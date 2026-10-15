@@ -131,10 +131,12 @@ async function waitIdle(page, timeout = 10000) {
  *   inline (the client calls api_bootstrap). inlinePage: doGet's ?page= (#boot-page); defaults to ''
  *   (no parameter) with `boot`, else nothing inline (the client asks google.script.url.getLocation).
  *   plotly: {delayMs} answers the Plotly CDN request late, {fail:true} makes it fail.
+ *   formSchema / delays: see buildMockScript (extra source columns or a fallback answer of api_getFormSchema,
+ *   extra answer delay per api name); both can also be changed at run time through window.__mock.
  */
 async function openApp({ empty = false, configured = true, page: pageId = 'dashboard',
   viewport = { width: 1400, height: 900 }, delayMs = 0, email, readySelector, failNext, beforeGoto, currentMonth, sync,
-  idle = true, prefs, boot, inlinePage, plotly = {} } = {}) {
+  idle = true, prefs, boot, inlinePage, plotly = {}, formSchema, delays } = {}) {
   const browser = await launchBrowser();
   const context = await browser.newContext({ viewport, locale: 'fr-FR', timezoneId: 'Europe/Paris' });
   const page = await context.newPage();
@@ -163,7 +165,7 @@ async function openApp({ empty = false, configured = true, page: pageId = 'dashb
     return route.abort();
   });
 
-  const mockOptions = { empty, configured, delayMs, email, failNext, prefs, currentMonth, sync };
+  const mockOptions = { empty, configured, delayMs, email, failNext, prefs, currentMonth, sync, formSchema, delays };
   const html = renderIndex({
     inject: '<script>' + buildMockScript(mockOptions) + '</script>',
     boot: boot === true ? bootstrapEnvelope(mockOptions) : boot,

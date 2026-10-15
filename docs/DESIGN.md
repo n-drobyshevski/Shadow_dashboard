@@ -122,6 +122,16 @@ with the system fallbacks above. The stylesheet must not block the first paint (
 - **Inputs/selects**: 1px `--rule-2`, 3px radius, 32px tall, focus = 2px `--accent` outline offset 1px.
 - **Modal / drawer**: the only elevated surfaces (shadow `0 12px 32px rgba(0,0,0,.18)`), 6px radius
   (drawer: none, full height, 1px left rule). Backdrop `rgba(22,24,27,.35)`, no blur.
+- **Form panel** (« Nouveau poste », « Nouvelle application »): a drawer, so the table stays in view. Title in
+  sans (« Nouveau poste — mai 2026 »). The fields come in collapsible sections: a hairline on top and the
+  small-caps label led by the same mono +/− marker as the dashboard's detail rows; two columns of fields when
+  the panel is wide enough, one at 390px. Required fields carry a `--ko` asterisk. Columns the Google Sheet
+  computes are no fields: one 12px `--ink-3` note names them. A fallback schema shows its warning as an
+  `alert-warning` line above the form; a 12px `--ink-3` line under it says where the columns were read, with a
+  quiet « Relire les colonnes ». Footer (fixed under the scrolling fields, hairline on top): a 12px `--ink-3`
+  note saying where the record goes, then « Annuler » (secondary) and the primary button; under 480px the note
+  takes its own line and the buttons stay right. Skeleton (label bars + 32px input outlines) while the
+  columns load. Closing with typed values asks first; while saving nothing closes the panel.
 - **Toasts**: bottom-left, ink background, white text, 3px radius, no icons; errors get a `--ko`
   left bar.
 - **Config screen**: left-aligned within the main column like any page: title "Source de données",
@@ -145,11 +155,16 @@ with the system fallbacks above. The stylesheet must not block the first paint (
 ## Copy
 - Titles: « Tableau de bord », « Postes », « Applications », « Suivi temporel », « Suivi des actions ».
 - Buttons: « Synchroniser maintenant », « Activer la synchronisation horaire », « Actualiser »,
-  « Enregistrer », « Annuler », « Ajouter un poste générique »,
-  « Nouvelle application », « Renommer », « Supprimer », « Exporter CSV », « Nouvelle action ».
+  « Enregistrer », « Annuler », « Nouveau poste », « Poste générique », « Créer le poste »,
+  « Nouvelle application », « Ajouter l’application », « Relire les colonnes », « Renommer », « Supprimer »,
+  « Exporter CSV », « Nouvelle action ».
+- Unsaved form: « Abandonner la saisie ? » / « Les valeurs saisies seront perdues. », buttons « Continuer la
+  saisie » and « Abandonner ».
 - Toasts: « Synchronisé — +2 postes · 1 application modifiée. », « Synchronisé — aucune modification. »,
   « 3 modifications enregistrées dans le Google Sheet source. », « 1 modification enregistrée (historique de
-  mai 2026). »,
+  mai 2026). », « Poste « LAB-TEX-04 » créé dans le Google Sheet source. », « Poste « LAB-TEX-04 » ajouté à
+  l’historique de avril 2026. », « Application « Slack » ajoutée. » (each + « (masqué par les filtres actifs). »
+  when the filters hide the new row),
   « Erreur : <message> ».
 - Numbers fr-FR: `71,4 %` (narrow no-break space before %), thousands with narrow no-break space.
 

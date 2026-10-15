@@ -32,7 +32,8 @@
  *   UI.skeleton(kind, {label, columns?, rows?}) -> div.skeleton (role=status, aria-busy, sr-only label): the
  *                                           grey silhouette of a page body while its data loads.
  *     kind 'dashboard' (KPI strip + two gauges), 'table' (columns: [labels] or a count; rows=6),
- *     'chart' (one plot block), 'lines' (rows text bars). Sizes match the real blocks: nothing jumps.
+ *     'chart' (one plot block), 'lines' (rows text bars), 'form' (two sections of field labels + input
+ *     outlines: UI.formPanel). Sizes match the real blocks: nothing jumps.
  *   UI.errorState(err|text, {retry?, prefix='Erreur', small?}) -> alert-error line « Erreur : message »
  *                                           (role=alert) + optional « Réessayer » text button.
  *   UI.errorText(err)                   -> err.message || 'Erreur inconnue.' (one fallback spelling).
@@ -47,6 +48,14 @@
  *     Field types: text | textarea | select (UI.dropdown) | select+allowCustom (combobox; tokens:true =
  *     comma-separated multi-token) | date (UI.dateField, 'DD/MM/YYYY') | month (UI.monthField, options =
  *     known months). Extra field keys: hint (help line), min/max (date), mono (identifiers), disabled.
+ *   UI.formFields({fields, groups?, onEnter?}) -> {form, control(name), values(), collect(), check(name),
+ *     showError(err), clearErrors(), isDirty(), focusFirst(), firstField(), setValues(values)}: the field loop of
+ *     formModal / formPanel; groups [{id, title, open?, note?}] -> collapsible <details class="form-section">.
+ *   UI.drawer(...) also accepts {footer?, canClose?, className?, initialFocus?}; it returns {close (forced), node,
+ *     requestClose} and the × goes through canClose too.
+ *   UI.formPanel({title, className?, submitLabel?, note?, load, onSubmit?, open?, reloadLabel?}) -> Promise<values|null>:
+ *     a creation form in a drawer (skeleton while load() runs, footer note + « Annuler » + submit, busy lock,
+ *     « Abandonner la saisie ? » before losing typed values).
  *   UI.select({..., id?, disabled?, mono?, searchable?, placeholder?}) / UI.multiSelect({..., id?}) build a
  *     UI.dropdown (js_controls.html); the returned element has getValue/setValue/setOptions/setDisabled.
  *   UI.editableTable: the search box is a UI.searchField (input.etable-search, « × » clear button, Esc
@@ -456,6 +465,14 @@
         el('table', { class: 'table skeleton-table' }, el('thead', null, head), el('tbody', null, body))));
     } else if (kind === 'chart') {
       shown.appendChild(el('div', { class: 'section' }, bar('skel-label', 30), el('span', { class: 'skel-chart' })));
+    } else if (kind === 'form') {
+      // Two sections of four fields: small-caps label, then field labels over 32px input outlines.
+      [0, 1].forEach(function (s) {
+        shown.appendChild(el('div', { class: 'skel-form-section' }, bar('skel-label', 24 + s * 10),
+          el('div', { class: 'form' }, [0, 1, 2, 3].map(function (i) {
+            return el('div', { class: 'form-field' }, bar('skel-label', 40 + ((i + s) % 3) * 15), el('span', { class: 'skel skel-input' }));
+          }))));
+      });
     } else {
       for (var j = 0; j < rows; j++) shown.appendChild(bar('skel-text', SKEL_WIDTHS[j % SKEL_WIDTHS.length]));
     }
@@ -682,6 +699,211 @@
   }
 
   /**
+   * UI.formFields({fields, groups?, onEnter?}) -> {form, control(name), values(), collect(), check(name),
+   *   showError(err), clearErrors(), isDirty(), focusFirst(), firstField(), setValues(values)}
+   * The fields of UI.formModal and UI.formPanel. fields: see UI.formModal, plus group (a groups[].id).
+   * groups: [{id, title, open?, note?}] -> one <details class="form-section" data-group=id> per group: a small-caps
+   * <summary class="form-section-title"> with the +/− marker, then a div.form of its fields and the optional
+   * p.form-section-note; fields of no known group come first in a plain div.form; a group with no field and no
+   * note is left out. Without groups the form itself is the div.form grid (UI.formModal).
+   * Enter in a single-line field calls onEnter(). collect() checks every field, opens the sections of the invalid
+   * ones and focuses the first of them: the values, or null. showError(err): err.field = a field name -> the
+   * message under that field (its section opened, the field focused), else an alert at the top of the form.
+   * isDirty(): a field's text differs from the one it was built with. values(): the values without checks.
+   */
+  function formFields(o) {
+    var opts = o || {};
+    var fields = opts.fields || [];
+    var groups = opts.groups || null;
+    var controls = {};
+    var names = [];
+    var initial = {};
+    /** Passed to a select field's onChange(value, form): form.control(name) = another field's control. */
+    var formApi = { control: function (name) { return controls[name] ? controls[name].control : null; } };
+    var alertBox = el('div', { class: 'form-alert', hidden: true });
+    var form = el('form', { class: groups ? 'form-sections' : 'form', novalidate: true,
+      onSubmit: function (e) { e.preventDefault(); if (opts.onEnter) opts.onEnter(); } }, alertBox);
+
+    var grids = {};
+    var sections = [];
+    var loose = groups ? null : form;
+    (groups || []).forEach(function (g) {
+      var grid = el('div', { class: 'form' });
+      grids[g.id] = grid;
+      sections.push({ group: g, grid: grid, node: el('details', { class: 'form-section', dataset: { group: g.id }, open: g.open !== false },
+        el('summary', { class: 'form-section-title' }, el('span', { class: 'form-section-label' }, g.title || '')),
+        grid, g.note ? el('p', { class: 'form-section-note' }, g.note) : null) });
+    });
+    function hostOf(f) {
+      if (groups && f.group && grids[f.group]) return grids[f.group];
+      if (!loose) loose = el('div', { class: 'form' });
+      return loose;
+    }
+
+    fields.forEach(function (f) {
+      var id = nextId('field');
+      var labelId = id + '-label';
+      var type = f.type || 'text';
+      var value = f.value === null || f.value === undefined ? '' : String(f.value);
+      var control;   // element placed in the form
+      var focusEl;   // element receiving focus / aria-invalid
+      var get;
+      var raw;       // the text as typed (isDirty)
+      var common = { id: id, name: f.name, class: ['input', f.mono ? 'mono' : null], required: !!f.required,
+        placeholder: f.placeholder || null, disabled: !!f.disabled };
+      if (type === 'textarea') {
+        control = focusEl = el('textarea', Object.assign(common, { rows: 3, value: value }));
+        get = function () { return String(control.value || '').trim(); };
+        raw = function () { return String(control.value || ''); };
+      } else if (type === 'select') {
+        var ops = normOptions(f.options);
+        if (!f.allowCustom && value && !ops.some(function (op) { return op.value === value; })) ops.push({ value: value, label: value });
+        control = UI.dropdown({ id: id, name: f.name, labelledBy: labelId, options: ops, value: value,
+          combobox: !!f.allowCustom, tokens: !!(f.allowCustom && f.tokens), mono: !!f.mono, disabled: !!f.disabled,
+          allowEmpty: !f.allowCustom && !f.required, emptyLabel: '—',
+          placeholder: f.placeholder || (!f.allowCustom && f.required ? 'Choisir…' : null),
+          onChange: f.onChange ? function (v) { f.onChange(v, formApi); } : null });
+        focusEl = control.control;
+        get = function () { return Core.str(control.getValue()); };
+        raw = get;
+      } else if (type === 'date' || type === 'month') {
+        var maker = type === 'date' ? UI.dateField : UI.monthField;
+        control = maker({ id: id, name: f.name, labelledBy: labelId, value: value, required: !!f.required,
+          min: f.min, max: f.max, options: f.options, disabled: !!f.disabled,
+          onValidate: function (msg) { UI.fieldError(control, msg); } });
+        focusEl = control.control;
+        get = function () { return control.getValue(); };
+        raw = function () { return String(control.getText()); };
+      } else {
+        control = focusEl = el('input', Object.assign(common, { type: 'text', value: value }));
+        get = function () { return String(control.value || '').trim(); };
+        raw = function () { return String(control.value || ''); };
+      }
+      var label = el('label', { for: id, id: labelId, class: 'field-label' }, f.label || f.name,
+        f.required ? el('span', { class: 'required', 'aria-hidden': 'true' }, ' *') : null);
+      if (focusEl.tagName === 'BUTTON') {
+        // A label click focuses the dropdown trigger without opening it.
+        label.addEventListener('click', function (e) { e.preventDefault(); if (!focusEl.disabled) focusEl.focus(); });
+      }
+      var hint = f.hint ? el('p', { class: 'field-help', id: id + '-help' }, f.hint) : null;
+      if (hint) focusEl.setAttribute('aria-describedby', ((focusEl.getAttribute('aria-describedby') || '') + ' ' + id + '-help').trim());
+      var err = el('p', { class: 'field-error', id: id + '-err', hidden: true });
+      focusEl.setAttribute('aria-describedby', ((focusEl.getAttribute('aria-describedby') || '') + ' ' + id + '-err').trim());
+      controls[f.name] = { field: f, control: control, focusEl: focusEl, type: type, get: get, raw: raw };
+      names.push(f.name);
+      hostOf(f).appendChild(el('div', { class: 'form-field' + (type === 'textarea' ? ' form-field-wide' : ''), dataset: { field: f.name } },
+        label, control, hint, err));
+    });
+    if (groups) {
+      if (loose) form.appendChild(loose);
+      sections.forEach(function (s) { if (s.grid.firstChild || s.group.note) form.appendChild(s.node); });
+    }
+    names.forEach(function (name) { initial[name] = controls[name].raw(); });
+
+    // Enter in a single-line field submits (dropdowns and comboboxes consume Enter while their list is open).
+    form.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' || e.defaultPrevented || e.isComposing) return;
+      var t = e.target;
+      if (t.tagName !== 'INPUT') return;
+      e.preventDefault();
+      if (opts.onEnter) opts.onEnter();
+    });
+
+    /** Opens the collapsed section around `node` (a field must be visible to be focused). */
+    function reveal(node) {
+      var d = node && node.closest ? node.closest('details.form-section') : null;
+      if (d && !d.open) d.open = true;
+    }
+
+    function check(name) {
+      var c = controls[name];
+      var v = c.get();
+      var msg = '';
+      if (c.type === 'date' || c.type === 'month') msg = c.control.validate();
+      else if (c.field.required && !v) msg = 'Ce champ est obligatoire.';
+      UI.fieldError(c.control, msg);
+      return { value: v, ok: !msg };
+    }
+
+    function collect() {
+      var values = {};
+      var bad = null;
+      names.forEach(function (name) {
+        var r = check(name);
+        if (!r.ok) {
+          reveal(controls[name].focusEl);
+          if (!bad) bad = controls[name].focusEl;
+        }
+        values[name] = r.value;
+      });
+      if (bad) { bad.focus(); return null; }
+      return values;
+    }
+
+    function values() {
+      var out = {};
+      names.forEach(function (name) { out[name] = controls[name].get(); });
+      return out;
+    }
+
+    function clearErrors() {
+      names.forEach(function (name) { UI.fieldError(controls[name].control, ''); });
+      alertBox.hidden = true;
+      clear(alertBox);
+    }
+
+    function showError(err) {
+      var field = err && err.field && controls[err.field] ? controls[err.field] : null;
+      if (field) {
+        reveal(field.focusEl);
+        UI.fieldError(field.control, errorText(err));
+        field.focusEl.focus();
+        return;
+      }
+      clear(alertBox).appendChild(errorState(err));
+      alertBox.hidden = false;
+    }
+
+    function isDirty() {
+      return names.some(function (name) { return controls[name].raw() !== initial[name]; });
+    }
+
+    /** The first enabled field of an open section (null when there is none). */
+    function firstField() {
+      var list = form.querySelectorAll(FIELD_FOCUS);
+      for (var i = 0; i < list.length; i++) {
+        if (!list[i].closest('details.form-section:not([open])')) return list[i];
+      }
+      return null;
+    }
+
+    /** Puts typed values back (a re-read of the form keeps them); unknown names are skipped. */
+    function setValues(map) {
+      Object.keys(map || {}).forEach(function (name) {
+        var c = controls[name];
+        var v = map[name];
+        if (!c || v === null || v === undefined || v === '') return;
+        if (c.type === 'select' || c.type === 'date' || c.type === 'month') c.control.setValue(v);
+        else c.focusEl.value = v;
+      });
+    }
+
+    return {
+      form: form,
+      control: formApi.control,
+      values: values,
+      collect: collect,
+      check: check,
+      showError: showError,
+      clearErrors: clearErrors,
+      isDirty: isDirty,
+      firstField: firstField,
+      setValues: setValues,
+      focusFirst: function () { focusFirst(null, firstField()); }
+    };
+  }
+
+  /**
    * UI.formModal({title, fields, submitLabel?, onSubmit?, wide?}) -> Promise<values|null>
    * fields: [{name, label, type:'text'|'textarea'|'select'|'date'|'month', options?, value?, required?,
    *           placeholder?, allowCustom?, tokens?, hint?, min?, max?, mono?, disabled?, onChange?}]
@@ -690,122 +912,23 @@
    * ('' when empty). Enter submits; the first invalid field is focused; errors are shown under the fields
    * (UI.fieldError). onSubmit(values) -> Promise keeps the modal open (busy submit button) until it
    * resolves; on rejection the error is shown inline (err.field -> that field) and the values are kept.
+   * Built on UI.formFields.
    */
   function formModal(o) {
     var opts = o || {};
     var fields = opts.fields || [];
     return new Promise(function (resolve) {
       var result = null;
-      var controls = {};
-      /** Passed to a select field's onChange(value, form): form.control(name) = another field's control. */
-      var formApi = { control: function (name) { return controls[name] ? controls[name].control : null; } };
       var busyNow = false;
-      var alertBox = el('div', { class: 'form-alert', hidden: true });
-      var form = el('form', { class: 'form', novalidate: true, onSubmit: function (e) { e.preventDefault(); submit(); } },
-        alertBox);
-
-      fields.forEach(function (f) {
-        var id = nextId('field');
-        var labelId = id + '-label';
-        var type = f.type || 'text';
-        var value = f.value === null || f.value === undefined ? '' : String(f.value);
-        var control;   // element placed in the form
-        var focusEl;   // element receiving focus / aria-invalid
-        var get;
-        var common = { id: id, name: f.name, class: ['input', f.mono ? 'mono' : null], required: !!f.required,
-          placeholder: f.placeholder || null, disabled: !!f.disabled };
-        if (type === 'textarea') {
-          control = focusEl = el('textarea', Object.assign(common, { rows: 3, value: value }));
-          get = function () { return String(control.value || '').trim(); };
-        } else if (type === 'select') {
-          var ops = normOptions(f.options);
-          if (!f.allowCustom && value && !ops.some(function (op) { return op.value === value; })) ops.push({ value: value, label: value });
-          control = UI.dropdown({ id: id, name: f.name, labelledBy: labelId, options: ops, value: value,
-            combobox: !!f.allowCustom, tokens: !!(f.allowCustom && f.tokens), mono: !!f.mono, disabled: !!f.disabled,
-            allowEmpty: !f.allowCustom && !f.required, emptyLabel: '—',
-            placeholder: f.placeholder || (!f.allowCustom && f.required ? 'Choisir…' : null),
-            onChange: f.onChange ? function (v) { f.onChange(v, formApi); } : null });
-          focusEl = control.control;
-          get = function () { return Core.str(control.getValue()); };
-        } else if (type === 'date' || type === 'month') {
-          var maker = type === 'date' ? UI.dateField : UI.monthField;
-          control = maker({ id: id, name: f.name, labelledBy: labelId, value: value, required: !!f.required,
-            min: f.min, max: f.max, options: f.options, disabled: !!f.disabled,
-            onValidate: function (msg) { UI.fieldError(control, msg); } });
-          focusEl = control.control;
-          get = function () { return control.getValue(); };
-        } else {
-          control = focusEl = el('input', Object.assign(common, { type: 'text', value: value }));
-          get = function () { return String(control.value || '').trim(); };
-        }
-        var label = el('label', { for: id, id: labelId, class: 'field-label' }, f.label || f.name,
-          f.required ? el('span', { class: 'required', 'aria-hidden': 'true' }, ' *') : null);
-        if (focusEl.tagName === 'BUTTON') {
-          // A label click focuses the dropdown trigger without opening it.
-          label.addEventListener('click', function (e) { e.preventDefault(); if (!focusEl.disabled) focusEl.focus(); });
-        }
-        var hint = f.hint ? el('p', { class: 'field-help', id: id + '-help' }, f.hint) : null;
-        if (hint) focusEl.setAttribute('aria-describedby', ((focusEl.getAttribute('aria-describedby') || '') + ' ' + id + '-help').trim());
-        var err = el('p', { class: 'field-error', id: id + '-err', hidden: true });
-        focusEl.setAttribute('aria-describedby', ((focusEl.getAttribute('aria-describedby') || '') + ' ' + id + '-err').trim());
-        controls[f.name] = { field: f, control: control, focusEl: focusEl, type: type, get: get };
-        form.appendChild(el('div', { class: 'form-field' + (type === 'textarea' ? ' form-field-wide' : '') },
-          label, control, hint, err));
-      });
-
-      // Enter in a single-line field submits (dropdowns and comboboxes consume Enter while their list is open).
-      form.addEventListener('keydown', function (e) {
-        if (e.key !== 'Enter' || e.defaultPrevented || e.isComposing) return;
-        var t = e.target;
-        if (t.tagName !== 'INPUT') return;
-        e.preventDefault();
-        submit();
-      });
-
-      function check(name) {
-        var c = controls[name];
-        var v = c.get();
-        var msg = '';
-        if (c.type === 'date' || c.type === 'month') msg = c.control.validate();
-        else if (c.field.required && !v) msg = 'Ce champ est obligatoire.';
-        UI.fieldError(c.control, msg);
-        return { value: v, ok: !msg };
-      }
-
-      function collect() {
-        var values = {};
-        var ok = true;
-        Object.keys(controls).forEach(function (name) {
-          var r = check(name);
-          if (!r.ok) ok = false;
-          values[name] = r.value;
-        });
-        return ok ? values : null;
-      }
-
-      function showError(err) {
-        var field = err && err.field && controls[err.field] ? controls[err.field] : null;
-        if (field) {
-          UI.fieldError(field.control, errorText(err));
-          field.focusEl.focus();
-          return;
-        }
-        clear(alertBox).appendChild(errorState(err));
-        alertBox.hidden = false;
-      }
-
       var m;
       var submitBtn;
+      var ff = formFields({ fields: fields, onEnter: function () { submit(); } });
+
       function submit() {
         if (busyNow) return;
-        var values = collect();
-        if (!values) {
-          var bad = form.querySelector('[aria-invalid="true"]');
-          if (bad) bad.focus();
-          return;
-        }
-        alertBox.hidden = true;
-        clear(alertBox);
+        var values = ff.collect();
+        if (!values) return;
+        ff.clearErrors();
         if (!opts.onSubmit) {
           result = values;
           m.close();
@@ -824,13 +947,13 @@
         }, function (err) {
           busyNow = false;
           m.setBusy(false);
-          showError(err);
+          ff.showError(err);
         });
       }
 
       m = modal({
         title: opts.title || 'Formulaire',
-        body: form,
+        body: ff.form,
         wide: opts.wide !== undefined ? !!opts.wide : fields.length > 6,
         actions: [
           { label: 'Annuler', onClick: function (close) { close(); } },
@@ -844,26 +967,172 @@
   }
 
   var openDrawers = [];
-  /** UI.drawer({title, body, onClose?}) -> {close, node}. Opening a drawer closes the previous one. */
+  /**
+   * UI.drawer({title, body, onClose?, footer?, canClose?, className?, initialFocus?}) -> {close, node, requestClose}
+   * Right-side panel. Opening a drawer closes the previous one. footer (Node | [Node]): div.drawer-footer under
+   * the scrolling body. canClose() vetoes the user's closes (×, Escape, backdrop, requestClose) when it returns
+   * false; it may start its own flow (a confirm) and call close() later. close() always closes.
+   * initialFocus: an element, or a function returning one (or null), focused once the panel slid in instead
+   * of the × button.
+   */
   function drawer(o) {
     var opts = o || {};
     openDrawers.slice().forEach(function (c) { c(); });
     var titleId = nextId('drawer-title');
     var close;
-    var panel = el('aside', { class: 'drawer', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId },
+    function requestClose() { if (!opts.canClose || opts.canClose()) close(); }
+    var closeBtn = el('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Fermer le panneau', onClick: requestClose }, '×');
+    var panel = el('aside', { class: ['drawer'].concat(opts.className || []), role: 'dialog', 'aria-modal': 'true',
+      'aria-labelledby': titleId },
       el('div', { class: 'drawer-header' },
         el('h2', { id: titleId, class: 'drawer-title' }, opts.title || ''),
-        el('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Fermer le panneau', onClick: function () { close(); } }, '×')),
-      el('div', { class: 'drawer-body' }, opts.body || null));
+        closeBtn),
+      el('div', { class: 'drawer-body' }, opts.body || null),
+      opts.footer ? el('div', { class: 'drawer-footer' }, opts.footer) : null);
     var overlay = el('div', { class: 'drawer-overlay' }, panel);
     close = openOverlay(overlay, panel, function () {
       var i = openDrawers.indexOf(close);
       if (i >= 0) openDrawers.splice(i, 1);
       if (opts.onClose) opts.onClose();
-    });
+    }, opts.canClose || null);
     openDrawers.push(close);
-    setTimeout(function () { panel.classList.add('open'); var b = panel.querySelector('.icon-btn'); if (b) b.focus(); }, 0);
-    return { close: close, node: panel };
+    setTimeout(function () {
+      panel.classList.add('open');
+      var target = typeof opts.initialFocus === 'function' ? opts.initialFocus() : opts.initialFocus;
+      try { (target || closeBtn).focus(); } catch (e) { /* ignore */ }
+    }, 0);
+    return { close: close, node: panel, requestClose: requestClose };
+  }
+
+  /**
+   * UI.formPanel({title, className?, submitLabel?, note?, load, onSubmit?, open?, reloadLabel?}) -> Promise<values|null>
+   * A creation form in a side panel (UI.drawer, or `open` = a function taking the same options, e.g. a page's
+   * ctx.drawer). load({force}) -> Promise<{fields, groups?, alert?, meta?}> (UI.formFields; alert: a warning line
+   * above the form; meta: a short line under it). A skeleton shows while it runs and the submit button stays
+   * disabled; a failure shows the error and « Réessayer ». reloadLabel: a quiet button after `meta` that calls
+   * load({force:true}) again, the typed values kept. Footer: `note` (where the record goes) on the left,
+   * « Annuler » and the primary submit button on the right. onSubmit(values) -> Promise: the submit button is busy
+   * and the panel cannot be closed until it settles; it closes on success, and on failure the error is shown in
+   * the form (err.field -> under that field, its section opened). Closing (×, Escape, backdrop, « Annuler ») with
+   * typed changes asks « Abandonner la saisie ? » first; without changes the panel closes at once. The first
+   * field is focused once loaded unless the user moved the focus meanwhile. Resolves with the submitted values,
+   * or null when the panel was closed without saving.
+   */
+  function formPanel(o) {
+    var opts = o || {};
+    return new Promise(function (resolve) {
+      var result = null;
+      var ff = null;
+      var busyNow = false;
+      var asking = false;
+      var closed = false;
+      var seq = 0;
+      var body = el('div', { class: 'form-panel-body' });
+      var submitBtn = el('button', { type: 'button', class: 'btn btn-primary form-panel-submit', disabled: true,
+        onClick: function () { submit(); } }, opts.submitLabel || 'Enregistrer');
+      var cancelBtn = el('button', { type: 'button', class: 'btn btn-secondary form-panel-cancel',
+        onClick: function () { handle.requestClose(); } }, 'Annuler');
+      var footer = [
+        opts.note ? el('p', { class: 'drawer-footer-note' }, opts.note) : null,
+        el('div', { class: 'drawer-footer-buttons' }, cancelBtn, submitBtn)
+      ];
+
+      function canClose() {
+        if (busyNow || asking) return false;
+        if (!ff || !ff.isDirty()) return true;
+        asking = true;
+        confirm('Les valeurs saisies seront perdues.', { title: 'Abandonner la saisie ?', okLabel: 'Abandonner',
+          cancelLabel: 'Continuer la saisie', danger: true }).then(function (ok) {
+          asking = false;
+          if (ok) handle.close();
+        });
+        return false;
+      }
+
+      var open = typeof opts.open === 'function' ? opts.open : drawer;
+      var handle = open({
+        title: opts.title || 'Formulaire',
+        body: body,
+        footer: footer,
+        className: ['form-panel'].concat(opts.className || []),
+        canClose: canClose,
+        initialFocus: function () { return ff ? ff.firstField() : null; },
+        onClose: function () { closed = true; resolve(result); }
+      });
+      var panel = handle.node;
+      function closeButton() { return panel.querySelector('.drawer-header .icon-btn'); }
+
+      function setBusy(on) {
+        busyNow = on;
+        cancelBtn.disabled = on;
+        var x = closeButton();
+        if (x) x.disabled = on;
+        panel.setAttribute('aria-busy', on ? 'true' : 'false');
+      }
+
+      function run(force) {
+        var mine = ++seq;
+        var keep = ff && ff.isDirty() ? ff.values() : null;
+        ff = null;
+        submitBtn.disabled = true;
+        clear(body).appendChild(skeleton('form', { label: 'Chargement du formulaire…' }));
+        body.setAttribute('aria-busy', 'true');
+        var p;
+        try { p = Promise.resolve(opts.load({ force: !!force })); } catch (e) { p = Promise.reject(e); }
+        p.then(function (res) {
+          if (closed || mine !== seq) return;
+          render(res || {}, keep);
+        }, function (err) {
+          if (closed || mine !== seq) return;
+          body.setAttribute('aria-busy', 'false');
+          clear(body).appendChild(errorState(err, { prefix: 'Formulaire indisponible', retry: function () { run(force); } }));
+        });
+      }
+
+      function render(res, keep) {
+        // The focus is still where the panel put it (× or nothing yet): the first field takes it.
+        var a = document.activeElement;
+        var untouched = !a || a === document.body || a === closeButton() || !panel.contains(a) || body.contains(a);
+        ff = formFields({ fields: res.fields || [], groups: res.groups || null, onEnter: function () { submit(); } });
+        if (keep) ff.setValues(keep);
+        clear(body);
+        body.setAttribute('aria-busy', 'false');
+        if (res.alert) body.appendChild(el('div', { class: 'alert alert-warning form-panel-alert', role: 'status' }, el('p', null, res.alert)));
+        body.appendChild(ff.form);
+        if (res.meta || opts.reloadLabel) {
+          body.appendChild(el('p', { class: 'form-panel-meta' }, res.meta || null, opts.reloadLabel ?
+            el('button', { type: 'button', class: 'btn btn-quiet btn-sm form-panel-reload', onClick: function () { run(true); } },
+              opts.reloadLabel) : null));
+        }
+        submitBtn.disabled = false;
+        if (untouched) ff.focusFirst();
+      }
+
+      function submit() {
+        if (busyNow || !ff || closed) return;
+        var values = ff.collect();
+        if (!values) return;
+        ff.clearErrors();
+        if (!opts.onSubmit) {
+          result = values;
+          handle.close();
+          return;
+        }
+        var p;
+        try { p = Promise.resolve(opts.onSubmit(values)); } catch (e) { p = Promise.reject(e); }
+        setBusy(true);
+        UI.busy(submitBtn, p).then(function () {
+          setBusy(false);
+          result = values;
+          handle.close();
+        }, function (err) {
+          setBusy(false);
+          if (!closed) ff.showError(err);
+        });
+      }
+
+      run(false);
+    });
   }
 
   // ------------------------------------------------------------------------------ tabs / selects
@@ -1469,7 +1738,9 @@
     toast: toast,
     modal: modal,
     confirm: confirm,
+    formFields: formFields,
     formModal: formModal,
+    formPanel: formPanel,
     drawer: drawer,
     tabs: tabs,
     multiSelect: multiSelect,

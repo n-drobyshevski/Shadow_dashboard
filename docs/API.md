@@ -664,6 +664,12 @@ State.loadMonth(month)           -> cached / shared pending request; a failure i
                                     any State.invalidate() clears every kept failure (« Réessayer » asks again).
 State.loadTimeline({force}?)     -> Promise<timeline> (cached)
 State.loadActions({force}?)      -> Promise<{actions, replacements}> (cached)
+State.loadFormSchema(entity, month, {force}?) -> Promise<FormSchema> (api_getFormSchema of a creation form; kept
+                                    5 minutes in memory, one request in flight per entity + month; force asks the
+                                    server with {fresh:true}; dropped by State.invalidate())
+State.extendColumns(month, entity, names[]) -> bool: adds the names the month's `columns[entity]` lacks (a record
+                                    created with a column added to the source since the last sync), true when
+                                    something was added
 State.refreshBootstrap({useInline}?) -> Promise<state> (api_bootstrap -> sets configured/months/... ; keeps month if
                                     still valid else latest). The FIRST call of the page consumes #boot-data; with
                                     useInline (App.boot only) it answers from it when it holds an ok envelope, with
@@ -699,7 +705,27 @@ UI.formModal({title, fields:[{name, label, type:'text'|'textarea'|'select'|'date
               required?, placeholder?, allowCustom?}], submitLabel?}) -> Promise<values|null>
     type 'date' shows <input type=date> but the value in/out is 'DD/MM/YYYY' (Core.frToIso/isoToFr).
     'select' with allowCustom renders <input list> + <datalist>.
-UI.drawer({title, body:Node}) -> {close}       (right-side panel)
+UI.formFields({fields, groups?, onEnter?}) -> {form, control(name), values(), collect(), check(name), showError(err),
+              clearErrors(), isDirty(), focusFirst(), firstField(), setValues(values)}
+    The field loop of UI.formModal / UI.formPanel (same field types and keys, plus `group`). groups:
+    [{id, title, open?, note?}] -> one <details class="form-section" data-group=id> per group (summary.form-section-title
+    with the +/− marker, div.form of its fields, p.form-section-note); a group with no field and no note is left out.
+    collect() checks every field, opens the sections of the invalid ones and focuses the first (values | null);
+    showError(err): err.field -> under that field (its section opened, the field focused), else an alert on top;
+    isDirty(): a field's text differs from the one it was built with. UI.formModal is built on it.
+UI.drawer({title, body:Node, onClose?, footer?, canClose?, className?, initialFocus?}) -> {close, node, requestClose}
+    Right-side panel. footer: div.drawer-footer under the scrolling body. canClose() vetoes the user's closes (×,
+    Escape, backdrop, requestClose) when it returns false (it may start its own confirm and call close() later);
+    close() always closes. initialFocus: an element or a function returning one (default: the × button).
+UI.formPanel({title, className?, submitLabel?, note?, load, onSubmit?, open?, reloadLabel?}) -> Promise<values|null>
+    A creation form in a drawer (`open` = UI.drawer or a page's ctx.drawer). load({force}) -> Promise<{fields, groups?,
+    alert?, meta?}>: skeleton meanwhile (submit disabled), error + « Réessayer » on failure; reloadLabel: a quiet button
+    after `meta` that loads again with {force:true}, typed values kept. Footer: `note` left, « Annuler » + the primary
+    submit right (the note on its own line under 480px). onSubmit(values) -> Promise: busy submit, « Annuler » / × /
+    Escape / backdrop blocked until it settles; success closes, failure shows the error in the form. Closing with
+    typed changes asks « Abandonner la saisie ? » (« Les valeurs saisies seront perdues. », « Continuer la saisie » /
+    « Abandonner »); without changes it closes at once. The first field takes the focus once loaded unless the
+    user moved it.
 UI.tabs(items:[{id, label, render:(root)=>void}], activeId?) -> Element
 UI.multiSelect({label, options:[string], value:[string], onChange:(values)=>void}) -> Element
 UI.select({label?, options:[string|{value,label}], value, onChange}) -> Element
@@ -764,7 +790,28 @@ an open drawer stay, no server call); otherwise it is re-mounted.
 Postes and Applications are built by `InventoryPage.create(spec)` (`js_page_inventory.html`, with
 `EntityDrawer`): header + CSV / create buttons, filter note, stat line, optional sections, the « Inventaire »
 editable table (key column → drawer, computed columns, « Conformité » filter, inline saves). Each page file
-only declares its spec (columns, nouns, CSV, create button, drawer).
+only declares its spec (columns, nouns, CSV, create buttons, drawer).
+
+`EntityForm.open(ctx, {entity, keyField, title, submitLabel, api, sections, presentation?, toast, fieldFallback?,
+button?})` (same file) is the creation form of both pages, in a `UI.formPanel` opened through `ctx.drawer`:
+- fields from `State.loadFormSchema(entity, month)` (api_getFormSchema): strict list → dropdown; other list →
+  combobox (a list without options suggests `Core.uniqueSorted` of the month's values); date → `UI.dateField`;
+  checkbox → Oui / Non (or its options); text. `presentation` adds textarea, tokens (+ suggestions) and mono to
+  text / open-list columns;
+- computed columns are no fields: « Score conformité, Niveau de risque, Statut : calculés par le Google Sheet. »
+  closes the « Conformité » section (else the first one);
+- `sections` [{id, title, open, columns}] place the columns (by `Core.normKey`, in that order); unknown columns go
+  to « Autres colonnes » (open); a section holding a required field or a prefilled value opens; Équipe /
+  Bâtiment / Labo default to the single active filter value;
+- origin 'fallback': the schema's warning as an alert above the form; a meta line names where the columns come
+  from, with « Relire les colonnes » (force, `fresh:true`);
+- footer note: « Écrit dans le Google Sheet source. » (applications: « … (Galink et IDP restent dans
+  l’application). »), past month « Mois figé : ajouté à l’historique de <mois> seulement, le Google Sheet source
+  n’est pas modifié. »;
+- only non-blank values are sent; on success `State.extendColumns` + `State.addRecord`, the table refreshed (rebuilt
+  when a column was added), `toast(name, {live, hidden, month})`, the new row scrolled into view and the focus back
+  on the button (several records in a row). The schema is prefetched when the pointer or the focus reaches the
+  button (`spec.primary.prefetch`).
 
 ### `window.App` (`js_main.html`)
 ```
@@ -842,8 +889,15 @@ instead of the configuration form.
 - Histograms `Distribution des scores — Postes` / `— Applications`.
 
 ### Postes (`postes`)
-- Header with counts; toolbar: search, `Conformité` select (Toutes / Conformes / Non conformes),
-  `➕ Poste générique` (api_addGenericPoste), `⬇️ CSV` export.
+- Header with counts; actions `[Exporter CSV] [Poste générique] [Nouveau poste]` (admins see the last two):
+  « Poste générique » (`#postes-add-generic`, secondary) calls api_addGenericPoste; « Nouveau poste »
+  (`#postes-add`, primary) opens `EntityForm` (title « Nouveau poste — mai 2026 », submit « Créer le poste »,
+  api_addPoste) with the sections Identification (Nom du poste, Équipe, Bâtiment / Labo, Responsable),
+  Équipement (Date d'achat, Criticité équipement, OS, Version OS), Conformité (IT Decathlon, EDR Decathlon,
+  Chiffrement disque, Réseau Decathlon, Type de compte, Enrolée) open, Visite (N° Visite, Date visite, Prochaine
+  revue) and Suivi (Action corrective, Responsable action, Deadline, Statut, Niveau de risque, Score conformité,
+  Application, Commentaires) collapsed; toast « Poste « X » créé dans le Google Sheet source. » or « Poste « X »
+  ajouté à l’historique de avril 2026. ». Toolbar: search, `Conformité` select (Toutes / Conformes / Non conformes).
 - `UI.editableTable` over filtered postes; columns = `columns.postes` order (key column first, not
   editable) + computed `Score` (`UI.scoreBadge`) + `Applis` count; options via `Core.optionsForColumn`.
   Period: the last month's inventory, kicker « … · inventaire fin octobre », computed column `_evo`
@@ -860,9 +914,12 @@ instead of the configuration form.
   api_addAction with target_type 'poste', source_month = month).
 
 ### Applications (`apps`)
-- Same layout; computed `Score` + criteria badges; `Galink`/`IDP` editable Oui/Non; toolbar `➕ Application`
-  (formModal: name, Éditeur, Type, Équipe, Installé sur poste, Contrat, SIP, Données sensibles exposées,
-  Niveau de risque, Galink, IDP → api_addApplication).
+- Same layout; computed `Score` + criteria badges; `Galink`/`IDP` editable Oui/Non; header « Nouvelle
+  application » (`#apps-add`) opens `EntityForm` (title « Nouvelle application — mai 2026 », submit « Ajouter
+  l’application », api_addApplication) with the sections Identification (name, Éditeur, Type, Équipe, Date), Usage
+  (Installé sur poste as poste tokens, Données sensibles exposées), Conformité (Contrat, SIP, Galink, IDP, Niveau de
+  risque) open, Suivi collapsed, Autres colonnes; a VALIDATION error without a field is shown under the name;
+  toast « Application « X » ajoutée. ».
 - Small summary row: counts Galink Oui/Non/vide and IDP Oui/Non/vide (migration readiness).
 - Drawer: 5-criteria checklist (✅/❌), postes it is installed on, linked actions + `➕ Action`, buttons
   `✏️ Renommer` (formModal → api_renameApplication) and `🗑️ Supprimer` (confirm → api_deleteApplication).
@@ -922,7 +979,8 @@ compares the first and last months by default.
   `inlineBoot_`/`inlinePage_` run from the real `Code.js` over the `boot` envelope / `page` options, '' when
   left out) to static HTML; optional injection of `test/fixtures/mockRun.js` + data for the browser.
   `bootstrapEnvelope(options)` (mockRun.js) computes in Node the envelope the mock's api_bootstrap returns;
-  the e2e harness takes `boot` / `inlinePage` (inline data) and `plotly: {delayMs}|{fail:true}`.
+  the e2e harness takes `boot` / `inlinePage` (inline data), `plotly: {delayMs}|{fail:true}` and the mock's
+  `formSchema` / `delays`.
 - `test/fixtures/mockRun.js` — browser `google.script.run` mock implementing every `api_*` from §3
   over in-memory data from `data.js` (records enriched with `Core`), recording calls in
   `window.__calls`. Creation forms: `api_getFormSchema` / `api_addPoste` / `api_addApplication` follow the server
@@ -931,4 +989,8 @@ compares the first and last months by default.
   `formSchema: {columns:{postes:[…]}, fallback, delayMs}` and `delays: {api_name: ms}` (also `window.__mock`).
 - `test/integration/form.test.js` — the forms' server half over the `form` source fixture: schema, cache and
   fallback, `api_addPoste` / `api_addApplication` / `api_addGenericPoste` writes and refusals with their field.
+- `test/e2e/forms.test.js` — the creation forms' client half: the panel (sections, notes, focus, prefetch and
+  cache, « Relire les colonnes »), saving (exact `api_addPoste` arguments, row and toast, field errors opening their
+  section), closing (unsaved-changes confirm, locked while saving), schema variants (new column, fallback, past
+  month), the applications form and the 390px layout.
 - `npm test` → `test/unit/**` + `test/integration/**`; `npm run test:e2e` → Playwright smoke tests.

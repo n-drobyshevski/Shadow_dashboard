@@ -22,9 +22,27 @@
  *     nouns: {one, many, loading, inExport, noMatch, none}, monoColumns, numericColumns?, extraColumns?:[name],
  *     computedColumns(ctx) -> [column], statsExtra?(all) -> [stat item], sections?(ctx) -> [section],
  *     onStats?(all, ctx), csv(ctx) -> {file, columns, rows}, csvTooltip, saveApi,
- *     primary?: {id, label, tooltip?, run(ctx, button)} (admins), openDrawer(id, ctx)}
+ *     primary?: {id, label, tooltip?, run(ctx, button), prefetch?(ctx)} (admins; prefetch runs when the pointer
+ *       or the focus reaches the button), secondary?: {id, label, tooltip?, run(ctx, button)} (admins, an outline
+ *       button before the primary one), openDrawer(id, ctx)}
  *   ctx: {month, columns, md() (current cached month), all() (globally filtered), visible() (+ conformity),
- *     refresh(), refreshPage(), live(), table, openDrawer(id), drawer(UI.drawer opts), drawerOpen(), closeDrawer()}
+ *     refresh(), refreshPage(), rerenderPage() (body rebuilt from the cache: new columns), isShown(id) (the record
+ *     is in the table as filtered now), rowNode(id), live(), table, openDrawer(id), drawer(UI.drawer opts),
+ *     drawerOpen(), closeDrawer()}
+ *
+ * window.EntityForm.open(ctx, {entity, keyField, title, submitLabel, api, sections, presentation?, toast,
+ *     fieldFallback?, button?}) -> Promise<record|null> — the creation form of a poste / an application in a side
+ *   panel (UI.formPanel through ctx.drawer). Its fields come from api_getFormSchema (State.loadFormSchema):
+ *   strict lists -> dropdown, other lists -> combobox (suggestions; a list without options suggests the month's
+ *   values), date -> UI.dateField, checkbox -> Oui / Non (or its options), text. Computed columns are not fields:
+ *   one note names them (end of « Conformité »). sections: [{id, title, open, columns:[name]}] (matched with
+ *   Core.normKey, in that order; unknown columns go to « Autres colonnes », open); a section holding a required
+ *   field or a prefilled value opens. presentation: {column: extras | (md) -> extras} for text / non-strict
+ *   columns (type:'textarea', tokens + options + hint, mono). Équipe / Bâtiment / Labo default to the single
+ *   active filter value. Footer note: where the record goes (source, or the frozen month's history). Only
+ *   non-blank values are sent to `api`; on success the record is added to the cache, the table refreshed, the
+ *   row scrolled into view, toast(name, {live, hidden, month}) shown, focus back on `button`. fieldFallback: the
+ *   field a VALIDATION error without a field is shown under.
  */
 (function () {
   'use strict';
@@ -150,13 +168,19 @@
           var out = spec.csv(v.ctx);
           UI.downloadCsv(out.file, out.columns, out.rows);
         } }, 'Exporter CSV');
+      if (spec.secondary && State.canEdit()) {
+        v.buttons.secondary = el('button', { type: 'button', class: 'btn btn-secondary', id: spec.secondary.id, disabled: true,
+          tooltip: spec.secondary.tooltip || null,
+          onClick: function () { if (v.ctx) spec.secondary.run(v.ctx, v.buttons.secondary); } }, spec.secondary.label);
+      }
       if (spec.primary && State.canEdit()) {
+        var prefetch = spec.primary.prefetch ? function () { if (v.ctx) spec.primary.prefetch(v.ctx); } : null;
         v.buttons.primary = el('button', { type: 'button', class: 'btn btn-primary', id: spec.primary.id, disabled: true,
-          tooltip: spec.primary.tooltip || null,
+          tooltip: spec.primary.tooltip || null, onPointerenter: prefetch, onFocus: prefetch,
           onClick: function () { if (v.ctx) spec.primary.run(v.ctx, v.buttons.primary); } }, spec.primary.label);
       }
       root.appendChild(UI.monthHeader({ title: spec.title, month: s.month, from: v.fromMonth, endLabel: 'inventaire',
-        kickerId: p + '-caption', actions: [v.buttons.csv, v.buttons.primary].filter(Boolean) }));
+        kickerId: p + '-caption', actions: [v.buttons.csv, v.buttons.secondary, v.buttons.primary].filter(Boolean) }));
       v.body = el('div', { class: 'block-stack ' + p + '-body', id: p + '-body' });
       root.appendChild(v.body);
       view = v;
@@ -230,6 +254,25 @@
       ctx.closeDrawer = function () { if (drawerHandle) drawerHandle.close(); };
       /** Refreshes the table of the page as it is now (the body may have been re-rendered since). */
       ctx.refreshPage = function () { if (view && view.ctx) view.ctx.refresh(); };
+      /** Rebuilds the body of the page from the cache (the month gained a column). */
+      ctx.rerenderPage = function () {
+        var cur = view;
+        var data = cur && cur.ctx ? State.getMonthData(cur.month) : null;
+        if (!data) return;
+        UI.clear(cur.body);
+        renderBody(cur, data);
+      };
+      /** True when the record is a row of the table as filtered now (global filters, conformity, period). */
+      ctx.isShown = function (id) {
+        return !!(view && view.ctx && view.ctx.visible().some(function (r) { return r._id === id; }));
+      };
+      /** The table row of a record (null when it is filtered out or on another page of the table). */
+      ctx.rowNode = function (id) {
+        if (!view || !view.ctx || !view.ctx.table) return null;
+        var rows = view.ctx.table.node.querySelectorAll('tbody tr[data-id]');
+        for (var i = 0; i < rows.length; i++) if (rows[i].dataset.id === id) return rows[i];
+        return null;
+      };
       v.ctx = ctx;
 
       // Summary line (globally filtered records, before the conformity filter):
@@ -357,6 +400,7 @@
       tableSection.id = p + '-inventory';
       v.body.appendChild(tableSection);
       if (v.buttons.primary) v.buttons.primary.disabled = false;
+      if (v.buttons.secondary) v.buttons.secondary.disabled = false;
       v.buttons.csv.disabled = false;
     }
 
@@ -370,5 +414,185 @@
   }
 
   window.InventoryPage = { create: create };
+
+  // ============================================================================== EntityForm
+
+  var OTHER_SECTION = 'autres';
+  var NOTE_SECTION = 'conformite';   // the computed-columns note closes this section (else the first one)
+
+  /** Footer note of the form: where the new record is written. */
+  function whereNote(entity, month, live) {
+    if (live) {
+      return 'Écrit dans le Google Sheet source' + (entity === 'applications' ? ' (Galink et IDP restent dans l’application).' : '.');
+    }
+    return 'Mois figé : ajouté à l’historique de ' + Fmt.monthLong(month) + ' seulement, le Google Sheet source n’est pas modifié.';
+  }
+
+  /** Équipe / Bâtiment / Labo: the value of the single active filter of that kind ('' otherwise). */
+  function filterDefault(name, entity) {
+    var f = State.get().filters || {};
+    var k = Core.normKey(name);
+    var list = k === Core.normKey('Équipe') ? f.equipes :
+      (entity === 'postes' && k === Core.normKey('Bâtiment / Labo') ? f.batiments : null);
+    return list && list.length === 1 ? Core.str(list[0]) : '';
+  }
+
+  function uniq(list) {
+    var seen = {};
+    return list.filter(function (v) {
+      var k = Core.normKey(v);
+      if (!k || seen[k]) return false;
+      seen[k] = true;
+      return true;
+    });
+  }
+
+  /** One schema column (api_getFormSchema) -> one UI.formFields field. */
+  function fieldOf(col, md, cfg) {
+    var f = { name: col.name, label: col.name, required: !!col.required };
+    var options = Array.isArray(col.options) && col.options.length ? col.options.map(Core.str) : null;
+    var strictList = (col.kind === 'select' || col.kind === 'checkbox') && !!col.strict;
+    if (col.kind === 'date') {
+      f.type = 'date';
+    } else if (col.kind === 'checkbox') {
+      f.type = 'select';
+      f.options = options || ['Oui', 'Non'];
+    } else if (col.kind === 'select' && strictList && options) {
+      f.type = 'select';
+      f.options = options;
+    } else if (col.kind === 'select') {
+      // A list that accepts other values (or whose values are unknown): a combobox suggesting them.
+      f.type = 'select';
+      f.allowCustom = true;
+      f.options = options || Core.uniqueSorted(md[cfg.entity], col.name);
+    } else {
+      f.type = 'text';
+    }
+    var extra = presentationOf(cfg, col.name);
+    if (typeof extra === 'function') extra = extra(md);
+    extra = extra || {};
+    if (!strictList && col.kind !== 'date' && col.kind !== 'checkbox') {
+      if (extra.type === 'textarea' && f.type === 'text') f.type = 'textarea';
+      if (extra.tokens) {
+        f.type = 'select';
+        f.allowCustom = true;
+        f.tokens = true;
+        f.options = uniq((f.options || []).concat(extra.options || []));
+      }
+      if (extra.placeholder) f.placeholder = extra.placeholder;
+      if (extra.hint) f.hint = extra.hint;
+    }
+    if (extra.mono) f.mono = true;
+    var def = filterDefault(col.name, cfg.entity);
+    if (def && (!strictList || (f.options || []).indexOf(def) >= 0)) f.value = def;
+    return f;
+  }
+
+  function presentationOf(cfg, name) {
+    var map = cfg.presentation || {};
+    var k = Core.normKey(name);
+    var keys = Object.keys(map);
+    for (var i = 0; i < keys.length; i++) if (Core.normKey(keys[i]) === k) return map[keys[i]];
+    return null;
+  }
+
+  /** « Score conformité, Niveau de risque, Statut : calculés par le Google Sheet. » */
+  function computedNote(names) {
+    return names.join(', ') + ' : ' + (names.length > 1 ? 'calculés' : 'calculé') + ' par le Google Sheet.';
+  }
+
+  /** « Colonnes lues dans le Google Sheet source · 14:02 » and the like, from the schema's origin. */
+  function schemaMeta(schema, month) {
+    var at = schema.readAt ? Fmt.stamp(schema.readAt) : '';
+    if (schema.origin === 'source') return 'Colonnes lues dans le Google Sheet source' + (at ? ' à ' + at : '') + '.';
+    if (schema.origin === 'fallback') return 'Colonnes de la dernière synchronisation' + (at ? ' (' + at + ')' : '') + '.';
+    return 'Colonnes de l’historique de ' + Fmt.monthLong(month) + '.';
+  }
+
+  /** {fields, groups, alert, meta} of UI.formPanel for a schema. */
+  function buildForm(schema, md, cfg, month) {
+    var sections = cfg.sections || [];
+    var place = {};   // normKey(column) -> {index (section), rank}
+    sections.forEach(function (sec, i) {
+      (sec.columns || []).forEach(function (c, rank) { place[Core.normKey(c)] = { index: i, rank: rank }; });
+    });
+    var computed = [];
+    var items = [];
+    (schema.columns || []).forEach(function (col, order) {
+      if (!col || !Core.str(col.name)) return;
+      if (col.computed) { computed.push(col.name); return; }
+      var at = place[Core.normKey(col.name)] || { index: sections.length, rank: order };
+      var f = fieldOf(col, md, cfg);
+      f.group = at.index < sections.length ? sections[at.index].id : OTHER_SECTION;
+      items.push({ field: f, index: at.index, rank: at.rank, order: order });
+    });
+    items.sort(function (a, b) { return a.index - b.index || a.rank - b.rank || a.order - b.order; });
+    var fields = items.map(function (it) { return it.field; });
+    var groups = sections.concat([{ id: OTHER_SECTION, title: 'Autres colonnes', open: true }]).map(function (sec) {
+      var mine = fields.filter(function (f) { return f.group === sec.id; });
+      var open = sec.open !== false || mine.some(function (f) { return f.required || Core.str(f.value) !== ''; });
+      return { id: sec.id, title: sec.title, open: open, count: mine.length };
+    }).filter(function (g) { return g.count > 0; });
+    if (computed.length && groups.length) {
+      var target = groups.filter(function (g) { return g.id === NOTE_SECTION; })[0] || groups[0];
+      target.note = computedNote(computed);
+    }
+    return {
+      fields: fields,
+      groups: groups.map(function (g) { return { id: g.id, title: g.title, open: g.open, note: g.note || null }; }),
+      alert: schema.origin === 'fallback' ? (schema.warning || 'Le Google Sheet source n’a pas pu être lu.') : null,
+      meta: schemaMeta(schema, month)
+    };
+  }
+
+  /** EntityForm.open(ctx, cfg): see the header. */
+  function openEntityForm(ctx, cfg) {
+    var month = ctx.month;
+    var entity = cfg.entity;
+    var live = month === State.get().currentMonth;
+    var created = null;
+    var sent = null;
+    var appOnly = {};
+    return UI.formPanel({
+      title: cfg.title,
+      className: 'entity-form',
+      submitLabel: cfg.submitLabel,
+      note: whereNote(entity, month, live),
+      reloadLabel: 'Relire les colonnes',
+      open: ctx.drawer,
+      load: function (o) {
+        return State.loadFormSchema(entity, month, { force: !!(o && o.force) }).then(function (schema) {
+          appOnly = {};
+          (schema.columns || []).forEach(function (c) { if (c && c.appOnly) appOnly[c.name] = true; });
+          return buildForm(schema, ctx.md(), cfg, month);
+        });
+      },
+      onSubmit: function (values) {
+        var record = {};
+        Object.keys(values).forEach(function (k) { if (Core.str(values[k]) !== '') record[k] = values[k]; });
+        sent = record;
+        return api.call(cfg.api, { month: month, record: record }).then(function (rec) { created = rec; }, function (err) {
+          if (cfg.fieldFallback && err && err.code === 'VALIDATION' && !err.field) err.field = cfg.fieldFallback;
+          throw err;
+        });
+      }
+    }).then(function (values) {
+      if (!values || !created) return null;
+      var grew = State.extendColumns(month, entity, Object.keys(sent || {}).filter(function (k) { return !appOnly[k]; }));
+      State.addRecord(month, entity, created);
+      if (grew) ctx.rerenderPage(); else ctx.refreshPage();
+      var name = Core.str(created[cfg.keyField]);
+      UI.toast(cfg.toast(name, { live: live, hidden: !ctx.isShown(created._id), month: month }), 'success');
+      var row = ctx.rowNode(created._id);
+      if (row && row.scrollIntoView) row.scrollIntoView({ block: 'nearest' });
+      var button = cfg.button;
+      if (button && button.isConnected && document.activeElement !== button) {
+        try { button.focus({ preventScroll: true }); } catch (e) { button.focus(); }
+      }
+      return created;
+    });
+  }
+
+  window.EntityForm = { open: openEntityForm };
 })();
 </script>

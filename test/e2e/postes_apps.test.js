@@ -108,8 +108,10 @@ describe('postes page', () => {
       assert.equal(await page.textContent('#postes-caption'), 'Mai 2026 · Export ' + MONTH);
       // No emoji anywhere in the page chrome (docs/DESIGN.md).
       assert.doesNotMatch(await page.textContent('#main'), /\p{Extended_Pictographic}/u);
-      assert.equal((await page.textContent('#postes-add-generic')).trim(), 'Ajouter un poste générique');
-      assert.equal((await page.textContent('#postes-export-csv')).trim(), 'Exporter CSV');
+      // Header: [Exporter CSV] [Poste générique] (secondary) [Nouveau poste] (primary).
+      assert.deepEqual(await page.$$eval('#main .page-header button', (bs) => bs.map((b) => [b.id, b.textContent.trim(), b.className])),
+        [['postes-export-csv', 'Exporter CSV', 'btn btn-secondary'], ['postes-add-generic', 'Poste générique', 'btn btn-secondary'],
+          ['postes-add', 'Nouveau poste', 'btn btn-primary']]);
       // Header hints are custom tooltips (aria-describedby), never title=.
       assert.match(await page.evaluate(() => {
         const b = document.getElementById('postes-export-csv');
@@ -273,7 +275,7 @@ describe('postes page', () => {
     });
   });
 
-  test('« Ajouter un poste générique » creates the generic poste once', async () => {
+  test('« Poste générique » creates the generic poste once', async () => {
     await withApp({ page: 'postes' }, async (app) => {
       const { page } = app;
       await page.click('#postes-add-generic');
@@ -294,7 +296,7 @@ describe('postes page', () => {
     });
   });
 
-  test('« Ajouter un poste générique »: busy button while the call runs; errors in a toast', async () => {
+  test('« Poste générique »: busy button while the call runs; errors in a toast', async () => {
     await withApp({ page: 'postes', delayMs: 400 }, async (app) => {
       const { page } = app;
       await page.click('#postes-add-generic');
@@ -302,7 +304,7 @@ describe('postes page', () => {
       assert.equal(await page.$eval('#postes-add-generic', (b) => getComputedStyle(b).opacity), '1');
       await app.waitIdle();
       assert.equal(await page.$('#postes-add-generic.is-busy'), null);
-      assert.equal((await page.textContent('#postes-add-generic')).trim(), 'Ajouter un poste générique');
+      assert.equal((await page.textContent('#postes-add-generic')).trim(), 'Poste générique');
       await page.evaluate(() => { window.__mock.failNext.api_addGenericPoste = { code: 'BUSY', message: 'Verrou occupé' }; });
       await page.click('#postes-add-generic');
       await app.waitIdle();
@@ -464,32 +466,36 @@ describe('applications page', () => {
     });
   });
 
-  test('« Nouvelle application » adds a record; duplicates are refused', async () => {
+  test('« Nouvelle application » adds a record from the form panel; duplicates are refused', async () => {
     await withApp({ page: 'apps' }, async (app) => {
       const { page } = app;
       async function fillForm(name) {
         await page.click('#apps-add');
-        await page.waitForSelector('.modal form');
-        assert.equal((await page.textContent('.modal .modal-title')).trim(), 'Nouvelle application — mai 2026');
-        await page.fill(`.modal [name="${KEY_APP}"]`, name);
-        await page.fill('.modal [name="Éditeur"]', 'Salesforce');
-        await chooseOption(page, '.modal [name="Type"]', 'SaaS');            // combobox (free text allowed)
-        await chooseOption(page, '.modal [name="Équipe"]', 'R&D Vélo');
-        await chooseOption(page, '.modal [name="Installé sur poste"]', 'RD-VEL-01');   // multi-token combobox
-        await chooseOption(page, '.modal [name="Contrat"]', 'Oui');
-        await chooseOption(page, '.modal [name="SIP"]', 'Oui');
-        await chooseOption(page, '.modal [name="Données sensibles exposées"]', 'Non');
-        await chooseOption(page, '.modal [name="Niveau de risque"]', 'Faible');
-        await chooseOption(page, '.modal [name="Galink"]', 'Oui');
-        await chooseOption(page, '.modal [name="IDP"]', 'Non');
+        await page.waitForSelector('.drawer.form-panel .form-sections');
+        await app.waitIdle();
+        assert.equal((await page.textContent('.form-panel .drawer-title')).trim(), 'Nouvelle application — mai 2026');
+        await page.fill(`.form-panel [name="${KEY_APP}"]`, name);
+        await page.fill('.form-panel [name="Éditeur"]', 'Salesforce');
+        await chooseOption(page, '.form-panel [name="Type"]', 'SaaS');            // combobox (free text allowed)
+        await chooseOption(page, '.form-panel [name="Équipe"]', 'R&D Vélo');
+        await chooseOption(page, '.form-panel [name="Installé sur poste"]', 'RD-VEL-01');   // multi-token combobox
+        await page.keyboard.press('Tab');   // the token list stays open for the next poste: Tab commits and closes it
+        await chooseOption(page, '.form-panel [name="Contrat"]', 'Oui');
+        await chooseOption(page, '.form-panel [name="SIP"]', 'Oui');
+        // A past month's snapshot has no list for this column (the live source has one): a text field here.
+        await page.fill('.form-panel [name="Données sensibles exposées"]', 'Non');
+        await chooseOption(page, '.form-panel [name="Niveau de risque"]', 'Faible');
+        await chooseOption(page, '.form-panel [name="Galink"]', 'Oui');
+        await chooseOption(page, '.form-panel [name="IDP"]', 'Non');
         await assertNoNativeControls(page);
-        await modalButton(page, 'Ajouter');
+        await page.click('.form-panel .drawer-footer button:has-text("Ajouter l’application")');
         await app.waitIdle();
       }
       await fillForm('Slack');
-      await page.waitForSelector('.modal', { state: 'detached' });
+      await page.waitForSelector('.drawer', { state: 'detached' });
       const adds = await callsNamed(app, 'api_addApplication');
       assert.equal(adds.length, 1);
+      // Only the filled fields are sent.
       assert.deepEqual(adds[0].args, { month: MONTH, record: {
         [KEY_APP]: 'Slack', 'Éditeur': 'Salesforce', Type: 'SaaS', 'Équipe': 'R&D Vélo', 'Installé sur poste': 'RD-VEL-01',
         Contrat: 'Oui', SIP: 'Oui', 'Données sensibles exposées': 'Non', 'Niveau de risque': 'Faible', Galink: 'Oui', IDP: 'Non',
@@ -501,19 +507,22 @@ describe('applications page', () => {
       assert.match(await page.textContent('#apps-stats'), /6 applications/);
       assert.ok((await toasts(page)).includes('Application «\u202fSlack\u202f» ajoutée.'));
 
-      // Same name modulo case -> VALIDATION: the modal stays open, the error sits under the name field,
+      // Same name modulo case -> VALIDATION: the panel stays open, the error sits under the name field,
       // every typed value is kept.
       await fillForm('slack');
-      await page.waitForSelector('.modal .field-error:not([hidden])');
-      const nameField = `.modal [name="${KEY_APP}"]`;
+      await page.waitForSelector('.form-panel .field-error:not([hidden])');
+      const nameField = `.form-panel [name="${KEY_APP}"]`;
       assert.equal(await page.getAttribute(nameField, 'aria-invalid'), 'true');
-      assert.match(await page.textContent('.modal .form-field:has([name="Nom du logiciel / service"]) .field-error'), /existe déjà/);
+      assert.match(await page.textContent(`.form-panel .form-field[data-field="${KEY_APP}"] .field-error`), /existe déjà/);
       assert.equal(await page.inputValue(nameField), 'slack');
-      assert.equal(await page.inputValue('.modal [name="Type"]'), 'SaaS');
-      assert.equal(await dropdownValue(page, '.modal [name="Galink"]'), 'Oui');
+      assert.equal(await page.inputValue('.form-panel [name="Type"]'), 'SaaS');
+      assert.equal(await dropdownValue(page, '.form-panel [name="Galink"]'), 'Oui');
       assert.equal((await toasts(page)).some((t) => /^Erreur/.test(t)), false);
-      await modalButton(page, 'Annuler');
-      await page.waitForSelector('.modal', { state: 'detached' });
+      // Typed values: « Annuler » asks first; « Abandonner » closes without saving.
+      await page.click('.form-panel .drawer-footer button:has-text("Annuler")');
+      await page.waitForSelector('.modal .confirm-message');
+      await modalButton(page, 'Abandonner');
+      await page.waitForSelector('.drawer', { state: 'detached' });
       assert.equal((await rowIds(page, 'apps')).length, 6);
       assert.equal((await callsNamed(app, 'api_addApplication')).length, 2);
       assert.deepEqual(app.errors, []);

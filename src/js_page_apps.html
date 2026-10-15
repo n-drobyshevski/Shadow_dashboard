@@ -17,8 +17,9 @@
  * Pages.apps — application inventory (docs/API.md §6 "Applications"), typeset per docs/DESIGN.md. Built by
  * InventoryPage (js_page_inventory.html): header (« Exporter CSV » / « Nouvelle application »), stat line,
  * editable ledger, conformity filter. Specific here: the Galink / IDP migration ledger, the computed
- * « Score » / « Critères » columns (they follow unsaved edits), the new-application form and the drawer
- * (5-criteria checklist, postes, linked actions, rename / delete).
+ * « Score » / « Critères » columns (they follow unsaved edits), the « Nouvelle application » form (EntityForm:
+ * fields read from the source sheet, in sections) and the drawer (5-criteria checklist, postes, linked actions,
+ * rename / delete).
  *
  * Read-only mode (lecteur, !State.canEdit()): no « Nouvelle application », no inline editing (Galink / IDP
  * included: plain cells, a row click opens the drawer), no « Renommer » / « Supprimer » / « Nouvelle action »
@@ -48,8 +49,6 @@
       throw err;
     };
   }
-
-  function yesNoOptions(col, ref) { return Core.optionsForColumn(col, ref) || ['Oui', 'Non']; }
 
   // ------------------------------------------------------------------------------ drawer
 
@@ -152,49 +151,38 @@
 
   // ------------------------------------------------------------------------------ add application
 
-  function addApplication(ctx) {
-    var md = ctx.md();
-    var month = ctx.month;
-    var ref = md.referentiel;
-    var filters = State.get().filters;
-    var equipes = Core.optionsForColumn('Équipe', ref) || Core.uniqueSorted(md.postes.concat(md.applications), 'Équipe');
-    var created = null;
-    return UI.formModal({
-      title: 'Nouvelle application — ' + Fmt.monthLong(month),
-      submitLabel: 'Ajouter',
-      fields: [
-        { name: KEY, label: 'Nom du logiciel / service', type: 'text', required: true },
-        { name: 'Éditeur', label: 'Éditeur', type: 'text' },
-        { name: 'Type', label: 'Type', type: 'select', allowCustom: true, options: Core.optionsForColumn('Type', ref) || [] },
-        { name: 'Équipe', label: 'Équipe', type: 'select', allowCustom: true, options: equipes,
-          value: (filters.equipes || []).length === 1 ? filters.equipes[0] : '' },
-        { name: 'Installé sur poste', label: 'Installé sur poste', type: 'select', allowCustom: true, tokens: true, mono: true,
-          options: Core.uniqueSorted(md.postes, KEY_POSTE), placeholder: 'POSTE-01, POSTE-02',
-          hint: 'Plusieurs postes : séparés par des virgules.' },
-        { name: 'Contrat', label: 'Contrat', type: 'select', options: yesNoOptions('Contrat', ref) },
-        { name: 'SIP', label: 'SIP', type: 'select', options: yesNoOptions('SIP', ref) },
-        { name: 'Données sensibles exposées', label: 'Données sensibles exposées', type: 'select',
-          options: yesNoOptions('Données sensibles exposées', ref) },
-        { name: 'Niveau de risque', label: 'Niveau de risque', type: 'select',
-          options: Core.optionsForColumn('Niveau de risque', ref) || Core.RISK_ORDER },
-        { name: 'Galink', label: 'Galink', type: 'select', options: yesNoOptions('Galink', ref) },
-        { name: 'IDP', label: 'IDP', type: 'select', options: yesNoOptions('IDP', ref) }
-      ],
-      onSubmit: function (values) {
-        var record = {};
-        Object.keys(values).forEach(function (k) { record[k] = values[k] === '' ? null : values[k]; });
-        return api.call('api_addApplication', { month: month, record: record })
-          .then(function (rec) { created = rec; }, onField(KEY));
+  /** Sections of the « Nouvelle application » form (EntityForm): source columns by name, then « Autres colonnes ». */
+  var APP_SECTIONS = [
+    { id: 'identification', title: 'Identification', open: true, columns: [KEY, 'Éditeur', 'Type', 'Équipe', 'Date'] },
+    { id: 'usage', title: 'Usage', open: true, columns: ['Installé sur poste', 'Données sensibles exposées'] },
+    { id: 'conformite', title: 'Conformité', open: true, columns: ['Contrat', 'SIP', 'Galink', 'IDP', 'Niveau de risque'] },
+    { id: 'suivi', title: 'Suivi', open: false,
+      columns: ['Action corrective', 'Responsable action', 'Statut', 'Score conformité', 'Commentaires'] }
+  ];
+
+  var APP_PRESENTATION = {
+    'Action corrective': { type: 'textarea' },
+    'Commentaires': { type: 'textarea' },
+    'Installé sur poste': function (md) {
+      return { tokens: true, mono: true, options: Core.uniqueSorted(md.postes, KEY_POSTE), placeholder: 'POSTE-01, POSTE-02',
+        hint: 'Plusieurs postes : séparés par des virgules.' };
+    }
+  };
+
+  function addApplication(ctx, button) {
+    return EntityForm.open(ctx, {
+      entity: 'applications',
+      keyField: KEY,
+      title: 'Nouvelle application — ' + Fmt.monthLong(ctx.month),
+      submitLabel: 'Ajouter l’application',
+      api: 'api_addApplication',
+      sections: APP_SECTIONS,
+      presentation: APP_PRESENTATION,
+      fieldFallback: KEY,
+      button: button,
+      toast: function (name, o) {
+        return 'Application ' + UI.quote(name) + ' ajoutée' + (o.hidden ? ' (masquée par les filtres actifs).' : '.');
       }
-    }).then(function (values) {
-      if (!values || !created) return null;
-      State.addRecord(month, 'applications', created);
-      var f = State.get().filters.equipes || [];
-      var hidden = f.length > 0 && f.indexOf(Core.str(created['Équipe'])) < 0;
-      UI.toast('Application ' + UI.quote(Core.str(created[KEY])) + ' ajoutée' +
-        (hidden ? ' (masquée par les filtres actifs).' : '.'), 'success');
-      ctx.refreshPage();
-      return created;
     }).catch(function (err) { UI.errorToast(err); });
   }
 
@@ -282,7 +270,8 @@
         rows: ctx.visible().map(function (r) { var o = Object.assign({}, r); o[SCORE_CSV] = r._score; return o; }) };
     },
     saveApi: 'api_saveApplications',
-    primary: { id: 'apps-add', label: 'Nouvelle application', run: function (ctx) { addApplication(ctx); } },
+    primary: { id: 'apps-add', label: 'Nouvelle application', run: addApplication,
+      prefetch: function (ctx) { State.loadFormSchema('applications', ctx.month).catch(function () { return null; }); } },
     openDrawer: openDrawer
   });
 })();
