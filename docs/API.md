@@ -17,9 +17,10 @@ identifiers and comments are **English**.
   `include`, `coreScript`, `setup` are public functions.
 - No `Date` object ever crosses `google.script.run`: every `api_*` takes **one JSON string** and
   returns **one JSON string** (see §3).
-- OAuth scopes: only `https://www.googleapis.com/auth/spreadsheets` and
+- OAuth scopes: only `https://www.googleapis.com/auth/spreadsheets`,
   `https://www.googleapis.com/auth/userinfo.email` (for `Session.getActiveUser()` /
-  `getEffectiveUser()`, used **only** in `src/Access.js`). Do not use `DriveApp`, `UrlFetchApp`,
+  `getEffectiveUser()`) and `https://www.googleapis.com/auth/groups` (`GroupsApp` membership checks).
+  `Session`, `GroupsApp` and `CacheService` are used **only** in `src/Access.js`. Do not use `DriveApp`, `UrlFetchApp`,
   `MailApp`, etc.
 - Web app: `executeAs: USER_DEPLOYING`, `access: DOMAIN`. Identity and roles are checked in-app (§4 Access).
 
@@ -175,17 +176,20 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 | `api_saveUser` | `{email, role:'admin'\|'lecteur'}` | `AccessView` (adds or changes the role) | `VALIDATION` (bad email / role, the owner, or the caller's own account) |
 | `api_addUsers` | `{emails:[string] (1–500), role}` | `{access:AccessView, added:[email], updated:[email] (role changed), skipped:[{email, reason}]}` — one write; invalid addresses, duplicates, the owner, the caller and accounts that already have that role are skipped with a reason | `VALIDATION` (role, empty / too long list, more than 2000 accounts) |
 | `api_removeUser` | `{email}` | `AccessView` | `VALIDATION` (as above), `NOT_FOUND` |
+| `api_saveGroup` | `{email, role}` | `AccessView` (adds a Google Group or changes its role) | `VALIDATION` (bad role; group unknown or its members not visible to the owner; more than 50 groups; the change would remove the caller's admin role) |
+| `api_removeGroup` | `{email}` | `AccessView` | `NOT_FOUND`, `VALIDATION` (the caller would lose admin) |
 | `api_setDomainRole` | `{role:'none'\|'lecteur'}` | `AccessView` | `VALIDATION` |
 
 `AccessView` = `{owner:email, users:[{email, role, added_at:'YYYY-MM-DD', added_by:email}] sorted by email
-(owner excluded), domainRole:'none'|'lecteur'}`. Emails are trimmed and lower-cased.
+(owner excluded), groups:[same shape] sorted by email, domainRole:'none'|'lecteur'}`. Emails are trimmed and lower-cased.
 
 The **complete list** of public API functions (used by the contract test) is exactly:
 `api_bootstrap, api_setConfig, api_getMonthData, api_importMonth, api_getImportLog, api_savePostes,
 api_addGenericPoste, api_saveApplications, api_addApplication, api_deleteApplication,
 api_renameApplication, api_getTimeline, api_getActions, api_addAction, api_updateAction,
 api_deleteAction, api_addReplacement, api_updateReplacement, api_deleteReplacement, api_getDiff,
-api_getSettings, api_setThreshold, api_saveUser, api_addUsers, api_removeUser, api_setDomainRole`
+api_getSettings, api_setThreshold, api_saveUser, api_addUsers, api_removeUser, api_setDomainRole,
+api_saveGroup, api_removeGroup`
 
 ---------------------------------------------------------------------------------------------------
 ## 4. Server internals
@@ -225,7 +229,11 @@ Config.uuid()                -> Utilities.getUuid()
 Access.ROLES = ['admin','lecteur'];  Access.DOMAIN_ROLES = ['none','lecteur']
 Access.ownerEmail()          -> Session.getEffectiveUser() email (the deployer), lower-cased
 Access.activeEmail()         -> Session.getActiveUser() email ('' when Google does not pass it: other domain)
-Access.roleOf(email, owner, access) -> 'admin' (owner) | listed role | 'lecteur' if domainRole is lecteur | ''
+Access.roleOf(email, owner, access) -> 'admin' for the owner, else the highest of: listed role, roles of the
+                               Google Groups the account belongs to, 'lecteur' if domainRole is lecteur; '' = none
+Access.isGroupMember(group, email) -> GroupsApp hasUser, sub-groups up to 3 levels (cycle-safe, ≤ 30 calls),
+                               cached 600 s in CacheService ('grp:<group>|<email>' -> '1'/'0'); errors -> false, not cached
+Access.checkGroup(v)         -> normalised group email, or VALIDATION if unknown / members hidden from the owner
 Access.currentUser(access?)  -> {email, role, isOwner, owner}
 Access.requireRole(minRole, access?) -> currentUser or FORBIDDEN
 Access.checkEmail(v) / Access.checkRole(v, allowed?) -> normalised value or VALIDATION

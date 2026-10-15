@@ -15,6 +15,7 @@ var Config = (function () {
   // parts of two versions, and parts left over from a longer list are ignored, then deleted.
   var ACCESS_CHUNK = 3000;
   var MAX_USERS = 2000;
+  var MAX_GROUPS = 50;
   var DATA_SPREADSHEET_NAME = 'ShadowIT_AppData';
 
   /**
@@ -53,7 +54,7 @@ var Config = (function () {
   }
 
   /**
-   * @return {{dataId: string, sourceId: string, threshold: number, access: {users: Object[], domainRole: string}}}
+   * @return {{dataId: string, sourceId: string, threshold: number, access: {users: Object[], groups: Object[], domainRole: string}}}
    *   ids are '' when unset; threshold is Core.THRESHOLD when unset or invalid.
    */
   function get() {
@@ -81,18 +82,22 @@ var Config = (function () {
   }
 
   /**
-   * Access list as stored in ACCESS_JSON: {users:[{email, role, added_at, added_by}], domainRole}.
+   * Access list as stored in ACCESS_JSON_*: {users:[{email, role, added_at, added_by}], groups:[same], domainRole}.
    * Anything unreadable becomes the empty list (only the deployer gets in), never an error.
    */
   function parseAccess_(json) {
     var raw = null;
     try { raw = json ? JSON.parse(json) : null; } catch (e) { raw = null; }
-    var users = raw && Array.isArray(raw.users) ? raw.users : [];
+    function entries(list) {
+      return (Array.isArray(list) ? list : []).filter(function (u) { return u && typeof u.email === 'string' && u.email; })
+        .map(function (u) {
+          return { email: String(u.email), role: String(u.role || ''), added_at: String(u.added_at || ''),
+            added_by: String(u.added_by || '') };
+        });
+    }
     return {
-      users: users.filter(function (u) { return u && typeof u.email === 'string' && u.email; }).map(function (u) {
-        return { email: String(u.email), role: String(u.role || ''), added_at: String(u.added_at || ''),
-          added_by: String(u.added_by || '') };
-      }),
+      users: entries(raw && raw.users),
+      groups: entries(raw && raw.groups),
       domainRole: raw && typeof raw.domainRole === 'string' ? raw.domainRole : 'none'
     };
   }
@@ -107,7 +112,8 @@ var Config = (function () {
    * @param {{users: Object[], domainRole: string}} access
    */
   function setAccess(access) {
-    var json = JSON.stringify({ users: access.users || [], domainRole: access.domainRole || 'none' });
+    var json = JSON.stringify({ users: access.users || [], groups: access.groups || [],
+      domainRole: access.domainRole || 'none' });
     var store = props_();
     var parts = {};
     var n = 0;
@@ -147,6 +153,7 @@ var Config = (function () {
     PROP_THRESHOLD: PROP_THRESHOLD,
     PROP_ACCESS: PROP_ACCESS,
     MAX_USERS: MAX_USERS,
+    MAX_GROUPS: MAX_GROUPS,
     DATA_SPREADSHEET_NAME: DATA_SPREADSHEET_NAME,
     TIME_ZONE: TIME_ZONE,
     TABS: TABS,

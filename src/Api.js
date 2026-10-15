@@ -606,8 +606,13 @@ var ApiImpl_ = (function () {
       .map(function (u) {
         return { email: Access.normEmail(u.email), role: u.role, added_at: u.added_at, added_by: u.added_by };
       });
-    users.sort(function (a, b) { return a.email < b.email ? -1 : a.email > b.email ? 1 : 0; });
-    return { owner: owner, users: users, domainRole: access.domainRole === 'lecteur' ? 'lecteur' : 'none' };
+    function byEmail(a, b) { return a.email < b.email ? -1 : a.email > b.email ? 1 : 0; }
+    users.sort(byEmail);
+    var groups = (access.groups || []).map(function (g) {
+      return { email: Access.normEmail(g.email), role: g.role, added_at: g.added_at, added_by: g.added_by };
+    }).sort(byEmail);
+    return { owner: owner, users: users, groups: groups,
+      domainRole: access.domainRole === 'lecteur' ? 'lecteur' : 'none' };
   }
 
   function getSettings(args, user) {
@@ -717,6 +722,50 @@ var ApiImpl_ = (function () {
     });
   }
 
+  /** No self lock-out through groups: the caller must still be admin with the new list. */
+  function requireStillAdmin_(user, access) {
+    if (Access.roleOf(user.email, user.owner, access) !== 'admin') {
+      throw invalid_('Ce changement vous retirerait le rôle administrateur (vous l’avez par ce groupe).');
+    }
+  }
+
+  /** Adds a Google Group with a role, or changes its role. The group must be readable by the owner. */
+  function saveGroup(args, user) {
+    var role = Access.checkRole(args.role);
+    var email = Access.checkGroup(args.email); // GroupsApp call: outside the lock
+    return Store.withLock(function () {
+      var access = Config.get().access;
+      var existing = access.groups.filter(function (g) { return Access.normEmail(g.email) === email; })[0];
+      if (existing) {
+        existing.email = email;
+        existing.role = role;
+      } else {
+        if (access.groups.length >= Config.MAX_GROUPS) {
+          throw invalid_('La liste est limitée à ' + Config.MAX_GROUPS + ' groupes.');
+        }
+        access.groups.push({ email: email, role: role, added_at: Config.today(), added_by: user.email });
+      }
+      requireStillAdmin_(user, access);
+      Config.setAccess(access);
+      return accessView_(access, user.owner);
+    });
+  }
+
+  function removeGroup(args, user) {
+    var email = Access.checkEmail(args.email);
+    return Store.withLock(function () {
+      var access = Config.get().access;
+      var kept = access.groups.filter(function (g) { return Access.normEmail(g.email) !== email; });
+      if (kept.length === access.groups.length) {
+        throw Core.makeError('NOT_FOUND', 'Aucun groupe enregistré : ' + email + '.');
+      }
+      access.groups = kept;
+      requireStillAdmin_(user, access);
+      Config.setAccess(access);
+      return accessView_(access, user.owner);
+    });
+  }
+
   function removeUser(args, user) {
     var email = editableEmail_(args.email, user);
     return Store.withLock(function () {
@@ -781,6 +830,8 @@ var ApiImpl_ = (function () {
     setThreshold: setThreshold,
     saveUser: saveUser,
     addUsers: addUsers,
+    saveGroup: saveGroup,
+    removeGroup: removeGroup,
     removeUser: removeUser,
     setDomainRole: setDomainRole
   };
@@ -813,5 +864,7 @@ function api_getSettings(argsJson) { return apiWrap_(ApiImpl_.getSettings, 'api_
 function api_setThreshold(argsJson) { return apiWrap_(ApiImpl_.setThreshold, 'api_setThreshold', 'admin')(argsJson); }
 function api_saveUser(argsJson) { return apiWrap_(ApiImpl_.saveUser, 'api_saveUser', 'admin')(argsJson); }
 function api_addUsers(argsJson) { return apiWrap_(ApiImpl_.addUsers, 'api_addUsers', 'admin')(argsJson); }
+function api_saveGroup(argsJson) { return apiWrap_(ApiImpl_.saveGroup, 'api_saveGroup', 'admin')(argsJson); }
+function api_removeGroup(argsJson) { return apiWrap_(ApiImpl_.removeGroup, 'api_removeGroup', 'admin')(argsJson); }
 function api_removeUser(argsJson) { return apiWrap_(ApiImpl_.removeUser, 'api_removeUser', 'admin')(argsJson); }
 function api_setDomainRole(argsJson) { return apiWrap_(ApiImpl_.setDomainRole, 'api_setDomainRole', 'admin')(argsJson); }

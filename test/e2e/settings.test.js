@@ -194,6 +194,53 @@ describe('settings (admin)', () => {
     });
   });
 
+  test('Google Groups: add (checked by the server), change role, remove, no self lock-out', async () => {
+    await withApp({ page: 'settings' }, async (app) => {
+      const { page } = app;
+      const groupRows = () => page.$$eval('#groups-table tbody tr', (rs) => rs.map((r) => r.dataset.group));
+      assert.deepEqual(await groupRows(), ['labo-industry@decathlon.com']);
+
+      await page.fill('#group-email', 'inconnu@decathlon.com');
+      await page.click('#group-add');
+      await page.waitForSelector('#group-email[aria-invalid="true"]');
+      assert.match(await page.textContent('#group-email-err'), /Groupe introuvable ou membres non visibles/);
+
+      await page.fill('#group-email', 'Shadow-Admins@decathlon.com');
+      await chooseOption(page, '#group-role', 'Administrateur');
+      await page.click('#group-add');
+      assert.equal(await lastToast(page), 'Groupe ajouté — shadow-admins@decathlon.com (Administrateur).');
+      await app.waitIdle();
+      assert.deepEqual(await groupRows(), ['labo-industry@decathlon.com', 'shadow-admins@decathlon.com']);
+
+      await chooseOption(page, '#groups-table tr[data-group="labo-industry@decathlon.com"] .dd-trigger', 'Administrateur');
+      assert.equal(await lastToast(page), 'Rôle modifié — labo-industry@decathlon.com : Administrateur.');
+      await app.waitIdle();
+
+      await page.click('#groups-table tr[data-group="labo-industry@decathlon.com"] button:has-text("Retirer")');
+      await page.click('.modal button:has-text("Retirer")');
+      await page.waitForSelector('.modal', { state: 'detached' });
+      await app.waitIdle();
+      assert.deepEqual(await groupRows(), ['shadow-admins@decathlon.com']);
+      assert.deepEqual(app.errors, []);
+    });
+
+    // A second admin who is admin only through the group cannot remove it.
+    await withApp({ page: 'settings', email: 'chloe.admin@decathlon.com', readySelector: '#main .page' }, async (app) => {
+      const { page } = app;
+      await page.evaluate(() => window.__mock.db.access.groups.push({ email: 'shadow-admins@decathlon.com',
+        role: 'admin', added_at: '2026-10-01', added_by: 'owner@decathlon.com' }));
+      await page.click('.page-denied button:has-text("Réessayer")');
+      await page.waitForSelector('#main .page[data-page="dashboard"]');
+      await app.goto('settings');
+      await page.click('#groups-table tr[data-group="shadow-admins@decathlon.com"] button:has-text("Retirer")');
+      await page.click('.modal button:has-text("Retirer")');
+      await page.waitForFunction(() => /retirerait le rôle administrateur/.test(document.querySelector('.modal') ?
+        document.querySelector('.modal').textContent : ''));
+      assert.equal(await page.evaluate(() => window.__mock.db.access.groups.length), 2);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
   test('source: invalid value shown on the field, valid one saved', async () => {
     await withApp({ page: 'settings' }, async (app) => {
       const { page } = app;
@@ -263,6 +310,15 @@ describe('access (shell)', () => {
       await page.click('.page-denied button:has-text("Réessayer")');
       await page.waitForSelector('#main .page[data-page="dashboard"]');
       assert.equal((await page.textContent('#side-user .side-user-role')).trim(), 'Lecteur · lecture seule');
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('member of an allowed Google Group gets its role (lecteur)', async () => {
+    await withApp({ email: ACCOUNTS.GROUP_MEMBER }, async (app) => {
+      const { page } = app;
+      assert.equal((await page.textContent('#side-user .side-user-role')).trim(), 'Lecteur · lecture seule');
+      assert.equal(await page.$('#sidebar .nav-link[data-page="settings"]'), null);
       assert.deepEqual(app.errors, []);
     });
   });

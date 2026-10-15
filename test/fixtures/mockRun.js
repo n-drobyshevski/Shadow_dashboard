@@ -95,7 +95,16 @@ function mockMain(FIX, OPTS) {
         { email: 'lea.reader@decathlon.com', role: 'lecteur', added_at: '2026-04-02', added_by: OWNER },
         { email: 'sam.admin@decathlon.com', role: 'admin', added_at: '2026-04-02', added_by: OWNER }
       ],
+      groups: [
+        { email: 'labo-industry@decathlon.com', role: 'lecteur', added_at: '2026-04-02', added_by: OWNER }
+      ],
       domainRole: 'none'
+    },
+    // Google Groups known to the mock (members visible to the owner); 'hidden@…' is not readable.
+    groupMembers: {
+      'labo-industry@decathlon.com': ['marc.labo@decathlon.com'],
+      'shadow-admins@decathlon.com': ['sam.admin@decathlon.com', 'chloe.admin@decathlon.com'],
+      'labo-textile@decathlon.com': ['ines.textile@decathlon.com']
     }
   };
   if (!OPTS.empty) {
@@ -487,6 +496,38 @@ function mockMain(FIX, OPTS) {
       return res;
     },
 
+    api_saveGroup: function (args) {
+      var a = obj(args);
+      if (['admin', 'lecteur'].indexOf(a.role) < 0) fail('VALIDATION', 'Rôle invalide : « ' + s(a.role) + ' ».');
+      var email = normEmail(a.email);
+      if (!Core().isEmail(email)) fail('VALIDATION', 'Adresse e-mail invalide : « ' + s(a.email) + ' ».');
+      if (!db.groupMembers[email]) {
+        fail('VALIDATION', 'Groupe introuvable ou membres non visibles pour le propriétaire du déploiement : ' + email + '.');
+      }
+      var before = clone(db.access.groups);
+      var hit = db.access.groups.filter(function (g) { return g.email === email; })[0];
+      if (hit) hit.role = a.role;
+      else db.access.groups.push({ email: email, role: a.role, added_at: todayIso(), added_by: normEmail(db.email) });
+      if (roleOf(normEmail(db.email)) !== 'admin') {
+        db.access.groups = before;
+        fail('VALIDATION', 'Ce changement vous retirerait le rôle administrateur (vous l’avez par ce groupe).');
+      }
+      return accessView();
+    },
+
+    api_removeGroup: function (args) {
+      var email = normEmail(obj(args).email);
+      var before = db.access.groups;
+      var kept = before.filter(function (g) { return g.email !== email; });
+      if (kept.length === before.length) fail('NOT_FOUND', 'Aucun groupe enregistré : ' + email + '.');
+      db.access.groups = kept;
+      if (roleOf(normEmail(db.email)) !== 'admin') {
+        db.access.groups = before;
+        fail('VALIDATION', 'Ce changement vous retirerait le rôle administrateur (vous l’avez par ce groupe).');
+      }
+      return accessView();
+    },
+
     api_removeUser: function (args) {
       var email = editableEmail(obj(args).email);
       var kept = db.access.users.filter(function (u) { return u.email !== email; });
@@ -509,13 +550,20 @@ function mockMain(FIX, OPTS) {
     if (!email) return '';
     if (email === OWNER) return 'admin';
     var hit = db.access.users.filter(function (u) { return u.email === email; })[0];
-    if (hit) return hit.role;
-    return db.access.domainRole === 'lecteur' ? 'lecteur' : '';
+    var role = hit ? hit.role : '';
+    if (role !== 'admin' && db.access.domainRole === 'lecteur') role = 'lecteur';
+    db.access.groups.forEach(function (g) {
+      var members = db.groupMembers[g.email] || [];
+      if (members.indexOf(email) >= 0 && (g.role === 'admin' || !role)) role = g.role === 'admin' ? 'admin' : role || 'lecteur';
+    });
+    return role;
   }
   function accessView() {
     var users = clone(db.access.users);
     users.sort(function (a, b) { return a.email < b.email ? -1 : a.email > b.email ? 1 : 0; });
-    return { owner: OWNER, users: users, domainRole: db.access.domainRole };
+    var groups = clone(db.access.groups);
+    groups.sort(function (a, b) { return a.email < b.email ? -1 : a.email > b.email ? 1 : 0; });
+    return { owner: OWNER, users: users, groups: groups, domainRole: db.access.domainRole };
   }
   function editableEmail(v) {
     var email = normEmail(v);

@@ -47,6 +47,8 @@ function loadGas(options) {
     HtmlService: env.HtmlService,
     Logger: env.Logger,
     Session: env.Session,
+    GroupsApp: env.GroupsApp,
+    CacheService: env.CacheService,
     console: env.console,
     Date,
   });

@@ -57,7 +57,7 @@ test('the deployer is admin without being listed; bootstrap reports the user and
   assert.match(boot.dataUrl, /^https:\/\//);
   assert.match(boot.sourceUrl, /^https:\/\//);
   const settings = ok(sb.ctx, 'api_getSettings');
-  assert.deepEqual(settings.access, { owner: OWNER, users: [], domainRole: 'none' });
+  assert.deepEqual(settings.access, { owner: OWNER, users: [], groups: [], domainRole: 'none' });
   assert.equal(settings.me, OWNER);
 });
 
@@ -96,7 +96,7 @@ test('lecteur: read endpoints work, every write endpoint is FORBIDDEN, links are
   ok(sb.ctx, 'api_getDiff', { oldMonth: '2026-05', newMonth: '2026-05' });
 
   const writes = apiNames(sb.ctx).filter((n) => !LECTEUR_APIS.includes(n));
-  assert.equal(writes.length, 20);
+  assert.equal(writes.length, 22);
   const poste = md.postes[0];
   for (const name of writes) {
     const err = fail(sb.ctx, name, { month: '2026-05', id: poste._id, changes: [], email: ADMIN2, role: 'admin',
@@ -292,7 +292,7 @@ test('large lists: 1500 accounts are split across properties under 9 KB and read
   assert.deepEqual(Object.keys(after).filter((k) => /^ACCESS_JSON_\d+$/.test(k)), ['ACCESS_JSON_0'], 'from ' + before);
   ok(sb.ctx, 'api_addUsers', { role: 'lecteur', emails: Array.from({ length: 300 }, (_, i) => 'p' + i + '@decathlon.com') });
   sb.env.PropertiesService.getScriptProperties().setProperty('ACCESS_JSON_N', '1');
-  assert.deepEqual(plain(sb.ctx.Config.get().access), { users: [], domainRole: 'none' }, 'truncated JSON -> empty');
+  assert.deepEqual(plain(sb.ctx.Config.get().access), { users: [], groups: [], domainRole: 'none' }, 'truncated JSON -> empty');
 });
 
 test('the access list is capped at 2000 accounts', () => {
@@ -305,4 +305,89 @@ test('the access list is capped at 2000 accounts', () => {
   fail(sb.ctx, 'api_saveUser', { email: 'one.more@decathlon.com', role: 'lecteur' }, 'VALIDATION');
   // Changing a role is still possible at the cap.
   ok(sb.ctx, 'api_saveUser', { email: 'a1@decathlon.com', role: 'admin' });
+});
+
+// ---------------------------------------------------------------------------- Google Groups
+
+const LAB = 'labo-industry@decathlon.com';
+const SUB = 'labo-textile@decathlon.com';
+const ADMINS = 'shadow-admins@decathlon.com';
+
+function withGroups() {
+  const sb = imported();
+  sb.env.__setGroups({
+    [LAB]: { members: ['marc@decathlon.com'], children: [SUB] },
+    [SUB]: { members: ['Ines@decathlon.com'], children: [LAB] }, // cycle: must terminate
+    [ADMINS]: { members: [ADMIN2, 'marc@decathlon.com'] },
+    'secret@decathlon.com': { members: ['x@decathlon.com'], hidden: true },
+  });
+  return sb;
+}
+
+test('groups: add with role, members get it (sub-groups included), highest role wins', () => {
+  const sb = withGroups();
+  let view = ok(sb.ctx, 'api_saveGroup', { email: ' Labo-Industry@decathlon.com ', role: 'lecteur' });
+  assert.deepEqual(view.groups.map((g) => [g.email, g.role, g.added_by]), [[LAB, 'lecteur', OWNER]]);
+  as(sb, 'marc@decathlon.com');
+  assert.equal(ok(sb.ctx, 'api_bootstrap').user.role, 'lecteur');
+  as(sb, 'ines@decathlon.com');
+  assert.equal(ok(sb.ctx, 'api_bootstrap').user.role, 'lecteur', 'member of a sub-group');
+  fail(sb.ctx, 'api_importMonth', { month: '2026-06' }, 'FORBIDDEN');
+  as(sb, 'nobody@decathlon.com');
+  fail(sb.ctx, 'api_bootstrap', null, 'FORBIDDEN');
+
+  as(sb, undefined);
+  ok(sb.ctx, 'api_saveGroup', { email: ADMINS, role: 'admin' });
+  as(sb, 'marc@decathlon.com');
+  assert.equal(ok(sb.ctx, 'api_bootstrap').user.role, 'admin', 'admin group beats lecteur group');
+  // Explicit lecteur entry never lowers a group admin.
+  as(sb, undefined);
+  ok(sb.ctx, 'api_saveUser', { email: 'marc@decathlon.com', role: 'lecteur' });
+  as(sb, 'marc@decathlon.com');
+  assert.equal(ok(sb.ctx, 'api_getSettings').access.groups.length, 2);
+});
+
+test('groups: memberships are cached; removing a group applies at once', () => {
+  const sb = withGroups();
+  ok(sb.ctx, 'api_saveGroup', { email: LAB, role: 'lecteur' });
+  as(sb, 'marc@decathlon.com');
+  ok(sb.ctx, 'api_bootstrap');
+  const calls = sb.env.__state.groupCalls;
+  for (let i = 0; i < 5; i++) ok(sb.ctx, 'api_getActions');
+  assert.equal(sb.env.__state.groupCalls, calls, 'no GroupsApp call while cached');
+  assert.equal(sb.env.__state.cache.get('grp:' + LAB + '|marc@decathlon.com'), '1');
+  as(sb, undefined);
+  ok(sb.ctx, 'api_removeGroup', { email: LAB });
+  as(sb, 'marc@decathlon.com');
+  fail(sb.ctx, 'api_bootstrap', null, 'FORBIDDEN');
+});
+
+test('groups: unknown or hidden groups are refused; a group that becomes unreadable denies quietly', () => {
+  const sb = withGroups();
+  for (const email of ['ghost@decathlon.com', 'secret@decathlon.com']) {
+    const err = fail(sb.ctx, 'api_saveGroup', { email, role: 'lecteur' }, 'VALIDATION');
+    assert.match(err.message, /Groupe introuvable ou membres non visibles/);
+  }
+  fail(sb.ctx, 'api_saveGroup', { email: LAB, role: 'none' }, 'VALIDATION');
+  fail(sb.ctx, 'api_removeGroup', { email: LAB }, 'NOT_FOUND');
+  ok(sb.ctx, 'api_saveGroup', { email: LAB, role: 'lecteur' });
+  sb.env.__setGroups({ [LAB]: { members: ['marc@decathlon.com'], hidden: true } });
+  as(sb, 'marc@decathlon.com');
+  fail(sb.ctx, 'api_bootstrap', null, 'FORBIDDEN');
+  assert.equal(sb.env.__state.cache.has('grp:' + LAB + '|marc@decathlon.com'), false, 'errors are not cached');
+});
+
+test('groups: an admin cannot remove or demote the group that makes them admin', () => {
+  const sb = withGroups();
+  ok(sb.ctx, 'api_saveGroup', { email: ADMINS, role: 'admin' });
+  as(sb, ADMIN2);
+  for (const [name, args] of [['api_removeGroup', { email: ADMINS }], ['api_saveGroup', { email: ADMINS, role: 'lecteur' }]]) {
+    const err = fail(sb.ctx, name, args, 'VALIDATION');
+    assert.match(err.message, /retirerait le rôle administrateur/);
+  }
+  // The owner can.
+  as(sb, undefined);
+  ok(sb.ctx, 'api_saveGroup', { email: ADMINS, role: 'lecteur' });
+  as(sb, ADMIN2);
+  assert.equal(ok(sb.ctx, 'api_bootstrap').user.role, 'lecteur');
 });

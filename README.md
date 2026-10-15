@@ -86,8 +86,8 @@ Workspace que le déployeur. Avec un compte Gmail personnel, seul le déployeur 
    ```
    `clasp push -f` remplace tout le contenu du projet distant, manifeste `appsscript.json` compris.
 6. **Autoriser le script** : `npx clasp open-script` → dans l'éditeur, choisir la fonction `setup`
-   → Exécuter → accepter l'autorisation (Google Sheets, et l'adresse e-mail du compte pour le
-   contrôle d'accès ; écran « Google n'a pas validé cette application » → Paramètres avancés →
+   → Exécuter → accepter l'autorisation (Google Sheets ; l'adresse e-mail du compte et la lecture
+   des membres de Google Groups pour le contrôle d'accès ; écran « Google n'a pas validé cette application » → Paramètres avancés →
    Accéder au projet). Le journal d'exécution
    affiche l'URL du classeur `ShadowIT_AppData` qui vient d'être créé.
 7. **Déployer l'application web** : dans l'éditeur, Déployer → Nouveau déploiement → type
@@ -120,6 +120,13 @@ Workspace que le déployeur. Avec un compte Gmail personnel, seul le déployeur 
   `Nom <adresse>`), affiche ce qui sera ajouté, modifié, ignoré ou invalide, puis enregistre tout en une
   fois (500 adresses par ajout, 2000 comptes au total ; au-delà, ouvrir plutôt au domaine en lecture).
   Une recherche filtre la liste.
+- **Groupes Google** : ajouter l'adresse d'un groupe (ex. `labo-industry@decathlon.com`) avec un rôle ;
+  tous ses membres le reçoivent, sous-groupes compris (3 niveaux). Si un compte a plusieurs rôles
+  (liste, groupes, domaine), le plus élevé l'emporte. L'appartenance est vérifiée avec le compte du
+  propriétaire, qui doit pouvoir **voir les membres** du groupe (sinon l'ajout est refusé), et mise en
+  cache 10 minutes : un changement de membres dans Google s'applique sous 10 minutes, le retrait d'un
+  groupe de la liste immédiatement. Un administrateur ne peut pas retirer ni rétrograder le groupe qui
+  lui donne ce rôle.
 - « Autres comptes du domaine » : *Aucun accès* (par défaut, seuls les comptes listés entrent) ou
   *Lecteur* (tout le domaine peut consulter).
 - Un compte non autorisé voit « Accès refusé » avec son adresse, à transmettre à un administrateur.
@@ -131,6 +138,10 @@ Workspace que le déployeur. Avec un compte Gmail personnel, seul le déployeur 
   comptes. Dans `src/appsscript.json`, mettre provisoirement `"access": "MYSELF"` avant de déployer.
 
 ## Mettre à jour
+
+Si une nouvelle version demande une autorisation supplémentaire (c'est le cas de l'ajout des Groupes
+Google), exécuter de nouveau `setup` dans l'éditeur et accepter, sinon l'application renvoie une
+erreur d'autorisation.
 
 Pour publier une nouvelle version **sur la même URL**, réutiliser l'ID de déploiement de l'étape 7 :
 
@@ -228,7 +239,10 @@ every server call: **admin** (everything, incl. Paramètres) or **lecteur** (rea
 always admin and nobody can edit their own access. Unlisted domain accounts get no access by default,
 or lecteur if « Autres comptes du domaine » is set so. « Ajouter plusieurs comptes… » takes a pasted
 list in any common shape (Sheets column, comma/semicolon separated, `Name <address>`), previews it and
-saves it in one call (500 per batch, 2000 accounts max). The list lives in the `ACCESS_JSON_N` /
+saves it in one call (500 per batch, 2000 accounts max). Google Groups can be granted a role too:
+members (sub-groups included, 3 levels) get it, the highest role wins, memberships are checked with
+GroupsApp as the deployer (who must see the members) and cached 10 minutes. After pulling this
+version, run `setup()` again to grant the new groups scope. The list lives in the `ACCESS_JSON_N` /
 `ACCESS_JSON_0..` script properties (split because one property holds 9 KB), the compliance threshold (default 80 %) in `COMPLIANCE_THRESHOLD`. For a personal Gmail
 deployer, set `"access": "MYSELF"` in `src/appsscript.json`.
 

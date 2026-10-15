@@ -300,7 +300,8 @@ async function screenshot(pageId, outPath, options = {}) {
 }
 
 /** Mock accounts (test/fixtures/mockRun.js). */
-const ACCOUNTS = { OWNER: 'owner@decathlon.com', LECTEUR: 'lea.reader@decathlon.com', ADMIN2: 'sam.admin@decathlon.com' };
+const ACCOUNTS = { OWNER: 'owner@decathlon.com', LECTEUR: 'lea.reader@decathlon.com', ADMIN2: 'sam.admin@decathlon.com',
+  GROUP_MEMBER: 'marc.labo@decathlon.com' /* lecteur through labo-industry@decathlon.com */ };
 
 module.exports = { ACCOUNTS, openApp, screenshot, waitIdle, chooseOption, chooseOptions, optionLabels, dropdownValue, typeDate,
   openListbox };

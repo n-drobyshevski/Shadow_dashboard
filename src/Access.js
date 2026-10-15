@@ -8,7 +8,11 @@
  *
  * Roles: 'admin' (everything, incl. Paramètres) and 'lecteur' (read only). The deployer
  * (Session.getEffectiveUser()) is always admin and is not stored in the list, so nobody can lock
- * the app. Accounts that are not listed get `domainRole` ('none' by default, or 'lecteur').
+ * the app. A caller's role is the highest of: their own entry, the Google Groups they belong to
+ * (GroupsApp, sub-groups up to GROUP_DEPTH levels, run as the deployer who must be able to see the
+ * members), and `domainRole` ('none' by default, or 'lecteur') for any account of the domain.
+ * Group memberships are cached GROUP_CACHE_S seconds (CacheService), so a membership change in Google
+ * applies within that delay; removing a group from the list applies at once.
  *
  * Load-order safe: the IIFE only defines values and functions; GAS services are touched lazily.
  */
@@ -16,6 +20,9 @@ var Access = (function () {
   var ROLES = ['admin', 'lecteur'];
   var DOMAIN_ROLES = ['none', 'lecteur'];
   var RANK = { lecteur: 1, admin: 2 };
+  var GROUP_DEPTH = 3;       // the group itself + 2 levels of sub-groups
+  var GROUP_CACHE_S = 600;   // membership cache (seconds)
+  var MAX_GROUP_CHECKS = 30; // GroupsApp calls per membership test at most (wide nested trees)
 
   function normEmail(v) {
     return typeof v === 'string' ? v.trim().toLowerCase() : '';
@@ -33,13 +40,83 @@ var Access = (function () {
     return sessionEmail_(Session.getActiveUser());
   }
 
-  /** Role of `email` for the given access list ('' = no access). */
+  function cache_() {
+    try { return CacheService.getScriptCache(); } catch (e) { return null; }
+  }
+
+  /**
+   * Is `email` a member of `groupEmail` (directly or through sub-groups)? Errors (group gone, members
+   * hidden from the deployer, quota) count as "not a member" and are logged, never thrown, and are not
+   * cached. Results are cached GROUP_CACHE_S seconds.
+   */
+  function isGroupMember(groupEmail, email) {
+    var group = normEmail(groupEmail);
+    var key = 'grp:' + group + '|' + email;
+    var cache = cache_();
+    var cached = cache ? cache.get(key) : null;
+    if (cached === '1' || cached === '0') return cached === '1';
+    var budget = { left: MAX_GROUP_CHECKS };
+    var member;
+    try {
+      member = memberOf_(GroupsApp.getGroupByEmail(group), email, GROUP_DEPTH, {}, budget);
+    } catch (e) {
+      console.warn('Access: group ' + group + ' not readable (' + (e && e.message) + ')');
+      return false;
+    }
+    if (cache) {
+      try { cache.put(key, member ? '1' : '0', GROUP_CACHE_S); } catch (e) { /* cache full: ignore */ }
+    }
+    return member;
+  }
+
+  function memberOf_(group, email, depth, seen, budget) {
+    var id = normEmail(group.getEmail());
+    if (seen[id] || budget.left <= 0) return false;
+    seen[id] = true;
+    budget.left--;
+    if (group.hasUser(email)) return true;
+    if (depth <= 1) return false;
+    var children = group.getGroups() || [];
+    for (var i = 0; i < children.length; i++) {
+      if (memberOf_(children[i], email, depth - 1, seen, budget)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Role of `email` for the given access list ('' = no access): the highest of the explicit entry,
+   * the groups (only checked when they can raise the role) and the domain role.
+   */
   function roleOf(email, owner, access) {
     if (!email) return '';
     if (owner && email === owner) return 'admin';
     var hit = (access.users || []).filter(function (u) { return normEmail(u.email) === email; })[0];
-    if (hit && RANK[hit.role]) return hit.role;
-    return access.domainRole === 'lecteur' ? 'lecteur' : '';
+    var role = hit && RANK[hit.role] ? hit.role : '';
+    if (role !== 'admin' && access.domainRole === 'lecteur') role = 'lecteur';
+    ['admin', 'lecteur'].forEach(function (groupRole) {
+      if (role && RANK[role] >= RANK[groupRole]) return;
+      var groups = (access.groups || []).filter(function (g) { return g.role === groupRole; });
+      for (var i = 0; i < groups.length; i++) {
+        if (isGroupMember(groups[i].email, email)) { role = groupRole; return; }
+      }
+    });
+    return role;
+  }
+
+  /**
+   * Validated group address or VALIDATION: the group must exist and its members must be visible to
+   * the deployer (the app checks memberships with the deployer's account).
+   */
+  function checkGroup(v) {
+    var email = checkEmail(v);
+    try {
+      var g = GroupsApp.getGroupByEmail(email);
+      g.hasUser(ownerEmail() || email);
+    } catch (e) {
+      throw Core.makeError('VALIDATION', 'Groupe introuvable ou membres non visibles pour le propriétaire du ' +
+        'déploiement : ' + email + '.');
+    }
+    return email;
   }
 
   /** @return {{email: string, role: string, isOwner: boolean, owner: string}} */
@@ -96,6 +173,10 @@ var Access = (function () {
     currentUser: currentUser,
     requireRole: requireRole,
     checkEmail: checkEmail,
-    checkRole: checkRole
+    checkRole: checkRole,
+    checkGroup: checkGroup,
+    isGroupMember: isGroupMember,
+    GROUP_DEPTH: GROUP_DEPTH,
+    GROUP_CACHE_S: GROUP_CACHE_S
   };
 })();

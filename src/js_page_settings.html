@@ -24,6 +24,9 @@
 .page-settings .access-count { color: var(--ink-3); font-size: 12px; }
 .page-settings .access-tools .access-bulk-open { margin-left: auto; }
 .page-settings .access-nomatch { margin: 0; color: var(--ink-2); }
+.page-settings .access-body > .subsection-title { margin: var(--s3) 0 0; }
+.page-settings .access-groups { display: flex; flex-direction: column; gap: var(--s3); }
+.page-settings .access-groups > .field-help { margin: 0; max-width: 72ch; }
 /* Bulk add dialog */
 .access-bulk .access-bulk-text { width: 100%; min-height: 168px; font-family: var(--font-mono); font-size: 13px; }
 .access-bulk .access-bulk-role { max-width: 200px; }
@@ -49,7 +52,9 @@
  *   - Accès: role of the other accounts of the domain (api_setDomainRole), the access list with an inline
  *     role dropdown and « Retirer » (api_saveUser / api_removeUser), a search over the list, an add form,
  *     and « Ajouter plusieurs comptes… »: paste any list of addresses (Core.parseEmailList), live
- *     preview of new / changed / already present / invalid, one api_addUsers call. The deployer is
+ *     preview of new / changed / already present / invalid, one api_addUsers call. Below, « Groupes Google »:
+ *     every member of a listed group gets its role (api_saveGroup / api_removeGroup; the server checks the
+ *     group exists and its members are visible to the owner). The deployer is
  *     always admin and the caller cannot edit their own access (server guards, shown here as plain text).
  * The page is also reachable before a source is configured, so that access can be set up first.
  */
@@ -413,11 +418,111 @@
       }
 
       wrap.appendChild(el('div', { class: 'settings-form' }, domain));
+      wrap.appendChild(el('h3', { class: 'subsection-title' }, 'Comptes'));
       wrap.appendChild(el('div', { class: 'access-tools' }, search, count, bulk));
       wrap.appendChild(tbl);
       wrap.appendChild(nomatch);
       wrap.appendChild(form);
+      wrap.appendChild(el('h3', { class: 'subsection-title', id: 'groups-title' }, 'Groupes Google'));
+      wrap.appendChild(groupsBlock());
       filter();
+    }
+
+    /** Google Groups: table (role dropdown, « Retirer ») + add form. */
+    function groupsBlock() {
+      var groups = view.groups || [];
+      var block = el('div', { class: 'access-groups' });
+      block.appendChild(el('p', { class: 'field-help', id: 'groups-help' }, 'Chaque membre d’un groupe reçoit son ' +
+        'rôle, sous-groupes compris ; si un compte a plusieurs rôles, le plus élevé l’emporte. Le propriétaire du ' +
+        'déploiement doit pouvoir voir les membres du groupe. Un changement de membres dans Google est pris en ' +
+        'compte sous 10 minutes.'));
+      if (groups.length) {
+        block.appendChild(UI.table({
+          id: 'groups-table',
+          className: 'access-table',
+          caption: 'Groupes Google autorisés',
+          rows: groups,
+          columns: [
+            { label: 'Groupe', mono: true, rowHeader: true },
+            { label: 'Rôle', className: 'access-role' },
+            { label: 'Ajouté le', mono: true, className: 'access-added' },
+            { label: '', className: 'access-actions' }
+          ],
+          rowAttrs: function (g) { return { dataset: { group: g.email } }; },
+          cells: function (g) {
+            return [
+              g.email,
+              entryRole(g, 'api_saveGroup', 'Rôle du groupe ' + g.email),
+              [Fmt.date(g.added_at), g.added_by ? el('span', { class: 'access-note' }, 'par ' + g.added_by) : null],
+              el('button', { type: 'button', class: 'btn btn-quiet is-danger btn-sm',
+                'aria-label': 'Retirer le groupe ' + g.email,
+                onClick: function () {
+                  var t = token;
+                  UI.confirm('Les membres de ' + g.email + ' perdront le rôle donné par ce groupe.', {
+                    title: 'Retirer le groupe', okLabel: 'Retirer', danger: true,
+                    onConfirm: function () {
+                      return api.call('api_removeGroup', { email: g.email }).then(function (next) {
+                        if (t !== token) return;
+                        UI.toast('Groupe retiré — ' + g.email + '.', 'success');
+                        apply(next);
+                      });
+                    }
+                  });
+                } }, 'Retirer')
+            ];
+          }
+        }));
+      } else {
+        block.appendChild(UI.empty('Aucun groupe.', { small: true }));
+      }
+
+      var gEmail = el('input', { type: 'email', class: 'input', id: 'group-email', autocomplete: 'off',
+        placeholder: 'equipe-labo@decathlon.com', spellcheck: 'false' });
+      var gRole = UI.select({ label: 'Rôle', id: 'group-role', options: ROLE_OPTIONS, value: 'lecteur' });
+      var gAdd = el('button', { type: 'submit', class: 'btn btn-secondary', id: 'group-add' }, 'Ajouter le groupe');
+      block.appendChild(el('form', { class: 'settings-form', id: 'group-form', novalidate: true, onSubmit: function (e) {
+        e.preventDefault();
+        var value = gEmail.value.trim();
+        UI.fieldError(gEmail, '');
+        if (!value) { UI.fieldError(gEmail, 'Saisissez l’adresse du groupe.'); gEmail.focus(); return; }
+        var r = gRole.getValue();
+        var t = token;
+        UI.busy(gAdd, api.call('api_saveGroup', { email: value, role: r }), 'Vérification…').then(function (next) {
+          if (t !== token) return;
+          UI.toast('Groupe ajouté — ' + value.toLowerCase() + ' (' + roleLabel(r) + ').', 'success');
+          apply(next);
+        }, function (err) {
+          if (t !== token) return;
+          UI.fieldError(gEmail, UI.errorText(err));
+          gEmail.focus();
+        });
+      } },
+        el('div', { class: 'form-field form-field-grow' },
+          el('label', { for: 'group-email', class: 'field-label' }, 'Ajouter un groupe'), gEmail),
+        gRole,
+        el('div', { class: 'form-actions' }, gAdd)));
+      return block;
+    }
+
+    /** Inline role dropdown of a group row, saved on change (reverted on error). */
+    function entryRole(entry, apiName, aria) {
+      var dd = UI.select({ ariaLabel: aria, options: ROLE_OPTIONS, value: entry.role, size: 'sm',
+        onChange: function (role) {
+          if (role === entry.role) return;
+          var t = token;
+          dd.setDisabled(true);
+          api.call(apiName, { email: entry.email, role: role }).then(function (next) {
+            if (t !== token) return;
+            UI.toast('Rôle modifié — ' + entry.email + ' : ' + roleLabel(role) + '.', 'success');
+            apply(next);
+          }, function (err) {
+            if (t !== token) return;
+            dd.setDisabled(false);
+            dd.setValue(entry.role);
+            UI.toast('Erreur : ' + UI.errorText(err), 'error');
+          });
+        } });
+      return dd;
     }
 
     render();
