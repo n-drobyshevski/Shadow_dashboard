@@ -1,0 +1,346 @@
+<script>
+/**
+ * Pages.dashboard — port of Tableau_de_bord.py (docs/API.md §6), typeset per docs/DESIGN.md.
+ *
+ * KPI strip, compliance gauges, risk bars, "Détail conformité" leader rows, score histograms (all on
+ * the filtered data of the selected month), then the Google Sheets import section + import ledger.
+ */
+(function () {
+  'use strict';
+
+  var el = UI.el;
+  var KEY_POSTE = Core.KEY_POSTE;
+  var KEY_APP = Core.KEY_APP;
+
+  var token = 0;            // bumped on every mount/unmount: stale async renders are dropped
+  var chartEls = [];
+  var lastImport = null;    // result of the last successful import (warnings survive the re-mount)
+  var importLogCache = null;
+
+  // ------------------------------------------------------------------------------ helpers
+
+  function header(s) {
+    var kicker = s.month ? [Fmt.monthTitle(s.month) + ' · ', el('span', { class: 'mono' }, 'Export ' + s.month)] :
+      'Aucun export importé';
+    var h = UI.pageHeader({ title: 'Tableau de bord', kicker: kicker, kickerId: s.month ? 'dashboard-caption' : null });
+    var k = h.querySelector('.page-kicker');
+    if (k && s.month) k.dataset.month = s.month;
+    return h;
+  }
+
+  function filterNote() {
+    var text = State.filterSummary('all');
+    return text ? el('p', { class: 'filter-note', role: 'status' }, text) : null;
+  }
+
+  /** Section (hairline + small-caps label) around a chart box; the draw runs once the box is in the DOM. */
+  function chartSection(title, id, draws, drawFn, caption) {
+    var box = el('div', { class: 'chart-box', id: id, role: 'img', 'aria-label': title });
+    chartEls.push(box);
+    draws.push(function () { drawFn(box); });
+    return el('section', { class: 'section chart-section', dataset: { chart: id } },
+      el('h2', { class: 'section-title' }, title), box, caption || null);
+  }
+
+  function toneFor(rate, total) {
+    if (!total) return null;
+    return rate >= Core.THRESHOLD ? 'ok' : 'ko';
+  }
+
+  /** "■ Sous le seuil · 5 conformes sur 7 · seuil 80 %" under a gauge (status always in words). */
+  function gaugeCaption(rate, ok, total, noun) {
+    if (!total) return el('p', { class: 'chart-caption' }, 'Aucun' + (noun === 'application' ? 'e ' : ' ') + noun + ' dans la sélection.');
+    return Charts.thresholdCaption({ items: [{ rate: rate, ok: ok, total: total }] });
+  }
+
+  /** One "Détail conformité" row: label ……… count (share), expandable to the affected names. */
+  function detailItem(id, label, count, total, items, keyField) {
+    var names = items.map(function (r) { return Core.str(r[keyField]) || '(sans nom)'; });
+    var share = total ? ['(', UI.fmtPctNode(count / total * 100), ')'] : '';
+    var summary = el('summary', { class: 'detail-summary' },
+      el('span', { class: 'detail-label' }, label),
+      el('span', { class: 'leader', 'aria-hidden': 'true' }),
+      el('span', { class: 'detail-value' },
+        el('span', { class: 'detail-count' + (count > 0 ? ' is-ko' : '') }, UI.fmtNum(count)),
+        el('span', { class: 'detail-share' }, share)));
+    // A zero row has nothing to reveal: it does not toggle.
+    if (!names.length) summary.addEventListener('click', function (e) { e.preventDefault(); });
+    var body = names.length ?
+      el('ul', { class: 'detail-list' }, names.map(function (n) { return el('li', null, n); })) : null;
+    return el('details', { class: 'detail-item' + (count > 0 ? '' : ' is-zero'), dataset: { detail: id } }, summary, body);
+  }
+
+  function nonItems(list, field) {
+    return list.filter(function (r) { return Core.str(r[field]) === 'Non'; });
+  }
+
+  // ------------------------------------------------------------------------------ dashboard body
+
+  function renderDashboard(body, s, md) {
+    var f = State.filtered(md);
+    var postes = f.postes;
+    var apps = f.applications;
+    var k = Core.computeKpis(postes, apps);
+    var draws = [];
+
+    var note = filterNote();
+    if (note) body.appendChild(note);
+    if (!postes.length && !apps.length) {
+      body.appendChild(UI.empty('Aucun poste ni application ne correspond aux filtres sélectionnés.'));
+    }
+
+    // KPI strip
+    body.appendChild(UI.kpiStrip([
+      { key: 'total_postes', title: 'Postes inventoriés', value: UI.fmtNum(k.total_postes) },
+      { key: 'postes_conformes', title: 'Postes conformes', value: UI.fmtNum(k.postes_conformes),
+        sub: UI.fmtPctNode(k.taux_postes), tone: toneFor(k.taux_postes, k.total_postes) },
+      { key: 'total_apps', title: 'Applications inventoriées', value: UI.fmtNum(k.total_apps) },
+      { key: 'apps_conformes', title: 'Applications conformes', value: UI.fmtNum(k.apps_conformes),
+        sub: UI.fmtPctNode(k.taux_apps), tone: toneFor(k.taux_apps, k.total_apps) }
+    ]));
+
+    // Gauges
+    body.appendChild(el('div', { class: 'grid grid-2' },
+      chartSection('Conformité des postes', 'chart-gauge-postes', draws, function (box) { Charts.gauge(box, k.taux_postes); },
+        gaugeCaption(k.taux_postes, k.postes_conformes, k.total_postes, 'poste')),
+      chartSection('Conformité des applications', 'chart-gauge-apps', draws, function (box) { Charts.gauge(box, k.taux_apps); },
+        gaugeCaption(k.taux_apps, k.apps_conformes, k.total_apps, 'application'))));
+
+    // Risk bars
+    body.appendChild(el('div', { class: 'grid grid-2' },
+      chartSection('Risques — Postes', 'chart-risk-postes', draws, function (box) { Charts.riskBars(box, Core.riskCounts(postes)); }),
+      chartSection('Risques — Applications', 'chart-risk-apps', draws, function (box) { Charts.riskBars(box, Core.riskCounts(apps)); })));
+
+    // Conformity details
+    body.appendChild(UI.section('Détail conformité',
+      el('div', { class: 'grid grid-2' },
+        el('div', { class: 'detail-block', id: 'detail-postes' },
+          el('h3', { class: 'subsection-title' }, 'Postes'),
+          el('div', { class: 'detail-rows' },
+            detailItem('postes_sans_edr', 'Sans EDR', k.postes_sans_edr, k.total_postes, nonItems(postes, 'EDR Decathlon'), KEY_POSTE),
+            detailItem('postes_non_it', 'Non IT Decathlon', k.postes_non_it, k.total_postes, nonItems(postes, 'IT Decathlon'), KEY_POSTE),
+            detailItem('postes_hors_reseau', 'Hors réseau Decathlon', k.postes_hors_reseau, k.total_postes,
+              nonItems(postes, 'Réseau Decathlon'), KEY_POSTE))),
+        el('div', { class: 'detail-block', id: 'detail-apps' },
+          el('h3', { class: 'subsection-title' }, 'Applications'),
+          el('div', { class: 'detail-rows' },
+            detailItem('apps_sans_sip', 'Sans SIP', k.apps_sans_sip, k.total_apps, nonItems(apps, 'SIP'), KEY_APP),
+            detailItem('apps_sans_contrat', 'Sans contrat', k.apps_sans_contrat, k.total_apps, nonItems(apps, 'Contrat'), KEY_APP),
+            detailItem('apps_sans_galink', 'Sans Galink', k.apps_sans_galink, k.total_apps, nonItems(apps, 'Galink'), KEY_APP),
+            detailItem('apps_sans_idp', 'Sans IDP', k.apps_sans_idp, k.total_apps, nonItems(apps, 'IDP'), KEY_APP))))));
+
+    // Histograms
+    function scores(list) {
+      return list.map(function (r) { return r._score; }).filter(function (v) { return v !== null && v !== undefined; });
+    }
+    body.appendChild(el('div', { class: 'grid grid-2' },
+      chartSection('Distribution des scores — Postes', 'chart-hist-postes', draws, function (box) { Charts.histogram(box, scores(postes)); }),
+      chartSection('Distribution des scores — Applications', 'chart-hist-apps', draws, function (box) { Charts.histogram(box, scores(apps)); })));
+
+    draws.forEach(function (d) {
+      try { d(); } catch (e) { console.error(e); }
+    });
+  }
+
+  // ------------------------------------------------------------------------------ import section
+
+  function confirmMessage(month) {
+    return 'L’export de ' + Fmt.monthLong(month) + ' existe déjà. Ré-importer écrase les postes, applications et le ' +
+      'référentiel de ce mois (Galink/IDP sont conservés). Continuer ?';
+  }
+
+  function importLabel(month) { return State.get().months.indexOf(month) >= 0 ? 'Ré-importer' : 'Importer'; }
+
+  function importPanel(s, myToken) {
+    var button = el('button', { type: 'submit', class: 'btn btn-primary', id: 'import-button' }, importLabel(s.currentMonth));
+    var field = UI.monthField({ id: 'import-month', name: 'month', value: s.currentMonth || '', options: s.months,
+      required: true, labelledBy: 'import-month-label',
+      onValidate: function (msg) { UI.fieldError(field, msg ? 'Mois invalide (format attendu : AAAA-MM).' : ''); },
+      onChange: function (v) { button.textContent = importLabel(v); } });
+    field.control.addEventListener('input', function () {
+      var v = field.getValue();
+      if (v) button.textContent = importLabel(v);
+    });
+    // Server errors only (field errors go under the field, UI.fieldError).
+    var status = el('div', { id: 'import-status', class: 'import-status', role: 'status', 'aria-live': 'polite' });
+
+    function showError(err) {
+      UI.clear(status).appendChild(UI.errorState(err));
+    }
+
+    function runImport(month, overwrite) {
+      UI.clear(status);
+      field.setDisabled(true);
+      var p = api.call('api_importMonth', { month: month, overwrite: !!overwrite });
+      UI.busy(button, p, 'Import en cours…').then(null, function () {});
+      return p.then(function (res) {
+        lastImport = res;
+        importLogCache = null;
+        field.setDisabled(false);
+        var c = res.counts || {};
+        UI.toast('Import terminé — ' + UI.fmtNum(c.postes) + ' postes, ' + UI.fmtNum(c.applications) + ' applications.', 'success');
+        var before = State.get().month;
+        State.invalidate();
+        return State.refreshBootstrap().then(function () {
+          var now = State.get().month;
+          if (now !== res.month) State.set({ month: res.month });       // triggers a re-mount
+          else if (before === res.month) App.refresh();                  // same month: re-mount explicitly
+          // else: refreshBootstrap already switched to res.month and the App re-mounted.
+        });
+      }, function (err) {
+        field.setDisabled(false);
+        if (err.code === 'MONTH_EXISTS' && !overwrite) {
+          return UI.confirm(confirmMessage(month), { title: 'Mois déjà importé', okLabel: 'Ré-importer', danger: true })
+            .then(function (ok) { return ok ? runImport(month, true) : null; });
+        }
+        var shown = err.code === 'NOT_CONFIGURED' ?
+          new Error('La source n’est pas configurée. Utilisez ' + UI.quote('Changer de source') + ' dans la barre latérale.') : err;
+        if (myToken === token) showError(shown);
+        UI.toast('Erreur : ' + UI.errorText(shown), 'error');
+        return null;
+      });
+    }
+
+    var errorLine = el('p', { class: 'field-error', id: 'import-month-err', hidden: true });
+    var form = el('form', { class: 'import-form', novalidate: true, onSubmit: function (e) {
+      e.preventDefault();
+      if (button.getAttribute('aria-busy') === 'true') return;
+      var msg = field.validate();
+      UI.fieldError(field, msg ? 'Mois invalide (format attendu : AAAA-MM).' : '');
+      if (msg) { field.focus(); return; }
+      runImport(field.getValue(), false);
+    } },
+      el('label', { for: 'import-month', id: 'import-month-label', class: 'field-label' }, 'Mois de l’export'),
+      el('div', { class: 'inline-form' }, field, button),
+      errorLine);
+
+    var sourceLine = s.sourceUrl ?
+      el('p', { class: 'muted small' }, 'Source : ', UI.extLink(s.sourceUrl, s.sourceTitle || 'Google Sheet source')) :
+      el('p', { class: 'muted small' }, 'Aucune source configurée.');
+
+    var logBox = el('div', { class: 'import-log', id: 'import-log' });
+    var panel = UI.section('Importer depuis Google Sheets',
+      el('div', { class: 'grid grid-2 import-grid' },
+        el('div', { class: 'import-card' },
+          el('p', { class: 'page-lede' }, 'Crée un instantané mensuel des onglets ' + UI.quote('Suivi des postes') + ', ' +
+            UI.quote('Suivi des applications') + ' et ' + UI.quote('Référentiel') + ' du Google Sheet source.'),
+          sourceLine, form, status, lastImportBlock()),
+        el('div', { class: 'import-history' },
+          el('h3', { class: 'subsection-title' }, 'Derniers imports'),
+          logBox)));
+    panel.id = 'import-panel';
+    loadImportLog(logBox, myToken);
+    return panel;
+  }
+
+  function lastImportBlock() {
+    if (!lastImport) return null;
+    var c = lastImport.counts || {};
+    var warnings = lastImport.warnings || [];
+    return el('div', { class: 'alert ' + (warnings.length ? 'alert-warning' : 'alert-success'), id: 'import-result',
+      dataset: { month: lastImport.month } },
+      el('p', null, 'Dernier import : ' + Fmt.monthLong(lastImport.month) + ' — ',
+        el('span', { class: 'num' }, UI.fmtNum(c.postes)), ' postes, ',
+        el('span', { class: 'num' }, UI.fmtNum(c.applications)), ' applications, ',
+        el('span', { class: 'num' }, UI.fmtNum(c.referentiel)), ' catégories de référentiel' +
+        (lastImport.overwritten ? ' (mois écrasé)' : '') +
+        (lastImport.carriedOver ? ' · ' + lastImport.carriedOver + ' valeur(s) Galink/IDP reprise(s)' : '') + '.'),
+      warnings.length ? el('ul', { class: 'warning-list' }, warnings.map(function (w) { return el('li', null, w); })) : null);
+  }
+
+  /** Warnings of one import: a hidden row listing them, revealed by the count button of its row. */
+  function importWarnings(e, i) {
+    var w = e.warnings || [];
+    if (!w.length) return { toggle: null, detail: null };
+    var detailId = 'import-warnings-' + i;
+    var detail = el('tr', { class: 'import-warnings-row', id: detailId, hidden: true },
+      el('td', { colspan: '6' }, el('ul', { class: 'warning-list' }, w.map(function (t) { return el('li', null, t); }))));
+    var toggle = el('button', { type: 'button', class: 'btn btn-quiet btn-sm import-warn-toggle',
+      'aria-expanded': 'false', 'aria-controls': detailId,
+      'aria-label': w.length + ' alerte' + (w.length > 1 ? 's' : '') + ' d’import — afficher le détail',
+      onClick: function () {
+        var open = toggle.getAttribute('aria-expanded') !== 'true';
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        detail.hidden = !open;
+      } }, String(w.length));
+    return { toggle: toggle, detail: detail };
+  }
+
+  function loadImportLog(box, myToken) {
+    UI.clear(box).appendChild(UI.loading('Chargement de l’historique…', { small: true }));
+    var p = importLogCache ? Promise.resolve(importLogCache) : api.call('api_getImportLog', null);
+    p.then(function (log) {
+      importLogCache = log || [];
+      if (myToken !== token) return;
+      UI.clear(box);
+      var entries = importLogCache.slice(0, 5);
+      if (!entries.length) { box.appendChild(UI.empty('Aucun import pour le moment.', { small: true })); return; }
+      var warn = entries.map(importWarnings);
+      function count(key) { return function (e) { return UI.fmtNum((e.counts || {})[key]); }; }
+      box.appendChild(UI.table({
+        className: 'import-table',
+        columns: [
+          { label: 'Mois', cell: function (e) { return Fmt.monthLong(e.month); } },
+          { label: 'Importé le', mono: true, cell: function (e) { return Fmt.dateTime(e.imported_at); } },
+          { label: 'Postes', num: true, cell: count('postes') },
+          { label: 'Applis', num: true, cell: count('applications') },
+          { label: 'Référentiel', num: true, cell: count('referentiel') },
+          { label: 'Alertes', num: true, cell: function (e, i) { return warn[i].toggle || el('span', { class: 'faint' }, '—'); } }
+        ],
+        rows: entries,
+        rowAttrs: function (e) { return { dataset: { month: e.month } }; },
+        extraRows: function (e, i) { return warn[i].detail; }
+      }));
+    }, function (err) {
+      if (myToken !== token) return;
+      UI.clear(box).appendChild(UI.errorState(err, { prefix: 'Historique indisponible', small: true,
+        retry: function () { loadImportLog(box, myToken); } }));
+    });
+  }
+
+  // ------------------------------------------------------------------------------ page
+
+  function mount(root) {
+    var myToken = ++token;
+    chartEls = [];
+    var s = State.get();
+    root.appendChild(header(s));
+
+    if (!s.months.length) {
+      // Empty state: one line of ink-2 text; the import section right below is the action.
+      var empty = UI.empty('Aucune donnée importée.');
+      empty.id = 'dashboard-empty';
+      root.appendChild(empty);
+      root.appendChild(importPanel(s, myToken));
+      return;
+    }
+
+    var body = el('div', { class: 'dashboard-body', id: 'dashboard-body', 'aria-busy': 'true' },
+      UI.loading('Chargement des données…'));
+    root.appendChild(body);
+    root.appendChild(importPanel(s, myToken));
+
+    State.loadMonth(s.month).then(function (md) {
+      if (myToken !== token) return;
+      UI.clear(body);
+      body.setAttribute('aria-busy', 'false');
+      renderDashboard(body, State.get(), md);
+    }, function (err) {
+      if (myToken !== token) return;
+      UI.clear(body);
+      body.setAttribute('aria-busy', 'false');
+      body.appendChild(UI.errorState(err, { prefix: 'Impossible de charger ' + Fmt.monthLong(s.month),
+        retry: function () { State.invalidate(s.month); App.refresh(); } }));
+    });
+  }
+
+  function unmount() {
+    token++;
+    chartEls.forEach(function (n) { Charts.purge(n); });
+    chartEls = [];
+  }
+
+  window.Pages = window.Pages || {};
+  window.Pages.dashboard = { id: 'dashboard', title: 'Tableau de bord', icon: '', mount: mount, unmount: unmount };
+})();
+</script>

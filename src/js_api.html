@@ -1,0 +1,58 @@
+<script>
+/**
+ * window.api — Promise wrapper around google.script.run (docs/API.md §5).
+ *
+ * Every server function takes one JSON string and returns one JSON envelope string
+ * {ok:true, data} | {ok:false, error:{code, message}}.
+ *   api.call('api_getMonthData', {month: '2026-05'}).then(function (data) { ... })
+ * Rejections are Error objects with a `.code`: one of Core.ERROR_CODES, or 'TRANSPORT' when the
+ * call itself failed (network, authorization, server crash outside apiWrap_, malformed reply).
+ */
+(function () {
+  'use strict';
+
+  function makeErr(code, message) {
+    var err = new Error(message || 'Erreur inconnue.');
+    err.code = code;
+    return err;
+  }
+
+  function call(name, args) {
+    return new Promise(function (resolve, reject) {
+      var run = window.google && window.google.script && window.google.script.run;
+      if (!run) {
+        reject(makeErr('TRANSPORT', 'Service Apps Script indisponible (google.script.run).'));
+        return;
+      }
+      var runner = run
+        .withSuccessHandler(function (reply) {
+          var env;
+          try {
+            env = typeof reply === 'string' ? JSON.parse(reply) : reply;
+          } catch (e) {
+            reject(makeErr('TRANSPORT', 'Réponse du serveur illisible.'));
+            return;
+          }
+          if (env && env.ok === true) {
+            resolve(env.data);
+          } else if (env && env.ok === false && env.error) {
+            reject(makeErr(env.error.code || 'INTERNAL', env.error.message));
+          } else {
+            reject(makeErr('TRANSPORT', 'Réponse du serveur inattendue.'));
+          }
+        })
+        .withFailureHandler(function (e) {
+          var msg = (e && e.message) ? e.message : String(e || 'Erreur de communication avec le serveur.');
+          reject(makeErr('TRANSPORT', msg));
+        });
+      if (typeof runner[name] !== 'function') {
+        reject(makeErr('TRANSPORT', 'Fonction serveur inconnue : ' + name));
+        return;
+      }
+      runner[name](JSON.stringify(args === undefined ? null : args));
+    });
+  }
+
+  window.api = { call: call };
+})();
+</script>

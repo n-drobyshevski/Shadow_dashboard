@@ -1,0 +1,1313 @@
+<script>
+/**
+ * window.UI — DOM builder and UI components (docs/API.md §5).
+ *
+ * Security rule: every piece of text goes through textContent (UI.el); innerHTML is never used.
+ * URL-bearing attributes (href, src, action, formaction) reject javascript:/data:/vbscript: URLs.
+ *
+ * Visual language: docs/DESIGN.md ("audit ledger"). No emoji in component chrome. Additions to the
+ * API.md §5 surface (documented at the top of css.html too):
+ *   UI.statusMark(text, tone)            -> span.mark.mark-<tone>: 6px square + coloured text.
+ *                                           tone: ok|ko|warn|info|neutral or a risk level.
+ *   UI.kpiStrip([{key?, title, value, sub?, tone?}]) -> div.kpi-strip of UI.card cells (data-kpi = key).
+ *   UI.pageHeader({title, kicker?, kickerId?, actions?:[Node]}) -> header.page-header.
+ *   UI.leaderRow(label, value, attrs?)   -> div.leaders-row "label ……… value".
+ *   editableTable columns also accept {numeric?:bool, mono?:bool} (right-aligned mono / identifier cells);
+ *   editableTable options also accept toolbarEnd:[Node] (placed at the right end, after search + count).
+ *   UI.fmtPctNode(n, digits?)           -> span.pct: same text as fmtPct, the space before % is set in the
+ *                                           sans face so that it stays narrow inside mono figures.
+ *   UI.cellMark(column, value)          -> read view of a ledger cell: Statut / Niveau de risque as marks,
+ *                                           Oui/Non criteria with « Non » in --ko; null for other columns.
+ *   UI.NNBSP                            -> '\u202f' (narrow no-break space: before %, inside « »).
+ *   UI.el(tag, {tooltip: text|Node})    -> custom tooltip (UI.tooltip, js_controls.html); never use title=.
+ *   UI.empty(text, action? | {action?, small?})  -> one line of ink-2 text ("no data" only).
+ *   UI.loading(text='Chargement…', {small?})     -> spinner + text (role=status).
+ *   UI.errorState(err|text, {retry?, prefix='Erreur', small?}) -> alert-error line « Erreur : message »
+ *                                           (role=alert) + optional « Réessayer » text button.
+ *   UI.errorText(err)                   -> err.message || 'Erreur inconnue.' (one fallback spelling).
+ *   UI.modal(...) also accepts {initialFocus?: Element}; it returns {close, node, buttons, setBusy(bool)}.
+ *     An action whose onClick returns a Promise keeps the dialog open with UI.busy on that button.
+ *     Dialogs with a danger action open with the focus on the non-destructive button (Annuler).
+ *   UI.confirm(message, {..., onConfirm?: () => Promise}) -> Promise<boolean>; with onConfirm the dialog
+ *     stays open (busy button) until the promise settles; a rejection is shown inline, dialog kept open.
+ *   UI.formModal({..., onSubmit?: (values) => Promise}) -> Promise<values|null>: with onSubmit the modal
+ *     stays open (busy submit button) until the promise resolves; on rejection the error is shown inline
+ *     (err.field = a field name -> under that field, else an alert at the top) and the values are kept.
+ *     Field types: text | textarea | select (UI.dropdown) | select+allowCustom (combobox; tokens:true =
+ *     comma-separated multi-token) | date (UI.dateField, 'DD/MM/YYYY') | month (UI.monthField, options =
+ *     known months). Extra field keys: hint (help line), min/max (date), mono (identifiers), disabled.
+ *   UI.select({..., id?, disabled?, mono?, searchable?, placeholder?}) / UI.multiSelect({..., id?}) build a
+ *     UI.dropdown (js_controls.html); the returned element has getValue/setValue/setOptions/setDisabled.
+ *   UI.editableTable: the search box is a UI.searchField (input.etable-search, « × » clear button, Esc
+ *     clears). Inline editors are laid over the cell (the column never changes width): columns with
+ *     `options` -> UI.dropdown size sm opened at once (select commits, Esc / outside click cancel);
+ *     date columns (label containing Date / Deadline / Prochaine revue / Échéance, or col.type 'date')
+ *     -> UI.dateField sm (Enter commits a valid date, an invalid one is refused); others -> text input.
+ *     « Enregistrer (n) » shows UI.busy while onSave runs.
+ */
+(function () {
+  'use strict';
+
+  var UNSAFE_URL = /^\s*(javascript|data|vbscript)\s*:/i;
+  var URL_ATTRS = { href: 1, src: 1, action: 1, formaction: 1, xlinkHref: 1 };
+  var uid = 0;
+  function nextId(prefix) { uid++; return (prefix || 'ui') + '-' + uid; }
+
+  // ------------------------------------------------------------------------------ DOM builder
+
+  function appendChildren(node, children) {
+    children.forEach(function (c) {
+      if (c === null || c === undefined || c === false || c === true) return;
+      if (Array.isArray(c)) { appendChildren(node, c); return; }
+      if (c instanceof Node) { node.appendChild(c); return; }
+      node.appendChild(document.createTextNode(frSpacing(String(c))));
+    });
+  }
+
+  /**
+   * French guillemets hold their content with a narrow no-break space (U+202F), so that « never ends a
+   * line on its own. Applied to every text child built by UI.el (server messages included).
+   */
+  var NNBSP = '\u202f';
+  function frSpacing(s) {
+    return s.indexOf('«') < 0 && s.indexOf('»') < 0 ? s : s.replace(/«[ \u00a0]/g, '«' + NNBSP).replace(/[ \u00a0]»/g, NNBSP + '»');
+  }
+
+  /** UI.quote(s) -> '« s »' with narrow no-break spaces inside the guillemets. */
+  function quote(s) { return '«' + NNBSP + String(s === null || s === undefined ? '' : s) + NNBSP + '»'; }
+
+  /**
+   * UI.el(tag, attrs?, ...children)
+   * attrs: class, id, style (object|string), dataset (object), on<Event> (function), text
+   * (textContent), value (set as a property after children, so <select> works), any other attribute
+   * via setAttribute (true -> '', false/null/undefined -> omitted).
+   */
+  function el(tag, attrs) {
+    var node = document.createElement(tag);
+    var children = Array.prototype.slice.call(arguments, 2);
+    var value;
+    var hasValue = false;
+    var tip = null;
+    if (attrs && (attrs instanceof Node || Array.isArray(attrs) || typeof attrs !== 'object')) {
+      // Called as UI.el(tag, child, ...): no attributes object.
+      children.unshift(attrs);
+      attrs = null;
+    }
+    if (attrs) {
+      Object.keys(attrs).forEach(function (k) {
+        var v = attrs[k];
+        if (v === undefined || v === null || v === false) return;
+        if (k === 'class' || k === 'className') {
+          node.className = Array.isArray(v) ? v.filter(Boolean).join(' ') : String(v);
+        } else if (k === 'style') {
+          if (typeof v === 'string') {
+            node.style.cssText = v;
+          } else {
+            Object.keys(v).forEach(function (p) {
+              if (v[p] === null || v[p] === undefined) return;
+              if (p.indexOf('-') >= 0) node.style.setProperty(p, String(v[p]));
+              else node.style[p] = v[p];
+            });
+          }
+        } else if (k === 'dataset') {
+          Object.keys(v).forEach(function (d) { if (v[d] !== null && v[d] !== undefined) node.dataset[d] = String(v[d]); });
+        } else if (k === 'text') {
+          node.textContent = String(v);
+        } else if (k === 'value') {
+          value = v;
+          hasValue = true;
+        } else if (k === 'tooltip') {
+          tip = v;
+        } else if (/^on[A-Za-z]/.test(k) && typeof v === 'function') {
+          node.addEventListener(k.slice(2).toLowerCase(), v);
+        } else if (k === 'innerHTML' || k === 'outerHTML') {
+          throw new Error('UI.el: ' + k + ' is not allowed');
+        } else if (URL_ATTRS[k] && UNSAFE_URL.test(String(v))) {
+          // dropped on purpose
+        } else {
+          node.setAttribute(k, v === true ? '' : String(v));
+        }
+      });
+    }
+    appendChildren(node, children);
+    if (hasValue) node.value = value === null || value === undefined ? '' : value;
+    if (tip !== null && window.UI && window.UI.tooltip) window.UI.tooltip(node, tip);
+    return node;
+  }
+
+  function clear(node) {
+    if (!node) return node;
+    while (node.firstChild) node.removeChild(node.firstChild);
+    return node;
+  }
+
+  /** External link (new tab, rel=noopener). */
+  function extLink(href, text, attrs) {
+    var a = el('a', Object.assign({ href: href || '#', target: '_blank', rel: 'noopener noreferrer' }, attrs || {}),
+      text);
+    return a;
+  }
+
+  // ------------------------------------------------------------------------------ formatting
+
+  function isNum(n) { return n !== null && n !== undefined && n !== '' && isFinite(Number(n)); }
+
+  /** UI.fmtPct(n, digits=1) -> '71,4\u202f%' (fr-FR, narrow no-break space before %); '—' for blanks. */
+  function fmtPct(n, digits) {
+    if (!isNum(n)) return '—';
+    var d = digits === undefined || digits === null ? 1 : digits;
+    return new Intl.NumberFormat('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: false })
+      .format(Number(n)) + NNBSP + '%';
+  }
+
+  /** Same text as fmtPct; the narrow no-break space is wrapped so that it stays narrow in mono text. */
+  function fmtPctNode(n, digits) {
+    var txt = fmtPct(n, digits);
+    var i = txt.length - 2;
+    if (txt.charAt(i + 1) !== '%' || !/\s/.test(txt.charAt(i))) return el('span', { class: 'pct' }, txt);
+    // The space keeps its character (text content unchanged); only its face changes.
+    return el('span', { class: 'pct' }, txt.slice(0, i), el('span', { class: 'nnbsp' }, txt.charAt(i)), '%');
+  }
+
+  function fmtNum(n) {
+    if (!isNum(n)) return '—';
+    return new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 }).format(Math.round(Number(n)));
+  }
+
+  var MONTH_NAMES = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre',
+    'octobre', 'novembre', 'décembre'];
+  /** '2026-05' -> 'mai 2026' (falls back to the input). */
+  function fmtMonth(m) {
+    var r = /^(\d{4})-(\d{2})$/.exec(String(m || ''));
+    if (!r) return String(m || '');
+    return MONTH_NAMES[Number(r[2]) - 1] + ' ' + r[1];
+  }
+
+  // ------------------------------------------------------------------------------ small components
+
+  /** Status mark "■ text" (the square is drawn by CSS, so textContent is exactly `text`). */
+  function badge(text, tone) {
+    return el('span', { class: 'badge badge-' + (tone || 'neutral') }, text);
+  }
+
+  var RISK_CLASS = { 'Critique': 'risk-critique', 'Élevé': 'risk-eleve', 'Moyen': 'risk-moyen', 'Faible': 'risk-faible' };
+
+  /** Mono figure coloured ok/ko (no square). */
+  function scoreBadge(score) {
+    var tone = !isNum(score) ? 'neutral' : (Number(score) >= Core.THRESHOLD ? 'ok' : 'ko');
+    var b = badge(null, tone);
+    b.appendChild(fmtPctNode(score));
+    b.classList.add('badge-score');
+    return b;
+  }
+
+  /** "■ Critique": square in the risk colour, text in ink. */
+  function riskBadge(level) {
+    var lvl = Core.str(level);
+    if (!lvl) return badge('—', 'neutral');
+    if (!Object.prototype.hasOwnProperty.call(RISK_CLASS, lvl)) return badge(lvl, 'neutral');
+    return el('span', { class: 'badge badge-risk ' + RISK_CLASS[lvl], dataset: { risk: lvl } }, lvl);
+  }
+
+  /**
+   * UI.statusMark(text, tone) -> span.mark.mark-<tone> ("■ Conforme")
+   * tone: 'ok'|'ko'|'warn'|'info'|'neutral' or a risk level ('Critique', 'Élevé', 'Moyen', 'Faible').
+   */
+  function statusMark(text, tone) {
+    var t = Core.str(tone) || 'neutral';
+    if (Object.prototype.hasOwnProperty.call(RISK_CLASS, t)) {
+      return el('span', { class: 'mark mark-risk ' + RISK_CLASS[t] }, text === undefined || text === null ? t : text);
+    }
+    return el('span', { class: 'mark mark-' + t }, text);
+  }
+
+  /** Yes/No criteria of the inventories (value that makes the record conform). */
+  var CRITERIA_OK = { 'IT Decathlon': 'Oui', 'EDR Decathlon': 'Oui', 'Chiffrement disque': 'Oui', 'Réseau Decathlon': 'Oui',
+    'Type de compte': 'Nominatif', 'Contrat': 'Oui', 'SIP': 'Oui', 'Galink': 'Oui', 'IDP': 'Oui' };
+  var STATUT_TONES = { 'conforme': 'ok', 'non conforme': 'ko', 'en cours': 'warn' };
+
+  /**
+   * UI.cellMark(column, value) -> Node|null. Read view of an inventory cell: « Statut » and « Niveau de
+   * risque » as status marks, a missing criterion (« Non », or not the conforming value) in --ko text.
+   * The text content is exactly the value. Returns null for the other columns / blank values.
+   */
+  function cellMark(column, value) {
+    var v = Core.str(value);
+    if (!v) return null;
+    if (column === 'Niveau de risque') return Object.prototype.hasOwnProperty.call(RISK_CLASS, v) ? riskBadge(v) : null;
+    if (column === 'Statut') return statusMark(v, STATUT_TONES[v.toLowerCase()] || 'neutral');
+    if (Object.prototype.hasOwnProperty.call(CRITERIA_OK, column) && v !== CRITERIA_OK[column] &&
+        (v === 'Non' || column === 'Type de compte')) {
+      return el('span', { class: 'cell-no' }, v);
+    }
+    return null;
+  }
+
+  /** One KPI-strip cell (no box): small-caps label, 32px mono figure, optional coloured sub line. */
+  function card(o) {
+    var opts = o || {};
+    var node = el('div', { class: 'kpi metric-card' + (opts.tone ? ' tone-' + opts.tone : '') },
+      el('div', { class: 'metric-title' }, opts.title),
+      el('div', { class: 'metric-value' }, opts.value === null || opts.value === undefined ? '—' : opts.value),
+      opts.sub !== undefined && opts.sub !== null && opts.sub !== '' ? el('div', { class: 'metric-sub' }, opts.sub) : null);
+    if (opts.key) node.dataset.kpi = opts.key;
+    return node;
+  }
+
+  /** UI.kpiStrip([{key?, title, value, sub?, tone?}]) -> one row of cells divided by vertical hairlines. */
+  function kpiStrip(items) {
+    return el('div', { class: 'kpi-strip', role: 'group' }, (items || []).map(function (it) { return card(it); }));
+  }
+
+  function section(title) {
+    var children = Array.prototype.slice.call(arguments, 1);
+    return el('section', { class: 'section' }, title ? el('h2', { class: 'section-title' }, title) : null, children);
+  }
+
+  /**
+   * UI.pageHeader({title, kicker?, kickerId?, actions?}) -> header.page-header
+   * kicker: string | Node | array — the small-caps line shown above the title (e.g. month + export).
+   */
+  function pageHeader(o) {
+    var opts = o || {};
+    var hasKicker = opts.kicker !== undefined && opts.kicker !== null && opts.kicker !== '';
+    return el('header', { class: 'page-header' },
+      hasKicker ? el('p', { class: 'page-kicker', id: opts.kickerId || null }, opts.kicker) : null,
+      el('div', { class: 'page-header-row' },
+        el('h1', { class: 'page-title' }, opts.title || ''),
+        opts.actions && opts.actions.length ? el('div', { class: 'page-header-actions' }, opts.actions) : null));
+  }
+
+  /** UI.leaderRow(label, value, attrs?) -> "label ……… value" row (value in mono). */
+  function leaderRow(label, value, attrs) {
+    return el('div', Object.assign({ class: 'leaders-row' }, attrs || {}),
+      el('span', { class: 'leader-label' }, label),
+      el('span', { class: 'leader', 'aria-hidden': 'true' }),
+      el('span', { class: 'leader-value num' }, value));
+  }
+
+  /**
+   * UI.empty(text, action? | {action?, small?}) -> one line of ink-2 text, left-aligned ("no data" only);
+   * optional action node (text button / link) after it.
+   */
+  function empty(text, o) {
+    var opts = o instanceof Node ? { action: o } : (o || {});
+    return el('div', { class: ['empty-state', opts.small ? 'is-small' : null], role: 'note' },
+      el('p', null, text || 'Aucune donnée.', opts.action ? [' ', opts.action] : null));
+  }
+
+  /** UI.loading(text='Chargement…', {small?}) -> spinner + one line of ink-2 text. */
+  function loading(text, o) {
+    var opts = o || {};
+    return el('div', { class: ['loading-state', opts.small ? 'is-small' : null], role: 'status' },
+      el('span', { class: 'spinner', 'aria-hidden': 'true' }), el('span', null, text || 'Chargement…'));
+  }
+
+  /** UI.errorText(err) -> the message of an Error / string, 'Erreur inconnue.' when there is none. */
+  function errorText(err) {
+    var m = err && typeof err === 'object' ? err.message : err;
+    m = m === null || m === undefined ? '' : String(m).trim();
+    return m || 'Erreur inconnue.';
+  }
+
+  /**
+   * UI.errorState(err|text, {retry?, prefix='Erreur', small?}) -> « Erreur : message » as an alert-error
+   * line (role=alert), with a « Réessayer » text button when retry is given.
+   */
+  function errorState(err, o) {
+    var opts = o || {};
+    var prefix = opts.prefix === undefined ? 'Erreur' : opts.prefix;
+    var text = (prefix ? prefix + ' : ' : '') + errorText(err);
+    return el('div', { class: ['alert', 'alert-error', 'error-state', opts.small ? 'is-small' : null], role: 'alert' },
+      el('p', null, text, opts.retry ? el('button', { type: 'button', class: 'btn btn-link error-retry',
+        onClick: function () { opts.retry(); } }, 'Réessayer') : null));
+  }
+
+  function spinner() {
+    return el('span', { class: 'spinner', role: 'status', 'aria-label': 'Chargement' });
+  }
+
+  // ------------------------------------------------------------------------------ toast
+
+  function toast(message, type) {
+    var kind = type === 'success' || type === 'error' ? type : 'info';
+    var root = document.getElementById('toast-root');
+    if (!root) {
+      root = el('div', { id: 'toast-root', class: 'toast-root', 'aria-live': 'polite' });
+      document.body.appendChild(root);
+    }
+    var node;
+    function dismiss() {
+      if (node && node.parentNode) node.parentNode.removeChild(node);
+    }
+    node = el('div', { class: 'toast toast-' + kind, role: kind === 'error' ? 'alert' : 'status' },
+      el('span', { class: 'toast-msg' }, String(message === undefined ? '' : message)),
+      el('button', { type: 'button', class: 'toast-close', 'aria-label': 'Fermer la notification', onClick: dismiss }, '×'));
+    root.appendChild(node);
+    setTimeout(dismiss, kind === 'error' ? 8000 : 4500);
+    return { close: dismiss };
+  }
+
+  // ------------------------------------------------------------------------------ overlays (modal, drawer)
+
+  var FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+    'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+  function modalRoot() {
+    var root = document.getElementById('modal-root');
+    if (!root) {
+      root = el('div', { id: 'modal-root' });
+      document.body.appendChild(root);
+    }
+    return root;
+  }
+
+  function openPopover() { return window.UI && UI.popover && UI.popover.current ? UI.popover.current() : null; }
+
+  /**
+   * Shared overlay behaviour: Escape closes, Tab is trapped inside `panel`, focus is restored on close.
+   * Returns a close(force?) function; `onClose` runs exactly once. `canClose()` (optional) can veto the
+   * user-initiated closes (Escape, backdrop) — used while a busy action runs.
+   * Escape is left to an open popover (dropdown, calendar) and to a non-empty search field first.
+   */
+  function openOverlay(overlay, panel, onClose, canClose) {
+    var previous = document.activeElement;
+    var closed = false;
+    function userClose() { if (!canClose || canClose()) close(); }
+    function onKey(e) {
+      if (e.key === 'Escape') {
+        if (openPopover()) return;
+        var t = e.target;
+        if (t && t.matches && t.matches('input[type=search]') && t.value) return;
+        // Only the top-most overlay reacts.
+        var root = modalRoot();
+        if (root.lastElementChild === overlay) { e.stopPropagation(); userClose(); }
+      } else if (e.key === 'Tab') {
+        if (!panel.contains(document.activeElement)) return;
+        var items = Array.prototype.filter.call(panel.querySelectorAll(FOCUSABLE), function (n) {
+          return n.offsetParent !== null || n === document.activeElement;
+        });
+        if (!items.length) return;
+        var first = items[0];
+        var last = items[items.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    }
+    function close() {
+      if (closed) return;
+      closed = true;
+      var pop = openPopover();
+      if (pop && pop.anchor && overlay.contains(pop.anchor)) pop.close('overlay', { restoreFocus: false });
+      document.removeEventListener('keydown', onKey, true);
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      if (!modalRoot().firstElementChild) document.body.classList.remove('has-overlay');
+      if (previous && typeof previous.focus === 'function' && previous.isConnected) {
+        try { previous.focus(); } catch (e) { /* ignore */ }
+      }
+      if (onClose) onClose();
+    }
+    overlay.addEventListener('mousedown', function (e) { if (e.target === overlay) userClose(); });
+    document.addEventListener('keydown', onKey, true);
+    if (openPopover()) UI.popover.closeAll();
+    modalRoot().appendChild(overlay);
+    document.body.classList.add('has-overlay');
+    return close;
+  }
+
+  var FIELD_FOCUS = 'input:not([type=hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled]), ' +
+    '.dd-trigger:not([disabled])';
+
+  function focusFirst(container, fallback) {
+    var target = (container && container.querySelector(FIELD_FOCUS)) || fallback;
+    if (target) setTimeout(function () { try { target.focus(); } catch (e) { /* ignore */ } }, 0);
+  }
+
+  /**
+   * UI.modal({title, body, actions:[{label, primary?, danger?, onClick(close)}], wide?, onClose?, initialFocus?})
+   *   -> {close, node, buttons, setBusy(bool)}
+   * onClick may return a Promise: the dialog stays open, the clicked button shows UI.busy, the other buttons
+   * are disabled and Escape / backdrop / × are ignored until it settles.
+   * Initial focus: the first field of the body, else the primary button; for a dialog with a danger action,
+   * the first non-destructive button (« Annuler ») so that a stray Enter never deletes.
+   */
+  function modal(o) {
+    var opts = o || {};
+    var titleId = nextId('modal-title');
+    var close;
+    var buttons = [];
+    var busyCount = 0;
+    var actions = opts.actions && opts.actions.length ? opts.actions : [{ label: 'Fermer', primary: true }];
+    var footer = el('div', { class: 'modal-footer' });
+    function setBusy(on) {
+      busyCount = Math.max(0, busyCount + (on ? 1 : -1));
+      var b = busyCount > 0;
+      buttons.forEach(function (btn) { if (!btn.classList.contains('is-busy')) btn.disabled = b; });
+      closeBtn.disabled = b;
+      dialog.setAttribute('aria-busy', b ? 'true' : 'false');
+    }
+    actions.forEach(function (a) {
+      var btn = el('button', {
+        type: 'button',
+        class: 'btn' + (a.danger ? ' btn-danger' : a.primary ? ' btn-primary' : ' btn-secondary'),
+        onClick: function () {
+          if (busyCount) return;
+          var r = a.onClick ? a.onClick(close) : close();
+          if (r && typeof r.then === 'function') {
+            var done = UI.busy(btn, r);
+            setBusy(true);
+            done.then(function () {}, function () {}).then(function () { setBusy(false); });
+          }
+        }
+      }, a.label);
+      buttons.push(btn);
+      footer.appendChild(btn);
+    });
+    var closeBtn = el('button', { type: 'button', class: 'icon-btn modal-close', 'aria-label': 'Fermer',
+      onClick: function () { if (!busyCount) close(); } }, '×');
+    var dialog = el('div', { class: 'modal' + (opts.wide ? ' modal-wide' : ''), role: 'dialog', 'aria-modal': 'true',
+      'aria-labelledby': titleId },
+      el('div', { class: 'modal-header' }, el('h2', { id: titleId, class: 'modal-title' }, opts.title || ''), closeBtn),
+      el('div', { class: 'modal-body' }, opts.body || null),
+      footer);
+    var overlay = el('div', { class: 'modal-overlay' }, dialog);
+    close = openOverlay(overlay, dialog, opts.onClose, function () { return !busyCount; });
+    var hasDanger = actions.some(function (a) { return a.danger; });
+    var primary = buttons.filter(function (b, i) { return actions[i].primary || actions[i].danger; })[0];
+    var safe = buttons.filter(function (b, i) { return !actions[i].danger && !actions[i].primary; })[0];
+    if (opts.initialFocus) focusFirst(null, opts.initialFocus);
+    else if (hasDanger) focusFirst(null, safe || closeBtn);
+    else focusFirst(dialog.querySelector('.modal-body'), primary || closeBtn);
+    return { close: close, node: dialog, buttons: buttons, setBusy: setBusy };
+  }
+
+  /**
+   * UI.confirm(message, {title?, okLabel?, cancelLabel?, danger?, onConfirm?}) -> Promise<boolean>
+   * onConfirm (optional) runs on « OK » and may return a Promise: the dialog stays open with the busy button;
+   * on rejection the error is shown inline and the dialog stays open (the user can retry or cancel).
+   */
+  function confirm(message, o) {
+    var opts = o || {};
+    return new Promise(function (resolve) {
+      var result = false;
+      var errorBox = el('div', { class: 'confirm-error' });
+      modal({
+        title: opts.title || 'Confirmation',
+        body: el('div', { class: 'confirm-body' }, el('p', { class: 'confirm-message' }, message), errorBox),
+        actions: [
+          { label: opts.cancelLabel || 'Annuler', onClick: function (close) { close(); } },
+          { label: opts.okLabel || 'Confirmer', primary: !opts.danger, danger: !!opts.danger,
+            onClick: function (close) {
+              if (!opts.onConfirm) { result = true; close(); return null; }
+              clear(errorBox);
+              var p;
+              try { p = Promise.resolve(opts.onConfirm()); } catch (e) { p = Promise.reject(e); }
+              return p.then(function () { result = true; close(); }, function (err) {
+                clear(errorBox).appendChild(errorState(err));
+              });
+            } }
+        ],
+        onClose: function () { resolve(result); }
+      });
+    });
+  }
+
+  function normOptions(options) {
+    return (options || []).map(function (o) {
+      // Keeps the dropdown option extras (hint, group, mono, disabled).
+      if (o !== null && typeof o === 'object') {
+        return Object.assign({}, o, { value: Core.str(o.value), label: Core.str(o.label !== undefined ? o.label : o.value) });
+      }
+      return { value: Core.str(o), label: Core.str(o) };
+    });
+  }
+
+  /**
+   * UI.formModal({title, fields, submitLabel?, onSubmit?, wide?}) -> Promise<values|null>
+   * fields: [{name, label, type:'text'|'textarea'|'select'|'date'|'month', options?, value?, required?,
+   *           placeholder?, allowCustom?, tokens?, hint?, min?, max?, mono?, disabled?, onChange?}]
+   * onChange(value, form) (select fields): form.control(name) is another field's control (e.g. setOptions).
+   * 'date' fields take and return 'DD/MM/YYYY'; 'month' fields 'YYYY-MM'. Values are trimmed strings
+   * ('' when empty). Enter submits; the first invalid field is focused; errors are shown under the fields
+   * (UI.fieldError). onSubmit(values) -> Promise keeps the modal open (busy submit button) until it
+   * resolves; on rejection the error is shown inline (err.field -> that field) and the values are kept.
+   */
+  function formModal(o) {
+    var opts = o || {};
+    var fields = opts.fields || [];
+    return new Promise(function (resolve) {
+      var result = null;
+      var controls = {};
+      /** Passed to a select field's onChange(value, form): form.control(name) = another field's control. */
+      var formApi = { control: function (name) { return controls[name] ? controls[name].control : null; } };
+      var busyNow = false;
+      var alertBox = el('div', { class: 'form-alert', hidden: true });
+      var form = el('form', { class: 'form', novalidate: true, onSubmit: function (e) { e.preventDefault(); submit(); } },
+        alertBox);
+
+      fields.forEach(function (f) {
+        var id = nextId('field');
+        var labelId = id + '-label';
+        var type = f.type || 'text';
+        var value = f.value === null || f.value === undefined ? '' : String(f.value);
+        var control;   // element placed in the form
+        var focusEl;   // element receiving focus / aria-invalid
+        var get;
+        var common = { id: id, name: f.name, class: ['input', f.mono ? 'mono' : null], required: !!f.required,
+          placeholder: f.placeholder || null, disabled: !!f.disabled };
+        if (type === 'textarea') {
+          control = focusEl = el('textarea', Object.assign(common, { rows: 3, value: value }));
+          get = function () { return String(control.value || '').trim(); };
+        } else if (type === 'select') {
+          var ops = normOptions(f.options);
+          if (!f.allowCustom && value && !ops.some(function (op) { return op.value === value; })) ops.push({ value: value, label: value });
+          control = UI.dropdown({ id: id, name: f.name, labelledBy: labelId, options: ops, value: value,
+            combobox: !!f.allowCustom, tokens: !!(f.allowCustom && f.tokens), mono: !!f.mono, disabled: !!f.disabled,
+            allowEmpty: !f.allowCustom && !f.required, emptyLabel: '—',
+            placeholder: f.placeholder || (!f.allowCustom && f.required ? 'Choisir…' : null),
+            onChange: f.onChange ? function (v) { f.onChange(v, formApi); } : null });
+          focusEl = control.control;
+          get = function () { return Core.str(control.getValue()); };
+        } else if (type === 'date' || type === 'month') {
+          var maker = type === 'date' ? UI.dateField : UI.monthField;
+          control = maker({ id: id, name: f.name, labelledBy: labelId, value: value, required: !!f.required,
+            min: f.min, max: f.max, options: f.options, disabled: !!f.disabled,
+            onValidate: function (msg) { UI.fieldError(control, msg); } });
+          focusEl = control.control;
+          get = function () { return control.getValue(); };
+        } else {
+          control = focusEl = el('input', Object.assign(common, { type: 'text', value: value }));
+          get = function () { return String(control.value || '').trim(); };
+        }
+        var label = el('label', { for: id, id: labelId, class: 'field-label' }, f.label || f.name,
+          f.required ? el('span', { class: 'required', 'aria-hidden': 'true' }, ' *') : null);
+        if (focusEl.tagName === 'BUTTON') {
+          // A label click focuses the dropdown trigger without opening it.
+          label.addEventListener('click', function (e) { e.preventDefault(); if (!focusEl.disabled) focusEl.focus(); });
+        }
+        var hint = f.hint ? el('p', { class: 'field-help', id: id + '-help' }, f.hint) : null;
+        if (hint) focusEl.setAttribute('aria-describedby', ((focusEl.getAttribute('aria-describedby') || '') + ' ' + id + '-help').trim());
+        var err = el('p', { class: 'field-error', id: id + '-err', hidden: true });
+        focusEl.setAttribute('aria-describedby', ((focusEl.getAttribute('aria-describedby') || '') + ' ' + id + '-err').trim());
+        controls[f.name] = { field: f, control: control, focusEl: focusEl, type: type, get: get };
+        form.appendChild(el('div', { class: 'form-field' + (type === 'textarea' ? ' form-field-wide' : '') },
+          label, control, hint, err));
+      });
+
+      // Enter in a single-line field submits (dropdowns and comboboxes consume Enter while their list is open).
+      form.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter' || e.defaultPrevented || e.isComposing) return;
+        var t = e.target;
+        if (t.tagName !== 'INPUT') return;
+        e.preventDefault();
+        submit();
+      });
+
+      function check(name) {
+        var c = controls[name];
+        var v = c.get();
+        var msg = '';
+        if (c.type === 'date' || c.type === 'month') msg = c.control.validate();
+        else if (c.field.required && !v) msg = 'Ce champ est obligatoire.';
+        UI.fieldError(c.control, msg);
+        return { value: v, ok: !msg };
+      }
+
+      function collect() {
+        var values = {};
+        var ok = true;
+        Object.keys(controls).forEach(function (name) {
+          var r = check(name);
+          if (!r.ok) ok = false;
+          values[name] = r.value;
+        });
+        return ok ? values : null;
+      }
+
+      function showError(err) {
+        var field = err && err.field && controls[err.field] ? controls[err.field] : null;
+        if (field) {
+          UI.fieldError(field.control, errorText(err));
+          field.focusEl.focus();
+          return;
+        }
+        clear(alertBox).appendChild(errorState(err));
+        alertBox.hidden = false;
+      }
+
+      var m;
+      var submitBtn;
+      function submit() {
+        if (busyNow) return;
+        var values = collect();
+        if (!values) {
+          var bad = form.querySelector('[aria-invalid="true"]');
+          if (bad) bad.focus();
+          return;
+        }
+        alertBox.hidden = true;
+        clear(alertBox);
+        if (!opts.onSubmit) {
+          result = values;
+          m.close();
+          return;
+        }
+        var p;
+        try { p = Promise.resolve(opts.onSubmit(values)); } catch (e) { p = Promise.reject(e); }
+        busyNow = true;
+        var done = UI.busy(submitBtn, p);
+        m.setBusy(true);
+        done.then(function () {
+          busyNow = false;
+          m.setBusy(false);
+          result = values;
+          m.close();
+        }, function (err) {
+          busyNow = false;
+          m.setBusy(false);
+          showError(err);
+        });
+      }
+
+      m = modal({
+        title: opts.title || 'Formulaire',
+        body: form,
+        wide: opts.wide !== undefined ? !!opts.wide : fields.length > 6,
+        actions: [
+          { label: 'Annuler', onClick: function (close) { close(); } },
+          { label: opts.submitLabel || 'Enregistrer', primary: true, onClick: function () { submit(); } }
+        ],
+        onClose: function () { resolve(result); }
+      });
+      submitBtn = m.buttons[m.buttons.length - 1];
+      submitBtn.setAttribute('type', 'button');
+    });
+  }
+
+  var openDrawers = [];
+  /** UI.drawer({title, body, onClose?}) -> {close, node}. Opening a drawer closes the previous one. */
+  function drawer(o) {
+    var opts = o || {};
+    openDrawers.slice().forEach(function (c) { c(); });
+    var titleId = nextId('drawer-title');
+    var close;
+    var panel = el('aside', { class: 'drawer', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId },
+      el('div', { class: 'drawer-header' },
+        el('h2', { id: titleId, class: 'drawer-title' }, opts.title || ''),
+        el('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Fermer le panneau', onClick: function () { close(); } }, '×')),
+      el('div', { class: 'drawer-body' }, opts.body || null));
+    var overlay = el('div', { class: 'drawer-overlay' }, panel);
+    close = openOverlay(overlay, panel, function () {
+      var i = openDrawers.indexOf(close);
+      if (i >= 0) openDrawers.splice(i, 1);
+      if (opts.onClose) opts.onClose();
+    });
+    openDrawers.push(close);
+    setTimeout(function () { panel.classList.add('open'); var b = panel.querySelector('.icon-btn'); if (b) b.focus(); }, 0);
+    return { close: close, node: panel };
+  }
+
+  // ------------------------------------------------------------------------------ tabs / selects
+
+  /**
+   * UI.tabs([{id, label, render(root)}], activeId?) -> Element. The panel is re-rendered on activation.
+   * Keyboard: ArrowLeft/ArrowRight (wrap), Home/End. On narrow screens the tab row scrolls sideways with a
+   * fade on the clipped side(s) and keeps the active tab in view. The panel is not a Tab stop.
+   */
+  function tabs(items, activeId) {
+    var list = items || [];
+    var baseId = nextId('tabs');
+    var tablist = el('div', { class: 'tablist', role: 'tablist' });
+    var panel = el('div', { class: 'tabpanel', role: 'tabpanel', id: baseId + '-panel' });
+    var buttons = {};
+    var current = null;
+    function updateCue() {
+      var max = tablist.scrollWidth - tablist.clientWidth;
+      tablist.classList.toggle('has-more-left', max > 1 && tablist.scrollLeft > 1);
+      tablist.classList.toggle('has-more-right', max > 1 && tablist.scrollLeft < max - 1);
+    }
+    /** Phones: the tab row scrolls sideways; keep the active tab in view (horizontal scroll only). */
+    function revealTab(b, retried) {
+      if (!b.isConnected) { if (!retried) setTimeout(function () { revealTab(b, true); }, 0); return; }
+      if (tablist.scrollWidth > tablist.clientWidth) {
+        var pad = 24;
+        var r = b.getBoundingClientRect();
+        var tr = tablist.getBoundingClientRect();
+        if (r.right > tr.right - pad) tablist.scrollLeft += r.right - tr.right + pad;
+        else if (r.left < tr.left + pad) tablist.scrollLeft -= tr.left - r.left + pad;
+      }
+      updateCue();
+    }
+    tablist.addEventListener('scroll', updateCue, { passive: true });
+    if (typeof ResizeObserver === 'function') new ResizeObserver(updateCue).observe(tablist);
+    function activate(id, focus) {
+      if (!list.some(function (it) { return it.id === id; })) id = list.length ? list[0].id : null;
+      current = id;
+      list.forEach(function (it) {
+        var b = buttons[it.id];
+        var on = it.id === id;
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+        b.tabIndex = on ? 0 : -1;
+        b.classList.toggle('active', on);
+        if (on) {
+          panel.setAttribute('aria-labelledby', b.id);
+          if (focus) b.focus();
+          revealTab(b);
+        }
+      });
+      clear(panel);
+      var item = list.filter(function (it) { return it.id === id; })[0];
+      if (item && item.render) {
+        try { item.render(panel); } catch (e) { console.error(e); panel.appendChild(errorState(e, { prefix: 'Erreur d’affichage' })); }
+      }
+      root.dataset.active = id || '';
+    }
+    list.forEach(function (it, i) {
+      buttons[it.id] = el('button', {
+        type: 'button', role: 'tab', class: 'tab', id: baseId + '-' + i, 'aria-controls': baseId + '-panel',
+        dataset: { tab: it.id },
+        onClick: function () { activate(it.id); },
+        onKeydown: function (e) {
+          var idx = list.indexOf(it);
+          var n = -1;
+          if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') n = (idx + (e.key === 'ArrowRight' ? 1 : -1) + list.length) % list.length;
+          else if (e.key === 'Home') n = 0;
+          else if (e.key === 'End') n = list.length - 1;
+          if (n >= 0) { e.preventDefault(); activate(list[n].id, true); }
+        }
+      }, it.label);
+      tablist.appendChild(buttons[it.id]);
+    });
+    var root = el('div', { class: 'tabs' }, tablist, panel);
+    root.activate = function (id) { activate(id); };
+    root.getActive = function () { return current; };
+    activate(activeId || (list[0] && list[0].id));
+    return root;
+  }
+
+  /**
+   * UI.select({label?, ariaLabel?, options:[string|{value,label,hint?,group?}], value, onChange, id?, disabled?,
+   *            mono?, searchable?, placeholder?, size?}) -> Element (div.field.select-field, a UI.dropdown).
+   * The trigger button carries `id`. Returned element: getValue/setValue/setOptions/setDisabled/focus, .control.
+   * No native <select> is rendered.
+   */
+  function select(o) {
+    var opts = o || {};
+    var dd = UI.dropdown({
+      id: opts.id, label: opts.label || null, ariaLabel: opts.label ? null : (opts.ariaLabel || 'Sélection'),
+      options: opts.options, value: opts.value, onChange: opts.onChange, disabled: opts.disabled, mono: opts.mono,
+      searchable: opts.searchable, placeholder: opts.placeholder, size: opts.size, allowEmpty: opts.allowEmpty,
+      className: 'field select-field'
+    });
+    return dd;
+  }
+
+  /**
+   * UI.multiSelect({label, options:[string], value:[string], onChange:(values)=>void, id?, searchable?})
+   * -> Element (div.multiselect, a UI.dropdown in multiple mode: checkbox rows, « Effacer la sélection »,
+   * summary « Toutes » / « Labo Textile » / « Labo Textile + 1 »).
+   */
+  function multiSelect(o) {
+    var opts = o || {};
+    return UI.dropdown({ id: opts.id, label: opts.label || null, ariaLabel: opts.label ? null : (opts.ariaLabel || 'Sélection'),
+      options: (opts.options || []).map(String), value: (opts.value || []).map(String), multiple: true,
+      placeholder: opts.placeholder || 'Toutes', onChange: opts.onChange, searchable: opts.searchable,
+      className: 'multiselect' });
+  }
+
+  // ------------------------------------------------------------------------------ read-only table
+
+  /**
+   * UI.table({columns, rows, id?, className?, caption?, cells?(row, i), rowAttrs?(row, i), extraRows?(row, i)})
+   * -> div.table-scroll (with .table = the <table>). Read-only ledger table on the etable markup: header on
+   * --paper-2 in small caps, 32px rows, hairline separators, no zebra.
+   *   columns: [{label, num?, mono?, wrap?, width? ('30%'), rowHeader?, className?, cell?(row, i)}]
+   *     num = right-aligned tabular figure; mono = identifier; wrap = free text that may wrap (the row grows);
+   *     rowHeader = <th scope=row>; width (any column) switches the table to a fixed layout with a <colgroup>.
+   *   cells(row, i) -> [content per column] builds a whole row at once (instead of each column.cell).
+   *   rowAttrs(row, i) -> attributes of the <tr> (dataset, class...); extraRows(row, i) -> <tr> | [<tr>] after it.
+   */
+  function table(o) {
+    var opts = o || {};
+    var cols = opts.columns || [];
+    var fixed = cols.some(function (c) { return !!c.width; });
+    function cellClass(c, extra) {
+      return [c.num ? 'num' : null, c.mono ? 'mono' : null, c.wrap ? 'is-wrap' : null, c.className || null, extra || null];
+    }
+    var body = [];
+    (opts.rows || []).forEach(function (row, i) {
+      var contents = opts.cells ? opts.cells(row, i) : null;
+      var tds = cols.map(function (c, j) {
+        var v = contents ? contents[j] : (c.cell ? c.cell(row, i) : row[c.key]);
+        if (v === undefined || v === null) v = '';
+        return c.rowHeader ? el('th', { scope: 'row', class: cellClass(c) }, v) : el('td', { class: cellClass(c) }, v);
+      });
+      body.push(el('tr', opts.rowAttrs ? opts.rowAttrs(row, i) : null, tds));
+      var extra = opts.extraRows ? opts.extraRows(row, i) : null;
+      if (extra) body.push(extra);
+    });
+    var node = el('table', { class: ['table', 'ui-table', fixed ? 'is-fixed' : null, opts.className], id: opts.id || null },
+      opts.caption ? el('caption', { class: 'sr-only' }, opts.caption) : null,
+      fixed ? el('colgroup', null, cols.map(function (c) { return el('col', { style: c.width ? { width: c.width } : null }); })) : null,
+      el('thead', null, el('tr', null, cols.map(function (c) {
+        return el('th', { scope: 'col', class: c.num ? 'num' : null }, c.label);
+      }))),
+      el('tbody', null, body));
+    var wrap = el('div', { class: 'table-scroll' }, node);
+    wrap.table = node;
+    return wrap;
+  }
+
+  // ------------------------------------------------------------------------------ editable table
+
+  function foldText(v) {
+    return Core.str(v).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  }
+
+  function compareValues(a, b) {
+    var ea = a === null || a === undefined || a === '';
+    var eb = b === null || b === undefined || b === '';
+    if (ea || eb) return ea === eb ? 0 : (ea ? 1 : -1); // blanks last (in both directions, see caller)
+    if (typeof a === 'number' && typeof b === 'number') return a - b;
+    if (typeof a === 'boolean' || typeof b === 'boolean') return (a ? 1 : 0) - (b ? 1 : 0);
+    return String(a).localeCompare(String(b), 'fr', { numeric: true, sensitivity: 'base' });
+  }
+
+  /**
+   * UI.editableTable({columns, rows, rowKey='_id', search=true, pageSize=50, onSave?, onRowClick?,
+   *                   emptyText?, toolbar?}) -> {node, setRows(rows), getDirty()}
+   */
+  function editableTable(o) {
+    var opts = o || {};
+    var columns = opts.columns || [];
+    var rowKey = opts.rowKey || '_id';
+    var pageSize = opts.pageSize || 50;
+    var rows = (opts.rows || []).slice();
+    var dirty = {};          // id -> {colKey: newValue}
+    var sortKey = null;
+    var sortDir = 1;
+    var query = '';
+    var page = 0;
+    var saving = false;
+    var rowsReplaced = false;
+
+    function idOf(row) { return row ? String(row[rowKey]) : ''; }
+    function view(row) {
+      var d = dirty[idOf(row)];
+      return d ? Object.assign({}, row, d) : row;
+    }
+    function isDirty(row, key) {
+      var d = dirty[idOf(row)];
+      return !!d && Object.prototype.hasOwnProperty.call(d, key);
+    }
+    function dirtyCount() {
+      return Object.keys(dirty).reduce(function (n, id) { return n + Object.keys(dirty[id]).length; }, 0);
+    }
+    function getDirty() {
+      return Object.keys(dirty).map(function (id) {
+        var original = rows.filter(function (r) { return idOf(r) === id; })[0];
+        return { id: original ? original[rowKey] : id, updates: Object.assign({}, dirty[id]) };
+      });
+    }
+
+    // --- structure
+    var searchBox = opts.search === false ? null : UI.searchField({
+      className: 'etable-search-field', inputClass: 'etable-search', placeholder: 'Rechercher…',
+      ariaLabel: 'Rechercher dans le tableau',
+      onInput: function (v) { query = v; page = 0; renderBody(); }
+    });
+    var countEl = el('span', { class: 'etable-count muted' });
+    var saveBtn = el('button', { type: 'button', class: 'btn btn-primary btn-small etable-save', onClick: save });
+    var cancelBtn = el('button', { type: 'button', class: 'btn btn-secondary btn-small etable-cancel', onClick: cancel }, 'Annuler');
+    var dirtyLabel = el('span', { class: 'etable-dirty-label' });
+    var dirtyBar = el('div', { class: 'etable-dirtybar', role: 'region', 'aria-label': 'Modifications non enregistrées', hidden: true },
+      dirtyLabel, el('span', { class: 'spacer' }), cancelBtn, saveBtn);
+    var toolbar = el('div', { class: 'etable-toolbar' },
+      el('div', { class: 'etable-tools' }, opts.toolbar || null),
+      el('div', { class: 'etable-right' }, searchBox, countEl, opts.toolbarEnd || null));
+    var thead = el('thead');
+    var tbody = el('tbody');
+    var table = el('table', { class: 'table etable-table' }, thead, tbody);
+    var pager = el('div', { class: 'etable-pager' });
+    var scroller = el('div', { class: 'table-scroll' }, table);
+    var node = el('div', { class: 'etable' }, toolbar, dirtyBar, scroller, pager);
+
+    /** Right-edge fade while columns remain hidden to the right (scroll cue). */
+    function updateScrollCue() {
+      var more = scroller.scrollWidth - scroller.clientWidth - scroller.scrollLeft > 1;
+      scroller.classList.toggle('has-more-right', more);
+      // The sticky key column's fade is only drawn once something has actually scrolled under it.
+      scroller.classList.toggle('has-more-left', scroller.scrollLeft > 1);
+      // The first column is sticky: cells scrolled into view (focus, keyboard) must land right of it.
+      var first = thead.querySelector('th');
+      var pad = first ? first.offsetWidth + 'px' : '';
+      if (scroller.style.scrollPaddingLeft !== pad) scroller.style.scrollPaddingLeft = pad;
+      scroller.style.scrollPaddingRight = more ? '40px' : '';
+    }
+    scroller.addEventListener('scroll', updateScrollCue, { passive: true });
+    if (typeof ResizeObserver === 'function') {
+      var ro = new ResizeObserver(updateScrollCue);
+      ro.observe(scroller);
+      ro.observe(table);
+    } else {
+      window.addEventListener('resize', updateScrollCue);
+    }
+
+    function renderHead() {
+      clear(thead);
+      var tr = el('tr');
+      columns.forEach(function (col) {
+        var label = col.label !== undefined ? col.label : col.key;
+        var sortable = col.sortable !== false;
+        var ariaSort = sortKey === col.key ? (sortDir === 1 ? 'ascending' : 'descending') : 'none';
+        var style = col.width ? { minWidth: typeof col.width === 'number' ? col.width + 'px' : col.width } : null;
+        var content = sortable ? el('button', { type: 'button', class: 'th-sort', onClick: function () {
+          if (sortKey === col.key) {
+            if (sortDir === 1) sortDir = -1; else { sortKey = null; sortDir = 1; }
+          } else { sortKey = col.key; sortDir = 1; }
+          renderHead();
+          renderBody();
+        } }, label, el('span', { class: 'sort-ind', 'aria-hidden': 'true' },
+          sortKey === col.key ? (sortDir === 1 ? '↑' : '↓') : '')) : label;
+        tr.appendChild(el('th', { scope: 'col', 'aria-sort': sortable ? ariaSort : null, style: style,
+          class: [col.editable ? 'th-editable' : null, col.numeric ? 'num' : null] }, content));
+      });
+      thead.appendChild(tr);
+    }
+
+    function sortValueOf(row, col) {
+      var v = view(row);
+      return col.sortValue ? col.sortValue(v) : v[col.key];
+    }
+
+    function visibleRows() {
+      var list = rows;
+      var q = foldText(query);
+      if (q) {
+        list = list.filter(function (row) {
+          return columns.some(function (col) {
+            var v = view(row);
+            if (foldText(v[col.key]).indexOf(q) >= 0) return true;
+            return col.sortValue ? foldText(col.sortValue(v)).indexOf(q) >= 0 : false;
+          });
+        });
+      }
+      if (sortKey !== null) {
+        var col = columns.filter(function (c) { return c.key === sortKey; })[0];
+        if (col) {
+          list = list.map(function (r, i) { return { r: r, i: i, v: sortValueOf(r, col) }; });
+          list.sort(function (a, b) {
+            var ea = a.v === null || a.v === undefined || a.v === '';
+            var eb = b.v === null || b.v === undefined || b.v === '';
+            if (ea !== eb) return ea ? 1 : -1;   // blanks always last
+            return (compareValues(a.v, b.v) * sortDir) || (a.i - b.i);
+          });
+          list = list.map(function (x) { return x.r; });
+        }
+      }
+      return list;
+    }
+
+    function cellContent(row, col) {
+      var v = view(row);
+      if (col.render) {
+        var out = col.render(v);
+        return out === null || out === undefined ? '' : out;
+      }
+      return Core.str(v[col.key]);
+    }
+
+    function renderCell(td, row, col) {
+      clear(td);
+      var content = cellContent(row, col);
+      td.appendChild(content instanceof Node ? content : document.createTextNode(String(content)));
+      td.classList.toggle('cell-dirty', isDirty(row, col.key));
+      if (col.numeric) td.classList.add('num');
+      if (col.mono) td.classList.add('mono');
+    }
+
+    /** Re-renders all the cells of `tr` (except a cell currently being edited). */
+    function renderRow(tr, row) {
+      if (!tr) return;
+      columns.forEach(function (col) {
+        var cell = null;
+        for (var i = 0; i < tr.children.length; i++) {
+          if (tr.children[i].dataset.col === col.key) { cell = tr.children[i]; break; }
+        }
+        if (cell && !cell.classList.contains('cell-editing')) renderCell(cell, row, col);
+      });
+    }
+
+    function setDirty(row, key, value) {
+      var id = idOf(row);
+      var normalized = value === '' || value === undefined ? null : value;
+      var original = row[key];
+      if (!dirty[id]) dirty[id] = {};
+      if (Core.str(normalized) === Core.str(original)) delete dirty[id][key];
+      else dirty[id][key] = normalized;
+      if (!Object.keys(dirty[id]).length) delete dirty[id];
+      updateDirtyBar();
+    }
+
+    /** Date-like columns get the date editor (DD/MM/YYYY mask, calendar, validation). */
+    var DATE_COL = /date|deadline|prochaine revue|échéance/i;
+    function isDateColumn(col) {
+      if (col.type) return col.type === 'date';
+      return !Array.isArray(col.options) && DATE_COL.test(String(col.label !== undefined ? col.label : col.key));
+    }
+
+    /**
+     * Inline editor, laid over the cell (absolutely positioned) so that the column never changes width:
+     * options -> UI.dropdown size sm opened at once (commit on select, Esc / outside click cancel);
+     * date columns -> UI.dateField sm (Enter / blur commit a valid date, an invalid one is refused);
+     * other columns -> text input (Enter / blur commit, Esc cancels).
+     */
+    function startEdit(td, row, col) {
+      if (td.classList.contains('cell-editing') || saving) return;
+      var curStr = Core.str(view(row)[col.key]);
+      var label = (col.label || col.key) + ' — modifier';
+      var editor;
+      var getValue;
+      var done = false;
+      var host = el('div', { class: 'cell-editor-host' });
+
+      function finish(apply) {
+        if (done) return;
+        done = true;
+        if (apply) setDirty(row, col.key, getValue());
+        td.classList.remove('cell-editing');
+        if (host.parentNode) host.parentNode.removeChild(host);
+        // Re-render every cell of the row: computed columns (score, criteria...) follow the edit at once.
+        renderRow(td.parentNode, row);
+        if (td.isConnected) td.focus();
+      }
+
+      if (Array.isArray(col.options)) {
+        var values = col.options.map(String);
+        if (curStr && values.indexOf(curStr) < 0) values.push(curStr);
+        editor = UI.dropdown({ size: 'sm', options: values, value: curStr, allowEmpty: true, emptyLabel: '—',
+          ariaLabel: label, mono: !!col.mono, searchable: values.length > 12,
+          onClose: function (reason) { finish(reason === 'select'); } });
+        getValue = function () { return editor.getValue(); };
+      } else if (isDateColumn(col)) {
+        editor = UI.dateField({ size: 'sm', value: curStr, ariaLabel: label });
+        getValue = function () { return editor.getValue(); };
+        var input = editor.control;
+        input.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            var msg = editor.validate();
+            if (msg) { input.setAttribute('aria-invalid', 'true'); return; }
+            finish(true);
+          } else if (e.key === 'Escape' && !editor.isOpen()) { e.preventDefault(); e.stopPropagation(); finish(false); }
+        });
+        input.addEventListener('blur', function () {
+          setTimeout(function () {
+            if (done || editor.isOpen() || host.contains(document.activeElement)) return;
+            if (editor.validate()) {
+              finish(false);
+              toast('Date invalide (JJ/MM/AAAA attendu) : modification annulée.', 'error');
+            } else {
+              finish(true);
+            }
+          }, 0);
+        });
+      } else {
+        editor = el('input', { type: 'text', class: 'input cell-editor', value: curStr, 'aria-label': label });
+        getValue = function () { return editor.value; };
+        editor.addEventListener('blur', function () { finish(true); });
+        editor.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+          else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+        });
+      }
+      host.addEventListener('click', function (e) { e.stopPropagation(); });
+      host.appendChild(editor);
+      // Freeze the geometry: the editor covers exactly the cell (2px inset), never the next one. Date and
+      // dropdown columns have a CSS min-width (td.cell-date / td.cell-choice) so that the editor fits.
+      host.style.width = Math.max(td.offsetWidth - 4, 0) + 'px';
+      td.classList.add('cell-editing');
+      td.appendChild(host);
+      if (editor.open && Array.isArray(col.options)) editor.open();
+      else if (editor.focus) editor.focus();
+      if (editor.select && editor.tagName === 'INPUT') editor.select();
+    }
+
+    function renderBody() {
+      clear(tbody);
+      var list = visibleRows();
+      var pages = Math.max(1, Math.ceil(list.length / pageSize));
+      if (page >= pages) page = pages - 1;
+      var slice = list.slice(page * pageSize, (page + 1) * pageSize);
+      if (!slice.length) {
+        tbody.appendChild(el('tr', { class: 'etable-empty' }, el('td', { colspan: String(Math.max(1, columns.length)) },
+          query ? 'Aucun résultat pour cette recherche.' : (opts.emptyText || 'Aucune donnée.'))));
+      }
+      slice.forEach(function (row) {
+        var tr = el('tr', { dataset: { id: idOf(row) } });
+        if (opts.onRowClick) {
+          tr.classList.add('row-clickable');
+          tr.tabIndex = 0;
+          tr.addEventListener('click', function (e) {
+            if (e.target.closest && e.target.closest('.cell-editable, .cell-editing, a, button, input, select, textarea')) return;
+            opts.onRowClick(row);
+          });
+          tr.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && e.target === tr) { e.preventDefault(); opts.onRowClick(row); }
+          });
+        }
+        columns.forEach(function (col) {
+          var td = el('td', { dataset: { col: col.key } });
+          if (col.editable) {
+            td.classList.add('cell-editable');
+            if (Array.isArray(col.options)) td.classList.add('cell-choice');
+            else if (isDateColumn(col)) td.classList.add('cell-date');
+            td.tabIndex = 0;
+            td.addEventListener('click', function (e) { e.stopPropagation(); startEdit(td, row, col); });
+            td.addEventListener('keydown', function (e) {
+              if ((e.key === 'Enter' || e.key === 'F2') && e.target === td) { e.preventDefault(); startEdit(td, row, col); }
+            });
+          }
+          renderCell(td, row, col);
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      countEl.textContent = list.length === rows.length ?
+        fmtNum(rows.length) + ' ligne' + (rows.length > 1 ? 's' : '') :
+        fmtNum(list.length) + ' / ' + fmtNum(rows.length) + ' lignes';
+      renderPager(pages, list.length);
+      updateDirtyBar();
+    }
+
+    function renderPager(pages) {
+      clear(pager);
+      pager.hidden = pages <= 1;
+      if (pages <= 1) return;
+      pager.appendChild(el('button', { type: 'button', class: 'btn btn-secondary btn-small', disabled: page === 0,
+        onClick: function () { page--; renderBody(); } }, 'Précédent'));
+      pager.appendChild(el('span', { class: 'muted' }, 'Page ' + (page + 1) + ' / ' + pages));
+      pager.appendChild(el('button', { type: 'button', class: 'btn btn-secondary btn-small', disabled: page >= pages - 1,
+        onClick: function () { page++; renderBody(); } }, 'Suivant'));
+    }
+
+    function updateDirtyBar() {
+      var n = dirtyCount();
+      dirtyBar.hidden = n === 0;
+      // Sentence in sans, only the figure in mono (same text content as before).
+      clear(dirtyLabel).appendChild(el('span', { class: 'etable-dirty-count' }, String(n)));
+      dirtyLabel.appendChild(document.createTextNode(' modification' + (n > 1 ? 's' : '') + ' non enregistrée' + (n > 1 ? 's' : '')));
+      if (!saving) {
+        // While saving, UI.busy owns the button content (spinner + « Enregistrement… »).
+        saveBtn.textContent = 'Enregistrer (' + n + ')';
+        saveBtn.disabled = n === 0 || !opts.onSave;
+      }
+      cancelBtn.disabled = saving;
+    }
+
+    function save() {
+      if (saving || !opts.onSave) return;
+      var changes = getDirty();
+      if (!changes.length) return;
+      saving = true;
+      rowsReplaced = false;
+      var snapshot = dirty;
+      updateDirtyBar();
+      var p;
+      try { p = Promise.resolve(opts.onSave(changes)); } catch (e) { p = Promise.reject(e); }
+      UI.busy(saveBtn, p, 'Enregistrement…').then(function () {
+        if (!rowsReplaced) {
+          // The page did not push fresh rows: apply the saved values locally.
+          rows = rows.map(function (r) { return snapshot[idOf(r)] ? Object.assign({}, r, snapshot[idOf(r)]) : r; });
+        }
+        dirty = {};
+      }, function (err) {
+        toast('Erreur : ' + errorText(err), 'error');
+      }).then(function () {
+        saving = false;
+        renderBody();
+      });
+    }
+
+    function cancel() {
+      dirty = {};
+      renderBody();
+    }
+
+    function setRows(newRows) {
+      rows = (newRows || []).slice();
+      rowsReplaced = true;
+      var ids = {};
+      rows.forEach(function (r) { ids[idOf(r)] = true; });
+      Object.keys(dirty).forEach(function (id) { if (!ids[id]) delete dirty[id]; });
+      renderBody();
+    }
+
+    renderHead();
+    renderBody();
+    return { node: node, setRows: setRows, getDirty: getDirty };
+  }
+
+  // ------------------------------------------------------------------------------ CSV
+
+  function csvCell(v) {
+    if (v === null || v === undefined) return '';
+    var s = typeof v === 'string' ? Core.escapeFormula(v) : String(v);
+    return /[";\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  /** UI.downloadCsv(filename, columns, rows): ';'-separated, UTF-8 BOM (Excel friendly). */
+  function downloadCsv(filename, columns, rows) {
+    var cols = columns || [];
+    var lines = [cols.map(csvCell).join(';')];
+    (rows || []).forEach(function (r) {
+      lines.push(cols.map(function (c) { return csvCell(r ? r[c] : null); }).join(';'));
+    });
+    var blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = el('a', { href: url, download: filename || 'export.csv', style: 'display:none' });
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(url); if (a.parentNode) a.parentNode.removeChild(a); }, 1000);
+  }
+
+  window.UI = {
+    el: el,
+    clear: clear,
+    extLink: extLink,
+    fmtPct: fmtPct,
+    fmtPctNode: fmtPctNode,
+    cellMark: cellMark,
+    fmtNum: fmtNum,
+    fmtMonth: fmtMonth,
+    badge: badge,
+    scoreBadge: scoreBadge,
+    riskBadge: riskBadge,
+    statusMark: statusMark,
+    card: card,
+    kpiStrip: kpiStrip,
+    pageHeader: pageHeader,
+    quote: quote,
+    frSpacing: frSpacing,
+    leaderRow: leaderRow,
+    section: section,
+    empty: empty,
+    loading: loading,
+    errorState: errorState,
+    errorText: errorText,
+    NNBSP: NNBSP,
+    toast: toast,
+    modal: modal,
+    confirm: confirm,
+    formModal: formModal,
+    drawer: drawer,
+    tabs: tabs,
+    multiSelect: multiSelect,
+    select: select,
+    table: table,
+    editableTable: editableTable,
+    spinner: spinner,
+    downloadCsv: downloadCsv
+  };
+})();
+</script>

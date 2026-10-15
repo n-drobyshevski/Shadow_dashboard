@@ -1,0 +1,452 @@
+<script>
+/**
+ * window.App — router, sidebar, configuration screen and boot (docs/API.md §5). Included last.
+ *
+ * Mounting: each page receives a fresh container appended to the cleared #main. A page whose async
+ * work completes after the user navigated away therefore writes into a detached node instead of
+ * polluting the next page.
+ */
+(function () {
+  'use strict';
+
+  var el = UI.el;
+
+  /**
+   * Navigation order + labels. The shell owns the labels: each one is the page title (docs/DESIGN.md
+   * « Copy »), whatever the page registers. Text-only nav: page icons are not rendered.
+   */
+  var NAV = [
+    { id: 'dashboard', title: 'Tableau de bord' },
+    { id: 'postes', title: 'Postes' },
+    { id: 'apps', title: 'Applications' },
+    { id: 'timeline', title: 'Suivi temporel' },
+    { id: 'actions', title: 'Suivi des actions' }
+  ];
+  var BRAND = 'Shadow IT';
+  var BRAND_SUB = 'Industry · conformité';
+
+  var sidebar = null;
+  var main = null;
+  var booted = false;
+  var currentPage = null;
+  var filtersBox = null;
+  var filterOptionsMonth = null;   // month whose options are rendered in the filters box
+  var suppressFilterRender = false; // filters changed by the sidebar widgets themselves
+  var filtersPage = null;           // page the filters box was rendered for (Bâtiment disabled on actions)
+
+  function pages() { return window.Pages || {}; }
+  function navInfo(id) { return NAV.filter(function (n) { return n.id === id; })[0]; }
+  function has(list, key) { return list.indexOf(key) >= 0; }
+  function historyApi() { return window.google && google.script && google.script.history; }
+
+  // ------------------------------------------------------------------------------ routing
+
+  function go(pageId, opts) {
+    var id = navInfo(pageId) ? pageId : 'dashboard';
+    var fromHistory = !!(opts && opts.fromHistory);
+    var h = historyApi();
+    if (!fromHistory && h && typeof h.push === 'function') {
+      try { h.push({ page: id }, { page: id }); } catch (e) { /* not available outside Apps Script */ }
+    }
+    setNavOpen(false);
+    if (State.get().page === id) refresh();
+    else State.set({ page: id });
+  }
+
+  function refresh() {
+    if (!booted) return;
+    if (!State.get().configured) { renderConfigScreen(); return; }
+    mountPage();
+  }
+
+  function unmountCurrent() {
+    if (currentPage && typeof currentPage.unmount === 'function') {
+      try { currentPage.unmount(); } catch (e) { console.error(e); }
+    }
+    currentPage = null;
+    if (main && window.Charts) {
+      Array.prototype.forEach.call(main.querySelectorAll('.js-plotly-plot'), function (n) { Charts.purge(n); });
+    }
+  }
+
+  function mountPage() {
+    var s = State.get();
+    var info = navInfo(s.page) || NAV[0];
+    var page = pages()[info.id];
+    unmountCurrent();
+    UI.clear(main);
+    var root = el('div', { class: 'page page-' + info.id, dataset: { page: info.id } });
+    main.appendChild(root);
+    updateNavActive();
+    if (!page || typeof page.mount !== 'function') {
+      root.appendChild(UI.pageHeader({ title: info.title }));
+      root.appendChild(UI.empty('Page indisponible.'));
+      return;
+    }
+    currentPage = page;
+    try {
+      page.mount(root);
+    } catch (e) {
+      console.error(e);
+      root.appendChild(el('div', { class: 'alert alert-error', role: 'alert' },
+        'Erreur lors de l’affichage de la page : ' + (e && e.message ? e.message : String(e))));
+    }
+    if (main.scrollTo) main.scrollTo(0, 0);
+  }
+
+  // ------------------------------------------------------------------------------ sidebar
+
+  function setNavOpen(open) {
+    document.body.classList.toggle('nav-open', !!open);
+    var t = document.getElementById('nav-toggle');
+    if (t) {
+      t.setAttribute('aria-expanded', open ? 'true' : 'false');
+      t.setAttribute('aria-label', open ? 'Masquer le menu' : 'Afficher le menu');
+    }
+  }
+
+  function updateNavActive() {
+    if (!sidebar) return;
+    var page = State.get().page;
+    Array.prototype.forEach.call(sidebar.querySelectorAll('.nav-link'), function (b) {
+      var on = b.dataset.page === page;
+      b.classList.toggle('active', on);
+      if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+    });
+  }
+
+  function brand() {
+    return el('div', { class: 'brand' },
+      el('span', { class: 'brand-name' }, BRAND),
+      el('span', { class: 'brand-sub' }, BRAND_SUB));
+  }
+
+  /** Right-aligned mono counts next to Postes / Applications (filtered data of the selected month). */
+  function updateNavCounts() {
+    if (!sidebar) return;
+    var s = State.get();
+    var md = s.month ? State.getMonthData(s.month) : null;
+    var f = md ? State.filtered(md) : null;
+    var counts = { postes: f ? f.postes.length : null, apps: f ? f.applications.length : null };
+    Array.prototype.forEach.call(sidebar.querySelectorAll('.nav-count'), function (n) {
+      var v = counts[n.dataset.count];
+      n.textContent = v === null || v === undefined ? '' : UI.fmtNum(v);
+    });
+  }
+
+  function renderSidebar() {
+    var s = State.get();
+    UI.clear(sidebar);
+    var nav = el('nav', { class: 'nav', 'aria-label': 'Pages' },
+      el('ul', { class: 'nav-list' }, NAV.map(function (n) {
+        var counted = n.id === 'postes' || n.id === 'apps';
+        return el('li', null, el('button', { type: 'button', class: 'nav-link', dataset: { page: n.id },
+          onClick: function () { go(n.id); } },
+          el('span', { class: 'nav-label' }, n.title),
+          counted ? el('span', { class: 'nav-count', dataset: { count: n.id } }) : null));
+      })));
+
+    var monthOptions = s.months.length ?
+      s.months.map(function (m) { return { value: m, label: Fmt.monthTitle(m) }; }) :
+      [{ value: '', label: 'Aucun mois importé' }];
+    var monthSelect = UI.select({
+      label: 'Mois',
+      id: 'month-select',
+      options: monthOptions,
+      value: s.month,
+      disabled: !s.months.length,
+      onChange: function (v) { if (v) State.set({ month: v }); }
+    });
+    monthSelect.classList.add('month-select');
+
+    filtersBox = el('div', { class: 'filters' });
+    filterOptionsMonth = null;
+
+    var footer = el('div', { class: 'sidebar-footer' },
+      s.dataUrl ? UI.extLink(s.dataUrl, 'Données (Google Sheet)', { class: 'side-link', id: 'link-data' }) : null,
+      s.sourceUrl ? UI.extLink(s.sourceUrl, 'Source', { class: 'side-link', id: 'link-source',
+        'aria-label': s.sourceTitle ? 'Source : ' + s.sourceTitle : null }) : null,
+      el('button', { type: 'button', class: 'btn btn-quiet', id: 'btn-source',
+        onClick: function () { openSourceModal(); } }, 'Changer de source'));
+
+    sidebar.appendChild(el('div', { class: 'sidebar-inner' },
+      brand(),
+      nav,
+      el('div', { class: 'sidebar-section' }, el('h2', { class: 'sidebar-heading' }, 'Période'), monthSelect),
+      el('div', { class: 'sidebar-section' }, el('h2', { class: 'sidebar-heading' }, 'Filtres'), filtersBox),
+      footer));
+    updateNavActive();
+    renderFilters();
+  }
+
+  /**
+   * Équipe / Bâtiment multiselects; options come from the selected month's postes. On Suivi des actions
+   * only the Équipe filter applies (actions and replacements carry an équipe, no bâtiment): the Bâtiment
+   * filter is disabled there, with a visible « Non applicable ici » note.
+   */
+  function renderFilters() {
+    if (!filtersBox) return;
+    var s = State.get();
+    var md = s.month ? State.getMonthData(s.month) : null;
+    if (s.month && !md) {
+      // Load once, then render the options (the page usually triggers the same cached request).
+      var month = s.month;
+      UI.clear(filtersBox).appendChild(el('p', { class: 'field-help', role: 'status' }, UI.spinner(), 'Chargement des filtres…'));
+      State.loadMonth(month).then(function () {
+        if (State.get().month === month) renderFilters();
+      }, function () {
+        if (State.get().month === month) {
+          UI.clear(filtersBox).appendChild(el('p', { class: 'field-help', role: 'status' }, 'Filtres indisponibles.'));
+        }
+      });
+      return;
+    }
+    filterOptionsMonth = s.month;
+    filtersPage = s.page;
+    updateNavCounts();
+    var postes = md ? md.postes : [];
+    var f = s.filters || { equipes: [], batiments: [] };
+    UI.clear(filtersBox);
+    filtersBox.appendChild(UI.multiSelect({
+      label: 'Équipe',
+      options: Core.uniqueSorted(postes, 'Équipe'),
+      value: f.equipes || [],
+      onChange: function (values) { setFilters({ equipes: values }); }
+    }));
+    filtersBox.lastChild.id = 'filter-equipe';
+    filtersBox.appendChild(UI.multiSelect({
+      label: 'Bâtiment / Labo',
+      options: Core.uniqueSorted(postes, 'Bâtiment / Labo'),
+      value: f.batiments || [],
+      onChange: function (values) { setFilters({ batiments: values }); }
+    }));
+    filtersBox.lastChild.id = 'filter-batiment';
+    if (s.page === 'actions') disableFilter(filtersBox.lastChild, 'filter-batiment-na');
+    // Always present (hidden when unused) so that toggling it never forces a re-render of the
+    // multiselects while the user is ticking boxes.
+    filtersBox.appendChild(el('button', { type: 'button', class: 'btn btn-quiet btn-sm', id: 'filters-reset',
+      hidden: !hasActiveFilters(f),
+      onClick: function () { State.set({ filters: { equipes: [], batiments: [] } }); } },
+      'Réinitialiser les filtres'));
+  }
+
+  /** Shows `month` in the sidebar month dropdown without firing onChange. */
+  function syncMonthSelect(month) {
+    var dd = sidebar && sidebar.querySelector('.month-select');
+    if (dd && dd.getValue() !== month) dd.setValue(month);
+  }
+
+  /** Disables every control of a filter widget and adds a visible note under it (never colour only). */
+  function disableFilter(node, noteId) {
+    node.classList.add('is-disabled');
+    node.setAttribute('aria-disabled', 'true');
+    if (typeof node.setDisabled === 'function') node.setDisabled(true);
+    Array.prototype.forEach.call(node.querySelectorAll('button, input, select, [tabindex]'), function (c) {
+      if ('disabled' in c) c.disabled = true; else c.setAttribute('tabindex', '-1');
+      c.setAttribute('aria-describedby', noteId);
+    });
+    node.appendChild(el('p', { class: 'filter-na', id: noteId }, 'Non applicable ici : les actions n’ont pas de bâtiment.'));
+  }
+
+  function hasActiveFilters(f) {
+    return !!f && ((f.equipes || []).length + (f.batiments || []).length) > 0;
+  }
+
+  function setFilters(patch) {
+    var f = State.get().filters || { equipes: [], batiments: [] };
+    var next = { equipes: (f.equipes || []).slice(), batiments: (f.batiments || []).slice() };
+    Object.keys(patch).forEach(function (k) { next[k] = patch[k]; });
+    var reset = document.getElementById('filters-reset');
+    if (reset) reset.hidden = !hasActiveFilters(next);
+    // The widgets already show the new values: do not re-render them (keeps the open list in place).
+    suppressFilterRender = true;
+    State.set({ filters: next });
+    suppressFilterRender = false;
+    updateNavCounts();
+  }
+
+  // ------------------------------------------------------------------------------ configuration
+
+  function sourceErrorText(err) {
+    if (err && err.code === 'VALIDATION') return 'URL ou identifiant invalide. Collez l’URL complète du Google Sheet source.';
+    return UI.errorText(err);
+  }
+
+  function tabsWarning(res) {
+    var missing = [];
+    var t = (res && res.tabsFound) || {};
+    if (t.postes === false) missing.push('« ' + Core.SOURCE_TABS.postes + ' »');
+    if (t.applications === false) missing.push('« ' + Core.SOURCE_TABS.applications + ' »');
+    if (t.referentiel === false) missing.push('« ' + Core.SOURCE_TABS.referentiel + ' »');
+    return missing.length ? 'Onglet(s) introuvable(s) : ' + missing.join(', ') : '';
+  }
+
+  function applySource(source) {
+    return api.call('api_setConfig', { source: source }).then(function (res) {
+      UI.toast('Source configurée — ' + (res.sourceTitle || res.sourceId) + '.', 'success');
+      var warn = tabsWarning(res);
+      if (warn) UI.toast(warn + '.', 'error');
+      State.invalidate();
+      return State.refreshBootstrap().then(function () { return res; });
+    });
+  }
+
+  function renderConfigScreen() {
+    unmountCurrent();
+    document.body.classList.add('unconfigured');
+    UI.clear(sidebar);
+    sidebar.appendChild(el('div', { class: 'sidebar-inner' }, brand()));
+    UI.clear(main);
+    var input = el('input', { type: 'text', id: 'config-source', class: 'input', required: true,
+      placeholder: 'https://docs.google.com/spreadsheets/d/…', autocomplete: 'off',
+      'aria-describedby': 'config-help config-error' });
+    var error = el('p', { id: 'config-error', class: 'field-error', role: 'alert', hidden: true });
+    var button = el('button', { type: 'submit', class: 'btn btn-primary', id: 'config-submit' }, 'Enregistrer la source');
+    // Invalid field: red border (aria-invalid) + the message under the field, as in every form.
+    function showError(msg) {
+      error.textContent = msg || '';
+      error.hidden = !msg;
+      if (msg) input.setAttribute('aria-invalid', 'true'); else input.removeAttribute('aria-invalid');
+    }
+    var form = el('form', { class: 'config-form', novalidate: true, onSubmit: function (e) {
+      e.preventDefault();
+      var value = input.value.trim();
+      showError(null);
+      if (!value) { showError('Ce champ est obligatoire.'); input.focus(); return; }
+      button.disabled = true;
+      button.classList.add('is-busy');
+      var sp = UI.spinner();
+      sp.removeAttribute('role'); sp.removeAttribute('aria-label'); sp.setAttribute('aria-hidden', 'true');
+      UI.clear(button).appendChild(sp);
+      button.appendChild(document.createTextNode('Vérification…'));
+      applySource(value).catch(function (err) {
+        showError(sourceErrorText(err));
+        button.disabled = false;
+        button.classList.remove('is-busy');
+        button.textContent = 'Enregistrer la source';
+        input.focus();
+      });
+    } },
+      el('label', { for: 'config-source', class: 'field-label' }, 'URL ou ID du Google Sheet source'),
+      input, error,
+      el('div', { class: 'form-actions' }, button));
+    main.appendChild(el('div', { class: 'page page-config', dataset: { page: 'config' } },
+      UI.pageHeader({ kicker: BRAND + ' · configuration', title: 'Source de données' }),
+      el('div', { class: 'config-card' },
+        el('p', { id: 'config-help', class: 'page-lede' },
+          'Collez l’URL (ou l’identifiant) du Google Sheet source « ShadowIT_Industry ». Il doit contenir les onglets « ' +
+          Core.SOURCE_TABS.postes + ' », « ' + Core.SOURCE_TABS.applications + ' » et « ' +
+          Core.SOURCE_TABS.referentiel + ' ». Chaque import en fait un instantané mensuel dans le classeur de données.'),
+        form)));
+    setTimeout(function () { input.focus(); }, 0);
+  }
+
+  function openSourceModal(prefill) {
+    var s = State.get();
+    UI.formModal({
+      title: 'Changer de source',
+      submitLabel: 'Enregistrer',
+      fields: [{ name: 'source', label: 'URL ou ID du Google Sheet source', type: 'text', required: true,
+        value: typeof prefill === 'string' ? prefill : s.sourceUrl,
+        placeholder: 'https://docs.google.com/spreadsheets/d/…' }]
+    }).then(function (values) {
+      if (!values) return;
+      applySource(values.source).catch(function (err) {
+        UI.toast('Erreur : ' + sourceErrorText(err), 'error');
+        openSourceModal(values.source);
+      });
+    });
+  }
+
+  // ------------------------------------------------------------------------------ boot
+
+  function renderAll() {
+    var s = State.get();
+    if (!s.configured) { renderConfigScreen(); return; }
+    document.body.classList.remove('unconfigured');
+    renderSidebar();
+    mountPage();
+  }
+
+  function onStateChange(s, changed) {
+    if (!booted) return;
+    if (has(changed, 'configured')) { renderAll(); return; }
+    if (!s.configured) return;
+    if (has(changed, 'months') || has(changed, 'dataUrl') || has(changed, 'sourceUrl') || has(changed, 'sourceTitle')) {
+      renderSidebar();
+    } else if (has(changed, 'month')) {
+      syncMonthSelect(s.month);
+      renderFilters();
+    } else if ((has(changed, 'filters') && !suppressFilterRender) ||
+        (has(changed, 'page') && (s.page === 'actions') !== (filtersPage === 'actions'))) {
+      renderFilters();
+    }
+    if (has(changed, 'page') || has(changed, 'month') || has(changed, 'filters')) mountPage();
+  }
+
+  /** Initial page from the Apps Script URL (?page=xxx), with a short timeout outside Apps Script. */
+  function initialPage() {
+    return new Promise(function (resolve) {
+      var done = false;
+      function finish(p) { if (!done) { done = true; resolve(p); } }
+      var url = window.google && google.script && google.script.url;
+      if (!url || typeof url.getLocation !== 'function') { finish(null); return; }
+      setTimeout(function () { finish(null); }, 1500);
+      try {
+        url.getLocation(function (loc) {
+          var p = loc && loc.parameter && loc.parameter.page;
+          finish(p && navInfo(p) ? p : null);
+        });
+      } catch (e) { finish(null); }
+    });
+  }
+
+  function renderBootError(err) {
+    UI.clear(main);
+    main.appendChild(el('div', { class: 'page' },
+      el('div', { class: 'alert alert-error', role: 'alert' },
+        el('strong', null, 'Impossible de charger l’application. '),
+        (err && err.message) || ''),
+      el('button', { type: 'button', class: 'btn btn-primary', onClick: boot }, 'Réessayer')));
+  }
+
+  function boot() {
+    sidebar = document.getElementById('sidebar');
+    main = document.getElementById('main');
+    var toggle = document.getElementById('nav-toggle');
+    if (toggle && !toggle.dataset.bound) {
+      toggle.dataset.bound = '1';
+      toggle.addEventListener('click', function () { setNavOpen(!document.body.classList.contains('nav-open')); });
+    }
+    var h = historyApi();
+    if (h && typeof h.setChangeHandler === 'function') {
+      try {
+        h.setChangeHandler(function (e) {
+          var p = e && e.state && e.state.page;
+          if (p) go(p, { fromHistory: true });
+        });
+      } catch (e) { /* ignore */ }
+    }
+    Promise.all([State.refreshBootstrap(), initialPage()]).then(function (res) {
+      if (res[1]) State.set({ page: res[1] });
+      booted = true;
+      renderAll();
+    }, function (err) {
+      console.error(err);
+      renderBootError(err);
+    });
+  }
+
+  State.subscribe(onStateChange);
+
+  window.App = {
+    go: go,
+    refresh: refresh,
+    boot: boot,
+    openSourceConfig: openSourceModal
+  };
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else boot();
+})();
+</script>

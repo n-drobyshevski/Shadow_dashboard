@@ -1,0 +1,302 @@
+<script>
+/**
+ * window.State — global client state + data caches (docs/API.md §5).
+ *
+ * The state object is replaced (never mutated) on every State.set(), so subscribers can compare
+ * references. Month data, the timeline and the actions are cached; in-flight requests are shared
+ * so that concurrent callers (sidebar + page) trigger a single server call.
+ */
+(function () {
+  'use strict';
+
+  var state = {
+    page: 'dashboard',
+    configured: false,
+    months: [],
+    month: '',
+    currentMonth: '',
+    dataUrl: '',
+    sourceUrl: '',
+    sourceTitle: '',
+    filters: { equipes: [], batiments: [] },
+    loading: false
+  };
+  var subscribers = [];
+
+  var monthCache = {};     // month -> monthData
+  var monthPending = {};   // month -> Promise<monthData>
+  var timelineCache = null;
+  var timelinePending = null;
+  var actionsCache = null;
+  var actionsPending = null;
+  // Bumped by invalidate(): responses of requests started before an invalidation are not cached.
+  var generation = 0;
+
+  function get() { return state; }
+
+  function set(patch) {
+    if (!patch) return;
+    var next = {};
+    var changed = [];
+    Object.keys(state).forEach(function (k) { next[k] = state[k]; });
+    Object.keys(patch).forEach(function (k) {
+      if (next[k] !== patch[k]) changed.push(k);
+      next[k] = patch[k];
+    });
+    if (!changed.length) return;
+    state = next;
+    subscribers.slice().forEach(function (fn) {
+      try { fn(state, changed); } catch (e) { console.error(e); }
+    });
+  }
+
+  function subscribe(fn) {
+    subscribers.push(fn);
+    return function unsubscribe() {
+      var i = subscribers.indexOf(fn);
+      if (i >= 0) subscribers.splice(i, 1);
+    };
+  }
+
+  function enrich(entity, records) {
+    return entity === 'postes' ? Core.enrichPostes(records) : Core.enrichApplications(records);
+  }
+
+  /** Server records are already enriched; re-enrich defensively so the cache is always consistent. */
+  function normalizeMonthData(md) {
+    md.postes = enrich('postes', md.postes || []);
+    md.applications = enrich('applications', md.applications || []);
+    md.referentiel = md.referentiel || {};
+    md.columns = md.columns || { postes: [], applications: [] };
+    return md;
+  }
+
+  function loadMonth(month, opts) {
+    var force = !!(opts && opts.force);
+    if (!month) return Promise.reject(Object.assign(new Error('Aucun mois sélectionné.'), { code: 'VALIDATION' }));
+    if (!force && monthCache[month]) return Promise.resolve(monthCache[month]);
+    if (!force && monthPending[month]) return monthPending[month];
+    var gen = generation;
+    var p = api.call('api_getMonthData', { month: month }).then(function (md) {
+      md = normalizeMonthData(md);
+      if (gen === generation) monthCache[month] = md;
+      if (monthPending[month] === p) delete monthPending[month];
+      return md;
+    }, function (err) {
+      if (monthPending[month] === p) delete monthPending[month];
+      throw err;
+    });
+    monthPending[month] = p;
+    return p;
+  }
+
+  function getMonthData(month) { return monthCache[month] || null; }
+
+  function patchRecords(month, entity, records) {
+    var md = monthCache[month];
+    if (!md || !md[entity]) return;
+    var byId = {};
+    (records || []).forEach(function (r) { if (r && r._id) byId[r._id] = r; });
+    md[entity] = enrich(entity, md[entity].map(function (r) { return byId[r._id] || r; }));
+    dropTimeline();
+  }
+
+  function removeRecord(month, entity, id) {
+    var md = monthCache[month];
+    if (!md || !md[entity]) return;
+    md[entity] = md[entity].filter(function (r) { return r._id !== id; });
+    dropTimeline();
+  }
+
+  function addRecord(month, entity, record) {
+    var md = monthCache[month];
+    if (!md || !md[entity] || !record) return;
+    md[entity] = md[entity].filter(function (r) { return r._id !== record._id; })
+      .concat(enrich(entity, [record]));
+    md[entity].sort(function (a, b) { return (a._order || 0) - (b._order || 0); });
+    dropTimeline();
+  }
+
+  /** Local edits change scores, so the cached timeline (built from server snapshots) is stale. */
+  function dropTimeline() {
+    timelineCache = null;
+    timelinePending = null;
+  }
+
+  function invalidate(month) {
+    generation++;
+    if (month) {
+      delete monthCache[month];
+      delete monthPending[month];
+    } else {
+      monthCache = {};
+      monthPending = {};
+    }
+    timelineCache = null;
+    timelinePending = null;
+    actionsCache = null;
+    actionsPending = null;
+  }
+
+  function filtered(monthData) {
+    var md = monthData || {};
+    return Core.filterData({ postes: md.postes || [], applications: md.applications || [] }, state.filters);
+  }
+
+  /**
+   * State.filterByEquipe(records, key='equipe') -> records whose équipe is in the global Équipe filter
+   * (all records when the filter is empty). For actions / replacements (field `equipe`); the
+   * Bâtiment / Labo filter does not apply to them.
+   */
+  function filterByEquipe(records, key) {
+    var k = key || 'equipe';
+    var eq = ((state.filters && state.filters.equipes) || []).map(function (s) { return String(s).trim(); });
+    var list = records || [];
+    if (!eq.length) return list.slice();
+    return list.filter(function (r) { return r && eq.indexOf(String(r[k] === null || r[k] === undefined ? '' : r[k]).trim()) >= 0; });
+  }
+
+  /**
+   * State.filterSummary(scope='all') -> '' | 'Filtres actifs — Équipe : A, B · Bâtiment / Labo : X (postes uniquement)'
+   * One wording for the « Filtres actifs » note of every page (render it as p.filter-note[role=status]).
+   * scope: 'all' (postes + applications: the Bâtiment filter is marked "postes uniquement"), 'postes'
+   * (Bâtiment applies fully), 'actions' (Bâtiment not applicable: marked "non applicable ici").
+   */
+  function filterSummary(scope) {
+    var f = state.filters || {};
+    var parts = [];
+    if ((f.equipes || []).length) parts.push('Équipe : ' + f.equipes.join(', '));
+    if ((f.batiments || []).length) {
+      var suffix = scope === 'postes' ? '' : scope === 'actions' ? ' (non applicable ici)' : ' (postes uniquement)';
+      parts.push('Bâtiment / Labo : ' + f.batiments.join(', ') + suffix);
+    }
+    return parts.length ? 'Filtres actifs — ' + parts.join(' · ') : '';
+  }
+
+  function loadTimeline(opts) {
+    var force = !!(opts && opts.force);
+    if (!force && timelineCache) return Promise.resolve(timelineCache);
+    if (!force && timelinePending) return timelinePending;
+    var gen = generation;
+    var p = api.call('api_getTimeline', null).then(function (tl) {
+      tl = tl || [];
+      if (gen === generation) timelineCache = tl;
+      if (timelinePending === p) timelinePending = null;
+      return tl;
+    }, function (err) {
+      if (timelinePending === p) timelinePending = null;
+      throw err;
+    });
+    timelinePending = p;
+    return p;
+  }
+
+  function loadActions(opts) {
+    var force = !!(opts && opts.force);
+    if (!force && actionsCache) return Promise.resolve(actionsCache);
+    if (!force && actionsPending) return actionsPending;
+    var gen = generation;
+    var p = api.call('api_getActions', null).then(function (res) {
+      res = { actions: (res && res.actions) || [], replacements: (res && res.replacements) || [] };
+      if (gen === generation) actionsCache = res;
+      if (actionsPending === p) actionsPending = null;
+      return res;
+    }, function (err) {
+      if (actionsPending === p) actionsPending = null;
+      throw err;
+    });
+    actionsPending = p;
+    return p;
+  }
+
+  function refreshBootstrap() {
+    set({ loading: true });
+    return api.call('api_bootstrap', null).then(function (b) {
+      var months = Core.sortMonths(b.months || []);
+      var month = months.indexOf(state.month) >= 0 ? state.month : (b.latestMonth || months[months.length - 1] || '');
+      set({
+        configured: !!b.configured,
+        months: months,
+        month: month,
+        currentMonth: b.currentMonth || Core.currentMonth(new Date()),
+        dataUrl: b.dataUrl || '',
+        sourceUrl: b.sourceUrl || '',
+        sourceTitle: b.sourceTitle || '',
+        loading: false
+      });
+      return state;
+    }, function (err) {
+      set({ loading: false });
+      throw err;
+    });
+  }
+
+  window.State = {
+    get: get,
+    set: set,
+    subscribe: subscribe,
+    loadMonth: loadMonth,
+    getMonthData: getMonthData,
+    patchRecords: patchRecords,
+    removeRecord: removeRecord,
+    addRecord: addRecord,
+    invalidate: invalidate,
+    filtered: filtered,
+    filterByEquipe: filterByEquipe,
+    filterSummary: filterSummary,
+    loadTimeline: loadTimeline,
+    loadActions: loadActions,
+    refreshBootstrap: refreshBootstrap
+  };
+})();
+
+/**
+ * window.Fmt — month / date notation, one per role, independent of the DOM (usable before UI loads).
+ *   Fmt.monthLong('2026-05')   -> 'mai 2026'          inside a sentence, chart axes, table headers, options
+ *   Fmt.monthTitle('2026-05')  -> 'Mai 2026'          start of a sentence or caption, select labels
+ *   Fmt.monthKicker('2026-05') -> 'Mai 2026 · Export 2026-05'   page kicker (CSS sets the small caps:
+ *                                 MAI 2026 · EXPORT 2026-05). The ISO export id appears ONLY here.
+ *   Fmt.monthRange(a, b)       -> 'Avril 2026 – mai 2026' (one month -> 'Mai 2026')
+ *   Fmt.date('2026-05-04')     -> '04/05/2026'        (DD/MM/YYYY input is returned unchanged)
+ *   Fmt.dateTime('2026-05-04 10:30') / ('2026-05-04T10:30:00') -> '04/05/2026 10:30'
+ * Invalid input is returned as a string unchanged ('' for null).
+ */
+(function () {
+  'use strict';
+  var MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre',
+    'octobre', 'novembre', 'décembre'];
+  function s(v) { return v === null || v === undefined ? '' : String(v); }
+  function parseMonth(m) { return /^(\d{4})-(\d{2})$/.exec(s(m).trim()); }
+  function cap(t) { return t ? t.charAt(0).toUpperCase() + t.slice(1) : t; }
+
+  function monthLong(m) {
+    var r = parseMonth(m);
+    if (!r || Number(r[2]) < 1 || Number(r[2]) > 12) return s(m);
+    return MONTHS[Number(r[2]) - 1] + ' ' + r[1];
+  }
+  function monthTitle(m) { return cap(monthLong(m)); }
+  function monthKicker(m) { return parseMonth(m) ? monthTitle(m) + ' · Export ' + s(m).trim() : s(m); }
+  function monthRange(a, b) {
+    if (!b || a === b) return monthTitle(a);
+    if (!a) return monthTitle(b);
+    return monthTitle(a) + ' – ' + monthLong(b);
+  }
+  function date(v) {
+    var r = /^(\d{4})-(\d{2})-(\d{2})/.exec(s(v).trim());
+    return r ? r[3] + '/' + r[2] + '/' + r[1] : s(v);
+  }
+  function dateTime(v) {
+    var r = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(s(v).trim());
+    return r ? r[3] + '/' + r[2] + '/' + r[1] + ' ' + r[4] + ':' + r[5] : date(v);
+  }
+
+  window.Fmt = {
+    monthLong: monthLong,
+    monthTitle: monthTitle,
+    monthKicker: monthKicker,
+    monthRange: monthRange,
+    date: date,
+    dateTime: dateTime
+  };
+})();
+</script>

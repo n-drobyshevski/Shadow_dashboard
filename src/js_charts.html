@@ -1,0 +1,648 @@
+<script>
+/**
+ * window.Charts — Plotly wrappers with one shared "audit ledger" theme (docs/API.md §5, docs/DESIGN.md).
+ *
+ * Every function draws into `el` with Plotly.react (idempotent: redraws reuse the same element),
+ * config {responsive:true, displayModeBar:false}, and falls back to UI.empty('Graphique indisponible')
+ * when Plotly could not be loaded (CDN blocked, offline...).
+ *
+ * Theme: IBM Plex Sans, transparent backgrounds, no gridlines unless they carry reading value, tight
+ * margins, French separators, no titles inside plots (the page puts a small-caps label above each chart).
+ *   - tick labels: numbers and months in Plex Mono 12px --ink-3; categories (risk levels, équipes) in
+ *     Plex Sans 13px --ink; value labels on bars in mono 12px; annotations ("seuil 80 %") sans 12px --ink-2.
+ *   - hover labels: --ink background, white Plex Mono 12px, no border, one order everywhere:
+ *     « <mois|catégorie> · <série> <valeur formatée> », e.g. « mai 2026 · Postes 71,4 % ». Values are
+ *     pre-formatted in fr-FR (narrow no-break space before %, thousands with a narrow space) and passed
+ *     as customdata, never printed raw by Plotly.
+ * Colours come from the CSS tokens (css.html :root) through Charts.tokens(); colour is used for status only.
+ *
+ * Page authors: series without `color` get the ledger defaults (ink solid, ink-3 dashed, accent, ...);
+ * series accept `dash` ('solid'|'dash'|'dot'). Charts.tokens() returns the palette.
+ * Helpers: Charts.fmtPct(v, digits=1) / Charts.fmtNum(v) (chart-side fr-FR formatters),
+ * Charts.hoverTemplate(head, series, value) -> '<head> · <series> <value><extra></extra>' (head and value
+ * may be Plotly placeholders such as '%{x}' / '%{customdata}'; series is escaped),
+ * Charts.thresholdCaption({prefix?, items:[{label?, rate, ok?, total?}], threshold?}) -> p.chart-caption
+ * .threshold-caption « ■ Sous le seuil · 5 conformes sur 7 · seuil 80 % » (status always in words).
+ */
+(function () {
+  'use strict';
+
+  var CONFIG = { responsive: true, displayModeBar: false };
+  var FALLBACK = {
+    ink: '#16181b', ink2: '#4a4f57', ink3: '#6b7079', rule: '#e3e4e6', rule2: '#c9cbcf',
+    paper: '#ffffff', paper2: '#f6f6f4', accent: '#0b63ce', ok: '#1f7a4d', ko: '#b42318', warn: '#a15c07',
+    riskCritique: '#b42318', riskEleve: '#d4621b', riskMoyen: '#c99a06', riskFaible: '#1f7a4d', onInk: '#ffffff',
+    sans: '"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif',
+    mono: '"IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace'
+  };
+  var VARS = {
+    ink: '--ink', ink2: '--ink-2', ink3: '--ink-3', rule: '--rule', rule2: '--rule-2', paper: '--paper',
+    paper2: '--paper-2', accent: '--accent', ok: '--ok', ko: '--ko', warn: '--warn',
+    riskCritique: '--risk-critique', riskEleve: '--risk-eleve', riskMoyen: '--risk-moyen',
+    riskFaible: '--risk-faible', onInk: '--on-ink', sans: '--font-sans', mono: '--font-mono'
+  };
+  var NNBSP = '\u202f'; // narrow no-break space (fr-FR before % and as thousands separator)
+  var GAP = '\u00a0';   // no-break space set in the sans face: the gap before % in the big gauge figure
+  var TICK = 12;        // tick label size (numbers / months)
+  var CAT = 13;         // category label size (risk levels, équipes)
+
+  /** Design tokens read from the stylesheet (fallbacks when the CSS variables are missing). */
+  function tokens() {
+    var out = {};
+    var cs = null;
+    try { cs = window.getComputedStyle(document.documentElement); } catch (e) { cs = null; }
+    Object.keys(VARS).forEach(function (k) {
+      var v = cs ? String(cs.getPropertyValue(VARS[k]) || '').trim() : '';
+      out[k] = v || FALLBACK[k];
+    });
+    out.risk = { 'Critique': out.riskCritique, 'Élevé': out.riskEleve, 'Moyen': out.riskMoyen, 'Faible': out.riskFaible };
+    return out;
+  }
+
+  function rgba(hex, alpha) {
+    var m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex || ''));
+    if (!m) return hex;
+    return 'rgba(' + parseInt(m[1], 16) + ',' + parseInt(m[2], 16) + ',' + parseInt(m[3], 16) + ',' + alpha + ')';
+  }
+
+  // ------------------------------------------------------------------------------ fr-FR formatting
+
+  function isNum(v) { return v !== null && v !== undefined && v !== '' && isFinite(Number(v)); }
+
+  /** 71.42857 -> '71,4 %' (narrow no-break space); '—' for null. */
+  function fmtPct(v, digits) {
+    if (!isNum(v)) return '—';
+    var d = digits === undefined ? 1 : digits;
+    return new Intl.NumberFormat('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: false })
+      .format(Number(v)) + NNBSP + '%';
+  }
+
+  /** 1234 -> '1 234' (narrow no-break space); '—' for null. */
+  function fmtNum(v) {
+    if (!isNum(v)) return '—';
+    return new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 }).format(Math.round(Number(v)))
+      .replace(/[   ]/g, NNBSP);
+  }
+
+  /** Text that goes into a hovertemplate: no markup, no Plotly placeholders. */
+  function clean(s) { return String(s === null || s === undefined ? '' : s).replace(/[<>%{}]/g, ''); }
+
+  /** '<head> · <series> <value>' with the trace box suppressed. */
+  function hoverTemplate(head, series, value) {
+    var s = clean(series);
+    return String(head) + ' · ' + (s ? s + ' ' : '') + String(value) + '<extra></extra>';
+  }
+
+  // ------------------------------------------------------------------------------ shared layout
+
+  function tickFont(t) { return { family: t.mono, size: TICK, color: t.ink3 }; }
+  function catFont(t) { return { family: t.sans, size: CAT, color: t.ink }; }
+
+  function axis(t, extra) {
+    return Object.assign({
+      showgrid: false,
+      zeroline: false,
+      showline: false,
+      linecolor: t.rule2,
+      linewidth: 1,
+      ticks: '',
+      tickcolor: t.rule2,
+      ticklen: 4,
+      tickfont: tickFont(t),
+      title: { text: '' },
+      fixedrange: true,
+      automargin: true
+    }, extra || {});
+  }
+
+  function baseLayout(t, extra) {
+    var layout = {
+      font: { family: t.sans, size: 12, color: t.ink2 },
+      paper_bgcolor: 'rgba(0,0,0,0)',
+      plot_bgcolor: 'rgba(0,0,0,0)',
+      margin: { l: 8, r: 8, t: 8, b: 8, pad: 0 },
+      separators: ', ',            // French: decimal comma, space as thousands separator
+      showlegend: false,
+      hovermode: 'closest',
+      // Ink box, white mono 12px, no visible border (border = background).
+      hoverlabel: { bgcolor: t.ink, bordercolor: t.ink, font: { family: t.mono, size: 12, color: t.onInk }, align: 'left',
+        namelength: 0 },
+      dragmode: false
+    };
+    return Object.assign(layout, extra || {});
+  }
+
+  function annotationFont(t) { return { family: t.sans, size: 12, color: t.ink2 }; }
+
+  function unavailable(el) {
+    UI.clear(el);
+    el.appendChild(UI.empty('Graphique indisponible'));
+    return null;
+  }
+
+  function draw(el, data, layout) {
+    if (!el) return null;
+    if (!window.Plotly || typeof window.Plotly.react !== 'function') return unavailable(el);
+    el.classList.add('chart');
+    try {
+      var p = window.Plotly.react(el, data, layout, CONFIG);
+      if (p && typeof p.catch === 'function') {
+        p.catch(function (e) { console.error('Plotly', e); unavailable(el); });
+      }
+      return p;
+    } catch (e) {
+      console.error('Plotly', e);
+      return unavailable(el);
+    }
+  }
+
+  function thresholdLabel(value) { return 'seuil ' + value + NNBSP + '%'; }
+
+  // ------------------------------------------------------------------------------ gauge
+
+  /**
+   * Compliance gauge 0–100 % (kept from the Streamlit original), restyled: thin flat arc on a neutral
+   * track, bar --ok when >= threshold else --ko, 2px ink tick at the threshold that just overshoots the
+   * arc, value as a mono figure. Plotly centres the arc in its ring and sets its tick labels far from it,
+   * so the three labels ("0", "80", "100") are small HTML labels placed from the drawn arc after every
+   * redraw: "0" / "100" right under the arc ends, "80" just outside the threshold tick.
+   */
+  function gauge(el, value, opts) {
+    var o = opts || {};
+    var t = tokens();
+    var v = value === null || value === undefined || !isFinite(Number(value)) ? 0 : Number(value);
+    var ok = v >= Core.THRESHOLD;
+    var band = 0.2;      // thickness of the arc, as a fraction of the gauge ring
+    // Left-aligned with its label and caption (.chart-gauge caps the plot width; the arc is not centred
+    // in a wide column).
+    if (el) el.classList.add('chart-gauge');
+    var p = draw(el, [{
+      type: 'indicator',
+      mode: 'gauge+number',
+      value: v,
+      // The space before % is set in the sans face: in Plex Mono it would take a full cell.
+      number: { suffix: '<span style="font-family:' + t.sans.replace(/"/g, "'") + '">' + GAP + '</span>%',
+        valueformat: '.1f', font: { family: t.mono, size: 30, color: t.ink } },
+      gauge: {
+        shape: 'angular',
+        axis: {
+          range: [0, 100], tickmode: 'array', tickvals: [0, Core.THRESHOLD, 100],
+          ticktext: ['', '', ''], ticks: '', ticklen: 0, tickwidth: 0,
+          tickcolor: t.rule2, tickfont: { family: t.mono, size: 10, color: t.ink3 }, showticklabels: true
+        },
+        bar: { color: ok ? t.ok : t.ko, thickness: band, line: { width: 0 } },
+        bgcolor: 'rgba(0,0,0,0)',
+        borderwidth: 0,
+        steps: [{ range: [0, 100], color: t.rule, thickness: band, line: { width: 0 } }],
+        threshold: { line: { color: t.ink, width: 2 }, thickness: band + 0.12, value: Core.THRESHOLD }
+      },
+      domain: { x: [0, 1], y: [0, 1] }
+    }], baseLayout(t, { height: o.height || 176, margin: { l: 6, r: 22, t: 14, b: 18 }, hovermode: false }));
+    if (p && typeof p.then === 'function') {
+      p.then(function () {
+        gaugeEnds(el);
+        if (typeof el.on === 'function' && !el.__gaugeEnds) {
+          el.__gaugeEnds = true;
+          el.on('plotly_afterplot', function () { gaugeEnds(el); });
+        }
+      }, function () {});
+    }
+    return p;
+  }
+
+  /** "0" / "100" under the two ends of the gauge arc and "80" beside the tick (HTML, from the drawn ring). */
+  function gaugeEnds(el) {
+    if (!el || !el.isConnected) return;
+    var ring = el.querySelectorAll('g.angular path');
+    var box = el.getBoundingClientRect();
+    var l = Infinity, r = -Infinity, b = -Infinity;
+    Array.prototype.forEach.call(ring, function (pth) {
+      var rc = pth.getBoundingClientRect();
+      if (!rc.width) return;
+      l = Math.min(l, rc.left); r = Math.max(r, rc.right); b = Math.max(b, rc.bottom);
+    });
+    var wrap = el.querySelector('.gauge-ends');
+    if (!isFinite(l) || !isFinite(r)) { if (wrap) wrap.hidden = true; return; }
+    if (!wrap) {
+      wrap = UI.el('div', { class: 'gauge-ends', 'aria-hidden': 'true' },
+        UI.el('span', { class: 'gauge-end gauge-end-min' }, '0'),
+        UI.el('span', { class: 'gauge-end gauge-end-max' }, '100'),
+        UI.el('span', { class: 'gauge-end gauge-tick' }, String(Core.THRESHOLD)));
+      el.appendChild(wrap);
+    }
+    wrap.hidden = false;
+    var radius = (r - l) / 2;
+    var mid = radius * (0.75 + 0.25 / 2);         // radius of the centre line of the arc
+    var cx = l - box.left + radius;
+    var cy = b - box.top;                          // the arc ends sit on the horizontal diameter
+    var spans = wrap.children;
+    spans[0].style.left = (cx - mid) + 'px';
+    spans[1].style.left = (cx + mid) + 'px';
+    spans[0].style.top = spans[1].style.top = (cy + 1) + 'px';
+    // Threshold label: just beyond the outer end of the tick (the arc band is centred on `mid`; the tick
+    // overshoots it by ~5px), anchored at its lower-left corner.
+    var a = Math.PI * (1 - Core.THRESHOLD / 100);
+    var rr = mid + 7;
+    spans[2].style.left = (cx + rr * Math.cos(a) + 1) + 'px';
+    spans[2].style.top = (cy - rr * Math.sin(a) - 11) + 'px';
+  }
+
+  // ------------------------------------------------------------------------------ bars
+
+  /**
+   * One horizontal bar per risk level (Core.RISK_ORDER, top to bottom), risk colours, count at the bar end.
+   * opts.noun ('poste' | 'application') adds the unit to the hover label: « Élevé · 1 poste ».
+   */
+  function riskBars(el, counts, opts) {
+    var c = counts || {};
+    var o = opts || {};
+    var t = tokens();
+    var levels = Core.RISK_ORDER.slice();
+    var values = levels.map(function (k) { return Number(c[k]) || 0; });
+    var max = Math.max(1, Math.max.apply(null, values));
+    return draw(el, [{
+      type: 'bar',
+      orientation: 'h',
+      y: levels,
+      x: values,
+      text: values.map(String),
+      textposition: 'outside',
+      textfont: { family: t.mono, size: 12, color: t.ink },
+      cliponaxis: false,
+      width: 0.5,
+      marker: { color: levels.map(function (k) { return t.risk[k]; }), line: { width: 0 } },
+      customdata: values.map(function (n) { return fmtNum(n) + (o.noun ? ' ' + o.noun + (n > 1 ? 's' : '') : ''); }),
+      hovertemplate: hoverTemplate('%{y}', '', '%{customdata}')
+    }], baseLayout(t, {
+      height: levels.length * 32 + 12,
+      margin: { l: 4, r: 28, t: 4, b: 4 },
+      bargap: 0.5,
+      xaxis: axis(t, { visible: false, range: [0, max * 1.12] }),
+      yaxis: axis(t, { autorange: 'reversed', type: 'category', ticklabelstandoff: 8, tickfont: catFont(t) })
+    }));
+  }
+
+  /**
+   * 10 equal bins on 0–100 (Core.histogramBins). Bins below the threshold in --ko at 70 % opacity,
+   * at/above in --ok; dashed ink line at 80 labelled "seuil 80 %"; counts printed above non-empty bins.
+   * opts.noun adds the unit to the hover label: « Score 80–90 % · 2 postes ».
+   */
+  function histogram(el, scores, opts) {
+    var o = opts || {};
+    var t = tokens();
+    var bins = Core.histogramBins((scores || []).filter(function (s) { return s !== null && s !== undefined; }), 10);
+    var counts = bins.map(function (b) { return b.count; });
+    var max = Math.max(1, Math.max.apply(null, counts));
+    return draw(el, [{
+      type: 'bar',
+      x: bins.map(function (b) { return (b.x0 + b.x1) / 2; }),
+      y: counts,
+      width: bins.map(function (b) { return (b.x1 - b.x0) * 0.72; }),
+      customdata: bins.map(function (b) {
+        return [b.x0 + '–' + b.x1 + NNBSP + '%', fmtNum(b.count) + (o.noun ? ' ' + o.noun + (b.count > 1 ? 's' : '') : '')];
+      }),
+      text: counts.map(function (n) { return n ? String(n) : ''; }),
+      textposition: 'outside',
+      textfont: { family: t.mono, size: 12, color: t.ink2 },
+      cliponaxis: false,
+      marker: {
+        color: bins.map(function (b) { return b.x0 >= Core.THRESHOLD ? t.ok : rgba(t.ko, 0.7); }),
+        line: { width: 0 }
+      },
+      hovertemplate: hoverTemplate('Score %{customdata[0]}', '', '%{customdata[1]}')
+    }], baseLayout(t, {
+      height: 200,
+      margin: { l: 4, r: 4, t: 30, b: 4 },
+      bargap: 0,
+      xaxis: axis(t, { range: [0, 100], tickmode: 'array', tickvals: [0, 20, 40, 60, 80, 100],
+        ticktext: ['0', '20', '40', '60', '80', '100' + NNBSP + '%'], showline: true, ticks: 'outside' }),
+      yaxis: axis(t, { visible: false, rangemode: 'tozero', range: [0, max * 1.18] }),
+      shapes: [{ type: 'line', xref: 'x', yref: 'paper', x0: Core.THRESHOLD, x1: Core.THRESHOLD, y0: 0, y1: 1.08,
+        line: { color: t.ink, width: 1, dash: 'dash' } }],
+      annotations: [{ x: Core.THRESHOLD, xref: 'x', y: 1.08, yref: 'paper', text: thresholdLabel(Core.THRESHOLD),
+        showarrow: false, xanchor: 'right', yanchor: 'bottom', xshift: -4, font: annotationFont(t) }]
+    }));
+  }
+
+  function defaultSeriesStyle(t, i) {
+    var styles = [
+      { color: t.ink, dash: 'solid' },
+      { color: t.ink3, dash: 'dash' },
+      { color: t.accent, dash: 'solid' },
+      { color: t.rule2, dash: 'dot' }
+    ];
+    return styles[i % styles.length];
+  }
+
+  function lastIndex(ys) {
+    for (var i = (ys || []).length - 1; i >= 0; i--) {
+      if (ys[i] !== null && ys[i] !== undefined && isFinite(Number(ys[i]))) return i;
+    }
+    return -1;
+  }
+
+  /**
+   * Line chart: {x, series:[{name, y, color?, dash?}], threshold?, yTitle?, yRange?, unit?:'%'|''}.
+   * Series are labelled directly at their last point (no legend); the threshold is a dotted rule
+   * labelled at the right edge. unit defaults to '%' when a threshold is given (rates), else none.
+   * Hover: « mai 2026 · Postes 71,4 % ».
+   */
+  function line(el, opts) {
+    var o = opts || {};
+    var t = tokens();
+    var x = o.x || [];
+    var series = o.series || [];
+    var hasThreshold = o.threshold !== undefined && o.threshold !== null;
+    var unit = o.unit !== undefined ? o.unit : (hasThreshold ? '%' : '');
+    var annotations = [];
+    var data = series.map(function (s, i) {
+      var st = defaultSeriesStyle(t, i);
+      var color = s.color || st.color;
+      var ys = s.y || [];
+      var li = lastIndex(ys);
+      if (li >= 0) {
+        annotations.push({ x: x[li], y: ys[li], xref: 'x', yref: 'y', text: clean(s.name), showarrow: false,
+          xanchor: 'left', yanchor: 'middle', xshift: 8, font: { family: t.sans, size: CAT, color: t.ink } });
+      }
+      return {
+        type: 'scatter',
+        mode: x.length > 1 ? 'lines+markers' : 'markers',
+        name: s.name,
+        x: x,
+        y: ys,
+        connectgaps: false,
+        line: { color: color, width: 2, dash: s.dash || (s.color ? 'solid' : st.dash) },
+        marker: { size: 6, color: color, line: { width: 0 } },
+        customdata: ys.map(function (v) { return unit === '%' ? fmtPct(v) : fmtNum(v); }),
+        hovertemplate: hoverTemplate('%{x}', s.name, '%{customdata}')
+      };
+    });
+    // Nudge direct labels apart when two series end on (almost) the same value.
+    if (annotations.length === 2 && Math.abs(Number(annotations[0].y) - Number(annotations[1].y)) < 6) {
+      var up = Number(annotations[0].y) >= Number(annotations[1].y) ? 0 : 1;
+      annotations[up].yshift = 8;
+      annotations[1 - up].yshift = -8;
+    }
+    if (hasThreshold) {
+      annotations.push({ x: 1, xref: 'paper', y: o.threshold, yref: 'y', text: thresholdLabel(o.threshold),
+        showarrow: false, xanchor: 'right', yanchor: 'bottom', font: annotationFont(t) });
+    }
+    var labelRoom = series.reduce(function (m, s) { return Math.max(m, String(s.name || '').length); }, 0) * 7.5 + 16;
+    return draw(el, data, baseLayout(t, {
+      height: o.height || 280,
+      margin: { l: 4, r: Math.min(140, labelRoom), t: 12, b: 4 },
+      xaxis: axis(t, { type: 'category', showline: true, ticks: 'outside' }),
+      // yTitle is accepted for compatibility but not drawn: the label above the chart names the measure.
+      yaxis: axis(t, { range: o.yRange || undefined, rangemode: 'tozero', showgrid: true, gridcolor: t.rule,
+        gridwidth: 1, nticks: 5, ticksuffix: unit === '%' ? NNBSP + '%' : '', ticklabelstandoff: 4 }),
+      shapes: hasThreshold ? [{ type: 'line', xref: 'paper', yref: 'y', x0: 0, x1: 1, y0: o.threshold, y1: o.threshold,
+        line: { color: t.ink, width: 1, dash: 'dot' } }] : [],
+      annotations: annotations
+    }));
+  }
+
+  /**
+   * Bar chart: {x, y, colors?, yTitle?, horizontal?}. Extension: {x, series:[{name, y, color?, outline?:bool|fill}]}
+   * draws grouped bars with a legend placed above the plot area (never over the bars).
+   * Options: labels:true prints each count above its bar (mono 12px ink-2) and drops the value axis;
+   * legend:false hides the legend (the page then puts a key in the caption). outline:true draws a series
+   * as a 1px outline in its colour on paper instead of a solid bar. Prefer partBars for "x sur y" counts.
+   */
+  function bars(el, opts) {
+    var o = opts || {};
+    var t = tokens();
+    var horizontal = !!o.horizontal;
+    var palette = [t.ink, t.ink3, t.rule2, t.accent];
+    var labels = !!o.labels;
+    function trace(name, y, color, i, outline) {
+      var c = color || palette[i % palette.length];
+      // outline: true -> paper fill; a colour string -> that fill (e.g. --paper-2 to tell two outlines apart).
+      var tr = {
+        type: 'bar',
+        name: name,
+        orientation: horizontal ? 'h' : 'v',
+        marker: outline ? { color: typeof outline === 'string' ? outline : t.paper, line: { width: 1, color: c } } :
+          { color: c, line: { width: 0 } },
+        customdata: (y || []).map(fmtNum),
+        hovertemplate: hoverTemplate(horizontal ? '%{y}' : '%{x}', name, '%{customdata}')
+      };
+      if (horizontal) { tr.x = y; tr.y = o.x || []; } else { tr.x = o.x || []; tr.y = y; }
+      if (labels) {
+        tr.texttemplate = '%{customdata}';
+        tr.textposition = 'outside';
+        tr.textfont = { family: t.mono, size: 12, color: t.ink2 };
+        tr.cliponaxis = false;
+      }
+      return tr;
+    }
+    var multi = !!(o.series && o.series.length > 1);
+    var data = o.series && o.series.length ?
+      o.series.map(function (s, i) { return trace(s.name, s.y || [], s.color, i, s.outline || false); }) :
+      [trace('', o.y || [], o.colors || t.ink, 0, false)];
+    var maxValue = 1;
+    data.forEach(function (d) {
+      (horizontal ? d.x : d.y).forEach(function (v) { if (isFinite(Number(v))) maxValue = Math.max(maxValue, Number(v)); });
+    });
+    // With printed counts the value axis is redundant: no ticks, no gridlines, headroom for the labels.
+    var valueAxis = labels ? axis(t, { visible: false, rangemode: 'tozero', range: [0, maxValue * 1.15] }) :
+      axis(t, { rangemode: 'tozero', showgrid: true, gridcolor: t.rule, nticks: 5 });
+    var showLegend = multi && o.legend !== false;
+    var catAxis = axis(t, { type: 'category', showline: true, ticks: 'outside',
+      tickfont: horizontal ? catFont(t) : tickFont(t) });
+    if (horizontal) { catAxis.autorange = 'reversed'; catAxis.ticklabelstandoff = 8; catAxis.ticks = ''; }
+    return draw(el, data, baseLayout(t, {
+      height: o.height || (horizontal ? Math.max(160, 30 * (o.x || []).length + 40) : 280),
+      margin: { l: 4, r: 8, t: labels ? 16 : 8, b: 4 },
+      barmode: 'group',
+      bargap: 0.45,
+      bargroupgap: 0.2,
+      showlegend: showLegend,
+      legend: { orientation: 'h', x: 0, xanchor: 'left', y: 1.02, yanchor: 'bottom', traceorder: 'normal',
+        font: { family: t.sans, size: 12, color: t.ink2 }, itemwidth: 30, itemclick: false, itemdoubleclick: false },
+      xaxis: horizontal ? valueAxis : catAxis,
+      yaxis: horizontal ? catAxis : valueAxis
+    }));
+  }
+
+  /**
+   * Part-of-whole bars, labelled directly (no legend):
+   *   {x:[category], groups:[{label, total:{name, y}, part:{name, y}, color?}], height?}.
+   * Per category and group, one outline bar (total = inventoriés, 1px in the group colour on paper) with
+   * the part (conformes) drawn as a solid bar inside it from the baseline: the paired encoding
+   * "inventoriés vs conformes" reads without a key. "part sur total" is printed above each bar, the group
+   * label under it and the category (month) under the group labels. Bars are capped at 28px wide so the
+   * solid parts never become heavy blocks.
+   * Traces, in order: [g0 total, g0 part, g1 total, g1 part, ...] (names from total.name / part.name).
+   * Hover: « mai 2026 · Postes 5 conformes sur 7 ».
+   */
+  function partBars(el, opts) {
+    var o = opts || {};
+    var t = tokens();
+    var x = o.x || [];
+    var groups = o.groups || [];
+    var n = x.length;
+    var G = Math.max(1, groups.length);
+    var slot = 0.8 / G;                  // share of a category taken by one group
+    var plotW = (el && el.clientWidth) || 480;
+    var unitPx = plotW / Math.max(1, n); // pixels per category
+    var width = Math.min(slot * 0.5, 28 / unitPx);
+    var px = unitPx / G;                 // ~pixels per bar slot
+    var compact = px < 52;               // too narrow for "5 sur 7": "5/7", no group labels
+    var palette = [t.ink, t.ink3, t.accent];
+    function pos(i, g) { return i + (g - (G - 1) / 2) * Math.min(slot, width * 2.2); }
+    var data = [];
+    var annotations = [];
+    var maxValue = 1;
+    groups.forEach(function (gr, g) {
+      var c = gr.color || palette[g % palette.length];
+      var xs = x.map(function (_, i) { return pos(i, g); });
+      var totals = (gr.total && gr.total.y) || [];
+      var parts = (gr.part && gr.part.y) || [];
+      totals.forEach(function (v) { if (isFinite(Number(v))) maxValue = Math.max(maxValue, Number(v)); });
+      var label = clean(gr.label);
+      data.push({
+        type: 'bar', name: gr.total && gr.total.name, x: xs, y: totals, width: width,
+        marker: { color: t.paper, line: { width: 1, color: c } },
+        text: totals.map(function (v, i) {
+          if (v === null || v === undefined) return '';
+          var p = parts[i] === null || parts[i] === undefined ? '—' : String(parts[i]);
+          return compact ? p + '/' + v : p + ' sur ' + v;
+        }),
+        textposition: 'outside', textfont: { family: t.mono, size: 12, color: t.ink2 }, cliponaxis: false,
+        constraintext: 'none',
+        customdata: x.map(function (m, i) {
+          var p = parts[i];
+          return [m, (isNum(p) ? fmtNum(p) : '—') + ' conforme' + (Number(p) > 1 ? 's' : '') + ' sur ' + fmtNum(totals[i])];
+        }),
+        hovertemplate: hoverTemplate('%{customdata[0]}', label, '%{customdata[1]}')
+      });
+      data.push({
+        type: 'bar', name: gr.part && gr.part.name, x: xs, y: parts, width: width,
+        marker: { color: c, line: { width: 0 } }, hoverinfo: 'skip'
+      });
+      if (!compact) {
+        xs.forEach(function (xv) {
+          annotations.push({ x: xv, xref: 'x', y: 0, yref: 'paper', yanchor: 'top', yshift: -3, showarrow: false,
+            text: label, font: { family: t.sans, size: 12, color: t.ink2 } });
+        });
+      }
+    });
+    x.forEach(function (m, i) {
+      annotations.push({ x: i, xref: 'x', y: 0, yref: 'paper', yanchor: 'top', yshift: compact ? -3 : -21,
+        showarrow: false, text: clean(m), font: tickFont(t) });
+    });
+    return draw(el, data, baseLayout(t, {
+      height: o.height || 280,
+      margin: { l: 4, r: 4, t: 18, b: compact ? 22 : 40 },
+      barmode: 'overlay',
+      xaxis: axis(t, { range: [-0.5, Math.max(0, n - 1) + 0.5], showline: true, showticklabels: false }),
+      yaxis: axis(t, { visible: false, rangemode: 'tozero', range: [0, maxValue * 1.15] }),
+      annotations: annotations
+    }));
+  }
+
+  /**
+   * Heatmap: {x, y, z:[[number|null]], zmin=0, zmax=100, title?, maxCellWidth?}: light sequential single hue
+   * (paper-2 -> a 45 % tint of --ok, so ink text stays readable in every cell), % printed in each cell in
+   * mono with 1 decimal like every other rate (« 50,0 % »), no colour bar. Hover: « mai 2026 · Labo Textile
+   * 50,0 % ».
+   * `title` is ignored inside the plot (label it above).
+   */
+  function heatmap(el, opts) {
+    var o = opts || {};
+    var t = tokens();
+    var zmin = o.zmin === undefined ? 0 : o.zmin;
+    var zmax = o.zmax === undefined ? 100 : o.zmax;
+    var z = o.z || [];
+    var text = z.map(function (row) {
+      return (row || []).map(function (v) { return isNum(v) ? fmtPct(v, 1) : ''; });
+    });
+    var hover = z.map(function (row) {
+      return (row || []).map(function (v) { return isNum(v) ? fmtPct(v, 1) : 'aucun poste'; });
+    });
+    var yLabels = o.y || [];
+    // maxCellWidth: caps each column (px) so that a few months read as a compact table, left-aligned.
+    if (el && o.maxCellWidth) {
+      var labelW = yLabels.reduce(function (m, s) { return Math.max(m, String(s).length); }, 0) * 7.5 + 24;
+      el.style.maxWidth = Math.round(labelW + Math.max(1, (o.x || []).length) * o.maxCellWidth + 8) + 'px';
+    }
+    return draw(el, [{
+      type: 'heatmap',
+      x: o.x || [],
+      y: yLabels,
+      z: z,
+      zmin: zmin,
+      zmax: zmax,
+      text: text,
+      texttemplate: '%{text}',
+      textfont: { family: t.mono, size: 12, color: t.ink },
+      customdata: hover,
+      hovertemplate: hoverTemplate('%{x}', '', '%{y} %{customdata}'),
+      xgap: 2,
+      ygap: 2,
+      showscale: false,
+      colorscale: [[0, t.paper2], [1, rgba(t.ok, 0.45)]]
+    }], baseLayout(t, {
+      height: Math.max(140, 34 * yLabels.length + 40),
+      margin: { l: 4, r: 4, t: 4, b: 4 },
+      xaxis: axis(t, { type: 'category', side: 'top' }),
+      yaxis: axis(t, { type: 'category', autorange: 'reversed', ticklabelstandoff: 8, tickfont: catFont(t) })
+    }));
+  }
+
+  // ------------------------------------------------------------------------------ captions
+
+  /**
+   * Charts.thresholdCaption({prefix?, items:[{label?, rate, ok?, total?}], threshold?}) -> p.chart-caption
+   * One status per item, always in words next to its colour:
+   *   item without label: « ■ Sous le seuil · 5 conformes sur 7 »
+   *   item with label:    « Postes 71,4 % ■ Sous le seuil »
+   * followed by « · seuil 80 % ». prefix (string | Node | array) comes first, e.g. 'Mai 2026 — '.
+   * An item with rate null renders « Postes — ».
+   */
+  function thresholdCaption(o) {
+    var opts = o || {};
+    var th = opts.threshold === undefined ? Core.THRESHOLD : opts.threshold;
+    var el = UI.el;
+    var parts = [];
+    (opts.items || []).forEach(function (it, i) {
+      if (i) parts.push(' · ');
+      var label = it.label ? el('span', { class: 'series' }, it.label) : null;
+      if (!isNum(it.rate)) { parts.push(label || '', ' —'); return; }
+      var above = Number(it.rate) >= th;
+      var mark = UI.statusMark(above ? 'Seuil atteint' : 'Sous le seuil', above ? 'ok' : 'ko');
+      // « Postes 71,4 % ■ Sous le seuil » stays on one line (it only wraps between items).
+      if (label) parts.push(el('span', { class: 'tc-item' }, label, ' ', el('span', { class: 'num' }, fmtPct(it.rate)), ' ', mark));
+      else parts.push(mark);
+      if (isNum(it.total)) {
+        parts.push(' · ', el('span', { class: 'num' }, fmtNum(it.ok)), ' conforme' + (Number(it.ok) > 1 ? 's' : '') + ' sur ',
+          el('span', { class: 'num' }, fmtNum(it.total)));
+      }
+    });
+    return el('p', { class: 'chart-caption threshold-caption' }, opts.prefix || null, parts,
+      ' · seuil ', el('span', { class: 'num' }, th + NNBSP + '%'));
+  }
+
+  function purge(el) {
+    if (el && window.Plotly && typeof window.Plotly.purge === 'function') {
+      try { window.Plotly.purge(el); } catch (e) { /* ignore */ }
+    }
+  }
+
+  window.Charts = {
+    gauge: gauge,
+    riskBars: riskBars,
+    histogram: histogram,
+    line: line,
+    bars: bars,
+    partBars: partBars,
+    heatmap: heatmap,
+    purge: purge,
+    tokens: tokens,
+    fmtPct: fmtPct,
+    fmtNum: fmtNum,
+    hoverTemplate: hoverTemplate,
+    thresholdCaption: thresholdCaption
+  };
+})();
+</script>

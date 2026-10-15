@@ -1,0 +1,350 @@
+<style>
+/* Suivi temporel (docs/API.md §6, docs/DESIGN.md). Everything else comes from css.html: page header,
+   sections, chart captions, threshold captions, ledger table, filter note. Only the KPI ledger's layout
+   (sticky label column, current month, signed deltas) is specific to this page. */
+.page-timeline .timeline-body { display: flex; flex-direction: column; gap: var(--s6); }
+/* KPI ledger: full width; the label column stays visible while many months scroll sideways. */
+.page-timeline .tl-kpi-table .tl-label-col {
+  position: sticky; left: 0; z-index: 2; background: var(--paper); min-width: 240px; width: 32%;
+  padding-right: var(--s5); box-shadow: inset -1px 0 0 var(--rule);
+}
+.page-timeline .tl-kpi-table thead .tl-label-col { background: var(--paper-2); z-index: 3; box-shadow: inset -1px 0 0 var(--rule-2); }
+.page-timeline .tl-kpi-table td { min-width: 148px; }
+/* The applications block starts under a stronger rule. */
+.page-timeline .tl-kpi-table tr:has(+ tr.tl-group-start) > * { border-bottom-color: var(--rule-2); }
+/* Selected month (sidebar « Période »): 2px ink rule under its header, its figures in ink 500. */
+.page-timeline .tl-kpi-table th.tl-current { color: var(--ink); box-shadow: inset 0 -2px 0 var(--ink); }
+.page-timeline .tl-kpi-table .tl-value { color: var(--ink-2); }
+.page-timeline .tl-kpi-table td.tl-current .tl-value { color: var(--ink); font-weight: 500; }
+/* Delta vs the previous month: a signed mono figure, ok / ko when the direction matters, ink-3 otherwise. */
+.page-timeline .tl-delta {
+  display: inline-block; min-width: 8ch; margin-left: var(--s2); text-align: right;
+  font-family: var(--font-mono); font-size: 12px; color: var(--ink-3);
+}
+.page-timeline .tl-delta.is-ok { color: var(--ok); }
+.page-timeline .tl-delta.is-ko { color: var(--ko); }
+.page-timeline .tl-legend .tl-delta { min-width: 0; margin-left: 0; }
+/* Phones: label column narrower, the delta goes under the value so that two months fit 358px. */
+@media (max-width: 700px) {
+  .page-timeline .tl-kpi-table .tl-label-col { min-width: 128px; max-width: 150px; width: auto; white-space: normal; padding-right: var(--s2); }
+  .page-timeline .tl-kpi-table td { min-width: 0; }
+  .page-timeline .tl-kpi-table td .tl-delta { display: block; min-width: 0; margin-left: 0; line-height: 1.2; }
+}
+</style>
+<script>
+/**
+ * Pages.timeline — "Suivi temporel" (docs/API.md §6).
+ *
+ * Month-by-month evolution of the conformity KPIs, computed client-side from the slim records of
+ * api_getTimeline (State.loadTimeline, cached). The global sidebar filters (Équipe / Bâtiment) are
+ * applied to every month with Core.filterData before Core.computeKpis, exactly like the dashboard.
+ *
+ * Sections: conformity rate line chart (Postes / Applications, threshold 80) with the threshold status in
+ * words (Charts.thresholdCaption), inventoried vs conformant counts, équipe × month heatmap of the postes
+ * conformity rate, KPI ledger with the delta vs the previous month.
+ * Month notation: window.Fmt (axes / headers 'mai 2026', captions 'Mai 2026'); figures: UI.fmtPct / fmtNum.
+ */
+(function () {
+  'use strict';
+
+  var el = UI.el;
+  var NO_TEAM = 'Sans équipe';
+
+  var token = 0;        // bumped on every mount/unmount: stale async renders are dropped
+  var chartEls = [];
+
+  /**
+   * KPI table rows. `kind`: 'pct' (percentage, delta in points) or 'count'.
+   * `better`: direction of a favourable change ('up' / 'down'), null when neutral (inventory sizes).
+   */
+  var KPI_ROWS = [
+    { key: 'total_postes', label: 'Postes inventoriés', kind: 'count', better: null },
+    { key: 'postes_conformes', label: 'Postes conformes', kind: 'count', better: 'up' },
+    { key: 'postes_non_conformes', label: 'Postes non conformes', kind: 'count', better: 'down' },
+    { key: 'taux_postes', label: 'Taux de conformité — Postes', kind: 'pct', better: 'up' },
+    { key: 'postes_sans_edr', label: 'Postes sans EDR', kind: 'count', better: 'down' },
+    { key: 'postes_non_it', label: 'Postes non IT Decathlon', kind: 'count', better: 'down' },
+    { key: 'postes_hors_reseau', label: 'Postes hors réseau Decathlon', kind: 'count', better: 'down' },
+    { key: 'total_apps', label: 'Applications inventoriées', kind: 'count', better: null },
+    { key: 'apps_conformes', label: 'Applications conformes', kind: 'count', better: 'up' },
+    { key: 'apps_non_conformes', label: 'Applications non conformes', kind: 'count', better: 'down' },
+    { key: 'taux_apps', label: 'Taux de conformité — Applications', kind: 'pct', better: 'up' },
+    { key: 'apps_sans_sip', label: 'Applications sans SIP', kind: 'count', better: 'down' },
+    { key: 'apps_sans_contrat', label: 'Applications sans contrat', kind: 'count', better: 'down' },
+    { key: 'apps_sans_galink', label: 'Applications sans Galink', kind: 'count', better: 'down' },
+    { key: 'apps_sans_idp', label: 'Applications sans IDP', kind: 'count', better: 'down' }
+  ];
+
+  // ------------------------------------------------------------------------------ computations
+
+  /** [{month, postes, applications, kpis}] with the global filters applied to each month. */
+  function computeSeries(timeline, filters) {
+    return (timeline || []).map(function (m) {
+      var f = Core.filterData({ postes: m.postes || [], applications: m.applications || [] }, filters);
+      return { month: m.month, postes: f.postes, applications: f.applications,
+        kpis: Core.computeKpis(f.postes, f.applications) };
+    });
+  }
+
+  /** Conformity rate, or null when there is nothing to measure (avoids plotting a misleading 0 %). */
+  function rate(total, ok) { return total ? (ok / total) * 100 : null; }
+
+  /** Équipe × month matrix of the postes conformity rate (null when the équipe has no poste that month). */
+  function teamMatrix(series) {
+    var teams = [];
+    series.forEach(function (m) {
+      m.postes.forEach(function (p) {
+        var t = Core.str(p['Équipe']) || NO_TEAM;
+        if (teams.indexOf(t) < 0) teams.push(t);
+      });
+    });
+    teams.sort(function (a, b) {
+      if (a === NO_TEAM || b === NO_TEAM) return a === b ? 0 : (a === NO_TEAM ? 1 : -1);
+      return a.localeCompare(b, 'fr');
+    });
+    var z = teams.map(function (t) {
+      return series.map(function (m) {
+        var list = m.postes.filter(function (p) { return (Core.str(p['Équipe']) || NO_TEAM) === t; });
+        return rate(list.length, list.filter(function (p) { return p._conforme === true; }).length);
+      });
+    });
+    return { teams: teams, z: z };
+  }
+
+  // ------------------------------------------------------------------------------ rendering helpers
+
+  /** Small-caps line above the title: "Avril 2026 – mai 2026 · 2 exports". */
+  function kickerText(series) {
+    if (!series.length) return 'Aucun export importé';
+    return Fmt.monthRange(series[0].month, series[series.length - 1].month) + ' · ' + series.length +
+      ' export' + (series.length > 1 ? 's' : '');
+  }
+
+  function filterNote() {
+    var text = State.filterSummary('all');
+    return text ? el('p', { class: 'filter-note', role: 'status' }, text) : null;
+  }
+
+  /** Section (hairline + small-caps label) holding a chart box; the draw runs once the box is in the DOM. */
+  function chartSection(title, id, draws, drawFn, caption) {
+    var box = el('div', { class: 'chart-box', id: id, role: 'img', 'aria-label': title });
+    chartEls.push(box);
+    draws.push(function () { drawFn(box); });
+    return el('section', { class: 'section chart-card' }, el('h2', { class: 'section-title' }, title), box,
+      caption || null);
+  }
+
+  /** "Mai 2026 — Postes 71,4 % ■ Sous le seuil · Applications 60,0 % ■ Sous le seuil · seuil 80 %". */
+  function rateCaption(last) {
+    var k = last.kpis;
+    return Charts.thresholdCaption({
+      prefix: Fmt.monthTitle(last.month) + ' — ',
+      items: [
+        { label: 'Postes', rate: rate(k.total_postes, k.postes_conformes) },
+        { label: 'Applications', rate: rate(k.total_apps, k.apps_conformes) }
+      ]
+    });
+  }
+
+  function plural(n, word) { return word + (n > 1 ? 's' : ''); }
+
+  /**
+   * "Mai 2026 — 5 postes conformes sur 7 · 3 applications conformes sur 5", then how to read the bars in
+   * words (they carry their own labels: no legend to decode).
+   */
+  function countsCaption(last) {
+    var k = last.kpis;
+    function part(ok, total, noun) {
+      return [el('span', { class: 'num' }, UI.fmtNum(ok)), ' ' + plural(ok, noun) + ' ' + plural(ok, 'conforme') + ' sur ',
+        el('span', { class: 'num' }, UI.fmtNum(total))];
+    }
+    return el('p', { class: 'chart-caption' }, Fmt.monthTitle(last.month) + ' — ',
+      part(k.postes_conformes, k.total_postes, 'poste'), ' · ', part(k.apps_conformes, k.total_apps, 'application'),
+      el('br'), el('span', { class: 'faint' }, 'Barre en contour : inventoriés · partie pleine : conformes.'));
+  }
+
+  function fmtValue(row, v) {
+    return row.kind === 'pct' ? UI.fmtPctNode(v) : UI.fmtNum(v);
+  }
+
+  /** Signed delta text: '+2', '−1', '=' for counts; '+5,0 pt', '−2,5 pt' for percentages. */
+  function fmtDelta(row, d) {
+    var eps = row.kind === 'pct' ? 0.05 : 0.5;   // below display precision -> unchanged
+    if (Math.abs(d) < eps) return '=';
+    var sign = d > 0 ? '+' : '−';
+    var abs = Math.abs(d);
+    if (row.kind === 'pct') {
+      return sign + new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+        .format(abs) + UI.NNBSP + 'pt';
+    }
+    return sign + UI.fmtNum(abs);
+  }
+
+  function deltaTone(row, d) {
+    var eps = row.kind === 'pct' ? 0.05 : 0.5;
+    if (!row.better || Math.abs(d) < eps) return 'neutral';
+    return (d > 0) === (row.better === 'up') ? 'ok' : 'ko';
+  }
+
+  var TONE_WORDS = { ok: 'amélioration', ko: 'dégradation', neutral: 'stable ou sans objet' };
+
+  function kpiTable(series, selectedMonth) {
+    var head = el('tr', null,
+      el('th', { scope: 'col', class: 'tl-label-col' }, 'Indicateur'),
+      series.map(function (m) {
+        var current = m.month === selectedMonth;
+        return el('th', { scope: 'col', class: 'num' + (current ? ' tl-current' : ''), dataset: { month: m.month } },
+          Fmt.monthLong(m.month), current ? el('span', { class: 'sr-only' }, ' (mois sélectionné)') : null);
+      }));
+    var body = KPI_ROWS.map(function (row) {
+      return el('tr', { dataset: { kpi: row.key }, class: row.key === 'total_apps' ? 'tl-group-start' : null },
+        el('th', { scope: 'row', class: 'tl-label-col' }, row.label),
+        series.map(function (m, i) {
+          var v = m.kpis[row.key];
+          var delta = null;
+          if (i > 0) {
+            var d = v - series[i - 1].kpis[row.key];
+            var tone = deltaTone(row, d);
+            // The words are in the tooltip (aria-describedby) and in the legend under the table.
+            delta = el('span', { class: 'tl-delta is-' + tone, dataset: { tone: tone },
+              tooltip: 'Par rapport à ' + Fmt.monthLong(series[i - 1].month) + ' : ' + TONE_WORDS[tone] },
+            fmtDelta(row, d));
+          }
+          return el('td', { class: 'num' + (m.month === selectedMonth ? ' tl-current' : ''), dataset: { month: m.month } },
+            el('span', { class: 'tl-value' }, fmtValue(row, v)), delta);
+        }));
+    });
+    return el('div', { class: 'table-scroll' },
+      el('table', { class: 'table tl-kpi-table' + (series.length > 1 ? ' has-deltas' : ''), id: 'timeline-kpi-table' },
+        el('caption', { class: 'sr-only' }, 'Indicateurs par mois avec évolution par rapport au mois précédent'),
+        el('thead', null, head), el('tbody', null, body)));
+  }
+
+  /** How to read the deltas, in words next to each colour. */
+  function deltaLegend() {
+    return el('p', { class: 'chart-caption tl-legend' }, 'Écart par rapport au mois précédent : ',
+      el('span', { class: 'tl-delta is-ok' }, '+1'), ' amélioration · ',
+      el('span', { class: 'tl-delta is-ko' }, '−1'), ' dégradation · ',
+      el('span', { class: 'tl-delta is-neutral' }, '='), ' stable ou sans objet (taille des inventaires).');
+  }
+
+  // ------------------------------------------------------------------------------ page body
+
+  function renderTimeline(body, s, timeline, kicker) {
+    var draws = [];
+    var series = computeSeries(timeline, s.filters || { equipes: [], batiments: [] });
+    if (kicker) kicker.textContent = kickerText(series);
+
+    var note = filterNote();
+    if (note) body.appendChild(note);
+
+    if (!series.length) {
+      var empty = UI.empty('Aucune donnée importée.', el('button', { type: 'button', class: 'btn btn-link',
+        onClick: function () { App.go('dashboard'); } }, 'Importer un export depuis le tableau de bord'));
+      empty.id = 'timeline-empty';
+      body.appendChild(empty);
+      return;
+    }
+    if (series.length < 2) {
+      body.appendChild(el('div', { class: 'alert alert-info', role: 'status', id: 'timeline-info' },
+        'Au moins deux exports mensuels sont nécessaires pour visualiser une évolution.'));
+    }
+
+    var x = series.map(function (m) { return Fmt.monthLong(m.month); });
+    var k = series.map(function (m) { return m.kpis; });
+    var last = series[series.length - 1];
+    var t = Charts.tokens();
+
+    body.appendChild(el('div', { class: 'grid grid-2' },
+      // Ledger line styles (Charts defaults): postes in ink, applications in ink-3 dashed.
+      chartSection('Taux de conformité', 'chart-timeline-taux', draws, function (box) {
+        Charts.line(box, {
+          x: x,
+          series: [
+            { name: 'Postes', y: k.map(function (v) { return rate(v.total_postes, v.postes_conformes); }) },
+            { name: 'Applications', y: k.map(function (v) { return rate(v.total_apps, v.apps_conformes); }) }
+          ],
+          threshold: Core.THRESHOLD,
+          unit: '%',
+          yRange: [0, 105]
+        });
+      }, rateCaption(last)),
+      // Part-of-whole bars, labelled directly: per month, one outline bar per inventory (inventoriés) with
+      // the conformant part solid inside it, "5 sur 7" above, "Postes" / "Applis" under it. No legend.
+      chartSection('Inventaire et conformité (nombre)', 'chart-timeline-counts', draws, function (box) {
+        Charts.partBars(box, {
+          x: x,
+          groups: [
+            { label: 'Postes', color: t.ink,
+              total: { name: 'Postes inventoriés', y: k.map(function (v) { return v.total_postes; }) },
+              part: { name: 'Postes conformes', y: k.map(function (v) { return v.postes_conformes; }) } },
+            { label: 'Applis', color: t.ink3,
+              total: { name: 'Applications inventoriées', y: k.map(function (v) { return v.total_apps; }) },
+              part: { name: 'Applications conformes', y: k.map(function (v) { return v.apps_conformes; }) } }
+          ]
+        });
+      }, countsCaption(last))));
+
+    var matrix = teamMatrix(series);
+    body.appendChild(matrix.teams.length ?
+      chartSection('Conformité des postes par équipe', 'chart-timeline-heatmap', draws, function (box) {
+        Charts.heatmap(box, { x: x, y: matrix.teams, z: matrix.z, zmin: 0, zmax: 100, maxCellWidth: 112 });
+      }, el('p', { class: 'chart-caption' }, 'Part des postes conformes par équipe et par mois. Case vide : aucun poste ce mois-là.')) :
+      UI.section('Conformité des postes par équipe', UI.empty('Aucun poste ne correspond aux filtres sélectionnés.')));
+
+    body.appendChild(UI.section('Indicateurs par mois', kpiTable(series, s.month),
+      series.length > 1 ? deltaLegend() : null));
+
+    draws.forEach(function (d) {
+      try { d(); } catch (e) { console.error(e); }
+    });
+  }
+
+  // ------------------------------------------------------------------------------ page
+
+  /** Loads (or reloads with force) the timeline and renders it; resolves when the body is drawn. */
+  function load(body, kicker, force) {
+    var myToken = ++token;
+    chartEls.forEach(function (n) { Charts.purge(n); });
+    chartEls = [];
+    UI.clear(body).appendChild(UI.loading('Chargement de l’historique…'));
+    body.setAttribute('aria-busy', 'true');
+    return State.loadTimeline({ force: !!force }).then(function (tl) {
+      if (myToken !== token) return;
+      UI.clear(body);
+      body.setAttribute('aria-busy', 'false');
+      renderTimeline(body, State.get(), tl, kicker);
+    }, function (err) {
+      if (myToken !== token) return;
+      UI.clear(body);
+      body.setAttribute('aria-busy', 'false');
+      var box = UI.errorState(err, { prefix: 'Impossible de charger l’historique',
+        retry: function () { load(body, kicker, true); } });
+      box.id = 'timeline-error';
+      body.appendChild(box);
+    });
+  }
+
+  function mount(root) {
+    var body = el('div', { class: 'timeline-body', id: 'timeline-body', 'aria-busy': 'true' });
+    var refreshBtn = el('button', { type: 'button', class: 'btn btn-secondary', id: 'timeline-refresh',
+      tooltip: 'Recharger l’historique depuis le classeur de données' }, 'Actualiser');
+    var header = UI.pageHeader({ title: 'Suivi temporel', kicker: 'Historique des exports', kickerId: 'timeline-kicker',
+      actions: [refreshBtn] });
+    var kicker = header.querySelector('.page-kicker');
+    refreshBtn.addEventListener('click', function () { UI.busy(refreshBtn, load(body, kicker, true)); });
+    root.appendChild(header);
+    root.appendChild(body);
+    load(body, kicker, false);
+  }
+
+  function unmount() {
+    token++;
+    chartEls.forEach(function (n) { Charts.purge(n); });
+    chartEls = [];
+  }
+
+  window.Pages = window.Pages || {};
+  window.Pages.timeline = { id: 'timeline', title: 'Suivi temporel', icon: '', mount: mount, unmount: unmount };
+})();
+</script>

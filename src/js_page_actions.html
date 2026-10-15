@@ -1,0 +1,958 @@
+<style>
+/* Suivi des actions (docs/API.md §6, docs/DESIGN.md). Everything else comes from css.html / css_controls.html:
+   page header, stat line, status / priority marks, ledger tables, row actions, sections, notes. Only the
+   column behaviour of these ledgers and the phone layout of the change-detection tables live here. */
+.page-actions .act-header-slot { display: contents; }
+.page-actions .act-panel { display: flex; flex-direction: column; gap: var(--s4); }
+/* Remediation ledger: 11 columns fit the 1072px main column at 1400px (tighter cell padding); free-text
+   columns wrap (the full text is also in the edit form opened by a row click). */
+.page-actions #actions-table :is(th, td) { padding-left: 6px; padding-right: 6px; }
+.page-actions #actions-table td:is([data-col="action"], [data-col="equipe"], [data-col="responsable"]) {
+  white-space: normal; line-height: 1.35; padding-top: 6px; padding-bottom: 6px;
+}
+.page-actions #actions-table td[data-col="action"] { min-width: 160px; max-width: 300px; }
+.page-actions #replacements-table td[data-col="comment"] { white-space: normal; min-width: 200px; max-width: 360px; line-height: 1.35; }
+/* Overdue deadline: the date, « ■ En retard » under it (12px). */
+.page-actions .deadline-cell { display: inline-flex; flex-direction: column; align-items: flex-start; line-height: 16px; }
+.page-actions .deadline-cell .mark { font-size: 12px; }
+/* Change detection */
+.page-actions .diff-controls .dd-trigger { min-width: 180px; }
+.page-actions .diff-controls .diff-arrow { align-self: center; }
+.page-actions .diff-body { gap: var(--s6); }
+.page-actions .diff-section { display: flex; flex-direction: column; gap: var(--s2); }
+.page-actions .diff-section.is-empty > .subsection-title { color: var(--ink-3); }
+.page-actions .diff-months { color: var(--ink); font-weight: 500; }
+.page-actions .diff-table { min-width: 680px; }
+.page-actions .diff-values { font-family: var(--font-mono); font-size: 12px; }
+.page-actions .diff-values .mark { font-family: var(--font-sans); margin-left: var(--s2); }
+.page-actions .diff-done-cell { white-space: normal; }
+.page-actions .diff-open-note { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1); margin-top: 2px; font-size: 12px; color: var(--ink-2); }
+.page-actions .diff-open-note .mark { font-size: 12px; }
+@media (max-width: 480px) {
+  .page-actions .diff-controls .diff-arrow { display: none; }
+  .page-actions .diff-controls .dd-label { min-width: 8.5em; }
+}
+/* Phones: no sideways scroll. Record / change tables drop their secondary columns; resolved actions become
+   two-line rows (name | action, then the full-width button or the « Déjà enregistrée » mark). */
+@media (max-width: 640px) {
+  .page-actions .diff-table { min-width: 0; table-layout: auto; }
+  .page-actions .diff-table-record :is(th, td, col):nth-child(2), .page-actions .diff-table-record :is(th, td, col):nth-child(3),
+  .page-actions .diff-table-change :is(th, td, col):nth-child(2) { display: none; }
+  .page-actions .diff-table td, .page-actions .diff-table th { white-space: normal; }
+  /* Words break between syllables (hyphens, lang="fr"), never mid-word; only the mono ids / values may. */
+  .page-actions .diff-table :is(td, th).is-wrap { overflow-wrap: break-word; hyphens: auto; }
+  .page-actions .diff-table td.mono, .page-actions .diff-table .diff-values { overflow-wrap: anywhere; hyphens: none; }
+  /* Modifications: Poste 26 %, Champ 30 % (« Score conformité » on two whole lines), values the rest. */
+  .page-actions .diff-table-change col:nth-child(1) { width: 26% !important; }
+  .page-actions .diff-table-change col:nth-child(3) { width: 30% !important; }
+  .page-actions .diff-table-change col:nth-child(4) { width: auto !important; }
+  .page-actions .diff-table-resolved, .page-actions .diff-table-resolved tbody, .page-actions .diff-table-resolved thead { display: block; }
+  .page-actions .diff-table-resolved colgroup { display: none; }
+  .page-actions .diff-table-resolved tr {
+    display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); column-gap: var(--s3);
+    border-bottom: 1px solid var(--rule);
+  }
+  .page-actions .diff-table-resolved thead tr { background: var(--paper-2); border-bottom-color: var(--rule-2); }
+  .page-actions .diff-table-resolved :is(th, td) { height: auto; border-bottom: 0; background: none; }
+  .page-actions .diff-table-resolved :is(th, td):is(:nth-child(2), :nth-child(4)) { display: none; }
+  .page-actions .diff-table-resolved thead th:last-child { display: none; }
+  .page-actions .diff-table-resolved td.diff-done-cell { grid-column: 1 / -1; padding-top: 0; padding-bottom: var(--s2); }
+  .page-actions .diff-table-resolved .btn-mark-done { width: 100%; }
+}
+</style>
+<script>
+/**
+ * Pages.actions — "Suivi des actions" (docs/API.md §6).
+ *
+ * Three tabs (UI.tabs):
+ *   1. Actions de remédiation   — status / type filters (toolbar), counts per status + overdue (stat line),
+ *                                  ledger; row click opens the action form (edit), « Supprimer » row action.
+ *   2. Remplacements de postes  — ledger, add / edit (row click) / delete.
+ *   3. Détection des changements — two month dropdowns -> api_getDiff -> removed / added / changed postes,
+ *                                  resolved actions (« Enregistrer comme terminée » -> api_addAction status
+ *                                  'Terminé'), same for applications.
+ * The global sidebar Équipe filter applies to the three tabs (State.filterByEquipe); the Bâtiment / Labo filter
+ * does not apply to actions (the filter note says so).
+ *
+ * Forms are UI.formModal with onSubmit: the modal stays open (busy button) while the server call runs and
+ * keeps the typed values with the error inline when it fails.
+ *
+ * Shared action form — window.ActionForm (one form, one copy, one toast for every place that creates an
+ * action: this page and the Postes / Applications drawers):
+ *   ActionForm.open({existing?, target?: {type:'poste'|'application', name, equipe?}, defaults?: {field: value},
+ *                    trigger?: button, onSaved?: (record, {created}) => any}) -> Promise<record|null>
+ *     Title « Nouvelle action » / « Modifier l’action », submit « Enregistrer », same 12 fields everywhere.
+ *     With `target` the target type / name are prefilled and locked (drawer). `defaults` prefill a new action
+ *     (e.g. {action, responsable, deadline} from the poste record). `trigger` shows UI.busy while the
+ *     suggestions load. api_addAction gets {target_type, target_name, equipe, action, responsable, priorite,
+ *     status, deadline, date_created, date_completed, source_month, comment}; api_updateAction only the
+ *     changed fields. Toasts: « Action créée — <cible>. » / « Action mise à jour — <cible>. ». After a
+ *     successful write the actions cache is reloaded (State.loadActions({force:true})), then onSaved runs
+ *     (re-render from the cache there, no second reload).
+ *   ActionForm.statusMark(status), ActionForm.priorityMark(priorite), ActionForm.isOverdue(action),
+ *   ActionForm.deadlineCell(action) — the same marks as the Suivi des actions ledger.
+ */
+(function () {
+  'use strict';
+
+  var el = UI.el;
+  var KEY_POSTE = Core.KEY_POSTE;
+  var KEY_APP = Core.KEY_APP;
+  var CLOSED_STATUSES = ['Terminé', 'Abandonné'];
+  // Colour = status only. À faire = hollow neutral mark (the accent blue is kept for interactive elements),
+  // Abandonné = ink-3. Priority is NOT a status: neutral ink marks told apart by weight and marker shape.
+  var STATUS_TONES = { 'À faire': 'neutral', 'En cours': 'warn', 'Terminé': 'ok', 'Abandonné': 'muted' };
+  var PRIORITY_CLASS = { 'Haute': 'priority-haute', 'Moyenne': 'priority-moyenne', 'Basse': 'priority-basse' };
+  var TYPE_LABELS = { poste: 'Poste', application: 'Application' };
+
+  var token = 0;                 // bumped on every mount/unmount: stale async renders are dropped
+  var activeTab = 'remediation'; // survives re-mounts
+  var actionFilters = { status: '', type: '' };
+  var diffChoice = null;         // {base, oldMonth, newMonth}: user's months, valid while the global month is `base`
+  var lastDiff = null;           // last api_getDiff result (re-rendered after "Enregistrer comme terminée")
+  var headerSlot = null;         // page-header actions of the active tab (create button), see setHeaderAction
+
+  // ------------------------------------------------------------------------------ small helpers
+
+  function todayFr() { return Core.fmtDDMMYYYY(new Date()); }
+  function todayIso() { return Core.frToIso(todayFr()); }
+
+  /** True when the action has a past deadline and is still open. */
+  function isOverdue(a) {
+    if (CLOSED_STATUSES.indexOf(Core.str(a.status)) >= 0) return false;
+    var iso = Core.frToIso(Core.str(a.deadline));
+    return !!iso && iso < todayIso();
+  }
+
+  /** Sort key for 'DD/MM/YYYY' columns. */
+  function frSortValue(v) { return Core.frToIso(Core.str(v)) || ''; }
+
+  function statusMark(status) {
+    var s = Core.str(status);
+    return s ? UI.statusMark(s, STATUS_TONES[s] || 'neutral') : UI.statusMark('—', 'neutral');
+  }
+
+  function priorityMark(p) {
+    var s = Core.str(p);
+    if (!s) return '';
+    return el('span', { class: ['mark', 'mark-priority', PRIORITY_CLASS[s] || 'priority-basse'] }, s);
+  }
+
+  /** Identifier cell: poste names in mono, application names in sans (docs/DESIGN.md "Tables"). */
+  function targetCell(type, name) {
+    var n = Core.str(name);
+    return type === 'application' ? el('span', { class: 'act-app' }, n) : el('span', { class: 'mono' }, n);
+  }
+
+  function dateCell(v) {
+    var d = Core.str(v);
+    return d ? el('span', { class: 'mono' }, d) : '';
+  }
+
+  /** Overdue deadline: the date + « ■ En retard » (status in words, same mark as the drawers). */
+  function deadlineCell(a) {
+    var d = Core.str(a.deadline);
+    if (!d) return '';
+    if (!isOverdue(a)) return dateCell(d);
+    return el('span', { class: 'deadline-cell deadline-overdue' }, el('span', { class: 'mono' }, d), ' ',
+      UI.statusMark('En retard', 'ko'));
+  }
+
+  function errorToast(err, prefix) {
+    UI.toast('Erreur : ' + (prefix ? prefix + '. ' : '') + UI.errorText(err), 'error');
+  }
+
+  function distinct(values) {
+    var out = [];
+    values.forEach(function (v) {
+      var s = Core.str(v);
+      if (s && out.indexOf(s) < 0) out.push(s);
+    });
+    return out.sort(function (a, b) { return a.localeCompare(b, 'fr'); });
+  }
+
+  /** Month data of the selected global month (for suggestions); resolves to null when unavailable. */
+  function monthData() {
+    var m = State.get().month;
+    if (!m) return Promise.resolve(null);
+    return State.loadMonth(m).then(null, function () { return null; });
+  }
+
+  /** Suggestions for the forms (postes / applications / équipes of the current month). */
+  function loadSuggestions() {
+    return monthData().then(function (md) {
+      return State.loadActions().then(function (data) { return data; }, function () { return null; }).then(function (data) {
+        var postes = md ? Core.uniqueSorted(md.postes, KEY_POSTE) : [];
+        var apps = md ? Core.uniqueSorted(md.applications, KEY_APP) : [];
+        var ref = md && md.referentiel ? (md.referentiel['Équipe'] || []) : [];
+        var equipes = distinct([].concat(ref,
+          md ? Core.uniqueSorted(md.postes, 'Équipe') : [],
+          md ? Core.uniqueSorted(md.applications, 'Équipe') : [],
+          (data && data.actions || []).map(function (a) { return a.equipe; }),
+          (data && data.replacements || []).map(function (r) { return r.equipe; })));
+        return { postes: postes, apps: apps, equipes: equipes, md: md };
+      });
+    });
+  }
+
+  /** Équipe of a poste / application in the current month (used when the form left it blank). */
+  function equipeOf(md, type, name) {
+    if (!md || !name) return '';
+    var list = type === 'application' ? md.applications : md.postes;
+    var key = type === 'application' ? KEY_APP : KEY_POSTE;
+    var n = Core.normKey(name);
+    var rec = (list || []).filter(function (r) { return Core.normKey(r[key]) === n; })[0];
+    return rec ? Core.str(rec['Équipe']) : '';
+  }
+
+  /** Changed fields of a form against the stored record ({} when nothing changed). */
+  function changedFields(values, existing) {
+    var updates = {};
+    Object.keys(values).forEach(function (k) {
+      if (Core.str(values[k]) !== Core.str(existing[k])) updates[k] = values[k];
+    });
+    return updates;
+  }
+
+  /** Re-fetches actions/replacements, then re-renders the active tab (if still mounted). */
+  function refreshAfterWrite(ctx) {
+    return State.loadActions({ force: true }).then(function () {
+      if (ctx.token === token) ctx.rerender();
+    }, function (err) { errorToast(err, 'Actualisation impossible'); });
+  }
+
+  /**
+   * Page-level create action of the active tab, in the page header like on the other pages
+   * (right-aligned). Nothing for "Détection des changements".
+   */
+  function setHeaderAction(node) {
+    if (!headerSlot) return;
+    UI.clear(headerSlot);
+    if (node) headerSlot.appendChild(node);
+    headerSlot.hidden = !node;
+  }
+
+  /** « Filtres actifs — Équipe : … · Bâtiment / Labo : … (non applicable ici) » or null. */
+  function filterNote() {
+    var text = State.filterSummary('actions');
+    return text ? el('p', { class: 'filter-note', role: 'status' }, text) : null;
+  }
+
+  function hasEquipeFilter() { return ((State.get().filters || {}).equipes || []).length > 0; }
+
+  /** Quiet destructive text button of a ledger row (32px hit area, never stacked). */
+  function deleteButton(label, onDelete) {
+    return el('span', { class: 'row-actions' },
+      el('button', { type: 'button', class: 'btn btn-quiet is-danger btn-delete', 'aria-label': 'Supprimer ' + label,
+        onClick: function (e) { e.stopPropagation(); onDelete(); } }, 'Supprimer'));
+  }
+
+  /** Deletion behind a danger confirm: the dialog stays open (busy) until the server answers. */
+  function confirmDelete(ctx, message, title, call, doneText) {
+    return UI.confirm(message, { title: title, okLabel: 'Supprimer', danger: true, onConfirm: call }).then(function (ok) {
+      if (!ok) return null;
+      UI.toast(doneText, 'success');
+      return refreshAfterWrite(ctx);
+    });
+  }
+
+  // ------------------------------------------------------------------------------ shared action form
+
+  function actionFields(v, sug, target) {
+    var locked = !!target;
+    /**
+     * Cible suggestions: postes (mono identifiers) and applications (names, sans) under their group label,
+     * the group of the chosen « Type de cible » first.
+     */
+    function targetOptionsFor(type) {
+      var postes = sug.postes.map(function (p) { return { value: p, label: p, group: 'Postes', mono: true }; });
+      var apps = sug.apps.map(function (a) { return { value: a, label: a, group: 'Applications' }; });
+      return type === 'application' ? apps.concat(postes) : postes.concat(apps);
+    }
+    var targetOptions = locked ? [v.target_name] : targetOptionsFor(v.target_type);
+    var months = Core.sortMonths(State.get().months || []);
+    return [
+      { name: 'target_type', label: 'Type de cible', type: 'select', required: true, value: v.target_type || 'poste',
+        disabled: locked, options: [{ value: 'poste', label: 'Poste' }, { value: 'application', label: 'Application' }],
+        onChange: function (type, form) {
+          var cible = form.control('target_name');
+          if (!cible || locked) return;
+          cible.setOptions(targetOptionsFor(type));
+          cible.setMono(type !== 'application');
+        } },
+      { name: 'target_name', label: 'Cible (poste ou application)', type: 'select', allowCustom: true, required: true,
+        disabled: locked, value: v.target_name, options: targetOptions, mono: v.target_type !== 'application',
+        placeholder: 'Nom du poste ou de l’application' },
+      { name: 'equipe', label: 'Équipe', type: 'select', allowCustom: true, value: v.equipe, options: sug.equipes,
+        hint: locked || v.id ? null : 'Vide : l’équipe de la cible dans l’export du mois.' },
+      { name: 'responsable', label: 'Responsable', type: 'text', value: v.responsable },
+      { name: 'action', label: 'Action', type: 'textarea', required: true, value: v.action },
+      { name: 'priorite', label: 'Priorité', type: 'select', value: v.priorite, options: Core.ACTION_PRIORITIES },
+      { name: 'status', label: 'Statut', type: 'select', required: true, value: v.status || 'À faire',
+        options: Core.ACTION_STATUSES },
+      { name: 'deadline', label: 'Échéance', type: 'date', value: v.deadline },
+      { name: 'source_month', label: 'Mois source', type: 'month', value: v.source_month, options: months },
+      { name: 'date_created', label: 'Date de création', type: 'date', value: v.date_created },
+      { name: 'date_completed', label: 'Date de réalisation', type: 'date', value: v.date_completed,
+        hint: 'Vide avec le statut « Terminé » : la date du jour.' },
+      { name: 'comment', label: 'Commentaire', type: 'textarea', value: v.comment }
+    ];
+  }
+
+  /** Fills the derived values: completion date when closed as 'Terminé', équipe from the target. */
+  function completeActionValues(values, md) {
+    var v = Object.assign({}, values);
+    if (v.status === 'Terminé' && !v.date_completed) v.date_completed = todayFr();
+    if (!v.equipe) v.equipe = equipeOf(md, v.target_type, v.target_name);
+    return v;
+  }
+
+  /** ActionForm.open (see the header comment). */
+  function openActionForm(o) {
+    var opts = o || {};
+    var existing = opts.existing || null;
+    var target = !existing && opts.target ? opts.target : null;
+    var loading = loadSuggestions();
+    if (opts.trigger) UI.busy(opts.trigger, loading);
+    return loading.then(function (sug) {
+      var s = State.get();
+      var initial = existing || Object.assign({ source_month: s.month, priorite: 'Moyenne', status: 'À faire',
+        date_created: todayFr() }, opts.defaults || {},
+      target ? { target_type: target.type, target_name: target.name, equipe: Core.str(target.equipe) ||
+        equipeOf(sug.md, target.type, target.name) } : {});
+      var saved = null;
+      var created = !existing;
+      return UI.formModal({
+        title: existing ? 'Modifier l’action' : 'Nouvelle action',
+        submitLabel: 'Enregistrer',
+        wide: true,
+        fields: actionFields(initial, sug, target),
+        onSubmit: function (values) {
+          var v = completeActionValues(values, sug.md);
+          if (target) { v.target_type = target.type; v.target_name = target.name; }
+          if (!existing) {
+            return api.call('api_addAction', v).then(function (rec) { saved = rec || v; });
+          }
+          var updates = changedFields(v, existing);
+          if (!Object.keys(updates).length) { saved = existing; created = null; return null; }
+          return api.call('api_updateAction', { id: existing.id, updates: updates }).then(function (rec) {
+            saved = rec || Object.assign({}, existing, updates);
+          });
+        }
+      }).then(function (values) {
+        if (!values || !saved) return null;
+        if (created === null) { UI.toast('Aucune modification.', 'info'); return null; }
+        UI.toast((created ? 'Action créée — ' : 'Action mise à jour — ') + Core.str(saved.target_name) + '.', 'success');
+        // Fresh actions cache for every list that shows actions, then the caller's refresh.
+        return State.loadActions({ force: true }).then(null, function (err) { errorToast(err, 'Actualisation impossible'); })
+          .then(function () { return opts.onSaved ? opts.onSaved(saved, { created: created }) : null; })
+          .then(function () { return saved; });
+      });
+    }, function (err) {
+      errorToast(err, 'Formulaire indisponible');
+      return null;
+    });
+  }
+
+  // ------------------------------------------------------------------------------ tab 1: remediation actions
+
+  function filterActions(actions) {
+    var f = actionFilters;
+    return actions.filter(function (a) {
+      if (f.status && Core.str(a.status) !== f.status) return false;
+      if (f.type && Core.str(a.target_type) !== f.type) return false;
+      return true;
+    });
+  }
+
+  function statusCounts(actions) {
+    var counts = { overdue: 0 };
+    Core.ACTION_STATUSES.forEach(function (s) { counts[s] = 0; });
+    actions.forEach(function (a) {
+      var s = Core.str(a.status);
+      if (Object.prototype.hasOwnProperty.call(counts, s) && s !== 'overdue') counts[s]++;
+      if (isOverdue(a)) counts.overdue++;
+    });
+    return counts;
+  }
+
+  var STAT_WORDS = { 'À faire': ['à faire', 'à faire'], 'En cours': ['en cours', 'en cours'],
+    'Terminé': ['terminée', 'terminées'], 'Abandonné': ['abandonnée', 'abandonnées'] };
+
+  /** "1 à faire  1 en cours  1 terminée  0 abandonnée  ■ 2 en retard sur 2 ouvertes" (figures in .num). */
+  function statLine(actions) {
+    var c = statusCounts(actions);
+    var open = actions.length - c['Terminé'] - c['Abandonné'];
+    function stat(status, n, words) {
+      return el('span', { class: 'stat', dataset: { status: status } },
+        el('span', { class: 'num' }, UI.fmtNum(n)), ' ' + (n > 1 ? words[1] : words[0]));
+    }
+    var line = el('p', { class: 'stat-line', id: 'action-counts', role: 'group', 'aria-label': 'Actions par statut' },
+      Core.ACTION_STATUSES.map(function (s) { return stat(s, c[s], STAT_WORDS[s] || [s.toLowerCase(), s.toLowerCase()]); }));
+    var late = el('span', { class: 'num' }, UI.fmtNum(c.overdue));
+    line.appendChild(c.overdue ?
+      el('span', { class: 'stat', dataset: { status: 'overdue' } },
+        UI.statusMark([late, ' en retard'], 'ko'), ' sur ', el('span', { class: 'num' }, UI.fmtNum(open)),
+        ' ouverte' + (open > 1 ? 's' : '')) :
+      el('span', { class: 'stat', dataset: { status: 'overdue' } }, late, ' en retard',
+        el('span', { class: 'faint' }, ' · aucune échéance dépassée')));
+    return line;
+  }
+
+  function renderRemediation(panel, ctx) {
+    var addBtn = el('button', { type: 'button', class: 'btn btn-primary', id: 'action-add',
+      onClick: function () { openActionForm({ trigger: addBtn, onSaved: ctx.rerender }); } },
+    'Nouvelle action');
+    setHeaderAction(addBtn);
+    panel.appendChild(UI.loading('Chargement des actions…'));
+    State.loadActions().then(function (data) {
+      if (ctx.token !== token) return;
+      UI.clear(panel);
+      var note = filterNote();
+      if (note) panel.appendChild(note);
+      var all = data.actions || [];
+      if (!all.length) {
+        panel.appendChild(UI.empty('Aucune action enregistrée.'));
+        return;
+      }
+      var actions = State.filterByEquipe(all).sort(function (a, b) {
+        // Open first, then by deadline (blank last), then by target name.
+        var ca = CLOSED_STATUSES.indexOf(a.status) >= 0 ? 1 : 0;
+        var cb = CLOSED_STATUSES.indexOf(b.status) >= 0 ? 1 : 0;
+        if (ca !== cb) return ca - cb;
+        var da = frSortValue(a.deadline) || '9999';
+        var db = frSortValue(b.deadline) || '9999';
+        if (da !== db) return da < db ? -1 : 1;
+        return Core.str(a.target_name).localeCompare(Core.str(b.target_name), 'fr');
+      });
+      if (!actions.length) {
+        panel.appendChild(UI.empty('Aucune action pour l’équipe sélectionnée.'));
+        return;
+      }
+
+      // Counts per status (within the global Équipe filter, independent of the table filters).
+      panel.appendChild(statLine(actions));
+
+      var table;
+      function apply() { table.setRows(filterActions(actions)); }
+      function filterSelect(id, label, key, options) {
+        return UI.select({ id: id, label: label, options: options, value: actionFilters[key],
+          onChange: function (v) { actionFilters[key] = v; apply(); } });
+      }
+      table = UI.editableTable({
+        rowKey: 'id',
+        pageSize: 50,
+        emptyText: 'Aucune action ne correspond aux filtres.',
+        toolbar: [
+          filterSelect('action-filter-status', 'Statut', 'status', [{ value: '', label: 'Tous' }].concat(Core.ACTION_STATUSES)),
+          filterSelect('action-filter-type', 'Type', 'type',
+            [{ value: '', label: 'Tous' }, { value: 'poste', label: 'Poste' }, { value: 'application', label: 'Application' }])
+        ],
+        onRowClick: function (a) {
+          openActionForm({ existing: a, onSaved: ctx.rerender });
+        },
+        columns: [
+          { key: 'target_name', label: 'Cible', render: function (a) { return targetCell(a.target_type, a.target_name); } },
+          { key: 'target_type', label: 'Type', render: function (a) { return TYPE_LABELS[a.target_type] || Core.str(a.target_type); } },
+          { key: 'equipe', label: 'Équipe' },
+          { key: 'action', label: 'Action' },
+          { key: 'responsable', label: 'Responsable' },
+          { key: 'priorite', label: 'Priorité', render: function (a) { return priorityMark(a.priorite); },
+            sortValue: function (a) { var i = Core.ACTION_PRIORITIES.indexOf(Core.str(a.priorite)); return i < 0 ? null : i; } },
+          { key: 'deadline', label: 'Échéance', render: deadlineCell, sortValue: function (a) { return frSortValue(a.deadline); } },
+          { key: 'status', label: 'Statut', render: function (a) { return statusMark(a.status); } },
+          { key: 'date_created', label: 'Créée', render: function (a) { return dateCell(a.date_created); },
+            sortValue: function (a) { return frSortValue(a.date_created); } },
+          { key: 'date_completed', label: 'Réalisée', render: function (a) { return dateCell(a.date_completed); },
+            sortValue: function (a) { return frSortValue(a.date_completed); } },
+          { key: '_actions', label: '', sortable: false, render: function (a) {
+            return deleteButton('l’action ' + Core.str(a.action), function () {
+              confirmDelete(ctx, 'Supprimer l’action « ' + Core.str(a.action) + ' » (' + Core.str(a.target_name) + ') ?',
+                'Supprimer l’action', function () { return api.call('api_deleteAction', { id: a.id }); }, 'Action supprimée.');
+            });
+          } }
+        ],
+        rows: filterActions(actions)
+      });
+      table.node.id = 'actions-table';
+      panel.appendChild(table.node);
+    }, function (err) {
+      if (ctx.token !== token) return;
+      UI.clear(panel).appendChild(UI.errorState(err, { prefix: 'Impossible de charger les actions', retry: ctx.rerender }));
+    });
+  }
+
+  // ------------------------------------------------------------------------------ tab 2: replacements
+
+  function replacementFields(r, sug) {
+    var v = r || { date_replacement: todayFr() };
+    return [
+      { name: 'old_poste', label: 'Ancien poste', type: 'select', allowCustom: true, required: true, mono: true,
+        value: v.old_poste, options: sug.postes },
+      { name: 'new_poste', label: 'Nouveau poste', type: 'select', allowCustom: true, required: true, mono: true,
+        value: v.new_poste, options: sug.postes },
+      { name: 'equipe', label: 'Équipe', type: 'select', allowCustom: true, value: v.equipe, options: sug.equipes,
+        hint: r ? null : 'Vide : l’équipe de l’ancien poste.' },
+      { name: 'responsable', label: 'Responsable', type: 'text', value: v.responsable },
+      { name: 'date_replacement', label: 'Date de remplacement', type: 'date', value: v.date_replacement },
+      { name: 'comment', label: 'Commentaire', type: 'textarea', value: v.comment }
+    ];
+  }
+
+  function openReplacementForm(ctx, existing, trigger) {
+    var loading = loadSuggestions();
+    if (trigger) UI.busy(trigger, loading);
+    return loading.then(function (sug) {
+      var outcome = null;
+      return UI.formModal({
+        title: existing ? 'Modifier le remplacement' : 'Nouveau remplacement',
+        submitLabel: 'Enregistrer',
+        fields: replacementFields(existing, sug),
+        onSubmit: function (values) {
+          var v = Object.assign({}, values);
+          if (!v.equipe) v.equipe = equipeOf(sug.md, 'poste', v.old_poste) || equipeOf(sug.md, 'poste', v.new_poste);
+          var label = v.old_poste + ' → ' + v.new_poste;
+          if (!existing) {
+            return api.call('api_addReplacement', v).then(function () { outcome = 'Remplacement enregistré — ' + label + '.'; });
+          }
+          var updates = changedFields(v, existing);
+          if (!Object.keys(updates).length) { outcome = ''; return null; }
+          return api.call('api_updateReplacement', { id: existing.id, updates: updates }).then(function () {
+            outcome = 'Remplacement mis à jour — ' + label + '.';
+          });
+        }
+      }).then(function (values) {
+        if (!values || outcome === null) return null;
+        if (!outcome) { UI.toast('Aucune modification.', 'info'); return null; }
+        UI.toast(outcome, 'success');
+        return refreshAfterWrite(ctx);
+      });
+    }, function (err) { errorToast(err, 'Formulaire indisponible'); });
+  }
+
+  function renderReplacements(panel, ctx) {
+    var addBtn = el('button', { type: 'button', class: 'btn btn-primary', id: 'replacement-add',
+      onClick: function () { openReplacementForm(ctx, null, addBtn); } }, 'Nouveau remplacement');
+    setHeaderAction(addBtn);
+    panel.appendChild(UI.loading('Chargement des remplacements…'));
+    State.loadActions().then(function (data) {
+      if (ctx.token !== token) return;
+      UI.clear(panel);
+      var note = filterNote();
+      if (note) panel.appendChild(note);
+      var all = data.replacements || [];
+      if (!all.length) {
+        panel.appendChild(UI.empty('Aucun remplacement enregistré.'));
+        return;
+      }
+      var rows = State.filterByEquipe(all).sort(function (a, b) {
+        // Most recent first.
+        var da = frSortValue(a.date_replacement);
+        var db = frSortValue(b.date_replacement);
+        return da === db ? 0 : (da < db ? 1 : -1);
+      });
+      if (!rows.length) {
+        panel.appendChild(UI.empty('Aucun remplacement pour l’équipe sélectionnée.'));
+        return;
+      }
+      var table = UI.editableTable({
+        rowKey: 'id',
+        emptyText: 'Aucun remplacement enregistré.',
+        onRowClick: function (r) { openReplacementForm(ctx, r); },
+        columns: [
+          { key: 'old_poste', label: 'Ancien poste', mono: true },
+          { key: 'new_poste', label: 'Nouveau poste', mono: true },
+          { key: 'equipe', label: 'Équipe' },
+          { key: 'responsable', label: 'Responsable' },
+          { key: 'date_replacement', label: 'Date', mono: true, sortValue: function (r) { return frSortValue(r.date_replacement); } },
+          { key: 'comment', label: 'Commentaire' },
+          { key: '_actions', label: '', sortable: false, render: function (r) {
+            var label = Core.str(r.old_poste) + ' → ' + Core.str(r.new_poste);
+            return deleteButton('le remplacement ' + label, function () {
+              confirmDelete(ctx, 'Supprimer le remplacement « ' + label + ' » ?', 'Supprimer le remplacement',
+                function () { return api.call('api_deleteReplacement', { id: r.id }); }, 'Remplacement supprimé.');
+            });
+          } }
+        ],
+        rows: rows
+      });
+      table.node.id = 'replacements-table';
+      panel.appendChild(table.node);
+    }, function (err) {
+      if (ctx.token !== token) return;
+      UI.clear(panel).appendChild(UI.errorState(err, { prefix: 'Impossible de charger les remplacements', retry: ctx.rerender }));
+    });
+  }
+
+  // ------------------------------------------------------------------------------ tab 3: change detection
+
+  /** Default comparison: previous month -> selected global month (or latest when it has no predecessor). */
+  function defaultDiffMonths(months, current) {
+    var newMonth = months.indexOf(current) >= 0 && Core.previousMonth(months, current) ? current : months[months.length - 1];
+    return { oldMonth: Core.previousMonth(months, newMonth) || months[0], newMonth: newMonth };
+  }
+
+  /**
+   * Column widths (%) of the diff tables. The first two columns (poste / application, équipe) are the same
+   * in every schema, so that all the stacked tables (retirés / ajoutés / modifications / actions résolues)
+   * line up. Index = column: [width %, 'num' (numeric) | 'wrap' (free text) | null, cell class].
+   */
+  var DIFF_SCHEMAS = {
+    record: [[30], [18, 'wrap'], [18, 'wrap'], [12, 'num'], [22]],
+    change: [[30], [18, 'wrap'], [18, 'wrap'], [34, 'wrap', 'diff-values']],
+    resolved: [[30], [18, 'wrap'], [18, 'wrap', 'diff-action-text'], [12, 'wrap'], [22, 'wrap', 'diff-done-cell']]
+  };
+
+  /**
+   * One diff table (UI.table). rows: [{attrs (of the <tr>), cells: [content per column]}]. The first column
+   * is the poste (mono identifier) or the application name (sans).
+   */
+  function diffTable(id, headers, rows, schema, type) {
+    var cols = DIFF_SCHEMAS[schema];
+    return UI.table({
+      id: id,
+      className: 'diff-table diff-table-' + schema,
+      columns: headers.map(function (h, i) {
+        var c = cols[i] || [];
+        return { label: h, width: c[0] ? c[0] + '%' : null, num: c[1] === 'num', wrap: c[1] === 'wrap',
+          mono: i === 0 && type === 'poste', className: i === 0 ? (type === 'poste' ? null : 'act-app') : (c[2] || null) };
+      }),
+      rows: rows,
+      cells: function (r) { return r.cells; },
+      rowAttrs: function (r) { return r.attrs; }
+    });
+  }
+
+  /** Conformity fields whose change has a known direction: 'better' | 'worse' | null. */
+  var CRITERIA_OK = { 'IT Decathlon': 'Oui', 'EDR Decathlon': 'Oui', 'Chiffrement disque': 'Oui', 'Réseau Decathlon': 'Oui',
+    'Type de compte': 'Nominatif', 'Contrat': 'Oui', 'SIP': 'Oui', 'Galink': 'Oui', 'IDP': 'Oui' };
+  var SCORE_FIELDS = { 'Score conformité': true };
+  function changeDirection(col, oldV, newV) {
+    var o = Core.str(oldV);
+    var n = Core.str(newV);
+    if (SCORE_FIELDS[col]) {
+      var so = Core.parseScore(o);
+      var sn = Core.parseScore(n);
+      if (so === null || sn === null || so === sn) return null;
+      return sn > so ? 'better' : 'worse';
+    }
+    if (col === 'Statut') {
+      if (n === 'Conforme' && o !== 'Conforme') return 'better';
+      if (n === 'Non conforme' && o !== 'Non conforme') return 'worse';
+      return null;
+    }
+    if (col === 'Niveau de risque') {
+      var io = Core.RISK_ORDER.indexOf(o);
+      var inn = Core.RISK_ORDER.indexOf(n);
+      if (io < 0 || inn < 0 || io === inn) return null;
+      return inn > io ? 'better' : 'worse';   // RISK_ORDER runs from Critique to Faible
+    }
+    if (Object.prototype.hasOwnProperty.call(CRITERIA_OK, col)) {
+      var okV = CRITERIA_OK[col];
+      if (n === okV && o !== okV && o) return 'better';
+      if (o === okV && n && n !== okV) return 'worse';
+    }
+    return null;
+  }
+
+  /** A source value as shown in the diff: scores through the shared fr-FR formatter, blanks as ∅. */
+  function diffValue(col, v) {
+    var s = Core.str(v);
+    if (!s) return '∅';
+    if (SCORE_FIELDS[col]) {
+      var n = Core.parseScore(s);
+      return n === null ? s : UI.fmtPct(n);
+    }
+    return s;
+  }
+
+  /** Sub-block of a diff group: small-caps sub-label "Postes retirés (1)", then a table or one line. */
+  function diffSection(id, title, count, content, emptyText) {
+    return el('div', { class: 'diff-section' + (count ? '' : ' is-empty'), id: id, dataset: { count: String(count) } },
+      el('h3', { class: 'subsection-title' }, title + ' (' + count + ')'),
+      count ? content : UI.empty(emptyText, { small: true }));
+  }
+
+  function diffGroup(id, title) {
+    var children = Array.prototype.slice.call(arguments, 2);
+    return el('section', { class: 'section diff-group', id: id, 'aria-labelledby': id + '-title' },
+      el('h2', { class: 'section-title', id: id + '-title' }, title), children);
+  }
+
+  function recordRows(list, keyField, cols) {
+    return list.map(function (r) {
+      return { attrs: { dataset: { name: Core.str(r[keyField]) } },
+        cells: [Core.str(r[keyField])].concat(cols.map(function (c) {
+          if (c === 'score') return UI.scoreBadge(r._score);
+          if (c === 'risk') return UI.riskBadge(r['Niveau de risque']);
+          return Core.str(r[c]);
+        })) };
+    });
+  }
+
+  /** An identical action = same target type + name + action text, already closed as 'Terminé'. */
+  function findIdenticalDone(actions, type, ra) {
+    return actions.filter(function (a) {
+      return a.target_type === type && Core.normKey(a.target_name) === Core.normKey(ra.name) &&
+        Core.normKey(a.action) === Core.normKey(ra.action) && Core.str(a.status) === 'Terminé';
+    })[0] || null;
+  }
+
+  function findOpenSame(actions, type, ra) {
+    return actions.filter(function (a) {
+      return a.target_type === type && Core.normKey(a.target_name) === Core.normKey(ra.name) &&
+        Core.normKey(a.action) === Core.normKey(ra.action) && CLOSED_STATUSES.indexOf(Core.str(a.status)) < 0;
+    })[0] || null;
+  }
+
+  function resolvedRows(ctx, list, type, actions, diff) {
+    return list.map(function (ra) {
+      var done = findIdenticalDone(actions, type, ra);
+      var open = done ? null : findOpenSame(actions, type, ra);
+      var cell;
+      if (done) {
+        // Already recorded: a status mark, not a disabled button.
+        cell = UI.statusMark('Déjà enregistrée', 'ok');
+        cell.classList.add('diff-done-mark');
+      } else {
+        var btn = el('button', {
+          type: 'button', class: 'btn btn-sm btn-secondary btn-mark-done',
+          onClick: function () {
+            UI.busy(btn, api.call('api_addAction', {
+              target_type: type,
+              target_name: ra.name,
+              equipe: ra.equipe,
+              action: ra.action,
+              responsable: ra.responsable,
+              status: 'Terminé',
+              date_completed: todayFr(),
+              source_month: diff.newMonth,
+              comment: 'Action résolue détectée entre ' + diff.oldMonth + ' et ' + diff.newMonth + '.'
+            })).then(function () {
+              UI.toast('Action enregistrée comme terminée — ' + ra.name + '.', 'success');
+              return refreshAfterWrite(ctx);
+            }, function (err) { errorToast(err, 'Enregistrement impossible'); });
+          }
+        }, 'Enregistrer comme terminée');
+        cell = [btn, open ? el('div', { class: 'diff-open-note' }, 'Déjà suivie :', statusMark(open.status)) : null];
+      }
+      return { attrs: { dataset: { name: ra.name } }, cells: [ra.name, ra.equipe, ra.action, ra.responsable, cell] };
+    });
+  }
+
+  function renderDiffResult(box, ctx, diff, actions) {
+    UI.clear(box);
+    var p = diff.postes || {};
+    var a = diff.applications || {};
+    // The global Équipe filter applies here too (Bâtiment / Labo does not: see the filter note).
+    var byTeam = function (list, key) { return State.filterByEquipe(list || [], key); };
+    var pRemoved = byTeam(p.removed, 'Équipe');
+    var pAdded = byTeam(p.added, 'Équipe');
+    var pChanges = byTeam(p.changes, 'equipe');
+    var pResolved = byTeam(p.resolved_actions, 'equipe');
+    var aRemoved = byTeam(a.removed, 'Équipe');
+    var aAdded = byTeam(a.added, 'Équipe');
+    var aResolved = byTeam(a.resolved_actions, 'equipe');
+
+    function count(n, word) {
+      return [el('span', { class: 'num' }, UI.fmtNum(n)), ' ' + word + (n > 1 ? 's' : '')];
+    }
+    box.appendChild(el('p', { class: 'stat-line', id: 'diff-summary' },
+      el('span', { class: 'diff-months' }, Fmt.monthTitle(diff.oldMonth) + ' → ' + Fmt.monthLong(diff.newMonth)),
+      el('span', null, 'Postes : ', count(pRemoved.length, 'retiré'), ' · ', count(pAdded.length, 'ajouté'), ' · ',
+        count(pChanges.length, 'modifié')),
+      el('span', null, 'Applications : ', count(aRemoved.length, 'retirée'), ' · ', count(aAdded.length, 'ajoutée'))));
+
+    // Postes
+    var changeRows = [];
+    pChanges.forEach(function (ch) {
+      Object.keys(ch.diffs || {}).forEach(function (col) {
+        var d = ch.diffs[col];
+        var dir = changeDirection(col, d.old, d['new']);
+        changeRows.push({ attrs: { dataset: { name: ch.name, col: col, dir: dir || '' } }, cells: [ch.name, ch.equipe, col, [
+          el('span', { class: 'diff-old' }, diffValue(col, d.old)), ' → ',
+          el('span', { class: 'diff-new' }, diffValue(col, d['new'])),
+          dir ? ' ' : null,
+          dir ? UI.statusMark(dir === 'better' ? 'amélioration' : 'dégradation', dir === 'better' ? 'ok' : 'ko') : null]] });
+      });
+    });
+    var posteCols = ['Équipe', 'Bâtiment / Labo', 'score', 'risk'];
+    var posteHeaders = ['Poste', 'Équipe', 'Bâtiment / Labo', 'Score', 'Niveau de risque'];
+    var resolvedHeaders = ['Équipe', 'Action', 'Responsable', ''];
+    box.appendChild(diffGroup('diff-postes', 'Postes',
+      diffSection('diff-postes-removed', 'Postes retirés', pRemoved.length,
+        diffTable('diff-postes-removed-table', posteHeaders, recordRows(pRemoved, KEY_POSTE, posteCols), 'record', 'poste'),
+        'Aucun poste retiré.'),
+      diffSection('diff-postes-added', 'Postes ajoutés', pAdded.length,
+        diffTable('diff-postes-added-table', posteHeaders, recordRows(pAdded, KEY_POSTE, posteCols), 'record', 'poste'),
+        'Aucun poste ajouté.'),
+      diffSection('diff-postes-changes', 'Modifications', changeRows.length,
+        diffTable('diff-postes-changes-table', ['Poste', 'Équipe', 'Champ', 'Ancien → nouveau'], changeRows, 'change', 'poste'),
+        'Aucune modification.'),
+      diffSection('diff-postes-resolved', 'Actions résolues', pResolved.length,
+        diffTable('diff-postes-resolved-table', ['Poste'].concat(resolvedHeaders),
+          resolvedRows(ctx, pResolved, 'poste', actions, diff), 'resolved', 'poste'),
+        'Aucune action résolue.')));
+
+    // Applications
+    var appCols = ['Équipe', 'Éditeur', 'score', 'risk'];
+    var appHeaders = ['Application', 'Équipe', 'Éditeur', 'Score', 'Niveau de risque'];
+    box.appendChild(diffGroup('diff-apps', 'Applications',
+      diffSection('diff-apps-removed', 'Applications retirées', aRemoved.length,
+        diffTable('diff-apps-removed-table', appHeaders, recordRows(aRemoved, KEY_APP, appCols), 'record', 'application'),
+        'Aucune application retirée.'),
+      diffSection('diff-apps-added', 'Applications ajoutées', aAdded.length,
+        diffTable('diff-apps-added-table', appHeaders, recordRows(aAdded, KEY_APP, appCols), 'record', 'application'),
+        'Aucune application ajoutée.'),
+      diffSection('diff-apps-resolved', 'Actions résolues', aResolved.length,
+        diffTable('diff-apps-resolved-table', ['Application'].concat(resolvedHeaders),
+          resolvedRows(ctx, aResolved, 'application', actions, diff), 'resolved', 'application'),
+        'Aucune action résolue.')));
+  }
+
+  function renderDiff(panel, ctx) {
+    setHeaderAction(null);
+    var s = State.get();
+    var months = Core.sortMonths(s.months || []);
+    var note = filterNote();
+    if (note) panel.appendChild(note);
+    panel.appendChild(el('p', { class: 'page-lede diff-intro' }, 'Compare deux exports mensuels : postes et applications ' +
+      'retirés ou ajoutés, champs modifiés, et actions correctives disparues (considérées comme résolues).'));
+    var options = months.map(function (m) { return { value: m, label: Fmt.monthTitle(m) }; });
+
+    if (months.length < 2) {
+      panel.appendChild(el('div', { class: 'alert alert-info', role: 'status', id: 'diff-info' },
+        'Au moins deux exports mensuels sont nécessaires pour détecter des changements.'));
+      var disabledSel = function (id, label) {
+        return UI.select({ id: id, label: label, options: options, value: months[0] || '', disabled: true,
+          placeholder: months.length ? null : '—' });
+      };
+      panel.appendChild(el('div', { class: 'inline-form diff-controls' },
+        disabledSel('diff-old', 'Mois de référence'), disabledSel('diff-new', 'Mois comparé')));
+      return;
+    }
+
+    if (!diffChoice || diffChoice.base !== s.month ||
+        months.indexOf(diffChoice.oldMonth) < 0 || months.indexOf(diffChoice.newMonth) < 0) {
+      var d = defaultDiffMonths(months, s.month);
+      diffChoice = { base: s.month, oldMonth: d.oldMonth, newMonth: d.newMonth };
+    }
+    var result = el('div', { class: 'diff-result', id: 'diff-result', 'aria-live': 'polite' });
+
+    function selectFor(id, label, key) {
+      return UI.select({ id: id, label: label, options: options, value: diffChoice[key],
+        onChange: function (v) { diffChoice[key] = v; run(); } });
+    }
+
+    function run() {
+      var oldMonth = diffChoice.oldMonth;
+      var newMonth = diffChoice.newMonth;
+      var runToken = ctx.diffRun = (ctx.diffRun || 0) + 1;
+      UI.clear(result);
+      if (oldMonth === newMonth) {
+        result.appendChild(el('div', { class: 'alert alert-warning', role: 'status' },
+          'Choisissez deux mois différents.'));
+        return;
+      }
+      if (oldMonth > newMonth) {
+        result.appendChild(el('div', { class: 'alert alert-warning', role: 'status' },
+          'Le mois de référence est postérieur au mois comparé : les ajouts et les retraits sont inversés.'));
+      }
+      var loading = UI.loading('Comparaison en cours…');
+      result.appendChild(loading);
+      Promise.all([api.call('api_getDiff', { oldMonth: oldMonth, newMonth: newMonth }), State.loadActions()])
+        .then(function (res) {
+          if (ctx.token !== token || runToken !== ctx.diffRun) return;
+          lastDiff = res[0];
+          if (loading.parentNode) loading.parentNode.removeChild(loading);
+          var box = el('div', { class: 'diff-body' });
+          result.appendChild(box);
+          renderDiffResult(box, ctx, res[0], res[1].actions);
+        }, function (err) {
+          if (ctx.token !== token || runToken !== ctx.diffRun) return;
+          UI.clear(result).appendChild(UI.errorState(err, { prefix: 'Comparaison impossible', retry: run }));
+        });
+    }
+
+    panel.appendChild(el('div', { class: 'inline-form diff-controls' },
+      selectFor('diff-old', 'Mois de référence', 'oldMonth'),
+      el('span', { class: 'diff-arrow', 'aria-hidden': 'true' }, '→'),
+      selectFor('diff-new', 'Mois comparé', 'newMonth')));
+    panel.appendChild(result);
+
+    // After "Enregistrer comme terminée", re-render the last result with fresh actions (no new diff call).
+    if (ctx.reuseDiff && lastDiff && lastDiff.oldMonth === diffChoice.oldMonth && lastDiff.newMonth === diffChoice.newMonth) {
+      var diff = lastDiff;
+      State.loadActions().then(function (data) {
+        if (ctx.token !== token) return;
+        var box = el('div', { class: 'diff-body' });
+        result.appendChild(box);
+        renderDiffResult(box, ctx, diff, data.actions);
+      }, function () { run(); });
+    } else {
+      run();
+    }
+  }
+
+  // ------------------------------------------------------------------------------ page
+
+  function mount(root) {
+    var myToken = ++token;
+    var s = State.get();
+    headerSlot = el('span', { class: 'act-header-slot', hidden: true });
+    root.appendChild(UI.pageHeader({ title: 'Suivi des actions', kickerId: s.month ? 'actions-caption' : null,
+      kicker: s.month ? [Fmt.monthTitle(s.month) + ' · Export ', el('span', { class: 'mono' }, s.month)] :
+        'Aucun export importé', actions: [headerSlot] }));
+
+    var tabs;
+    /** Context shared by the tab renderers; rerender() redraws the active tab after a write. */
+    function makeCtx(reuseDiff) {
+      return {
+        token: myToken,
+        reuseDiff: !!reuseDiff,
+        rerender: function () {
+          if (myToken !== token) return;
+          var id = tabs.getActive();
+          // Change detection: keep the current comparison, only refresh the action-dependent buttons.
+          rerenderWith = id === 'diff';
+          tabs.activate(id);
+          rerenderWith = false;
+        }
+      };
+    }
+    var rerenderWith = false;
+    function tabRender(id, fn) {
+      return function (panel) {
+        activeTab = id;
+        var inner = el('div', { class: 'act-panel' });
+        panel.appendChild(inner);
+        fn(inner, makeCtx(rerenderWith));
+      };
+    }
+    tabs = UI.tabs([
+      { id: 'remediation', label: 'Actions de remédiation', render: tabRender('remediation', renderRemediation) },
+      { id: 'replacements', label: 'Remplacements de postes', render: tabRender('replacements', renderReplacements) },
+      { id: 'diff', label: 'Détection des changements', render: tabRender('diff', renderDiff) }
+    ], activeTab);
+    tabs.id = 'actions-tabs';
+    root.appendChild(tabs);
+  }
+
+  function unmount() {
+    token++;
+    headerSlot = null;
+  }
+
+  window.ActionForm = {
+    open: openActionForm,
+    statusMark: statusMark,
+    priorityMark: priorityMark,
+    isOverdue: isOverdue,
+    deadlineCell: deadlineCell,
+    STATUS_TONES: STATUS_TONES
+  };
+
+  window.Pages = window.Pages || {};
+  window.Pages.actions = { id: 'actions', title: 'Suivi des actions', icon: '', mount: mount, unmount: unmount };
+})();
+</script>
