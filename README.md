@@ -28,6 +28,7 @@ Classeur source (live)                Apps Script (src/*.js)              Naviga
 | `Store.js` | Seul module qui écrit dans le classeur de données (verrou, écriture en texte brut) |
 | `Config.js` | Propriétés du script, noms d'onglets, schémas |
 | `Core.js` | Logique pure partagée serveur/client (scores, KPI, filtres, diff) |
+| `Perf.js` | Lignes de mesure JSON (durées par appel et par étape) dans le journal des exécutions |
 
 **Client — `src/*.html`** : `index.html` (gabarit), `css*.html` (styles), `js_api.html` (promesses
 autour de `google.script.run`), `js_state.html` (état), `js_ui.html` et `js_controls.html`
@@ -60,7 +61,11 @@ modifiable depuis l'application. Les modifications d'un mois passé ne changent 
 | `Meta` | Version du schéma |
 
 Les identifiants des deux classeurs sont stockés dans les propriétés du script
-(`DATA_SPREADSHEET_ID`, `SOURCE_SPREADSHEET_ID`), l'état de la synchronisation dans `SYNC_STATE`.
+(`DATA_SPREADSHEET_ID`, `SOURCE_SPREADSHEET_ID`), le titre du classeur source dans `SOURCE_INFO`
+(affiché sans ouvrir la source, mis à jour à chaque synchronisation), l'état de la synchronisation dans
+`SYNC_STATE`, et
+`SOURCE_WRITE_STAMP` avance à chaque écriture de l'application dans la source (la synchronisation s'en
+sert pour ne jamais annuler une modification enregistrée pendant qu'elle lisait la source).
 
 ## Premier déploiement
 
@@ -149,9 +154,13 @@ synchronisation horaire ». Les mois déjà importés sont conservés.
 - **Groupes Google** : ajouter l'adresse d'un groupe (ex. `labo-industry@decathlon.com`) avec un rôle ;
   tous ses membres le reçoivent, sous-groupes compris (3 niveaux). Si un compte a plusieurs rôles
   (liste, groupes, domaine), le plus élevé l'emporte. L'appartenance est vérifiée avec le compte du
-  propriétaire, qui doit pouvoir **voir les membres** du groupe (sinon l'ajout est refusé), et mise en
-  cache 10 minutes : un changement de membres dans Google s'applique sous 10 minutes, le retrait d'un
-  groupe de la liste immédiatement. Un administrateur ne peut pas retirer ni rétrograder le groupe qui
+  propriétaire, qui doit pouvoir **voir les membres** du groupe (sinon l'ajout est refusé), puis mise en
+  cache : un compte membre le reste 10 minutes après sa dernière utilisation de l'application, mais
+  l'appartenance est revérifiée au moins **toutes les heures** ; un compte retiré d'un groupe dans Google
+  perd donc ce rôle sous 1 heure au plus (sous 10 minutes s'il n'utilise pas l'application), un compte
+  ajouté l'obtient sous 10 minutes. Un groupe devenu illisible (supprimé, membres masqués) ne donne
+  aucun rôle et n'est réessayé qu'après 2 minutes. Le retrait d'un groupe de la liste s'applique
+  immédiatement. Pour retirer un accès sur-le-champ, retirer le compte (ou le groupe) de la liste. Un administrateur ne peut pas retirer ni rétrograder le groupe qui
   lui donne ce rôle.
 - « Autres comptes du domaine » : *Aucun accès* (par défaut, seuls les comptes listés entrent) ou
   *Lecteur* (tout le domaine peut consulter).
@@ -203,6 +212,33 @@ WSL.
   en bas du menu de gauche passe en rouge avec le message, et Google envoie un e-mail d'échec au propriétaire
   du script. Les données affichées restent celles de la dernière synchronisation réussie.
 
+## Mesurer les temps de réponse
+
+Chaque appel serveur écrit une ligne JSON dans le journal des exécutions (Apps Script → Exécutions,
+ou Cloud Logging) : `{"api":"api_getMonthData","ms":812,"authMs":95,"ok":true}`, précédée des étapes
+(`{"stage":"ensure",…}` ouverture du classeur, `{"stage":"sheet","tab":"Postes","rows":7200,"ms":240}`
+lecture d'un onglet entier, `{"stage":"span","tab":"Postes","rows":300,"ms":30}` lecture des seules lignes
+d'un mois (ou du bas du journal), `listMonths`, `importMonth`, `writeBack`, `sync`). Ces lignes ne contiennent que
+des durées, des nombres et des noms d'onglets ou de mois : jamais d'adresse e-mail ni de donnée. Le
+détail des formats est dans `docs/API.md` §4 (Perf).
+
+Côté navigateur, la console (niveau « Verbose » / « Commentaires », dans le cadre `userHtmlFrame`)
+affiche `[rpc] api_getMonthData 1350ms` pour chaque appel et `[boot] ready …` à la fin du démarrage ;
+l'écart avec le `ms` du serveur est le coût de `google.script.run` lui-même.
+
+Ouverture à froid : `doGet` met déjà dans la page le démarrage du visiteur (`api_bootstrap`, contrôle
+d'accès compris, ligne `{"stage":"inlineBoot","ok":true,"bytes":…}`) et la page demandée (`?page=`).
+Le navigateur n'appelle donc pas `api_bootstrap` à l'ouverture : il demande aussitôt le mois affiché,
+et en même temps, si une période est mémorisée, son premier mois et l'historique. Plotly (4,5 Mo) et
+les polices se chargent sans bloquer : l'écran de démarrage et les chiffres s'affichent d'abord, les
+graphiques dès que Plotly est là (« Graphique indisponible » s'il n'est pas là au bout de 30 secondes ;
+s'il arrive plus tard, les graphiques de la page affichée apparaissent alors, sans action de l'utilisateur).
+
+Pour décider d'une optimisation : relever une ouverture à froid admin, une ouverture lecteur, un
+changement de mois, le Suivi temporel, une modification du mois en cours et une synchronisation
+horaire, puis comparer ouverture du classeur, lectures d'onglets et aller-retour. Les nombres d'appels
+Sheets de ces parcours sur un gros classeur sont fixés par `test/integration/perf.test.js`.
+
 ## À vérifier une fois sur de vrais Sheets
 
 Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement réel de Google Sheets.
@@ -215,9 +251,98 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
       une valeur `-` du référentiel après une synchronisation.
 - [ ] Écriture dans la source : modifier une cellule d'un poste du mois en cours, vérifier qu'elle
       change dans le classeur source ; une colonne calculée par formule est refusée avec un message ;
-      une liste déroulante (validation des données) refuse une valeur hors liste.
+      une liste déroulante (validation des données) refuse une valeur hors liste, avec le message
+      « Le Google Sheet source a refusé la valeur … » (le refus doit arriver à l'écriture de la cellule).
+- [ ] Écriture dans la source, lectures ciblées : dans le tableau, modifier ensemble des postes éloignés
+      les uns des autres (début, milieu et fin de l'onglet) : toutes les valeurs arrivent dans la source,
+      aucune autre cellule ne change (formules, listes déroulantes, cellules voisines). La ligne
+      `writeBack` d'Exécutions a un `sourceRead` nettement plus court qu'avant sur un gros onglet.
+      Ajouter une application alors que la ligne sous la dernière application n'est pas vide (ligne de
+      total) : une ligne est insérée au-dessus, les formules de la dernière ligne sont recopiées.
+- [ ] Synchronisation hors verrou : sur un gros classeur source, lancer « Synchroniser maintenant » et,
+      depuis une autre session, enregistrer aussitôt une modification du mois en cours : elle n'attend
+      plus la lecture de la source. Une fois la synchronisation terminée, recharger : la modification
+      est toujours là, dans l'application et dans la source (jamais annulée). Dans Exécutions, la ligne
+      `importMonth` montre `readSource` avant `lockWait`, et `reread: true` (avec `rereadSource`) quand
+      une écriture dans la source (ou une autre synchronisation) est arrivée pendant la lecture. Propriétés du script contient
+      `SOURCE_WRITE_STAMP` après une modification du mois en cours (ce garde-fou suppose qu'après
+      `SpreadsheetApp.flush()` une autre exécution qui ouvre la source voit l'écriture).
+- [ ] Synchronisations qui se chevauchent : lancer « Synchroniser maintenant » depuis deux sessions
+      presque en même temps (ou juste avant l'heure du déclencheur) en changeant une valeur directement
+      dans la source entre les deux clics : à la fin, l'application montre la valeur la plus récente et
+      le journal n'a pas de changement qui l'annule. La ligne `importMonth` de la synchronisation qui a
+      pris le verrou en second montre `reread: true` ; `SOURCE_WRITE_STAMP` change après chaque
+      synchronisation qui a écrit (ce garde-fou suppose que `LockService` et les Propriétés du script
+      se comportent comme les faux : un verrou acquis voit la propriété écrite par le détenteur précédent).
+- [ ] Lectures d'un mois pendant une écriture : sur un classeur de données dont l'onglet Applications a
+      plus de 1000 lignes (aucune ligne vide en bas), supprimer une application du mois en cours dans
+      une session pendant qu'une autre ouvre ce mois ou change de mois en boucle : jamais d'erreur
+      « coordinates of the range are outside the dimensions of the sheet » (Exécutions), et après
+      « Actualiser » les nombres sont justes (un mois relu pendant une synchronisation qui l'agrandit
+      ne perd pas sa dernière application). Même essai avec le mois en cours tout en bas de l'onglet
+      et une synchronisation qui lui ajoute une application pendant qu'une autre session change de
+      mois en boucle : jamais une application en moins à l'écran ; la ligne `sheet` d'Applications
+      (Exécutions) apparaît seulement quand la lecture a croisé l'écriture.
 - [ ] Le déclencheur `syncHourly` apparaît dans l'éditeur (Déclencheurs) et s'exécute toutes les
       heures (Exécutions) ; une synchronisation sans changement n'ajoute rien au journal.
+- [ ] Mesures : dans Exécutions, un appel (par exemple l'ouverture de l'application) montre ses lignes
+      JSON (`ensure`, `listMonths`, `sheet`…, puis `{"api":…,"ms":…}`) en une ligne chacune, sans
+      adresse e-mail ; une synchronisation horaire montre `importMonth` et `sync`. La durée totale de
+      l'exécution reste du même ordre que le `ms` de la ligne `api` (le coût des lignes est négligeable).
+- [ ] Console du navigateur (niveau « Verbose », cadre `userHtmlFrame`) : une ligne `[rpc] <nom> <ms>ms`
+      par appel et `[boot] ready …` au démarrage, aucune erreur.
+- [ ] Lecture d'un seul mois : changer de mois ; dans Exécutions, l'appel `api_getMonthData` montre des
+      lignes `span` (Postes, Applications, ImportLog avec `rows` = 1, Referentiel) et aucune ligne
+      `sheet` ; une synchronisation horaire sans changement non plus. Ajouter une application à un mois
+      passé (elle est écrite en fin d'onglet, après les mois suivants), recharger : elle apparaît dans
+      ce mois et dans aucun autre, et le mois suivant reste complet.
+- [ ] Version du schéma : après la première ouverture, Propriétés du script contient
+      `DATA_SCHEMA_VERSION` (`{"dataId":…,"version":"2"}`, l'id du classeur de données) ; la ligne
+      `ensure` d'un appel suivant est plus courte (plus de lecture de `Meta`). Supprimer la propriété :
+      l'appel suivant relit `Meta` une fois et la recrée. Si une ancienne version du classeur de données
+      est restaurée (historique des versions), supprimer aussi cette propriété pour que la mise à niveau
+      du schéma soit refaite.
+- [ ] Paramètres → Journal des synchronisations : les 12 dernières synchronisations, la plus récente en
+      haut, avec leurs alertes ; l'appel `api_getImportLog` ne lit que le bas de l'onglet `ImportLog`
+      (ligne `span`, `rows` = 12).
+- [ ] Titre de la source sans ouverture : dans Exécutions, l'appel `api_bootstrap` d'un admin (dans
+      l'exécution `doGet` à l'ouverture, seul après « Actualiser ») ne montre plus qu'une ouverture (le
+      classeur de données ; ligne `ensure`) ; les liens « Données » et
+      « Source » de la barre latérale ouvrent les bons classeurs (URL construites à partir des ids).
+      Renommer le classeur source dans Drive : le nouveau nom apparaît après la synchronisation horaire
+      suivante (ou « Synchroniser maintenant ») ; Propriétés du script contient `SOURCE_INFO`
+      (`{"id":…,"title":…}`). Retirer au propriétaire l'accès à la source : Paramètres affiche
+      « Classeur inaccessible. » (vérification en direct), l'ouverture de l'application reste rapide.
+- [ ] Cache des groupes : un membre d'un groupe autorisé entre ; le retirer du groupe dans Google
+      Admin : il perd l'accès au plus tard 1 heure après la dernière vérification, même en utilisant
+      l'application sans arrêt (10 minutes s'il ne l'utilise pas). L'ajouter à un groupe : accès sous
+      10 minutes. Un groupe aux membres masqués pour le propriétaire refuse l'accès sans erreur, et un
+      seul avertissement « not readable » apparaît dans Exécutions par compte toutes les 2 minutes.
+      Vérifier que `CacheService.getScriptCache().getAll` est disponible (ce que les faux services ne
+      peuvent prouver).
+- [ ] Deux sessions admin : ajouter un compte différent dans Paramètres → Accès depuis chacune, à
+      quelques instants d'intervalle (la seconde attend le verrou) ; après rechargement, la liste
+      contient les deux comptes.
+- [ ] Démarrage intégré à la page : à l'ouverture, Exécutions montre pour `doGet` les lignes
+      `api_bootstrap` puis `{"stage":"inlineBoot","ok":true,…}`, et la console n'a **pas** de ligne
+      `[rpc] api_bootstrap` (la première est `api_getMonthData`). Comparer la durée de l'exécution
+      `doGet` et le temps d'apparition de l'écran de démarrage avant / après cette version.
+- [ ] Un compte sans accès : `inlineBoot` avec `"ok":false`, puis l'écran « Accès refusé » (le
+      navigateur a appelé `api_bootstrap` lui-même) ; un lecteur voit sa vue lecteur sans appel
+      `api_bootstrap`.
+- [ ] `…/exec?page=postes` ouvre directement Postes (et `?page=settings` pour un lecteur, le tableau de
+      bord) ; « Actualiser » après une nouvelle synchronisation recharge bien les données (appel
+      `api_bootstrap` dans la console).
+- [ ] Le bac à sable HtmlService garde les `<script type="application/json">` et l'attribut
+      `onload` de la feuille de polices : les polices IBM Plex s'appliquent (onglet Réseau : la feuille
+      Google Fonts ne bloque plus le rendu) et Plotly n'est téléchargé qu'une fois (préchargement puis
+      script, même URL).
+- [ ] Plotly bloqué (DevTools → Réseau → bloquer `cdnjs.cloudflare.com`) : l'application démarre, les
+      chiffres s'affichent et chaque graphique indique « Graphique indisponible ».
+- [ ] Plotly très lent (DevTools → Réseau → limitation personnalisée, par exemple 100 kbit/s, pour que
+      `plotly.min.js` mette plus de 30 secondes) : « Graphique indisponible » s'affiche au bout de
+      30 secondes, puis les graphiques du tableau de bord apparaissent d'eux-mêmes à la fin du
+      téléchargement, sans clic ; Plotly n'est demandé qu'une fois.
 
 ## Tests
 
@@ -226,6 +351,9 @@ npm test            # unitaires + intégration (Node, faux services Apps Script)
 npm run test:e2e    # Playwright (Chromium) sur le client rendu avec un google.script.run simulé
 npm run test:all    # les deux
 ```
+
+`PERF_OUT=/chemin/mesure.json node --test test/integration/perf.test.js` enregistre en plus les
+nombres d'appels mesurés (ouvertures, lectures, cellules lues, propriétés et cache) par parcours.
 
 `test:e2e` attend Playwright installé globalement (`npm i -g playwright`) et ses navigateurs dans
 `$PLAYWRIGHT_BROWSERS_PATH` (par défaut `/opt/pw-browsers`). Facultatif : `.artifacts/plotly.min.js`
@@ -249,11 +377,14 @@ polices ; sans eux, le harnais utilise des substituts.
 - **6 minutes par exécution** Apps Script : une synchronisation lit et écrit un mois entier en un seul
   appel ; un classeur source très volumineux peut dépasser cette limite.
 - **Durée des déclencheurs** : 90 min/jour (compte Gmail) ou 6 h/jour (Workspace) pour toutes les
-  exécutions déclenchées ; une synchronisation horaire sans changement ne fait que lire la source.
+  exécutions déclenchées ; une synchronisation horaire sans changement ne fait que lire la source, et
+  elle la lit avant de prendre le verrou : les enregistrements ne l'attendent pas.
 - **Comptes du domaine uniquement** : l'adresse des visiteurs d'un autre domaine n'est pas transmise
   par Google, ils ne peuvent donc pas être autorisés. Les écritures passent par un verrou (attente 20 s, sinon « Une autre opération est en cours. Réessayez dans quelques instants. »).
 - Les modifications de code ne sont visibles sur l'URL publiée qu'après `npm run deploy`.
-- Le navigateur doit pouvoir charger Plotly (cdnjs.cloudflare.com) et Google Fonts.
+- Le navigateur doit pouvoir charger Plotly (cdnjs.cloudflare.com) et Google Fonts ; sans eux,
+  l'application fonctionne avec « Graphique indisponible » à la place des graphiques et les polices
+  système.
 - Chaque mois ajoute une ligne par poste et par application au classeur de données (le mois en cours
   est réécrit, pas dupliqué) ; Google Sheets plafonne à 10 millions de cellules par classeur.
 
@@ -262,7 +393,7 @@ polices ; sans eux, le harnais utilise des substituts.
 ## English summary
 
 Shadow IT Dashboard is a Google Apps Script web app (single HtmlService page) ported from a Streamlit
-app. Server code lives in `src/*.js` (`Api`, `Importer`, `Sync`, `Store`, `Config`, `Core`, `Code`); client
+app. Server code lives in `src/*.js` (`Api`, `Importer`, `Sync`, `Store`, `Config`, `Core`, `Perf`, `Code`); client
 code in `src/*.html`. A live source spreadsheet (`Suivi des postes`, `Suivi des applications`,
 `Référentiel`) is synchronised every hour (time-driven trigger `syncHourly`) into the current month of the
 app's own `ShadowIT_AppData` spreadsheet (tabs `Postes`, `Applications`, `Referentiel`, `Actions`,
@@ -286,7 +417,11 @@ or lecteur if « Autres comptes du domaine » is set so. « Ajouter plusieurs co
 list in any common shape (Sheets column, comma/semicolon separated, `Name <address>`), previews it and
 saves it in one call (500 per batch, 2000 accounts max). Google Groups can be granted a role too:
 members (sub-groups included, 3 levels) get it, the highest role wins, memberships are checked with
-GroupsApp as the deployer (who must see the members) and cached 10 minutes. After pulling this
+GroupsApp as the deployer (who must see the members) and cached: a membership slides 10 minutes past
+its last use but is re-verified at least every hour (a removal from a group in Google applies within
+1 h), a non-membership is cached 10 minutes, an unreadable group 2 minutes (it grants nothing), all of
+a call's group entries are read in one `CacheService.getAll`, and a cache failure only means a live
+check. After pulling this
 version, run `setup()` again to grant the new groups scope. The list lives in the `ACCESS_JSON_N` /
 `ACCESS_JSON_0..` script properties (split because one property holds 9 KB), the compliance threshold (default 80 %) in `COMPLIANCE_THRESHOLD`. For a personal Gmail
 deployer, set `"access": "MYSELF"` in `src/appsscript.json`.
@@ -294,5 +429,20 @@ deployer, set `"access": "MYSELF"` in `src/appsscript.json`.
 Updates: `DEPLOYMENT_ID=AKfy... npm run deploy` pushes and redeploys the same deployment, so the URL
 stays stable (without `DEPLOYMENT_ID` a new deployment and URL are created). If the data
 spreadsheet is really gone, delete the `DATA_SPREADSHEET_ID` script property. Verify once on real
-Sheets that values starting with `= + - @ '` round-trip unchanged. Tests: `npm test`,
-`npm run test:e2e`. Limits: 6-minute execution time, users of the deployer's Workspace domain only.
+Sheets that values starting with `= + - @ '` round-trip unchanged. Timing: every server call logs
+one-line JSON timings (`{api, ms, authMs, ok}` plus per-stage lines, see `docs/API.md` §4 Perf) to the
+Executions log, and the browser console logs `[rpc] <name> <ms>ms` at the Verbose level. Cold open:
+doGet renders the visitor's bootstrap envelope (role check included; nothing when refused) and the
+`?page=` into the page, so the client issues the month (and, with a saved period, its first month and the
+history) at once; Plotly and the fonts load without blocking;
+`test/integration/perf.test.js` pins the Sheets call counts of the main flows on a large data
+spreadsheet. Server reads are scoped: one month's rows are located through column A and read as one
+block (never every month), ImportLog is read from the bottom, reads are memoized per execution (dropped
+on every write and when the script lock is taken), and the schema version is kept in the
+`DATA_SCHEMA_VERSION` script property so that each call skips the `Meta` read. The admin bootstrap
+does not open the source: spreadsheet URLs are built from the ids and the source title is kept in the
+`SOURCE_INFO` script property (saved with the source, refreshed by every sync); Paramètres is where the
+source is checked live. The sync reads the
+source before taking the script lock (a `SOURCE_WRITE_STAMP` script property, moved by every
+write-back, makes it read again under the lock when a save landed meanwhile), and a write-back reads
+the header block, the key column and the edited rows only. Tests: `npm test`, `npm run test:e2e`. Limits: 6-minute execution time, users of the deployer's Workspace domain only.

@@ -14,6 +14,13 @@
  * realm) for Date cells produced by the fakes. Plain objects/arrays created inside the context still
  * have the context's prototypes: compare them through `plain()` (JSON round trip) when using
  * assert.deepStrictEqual.
+ *
+ * A new Apps Script execution (fresh module state, same spreadsheets / properties / cache) is
+ * simulated by loading again over the same env: loadGas({ env }).
+ *
+ * The fake console records every call in env.__state.console without printing it (unless
+ * echoConsole), so the Perf timing lines never flood the test output: timingLines(env) returns them
+ * parsed, in order.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -24,13 +31,14 @@ const SRC_DIR = path.resolve(__dirname, '..', '..', 'src');
 
 /**
  * @param {{sources?:object[], props?:Object<string,string>, lockTimeout?:boolean, timeZone?:string,
- *          srcDir?:string, echoConsole?:boolean}} [options]
+ *          srcDir?:string, echoConsole?:boolean, env?:object}} [options] env: reuse an existing env
+ *          (a new execution); the env-building options are then ignored
  * @returns {{ctx: object, env: object, files: string[]}}
  */
 function loadGas(options) {
   const opts = options || {};
   const srcDir = opts.srcDir || SRC_DIR;
-  const env = createGasEnv({
+  const env = opts.env || createGasEnv({
     sources: opts.sources || [],
     timeZone: opts.timeZone,
     lockTimeout: opts.lockTimeout,
@@ -38,7 +46,7 @@ function loadGas(options) {
     echoConsole: opts.echoConsole,
     scriptAppDenied: opts.scriptAppDenied,
   });
-  if (opts.props) env.PropertiesService.getScriptProperties().setProperties(opts.props);
+  if (opts.props && !opts.env) env.PropertiesService.getScriptProperties().setProperties(opts.props);
 
   const ctx = vm.createContext({
     SpreadsheetApp: env.SpreadsheetApp,
@@ -75,6 +83,19 @@ function plain(v) {
   return v === undefined ? undefined : JSON.parse(JSON.stringify(v));
 }
 
+/**
+ * The Perf timing lines logged so far (console.log calls whose single argument is a JSON object),
+ * parsed: [{api, ms, authMs, ok, code?} | {stage, ms, ...}].
+ */
+function timingLines(env) {
+  const out = [];
+  for (const c of env.__state.console) {
+    if (c.level !== 'log' || c.args.length !== 1 || typeof c.args[0] !== 'string' || c.args[0].charAt(0) !== '{') continue;
+    try { out.push(JSON.parse(c.args[0])); } catch (e) { /* not a timing line */ }
+  }
+  return out;
+}
+
 /** Returns the raw cell values of a tab of a fake spreadsheet (host-realm copy). */
 function sheetValues(env, spreadsheetId, tabName) {
   const ss = env.SpreadsheetApp.openById(spreadsheetId);
@@ -83,4 +104,4 @@ function sheetValues(env, spreadsheetId, tabName) {
   return sh.getDataRange().getValues();
 }
 
-module.exports = { loadGas, plain, sheetValues, SRC_DIR };
+module.exports = { loadGas, plain, sheetValues, timingLines, SRC_DIR };

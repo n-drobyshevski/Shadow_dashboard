@@ -193,6 +193,26 @@ test('writes to the access list run under the lock (BUSY on timeout)', () => {
 
 // ------------------------------------------------------------------------------- threshold
 
+test('an access change under the lock starts from the stored list, not from the one read before it', () => {
+  const sb = imported();
+  // Another admin's execution adds an account while this call waits for the lock.
+  const lockObj = sb.env.LockService.getScriptLock();
+  const wait = lockObj.waitLock;
+  lockObj.waitLock = function (ms) {
+    lockObj.waitLock = wait;
+    const other = loadGas({ env: sb.env });
+    other.ctx.Config.setAccess({ users: [{ email: ADMIN2, role: 'admin' }], groups: [], domainRole: 'none' });
+    return wait.call(this, ms);
+  };
+  try {
+    ok(sb.ctx, 'api_saveUser', { email: READER, role: 'lecteur' });
+  } finally {
+    lockObj.waitLock = wait;
+  }
+  assert.deepEqual(ok(sb.ctx, 'api_getSettings').access.users.map((u) => [u.email, u.role]),
+    [[READER, 'lecteur'], [ADMIN2, 'admin']]);
+});
+
 test('threshold: validated, persisted, and applied to every later call', () => {
   const sb = imported();
   for (const threshold of [0, 101, 72.5, 'abc', null]) fail(sb.ctx, 'api_setThreshold', { threshold }, 'VALIDATION');
@@ -314,6 +334,8 @@ const LAB = 'labo-industry@decathlon.com';
 const SUB = 'labo-textile@decathlon.com';
 const ADMINS = 'shadow-admins@decathlon.com';
 
+function groupKey(group, email) { return 'grp:' + group + '|' + email; }
+
 function withGroups() {
   const sb = imported();
   sb.env.__setGroups({
@@ -356,14 +378,68 @@ test('groups: memberships are cached; removing a group applies at once', () => {
   const calls = sb.env.__state.groupCalls;
   for (let i = 0; i < 5; i++) ok(sb.ctx, 'api_getActions');
   assert.equal(sb.env.__state.groupCalls, calls, 'no GroupsApp call while cached');
-  assert.equal(sb.env.__state.cache.get('grp:' + LAB + '|marc@decathlon.com'), '1');
+  assert.match(sb.env.__state.cache.get(groupKey(LAB, 'marc@decathlon.com')), /^m:\d+$/);
   as(sb, undefined);
   ok(sb.ctx, 'api_removeGroup', { email: LAB });
   as(sb, 'marc@decathlon.com');
   fail(sb.ctx, 'api_bootstrap', null, 'FORBIDDEN');
 });
 
-test('groups: unknown or hidden groups are refused; a group that becomes unreadable denies quietly', () => {
+test('groups: every group a call may need is read from the cache in ONE getAll', () => {
+  const sb = withGroups();
+  const extra = ['g1@decathlon.com', 'g2@decathlon.com', 'g3@decathlon.com'];
+  sb.env.__setGroups(Object.fromEntries(extra.map((g) => [g, { members: ['someone@decathlon.com'] }])));
+  for (const g of extra) ok(sb.ctx, 'api_saveGroup', { email: g, role: 'admin' });
+  ok(sb.ctx, 'api_saveGroup', { email: LAB, role: 'lecteur' });
+  as(sb, 'ines@decathlon.com'); // lecteur through the sub-group of LAB, in none of the admin groups
+  const calls = sb.env.__state.calls;
+  const count = (k) => calls[k] || 0;
+  const before = { getAll: count('cacheGetAll'), get: count('cacheGet'), groups: sb.env.__state.groupCalls };
+  ok(sb.ctx, 'api_getActions');
+  assert.equal(count('cacheGetAll') - before.getAll, 1, 'cold: one getAll for the 4 groups');
+  assert.ok(sb.env.__state.groupCalls > before.groups, 'cold: checked live');
+  const warm = { getAll: count('cacheGetAll'), groups: sb.env.__state.groupCalls };
+  assert.equal(ok(sb.ctx, 'api_bootstrap').user.role, 'lecteur');
+  assert.equal(count('cacheGetAll') - warm.getAll, 1, 'warm: one getAll');
+  assert.equal(sb.env.__state.groupCalls, warm.groups, 'warm: no GroupsApp call');
+  assert.equal(count('cacheGet'), before.get, 'never one get per group');
+});
+
+test('groups: a cached membership slides with use but is re-verified after 1 h at most', (t) => {
+  const sb = withGroups();
+  ok(sb.ctx, 'api_saveGroup', { email: LAB, role: 'lecteur' });
+  let now = Date.UTC(2026, 4, 15, 8, 0, 0);
+  t.mock.method(Date, 'now', () => now);
+  const ctx = sb.ctx;
+  const minutes = (m) => { now += m * 60000; };
+  as(sb, 'marc@decathlon.com');
+  ok(ctx, 'api_bootstrap'); // live check at 08:00
+  const live = sb.env.__state.groupCalls;
+  // Removed from the group in Google: the cached membership still applies while it is used...
+  sb.env.__setGroups({ [LAB]: { members: [], children: [SUB] } });
+  for (let i = 0; i < 6; i++) { // 08:09, 08:18 ... 08:54: each hit renews the 10-min lifetime
+    minutes(9);
+    assert.equal(ok(ctx, 'api_bootstrap').user.role, 'lecteur', 'hit ' + i);
+  }
+  assert.equal(sb.env.__state.groupCalls, live, 'served by the cache beyond its first 10 minutes');
+  minutes(5); // 08:59
+  assert.equal(ok(ctx, 'api_bootstrap').user.role, 'lecteur');
+  minutes(1); // 09:00: 1 h after the live check -> verified again, access removed
+  fail(ctx, 'api_bootstrap', null, 'FORBIDDEN');
+  assert.ok(sb.env.__state.groupCalls > live);
+  assert.equal(sb.env.__state.cache.get(groupKey(LAB, 'marc@decathlon.com')), 'n');
+
+  // Without use, a membership expires after 10 minutes (then a live check).
+  sb.env.__setGroups({ [LAB]: { members: ['marc@decathlon.com'], children: [SUB] } });
+  minutes(11); // past the 10 min of the "not a member" answer
+  assert.equal(ok(ctx, 'api_bootstrap').user.role, 'lecteur');
+  const afterLive = sb.env.__state.groupCalls;
+  minutes(10);
+  assert.equal(ok(ctx, 'api_bootstrap').user.role, 'lecteur');
+  assert.ok(sb.env.__state.groupCalls > afterLive, 'idle 10 min: checked live again');
+});
+
+test('groups: an unreadable group is remembered as a failure for 120 s and still denies', (t) => {
   const sb = withGroups();
   for (const email of ['ghost@decathlon.com', 'secret@decathlon.com']) {
     const err = fail(sb.ctx, 'api_saveGroup', { email, role: 'lecteur' }, 'VALIDATION');
@@ -372,10 +448,54 @@ test('groups: unknown or hidden groups are refused; a group that becomes unreada
   fail(sb.ctx, 'api_saveGroup', { email: LAB, role: 'none' }, 'VALIDATION');
   fail(sb.ctx, 'api_removeGroup', { email: LAB }, 'NOT_FOUND');
   ok(sb.ctx, 'api_saveGroup', { email: LAB, role: 'lecteur' });
+  let now = Date.UTC(2026, 4, 15, 8, 0, 0);
+  t.mock.method(Date, 'now', () => now);
   sb.env.__setGroups({ [LAB]: { members: ['marc@decathlon.com'], hidden: true } });
   as(sb, 'marc@decathlon.com');
   fail(sb.ctx, 'api_bootstrap', null, 'FORBIDDEN');
-  assert.equal(sb.env.__state.cache.has('grp:' + LAB + '|marc@decathlon.com'), false, 'errors are not cached');
+  assert.equal(sb.env.__state.cache.get(groupKey(LAB, 'marc@decathlon.com')), 'e', 'failure cached');
+  const calls = sb.env.__state.groupCalls;
+  // Readable again: still denied (never granted) until the failure expires, without retrying GroupsApp.
+  sb.env.__setGroups({ [LAB]: { members: ['marc@decathlon.com'], children: [] } });
+  now += 119 * 1000;
+  fail(sb.ctx, 'api_bootstrap', null, 'FORBIDDEN');
+  assert.equal(sb.env.__state.groupCalls, calls, 'no GroupsApp call during the 120 s');
+  now += 1000;
+  assert.equal(ok(sb.ctx, 'api_bootstrap').user.role, 'lecteur', 'retried after 120 s');
+});
+
+test('groups: a failing or foreign cache falls back to the live check and never grants access', () => {
+  const sb = withGroups();
+  ok(sb.ctx, 'api_saveGroup', { email: LAB, role: 'lecteur' });
+  const st = sb.env.__state;
+  // Reads fail: every call checks live (members get in, others do not).
+  st.cacheFaults.read = true;
+  as(sb, 'marc@decathlon.com');
+  let calls = st.groupCalls;
+  assert.equal(ok(sb.ctx, 'api_bootstrap').user.role, 'lecteur');
+  assert.ok(st.groupCalls > calls, 'checked live');
+  as(sb, 'nobody@decathlon.com');
+  fail(sb.ctx, 'api_bootstrap', null, 'FORBIDDEN');
+  // Writes fail too: still answered live, nothing thrown.
+  st.cacheFaults.write = true;
+  as(sb, 'marc@decathlon.com');
+  calls = st.groupCalls;
+  assert.equal(ok(sb.ctx, 'api_bootstrap').user.role, 'lecteur');
+  assert.ok(st.groupCalls > calls);
+  st.cacheFaults.read = false;
+  st.cacheFaults.write = false;
+  // Values the code does not recognise (an older format, garbage, a time in the future) and a membership
+  // verified 1 h ago or more (whatever its remaining cache lifetime) are a miss.
+  const key = groupKey(LAB, 'nobody@decathlon.com');
+  for (const v of ['1', 'm:', 'm:abc', 'yes', 'm:' + (Date.now() + 3600e3), 'm:' + (Date.now() - 3600e3)]) {
+    st.cache.set(key, v);
+    st.cacheExpiry.set(key, Date.now() + 600e3);
+    as(sb, 'nobody@decathlon.com');
+    calls = st.groupCalls;
+    fail(sb.ctx, 'api_bootstrap', null, 'FORBIDDEN');
+    assert.ok(st.groupCalls > calls, v + ': checked live');
+    assert.equal(st.cache.get(key), 'n', v + ': replaced by the live answer');
+  }
 });
 
 test('groups: an admin cannot remove or demote the group that makes them admin', () => {

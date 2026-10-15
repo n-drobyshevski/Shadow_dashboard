@@ -35,8 +35,9 @@ identifiers and comments are **English**.
 | `src/Store.js` | `var Store` | Data spreadsheet repository. Only module that writes to the data spreadsheet. |
 | `src/Importer.js` | `var Importer` | Reads the live source spreadsheet, snapshots a month, writes the current month's edits back into the source. |
 | `src/Sync.js` | `var Sync` | Hourly synchronisation of the current month (trigger, status). Only module that uses `ScriptApp`. |
+| `src/Perf.js` | `var Perf` | One-line JSON timing logs (`console.log`), see §4 Perf. |
 | `src/Api.js` | global `api_*` functions + `apiWrap_` | `google.script.run` entry points. |
-| `src/Code.js` | `doGet`, `include`, `coreScript`, `setup` | Web app entry + template helpers. |
+| `src/Code.js` | `doGet`, `include`, `coreScript`, `setup` (+ private `inlineBoot_`, `inlinePage_`, `inlineJson_`) | Web app entry + template helpers. |
 | `src/index.html` | template | Shell; includes css + scripts. |
 | `src/css.html` | `<style>` | All styles. |
 | `src/js_api.html` | `window.api` | Promise wrapper around `google.script.run`. |
@@ -135,7 +136,10 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
   (`Access.requireRole(minRole)`: `FORBIDDEN` when the identity is not passed, the account has no access,
   or a lecteur calls an admin endpoint) and applies the effective threshold (`Core.setThreshold`), then
   catches errors: `err.code` in `Core.ERROR_CODES` → that code, else `INTERNAL`; message in French when
-  produced by us; `console.error` the stack.
+  produced by us; `console.error` the stack. Every call ends with one timing line
+  `{api, ms, authMs, ok, code?}` (§4 Perf). Every call starts with empty per-execution read memos
+  (`Store.clearMemo_()`, `Config.clearMemo_()`, §4): one call = one execution in Apps Script, and the
+  reset keeps the test sandbox, which runs many calls in one context, honest.
 - Roles: **lecteur** endpoints = `api_bootstrap`, `api_savePrefs`, `api_getMonthData`, `api_getSyncStatus`,
   `api_getImportLog`, `api_getTimeline`, `api_getActions`, `api_getDiff`. Every other endpoint is **admin** only.
 - **Current month = live.** The month of today (Europe/Paris) follows the source spreadsheet: the hourly sync
@@ -144,7 +148,9 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
   (`Importer.writeEdits` / `appendRecord` / `deleteRecord`), then into the snapshot, under the same lock. Past
   months are frozen history: their edits change the snapshot only. Fields without a source column (Galink /
   IDP) stay app-only.
-- Writes are performed inside `Store.withLock(fn)`; lock timeout (20 s) → `BUSY`.
+- Writes are performed inside `Store.withLock(fn)`; lock timeout (20 s) → `BUSY`. The sync is the one
+  writer that does its slowest read outside the lock: it reads the source first, then takes the lock to
+  compare and write (`Importer.importMonth`, §4), so saves do not wait behind a sync that changes nothing.
 
 ### Record shapes
 - **Poste / Application record** (as returned by the API): every source column (string or `null`) plus
@@ -173,14 +179,14 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 
 | Function | Args | Returns `data` | Errors |
 |---|---|---|---|
-| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:'', threshold:int, user:{email, role:'admin'|'lecteur', isOwner:bool}, prefs:{sidebar?, period?}, sync:SyncStatus}` (`dataUrl` / `sourceUrl` / `sourceTitle` are `''` for lecteurs: the spreadsheets are private to the deployer) | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
+| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:'', threshold:int, user:{email, role:'admin'|'lecteur', isOwner:bool}, prefs:{sidebar?, period?}, sync:SyncStatus}` (`dataUrl` / `sourceUrl` / `sourceTitle` are `''` for lecteurs: the spreadsheets are private to the deployer). Never opens the source: the URLs are built from the ids and `sourceTitle` is the stored one (`SOURCE_INFO`, refreshed by every sync; `''` until the first sync on a deployment that predates it), so it can be one sync old and says nothing about access — Paramètres checks the source live. | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
 | `api_savePrefs` | `{sidebar:'open'\|'collapsed', period:'month'\|'last3'\|'last6'\|'year'\|'all'}` (any subset of the known keys) | `{prefs}` = the caller's stored preferences. Every role (lecteurs included): interface state only, per account (`PREFS_<email>` Script Property). | `VALIDATION` (unknown key or value, nothing to save, no identity) |
 | `api_setConfig` | `{source:'url or id'}` | `{sourceId, sourceTitle, sourceUrl, tabsFound:{postes:bool, applications:bool, referentiel:bool}, sync:SyncStatus}` — also creates the hourly trigger (`sync.authError` when ScriptApp is not authorised; the source is saved anyway). The client then calls `api_syncNow`. | `VALIDATION` (bad id), `SOURCE_ERROR` (cannot open / no postes+apps tab). Saved only on success. |
 | `api_getMonthData` | `{month}` | `{month, postes:[rec], applications:[rec], referentiel:{cat:[v]}, columns:{postes:[h], applications:[h]}, importInfo:{imported_at, warnings:[]}\|null}` | `VALIDATION`, `NOT_FOUND` (month not imported). `columns.applications` always ends with `Galink`, `IDP` if missing from the source headers. |
 | `api_getSyncStatus` | – | `SyncStatus` | – |
 | `api_syncNow` | – | `{status:SyncStatus, result:SyncResult}` — synchronises the current month now. `SyncResult = {month, counts:{postes, applications, referentiel}, overwritten:bool, carriedOver:n, warnings:[...], changed:bool, changes:Changes}`; nothing is written when `changed` is false. | `NOT_CONFIGURED`, `SOURCE_ERROR`, `BUSY` (recorded in `lastError`, except `BUSY`) |
 | `api_enableSync` | – | as `api_syncNow`, after creating the hourly trigger if it is missing | `NOT_CONFIGURED` (ScriptApp not authorised: the deployer must run `setup` in the editor), then as `api_syncNow` |
-| `api_getImportLog` | – | `[ImportLog entry]` newest first (the « Journal des synchronisations ») | – |
+| `api_getImportLog` | `{limit?}` (integer 1–500, default 12) | `[{month, imported_at, counts, warnings, changes}]`: the `limit` latest ImportLog entries, newest first, with the fields the « Journal des synchronisations » shows only (no `source_id`, no headers). Read from the bottom of the tab (`Store.recentImportLog`). | `VALIDATION` (bad `limit`) |
 | `api_savePostes` | `{month, changes:[{id, updates:{col:value}}]}` | `{updated:[rec], sourceUpdated:bool}` (`true` = current month, written into the source) | `VALIDATION` (keys starting with `_` or the key column are rejected; a source cell computed by a formula; a value refused by the source cell's data validation), `NOT_FOUND`, `SOURCE_ERROR` (row not found in the source: renamed or deleted since the last sync) |
 | `api_addGenericPoste` | `{month}` | `{created:bool, record:rec}` (existing record if already present; current month: also appended to the source) | `NOT_FOUND` |
 | `api_saveApplications` | `{month, changes:[{id, updates}]}` | `{updated:[rec], sourceUpdated:bool}` | as `api_savePostes` |
@@ -196,7 +202,7 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 | `api_updateReplacement` | `{id, updates}` | `Replacement` | `NOT_FOUND` |
 | `api_deleteReplacement` | `{id}` | `{deleted:true, id}` | `NOT_FOUND` |
 | `api_getDiff` | `{oldMonth, newMonth}` | `{oldMonth, newMonth, postes:Core.diffPostes(...), applications:Core.diffApplications(...)}` (records enriched) | `VALIDATION`, `NOT_FOUND` |
-| `api_getSettings` | – | `{threshold, defaultThreshold:80, source:{id, url, title, tabsFound\|null}, dataUrl, access:AccessView, me:email, sync:SyncStatus}` (`sync.enabled` checked against the real triggers) | – |
+| `api_getSettings` | – | `{threshold, defaultThreshold:80, source:{id, url, title, tabsFound\|null}, dataUrl, access:AccessView, me:email, sync:SyncStatus}` (`sync.enabled` checked against the real triggers). The live check of the app: opens the source (`tabsFound:null` = not accessible, `title` then the stored one); `url` / `dataUrl` are built from the ids, the data spreadsheet is not opened. | – |
 | `api_setThreshold` | `{threshold}` | `{threshold}` | `VALIDATION` (not an integer 1–100) |
 | `api_saveUser` | `{email, role:'admin'\|'lecteur'}` | `AccessView` (adds or changes the role) | `VALIDATION` (bad email / role, the owner, or the caller's own account) |
 | `api_addUsers` | `{emails:[string] (1–500), role}` | `{access:AccessView, added:[email], updated:[email] (role changed), skipped:[{email, reason}]}` — one write; invalid addresses, duplicates, the owner, the caller and accounts that already have that role are skipped with a reason | `VALIDATION` (role, empty / too long list, more than 2000 accounts) |
@@ -238,16 +244,46 @@ Config.SCHEMAS = {
                  'changes_json'],
   Meta:         ['key','value']
 }
-Config.SCHEMA_VERSION = '1'
+Config.SCHEMA_VERSION = '2'   (2: ImportLog.changes_json)
+Config.PROP_SCHEMA    = 'DATA_SCHEMA_VERSION'  (JSON {dataId, version}: the schema version found in that data
+                        spreadsheet's Meta tab, so Store.ensure's fast path needs no Meta read; keyed by the id,
+                        so a new DATA_SPREADSHEET_ID never inherits it. Deleting it only costs one Meta read.)
 Config.PROP_THRESHOLD = 'COMPLIANCE_THRESHOLD'      (integer 1–100 as a string)
 Config.PROP_ACCESS    = 'ACCESS_JSON'  ({users:[{email, role, added_at, added_by}], domainRole} as JSON split in
                         3000-char parts ACCESS_JSON_0.. with the count in ACCESS_JSON_N; Config.MAX_USERS = 2000)
-Config.get()                 -> {dataId:''|id, sourceId:''|id, threshold:int (Core.THRESHOLD when unset),
+Config.get({fresh?})         -> {dataId:''|id, sourceId:''|id, sourceTitle:''|title stored for sourceId
+                                 (PROP_SOURCE_INFO), threshold:int (Core.THRESHOLD when unset),
+                                 schemaVersion:''|version recorded for dataId (PROP_SCHEMA),
                                  access:{users:[...], domainRole:'none'|'lecteur'}} (unreadable JSON -> empty list)
-Config.setDataId(id), Config.setSourceId(id), Config.setThreshold(n), Config.setAccess(access)
+                                A new object on every call, built from ONE getProperties per execution (memo);
+                                `fresh` reads the properties again. The memo is dropped by every setter below,
+                                by Config.clearMemo_() (start of each api_* call and of syncHourly,
+                                Store.resetCache_) and when Store.withLock acquires the lock, so every
+                                read-modify-write under the lock (access list, first-run creation) starts
+                                from the stored values.
+Config.setDataId(id), Config.setSourceId(id, title), Config.setThreshold(n), Config.setAccess(access)
+                                (setSourceId writes the id and PROP_SOURCE_INFO in one setProperties call)
+Config.PROP_SOURCE_INFO = 'SOURCE_INFO'  (JSON {id, title}: the source title api_bootstrap shows without
+                        opening the file. Written by api_setConfig, refreshed by every import under the lock;
+                        keyed by the source id, so another source never inherits it. Deleting it only hides
+                        the title until the next sync.)
+Config.rememberSourceTitle(id, title) -> bool  (Importer.importMonth, under the lock, with the title it read:
+                                writes only when `id` is the configured source and the title changed)
+Config.spreadsheetUrl(id)    -> 'https://docs.google.com/spreadsheets/d/<id>/edit' (links without opening files)
+Config.PROP_SOURCE_STAMP = 'SOURCE_WRITE_STAMP'  (source write stamp: a number moved forward by every
+                        execution that wrote into the source spreadsheet, and by every import that writes
+                        a snapshot; see Store.withLock and Importer.importMonth. Deleting it is harmless:
+                        at worst one extra source read.)
+Config.sourceStamp()         -> '' | stamp, from the memo (under the lock: the stored value, since withLock
+                                drops the memo; outside it: possibly older, which only causes an extra read)
+Config.bumpSourceStamp()     -> new stamp = max(Date.now(), previous + 1), never a value seen before. Called
+                                under the lock only: by Store.withLock (after a write-back) and by
+                                Importer.importMonth (before writing a snapshot).
+Config.setSchemaVersion(dataId, version)   (Store.ensure, once Meta is known to carry `version`)
 Config.PROP_PREFS_PREFIX = 'PREFS_'  (+ lower-cased email: JSON of that account's interface preferences)
 Config.PREF_VALUES    = {sidebar:['open','collapsed']}
-Config.getPrefs(email) -> {} | {sidebar}   Config.setPrefs(email, patch) -> merged, stored, returned
+Config.getPrefs(email) -> {} | {sidebar}  (from the same memo)
+Config.setPrefs(email, patch) -> merged with the stored value (fresh read), stored, returned
 Config.PROP_FAVICON   = 'FAVICON_URL'  (optional https URL of the tab icon; '-' = none)
 Config.faviconUrl()          -> FAVICON_URL when it is an https URL, '' for '-', else DEFAULT_FAVICON_URL
                                 (assets/favicon.png embedded as a data:image/png;base64 URI).
@@ -266,7 +302,16 @@ Access.activeEmail()         -> Session.getActiveUser() email ('' when Google do
 Access.roleOf(email, owner, access) -> 'admin' for the owner, else the highest of: listed role, roles of the
                                Google Groups the account belongs to, 'lecteur' if domainRole is lecteur; '' = none
 Access.isGroupMember(group, email) -> GroupsApp hasUser, sub-groups up to 3 levels (cycle-safe, ≤ 30 calls),
-                               cached 600 s in CacheService ('grp:<group>|<email>' -> '1'/'0'); errors -> false, not cached
+                               cached in CacheService under 'grp:<group>|<email>':
+                                 'm:<ms of the live check>' member: GROUP_CACHE_S = 600 s, renewed on every hit
+                                   (sliding) but checked live again GROUP_MAX_AGE_S = 3600 s after the live check
+                                   at the latest (a removal from the group applies within 1 h);
+                                 'n' not a member: 600 s, fixed (an addition applies within 10 min);
+                                 'e' group not readable (gone, members hidden, quota): GROUP_ERROR_CACHE_S = 120 s,
+                                   fixed; denies (false) like the live error it stands for.
+                               Any other value is a miss. roleOf reads the entries of every group the call may
+                               need in ONE CacheService getAll; a cache failure (read or write) only means a live
+                               GroupsApp check, never an access granted.
 Access.checkGroup(v)         -> normalised group email, or VALIDATION if unknown / members hidden from the owner
 Access.currentUser(access?)  -> {email, role, isOwner, owner}
 Access.requireRole(minRole, access?) -> currentUser or FORBIDDEN
@@ -283,8 +328,26 @@ in a plain-text cell Sheets keeps a leading `'` as a literal character (it is on
 "force text" prefix in non-plain-text cells), so a prefix would turn `'- x'`, `'+33…'`, `'@user'` or a
 Référentiel `'-'` into `"'- x"`… on read. The `'@'` format is the one and only formula guard; the fake
 mimics this (plain-text cells store strings verbatim, other cells strip one leading `'`).
-Reads use one `getDataRange().getValues()` per tab; whole-tab rewrites use `clearContents()` of the
-data area + one `setValues()`.
+Reads: a whole tab with one `getDataRange().getValues()`; one month of `Postes` / `Applications` /
+`Referentiel` with column A (one narrow read, shared with `listMonths`) + one `getValues()` of the rows
+from the month's first to its last row, plus the row on each side of them when the sheet has it (rows of
+other months inside that block — a record appended after a later month — are filtered out by
+`row[0] === month`). These reads run outside the lock: when the block no longer matches column A, when a
+row on either side of it is now that month (the month grew or moved past the block), when the sheet
+no longer has the block's last row (rows deleted meanwhile; `getMaxRows()` is asked only when the block
+ends on the last row column A had), or when a block ending on the last row of the sheet (no row below it
+to check) saw the sheet gain rows during its read (`getMaxRows()` asked again after it), the whole tab is
+read instead. Column A itself (`getLastRow()` + one narrow read) falls back to the whole tab when rows
+were deleted between the two calls (the narrow range would run past the end of a sheet without blank
+rows); `ImportLog` is read from the bottom, with the same fallback. Writes: the smallest contiguous changed block with one `setValues()` (+ one `clearContent()` when
+a tab shrinks).
+
+**Read memo (per execution).** Whole-tab reads, column A and month blocks are memoized per tab for the
+current execution and shared with the callers, who copy before changing anything (`readTab` returns new
+objects, records are parsed anew). A tab's memo is dropped by every write primitive on it (block write,
+`clearContent`, row deletion), and the whole memo when `withLock` acquires the lock (another execution
+may have written while this one waited), when `ensure()` maps the tabs, by `resetCache_()` and by
+`clearMemo_()` (start of every `api_*` call and of `syncHourly`).
 
 ```
 Store.ensure()                          -> Spreadsheet. Idempotent. Cached per execution.
@@ -298,30 +361,58 @@ Store.ensure()                          -> Spreadsheet. Idempotent. Cached per e
                                              really deleted file is explicit: delete the DATA_SPREADSHEET_ID
                                              script property, the next execution creates a new spreadsheet;
                                            - then ensure every tab+header exists and Meta schema_version is
-                                             written. Fast path (all tabs + current schema_version) takes no
-                                             lock and writes nothing; any repair runs under Store.withLock.
-Store.dataUrl()                         -> string
+                                             written. Fast path (all tabs + current schema version) takes no
+                                             lock and writes nothing: getSheets() only when Config.get()
+                                             .schemaVersion (PROP_SCHEMA, keyed by the data spreadsheet id) is
+                                             current, else one Meta read (a current Meta version is then
+                                             copied into the property). Any repair runs under Store.withLock
+                                             and writes Meta and the property.
+Store.dataUrl()                         -> Config.spreadsheetUrl(dataId): built from the configured id, the file
+                                           is not opened (ensure() only when no id is configured yet)
 Store.withLock(fn)                      -> fn() result; LockService.getScriptLock().waitLock(20000)
-                                           (timeout -> makeError('BUSY')); SpreadsheetApp.flush() and
-                                           releaseLock() in finally.
+                                           (timeout -> makeError('BUSY')); drops the Store and Config read
+                                           memos once acquired; SpreadsheetApp.flush(), then, when fn wrote
+                                           into the source (noteSourceWrite) — even if fn or the flush
+                                           failed — Config.bumpSourceStamp(), then releaseLock(), in
+                                           finally. Re-entrant (only the outermost call flushes / bumps).
+Store.noteSourceWrite()                 -> marks the current withLock as having written into the source
+                                           (Importer write-back, before its first write); INTERNAL outside
+                                           withLock
+Store.clearMemo_()                      -> forgets the read memo (apiWrap_ / syncHourly start with it)
+Store.resetCache_()                     -> clearMemo_ + drops the opened spreadsheet and Config's memo (a new
+                                           execution, for tests)
 Store.readTab(tab)                      -> [object] (header->value, values as strings; '' for empty)
 Store.writeTab(tab, objects)            -> void (rewrite all data rows in schema column order)
-Store.listMonths()                      -> ['YYYY-MM'] asc unique (from ImportLog ∪ Postes ∪ Applications)
+Store.listMonths()                      -> ['YYYY-MM'] asc unique (from column A of ImportLog ∪ Postes ∪ Applications)
 Store.hasMonth(month)                   -> bool
-Store.readEntityMonth(tab, month)       -> [record] parsed from _json + {_id,_key,_order,_updated_at}, sorted by _order
-Store.readEntityAll(tab)                -> {month:[record]} for all months
+Store.tabMonths(tab)                    -> ['YYYY-MM'] asc: the months that have rows in `tab` (column A only)
+Store.readEntityMonth(tab, month)       -> [record] parsed from _json + {_id,_key,_order,_updated_at}, sorted by
+                                           _order; reads that month's block only
+Store.readEntityAll(tab)                -> {month:[record]} for all months (whole tab: api_getTimeline)
 Store.replaceEntityMonth(tab, month, records, keyField)
                                         -> [record] stored (keeps other months' rows; assigns _id via
                                            Config.uuid() if missing, _order = index, _key = str(rec[keyField]))
 Store.updateEntityRows(tab, month, changes)   changes=[{id, updates}] -> [record] updated;
                                            unknown id -> NOT_FOUND (nothing written). Sets _updated_at.
-Store.appendEntityRow(tab, month, record, keyField) -> record (new _id, _order = max+1)
+                                           Reads and rewrites within the month's block only.
+Store.appendEntityRow(tab, month, record, keyField) -> record (new _id, _order = max+1), appended after the
+                                           last used row (reads the month's block only)
 Store.deleteEntityRow(tab, month, id)   -> bool
-Store.readReferentiel(month)            -> {cat:[values]} (ordered by position)
+Store.readReferentiel(month)            -> {cat:[values]} (ordered by position); reads that month's block only
 Store.replaceReferentiel(month, refObj) -> void
-Store.getImportLog()                    -> [ImportLog entry] in insertion order (parsed json columns)
+Store.getImportLog()                    -> [ImportLog entry] in insertion order (parsed json columns; whole tab)
+Store.recentImportLog(limit)            -> the `limit` latest entries, newest first: the last `limit` rows, then
+                                           blocks twice as large while blank rows left fewer entries (a
+                                           block past the end of the sheet -> whole tab)
 Store.appendImportLog(entry)            -> void
-Store.latestImportInfo(month)           -> last ImportLog entry for month or null
+Store.latestImportInfo(month)           -> last ImportLog entry for month or null, parsing that row only: the
+                                           last 30 rows first unless column A is already memoized, then column
+                                           A from the bottom and that one row (last rows past the end of the
+                                           sheet -> column A; a row that no longer matches column A, or is
+                                           past the end of the sheet -> whole tab). ImportLog
+                                           is append-only and never pruned:
+                                           the latest row of every month is what listMonths and the
+                                           incomplete-import repair rely on.
 Store.listRows(tab)                     -> [object] (Actions / Replacements)
 Store.insertRow(tab, obj)               -> obj
 Store.updateRow(tab, id, updates)       -> updated obj | NOT_FOUND
@@ -339,8 +430,18 @@ Importer.readSource()       -> {sourceId, title, postes:{headers,records,warning
                                Per tab: one getDataRange() then getValues() + getDisplayValues();
                                Date cells formatted 'dd/MM/yyyy' in ss.getSpreadsheetTimeZone().
                                Missing postes AND applications tab -> SOURCE_ERROR.
-Importer.importMonth(month, overwrite, {skipUnchanged?}) -> SyncResult (see §3). Inside Store.withLock;
-                               every read happens before the first write. MONTH_EXISTS when the month
+Importer.importMonth(month, overwrite, {skipUnchanged?}) -> SyncResult (see §3). Notes
+                               Config.sourceStamp(), reads the source (readSource) OUTSIDE the lock,
+                               then takes Store.withLock (BUSY after 20 s, as before) to read the stored
+                               month, compare and write; every read happens before the first write.
+                               Lost-edit guard: under the lock, when the stamp moved (a write-back was
+                               flushed since the outside read began) or the configured source changed,
+                               the source is read again under the lock, so a live-month save that landed
+                               in between is never reverted. Out-of-order guard: an import that writes
+                               moves the same stamp (Config.bumpSourceStamp, under the lock, before its
+                               first write), so of two overlapping runs (hourly trigger, api_syncNow,
+                               api_enableSync) the one whose outside read is older reads the source again
+                               instead of reverting the newer import. MONTH_EXISTS when the month
                                exists and !overwrite. With skipUnchanged, an overwrite that changes nothing
                                (records, headers, référentiel) writes nothing, not even the ImportLog.
                                « Poste générique Decathlon » is added to the postes when an application
@@ -354,6 +455,8 @@ Importer.importMonth(month, overwrite, {skipUnchanged?}) -> SyncResult (see §3)
                                Carry-over of Galink/IDP via Core.mergeCarryOver from (a) the existing
                                snapshot of the same month when overwriting, else (b) the latest
                                EARLIER month that has applications (empty snapshots are skipped).
+                               Only those months are read (Store.readEntityMonth; (b) located with
+                               Store.tabMonths and read only when needed), never the whole history.
                                When overwriting a month whose previous import is incomplete (no
                                ImportLog entry) or has no applications, a second mergeCarryOver pass
                                fills the fields still blank from (b) (warning 'L’import précédent du
@@ -365,10 +468,21 @@ Importer.writeEdits(entity, [{name, fields}]) -> cells written. entity 'postes'|
                                found -> else SOURCE_ERROR; no formula -> else VALIDATION), then setValue per
                                cell (Core.escapeFormula: text stays text). Fields without a source column
                                are skipped (snapshot only). A value refused by data validation -> VALIDATION.
+                               Writes stay one setValue per edited cell: a block setValues would rewrite
+                               the cells between edited ones (formulas, validated cells, concurrent hand
+                               edits) and lose the refused value in the message.
 Importer.appendRecord(entity, rec) -> void. New source row just below the last record (inserted when that
                                row is not empty); formulas of the last record's row are copied down into
                                the columns the record leaves blank. Duplicate key -> VALIDATION.
 Importer.deleteRecord(entity, name) -> bool (false when the source has no such row).
+                               Reads of the three write-backs: getDataRange() for the size, the first 15
+                               rows (header row, Core.findHeaderRow's scan depth) and the key column below
+                               the header (getDisplayValues), then only what the write touches:
+                               writeEdits the formulas of the edited rows (rows at most 5 apart in one
+                               block; more than 3 blocks -> one block from the first to the last edited
+                               row), appendRecord the row below the last record and that record's
+                               formulas. Never the whole tab. All three run under Store.withLock
+                               (re-entrant) and call Store.noteSourceWrite() before their first write.
 ```
 
 ### Sync (`src/Sync.js`)
@@ -384,29 +498,71 @@ Sync.runFromTrigger() -> run() when a source is configured; rethrows failures (G
 syncHourly()          -> (Code.js) the trigger handler: Sync.runFromTrigger()
 ```
 
+### Perf (`src/Perf.js`)
+Timing lines for the Apps Script Executions log / Cloud Logging: one `console.log(JSON.stringify(obj))`
+each, carrying durations (ms, integers), counts, tab / API / stage names and month keys only (never an
+e-mail address, an id or record contents). Stage lines are emitted when the stage completes; a failure
+shows in the `{api, ok:false, code}` line (or the `sync` line for the hourly trigger).
+```
+Perf.log(obj)                    -> emits one line; never throws
+Perf.start(stage, fields?)       -> timer {lap(name), end(extra?)}: lap adds the time since the previous
+                                    lap to `name` (accumulates); end emits {stage, ms, <laps>, <fields>, <extra>} once
+```
+| Line | Emitted by |
+|---|---|
+| `{api, ms, authMs, ok, code?}` | `apiWrap_`, every `api_*` call (`authMs` = `Config.get` + role check, `null` when refused) |
+| `{stage:'ensure', ms, open, ensureTabs, created}` | `Store.ensure`, first successful call of an execution |
+| `{stage:'sheet', tab, rows, ms}` | every full read of a data tab (`Store` `readTable_`; memoized reads log nothing) |
+| `{stage:'span', tab, rows, ms}` | every partial read of a data tab: one month's block (`Postes`, `Applications`, `Referentiel`), `ImportLog` rows read from the bottom or the one row of `latestImportInfo` |
+| `{stage:'listMonths', ms, ImportLog, Postes, Applications, rows, months}` | `Store.listMonths` (one lap per tab) |
+| `{stage:'sourceSheet', tab, rows, ms}` | `Importer.readSource`, per entity tab |
+| `{stage:'importMonth', ms, readSource, lockWait, rereadSource?, dataReads, compare, writes?, flush, month, changed, reread}` | `Importer.importMonth` when it completes (`readSource` = the read outside the lock; `rereadSource` and `reread: true` when the source was read again under the lock; `writes` absent when nothing was written) |
+| `{stage:'writeBack', ms, sourceOpen, sourceRead, cellWrites, op, entity}` | `Importer.writeEdits` (`op:'edit'`), `appendRecord` (`'append'`), `deleteRecord` (`'delete'`), when they complete |
+| `{stage:'sync', ms, import, state, month, changed, ok:true}` / `{stage:'sync', ms, month, ok:false, code}` | `Sync.run` (hourly trigger and `api_syncNow` / `api_enableSync`) |
+| `{stage:'inlineBoot', ms, ok, bytes}` | `inlineBoot_` (doGet: the bootstrap rendered into the page, after its own `{api:'api_bootstrap', …}` line; `ok:false, bytes:0` when nothing was inlined) |
+
+Client side, `api.call` logs `[rpc] <name> <ms>ms` (plus the error code on failure) and `App.boot` logs
+`[boot] ready <ms>ms (boot <ms>ms, first paint <ms>ms)` with `console.debug` (shown at the browser
+console's « Verbose » level); the difference between `[rpc]` and the server's `{api, ms}` is the
+`google.script.run` overhead and queueing.
+
 ### Code (`src/Code.js`)
 ```
-doGet(e)        -> HtmlService.createTemplateFromFile('index').evaluate()
-                   .setTitle('Shadow IT — Tableau de bord')
+doGet(e)        -> HtmlService.createTemplateFromFile('index') with template.page = e.parameter.page || '',
+                   .evaluate().setTitle('Shadow IT — Tableau de bord')
                    .addMetaTag('viewport','width=device-width, initial-scale=1')
 include(name)   -> HtmlService.createHtmlOutputFromFile(name).getContent()
 coreScript()    -> 'var Core = (' + CoreFactory_.toString() + ')();'   (output must not contain '</script')
+inlineBoot_()   -> (template, #boot-data) inlineJson_(api_bootstrap('null')) when that envelope is ok, else ''
+                   (refused visitor, failure, exception: never throws). Goes through the WRAPPED api_bootstrap,
+                   so the role check and its {api} timing line apply; then logs {stage:'inlineBoot', ms, ok, bytes}.
+inlinePage_(p)  -> (template, #boot-page) JSON.stringify(p) for a NAV page id (dashboard, postes, apps, timeline,
+                   actions, settings), else 'null'. Admin-only pages are filtered by the client.
+inlineJson_(s)  -> JSON text safe inside <script>: < > & ' ` U+2028 U+2029 -> \uXXXX, / -> \/ (same value
+                   for JSON.parse; neither '</script' nor '<!--' can appear)
 setup()         -> Store.ensure(); Sync.enable(); logs data spreadsheet URL. Run once from the editor to authorize.
-syncHourly()    -> Sync.runFromTrigger() (time-driven trigger, every hour)
+syncHourly()    -> Store.clearMemo_(); Config.clearMemo_(); Sync.runFromTrigger() (time-driven trigger, every hour)
 ```
 
 ---------------------------------------------------------------------------------------------------
 ## 5. Client
 
 ### Template (`src/index.html`)
-Only the scriptlet form `<?!= fn('arg') ?>` is used (so the Node renderer stays trivial). Order:
+Only printing function scriptlets are used, `<?!= fn() ?>`, `<?!= fn('arg') ?>` or `<?!= fn(templateVar) ?>`
+(so the Node renderer stays trivial). Nothing in `<head>` blocks the scripts: the Google Fonts stylesheet
+is `media="print" onload="this.media='all'"` (+ a `<noscript>` copy) and Plotly is only
+`<link rel="preload" as="script">`ed — `Charts.ready()` runs it. Order:
 ```html
 <!DOCTYPE html><html lang="fr"><head><base target="_top"><meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?…" media="print" onload="this.media='all'"> + <noscript>
+<link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.3/plotly.min.js" as="script">
 <?!= include('css') ?>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.3/plotly.min.js"></script>
 </head><body>
+<div id="splash"> … </div>
 <div id="app"> … sidebar (#sidebar) + .workspace (app bar #appbar + main #main) … </div>
 <div id="toast-root"></div><div id="modal-root"></div>
+<script type="application/json" id="boot-data"><?!= inlineBoot_() ?></script>      bootstrap envelope or ''
+<script type="application/json" id="boot-page"><?!= inlinePage_(page) ?></script>  "postes" | null
 <script><?!= coreScript() ?></script>
 <?!= include('js_api') ?>  <?!= include('js_state') ?>  <?!= include('js_ui') ?>  <?!= include('js_charts') ?>
 <?!= include('js_page_dashboard') ?> <?!= include('js_page_inventory') ?> <?!= include('js_page_postes') ?> <?!= include('js_page_apps') ?>
@@ -423,6 +579,7 @@ api.call(name, args?) -> Promise<data>
    google.script.run.withSuccessHandler(s => parse envelope).withFailureHandler(e => reject)[name](JSON.stringify(args ?? null))
    ok:false  -> reject(err) where err = new Error(message), err.code = code
    transport failure -> err.code = 'TRANSPORT'
+   every call   -> console.debug('[rpc] <name> <ms>ms[ <code>]') when it settles
 ```
 
 ### `window.State` (`js_state.html`)
@@ -452,10 +609,15 @@ State.invalidate(month?)         -> drop one/all cached months (also the timelin
 State.filtered(monthData)        -> Core.filterData({postes, applications}, state.filters)
 State.loadMonth(month)           -> cached / shared pending request; a failure is handed once more to the next
                                     caller within 2 s (the page mounted after a month swap shows it, no 2nd call);
-                                    State.invalidate(month) clears it.
+                                    any State.invalidate() clears every kept failure (« Réessayer » asks again).
 State.loadTimeline({force}?)     -> Promise<timeline> (cached)
 State.loadActions({force}?)      -> Promise<{actions, replacements}> (cached)
-State.refreshBootstrap()         -> Promise (api_bootstrap -> sets configured/months/... ; keeps month if still valid else latest)
+State.refreshBootstrap({useInline}?) -> Promise<state> (api_bootstrap -> sets configured/months/... ; keeps month if
+                                    still valid else latest). The FIRST call of the page consumes #boot-data; with
+                                    useInline (App.boot only) it answers from it when it holds an ok envelope, with
+                                    no server call. Every other call asks the server (reload, retry, new source…).
+State.takeInline(id)             -> JSON.parse of <script type="application/json" id=…> rendered by doGet, removing
+                                    the element (read once); undefined when missing, empty or unreadable.
 ```
 
 ### `window.UI` (`js_ui.html`)
@@ -501,9 +663,18 @@ UI.downloadCsv(filename, columns:[string], rows:[object])   (client-side CSV exp
 ```
 
 ### `window.Charts` (`js_charts.html`)
-All draw into a container element, use `{responsive:true, displayModeBar:false}`, French labels, and
-fall back to `UI.empty('Graphique indisponible')` when `window.Plotly` is missing.
+All draw into a container element, use `{responsive:true, displayModeBar:false}` and French labels. Plotly
+is not in `<head>`: a draw asked before it is loaded waits for `Charts.ready()` (only into an element still in
+the page) and falls back to `UI.empty('Graphique indisponible')` when it could not be loaded. A build that
+still arrives after the 30 s timeout redraws the charts that fell back and are still in the page.
 ```
+Charts.ready()                                        -> Promise<Plotly>: adds the async plotly.min.js 2.35.3 script
+                                                         once (memoized); a load error or no load within 30 s
+                                                         rejects for the charts waiting then, and the script is
+                                                         never requested again. If that script still runs after
+                                                         the timeout, every later call resolves (later draws are
+                                                         real charts) and the draws that fell back are run again
+                                                         into the elements still in the page. Started by App.boot.
 Charts.gauge(el, value, {height=250})                 -> indicator gauge, bar Core.COLOR_OK if value>=80 else
                                                          COLOR_KO, threshold line at 80 (COLOR_THRESHOLD)
 Charts.riskBars(el, counts /* Core.riskCounts */)     -> bar per RISK_ORDER, colors RISK_COLORS, no legend
@@ -511,7 +682,10 @@ Charts.histogram(el, scores:[number])                 -> 10 bins on 0–100, vli
 Charts.line(el, {x:[labels], series:[{name, y:[number|null], color?}], threshold?:80, yTitle?, yRange?})
 Charts.heatmap(el, {x:[labels], y:[labels], z:[[number|null]], zmin=0, zmax=100, title?})
 Charts.purge(el)
-Charts.board({sectionClass?}) -> {section(title, id, drawFn, caption?), draw(), purge()}  (charts of a page body)
+Charts.board({sectionClass?}) -> {section(title, id, drawFn, caption?), draw(), purge()}  (charts of a page body;
+                                 draw() runs the queue at once when Plotly is there, else after Charts.ready(),
+                                 skipping boxes no longer in the page or purged; « Graphique indisponible » on failure,
+                                 then the queue again if Plotly still arrives late)
 ```
 
 ### Pages
@@ -544,13 +718,20 @@ only declares its spec (columns, nouns, CSV, create button, drawer).
 ```
 App.go(pageId)        -> navigate (also google.script.history.push({page}) when available)
 App.refresh()         -> re-mount current page
-App.boot()            -> called on DOMContentLoaded, behind the #splash (static in index.html: team logo,
-                         indeterminate bar, step line): « Vérification de l’accès… » State.refreshBootstrap();
-                         « Chargement de mai 2026… » State.loadMonth(month) (warms the cache); then renders and
-                         fades the splash out. After 8 s a note explains the Apps Script cold start; a failure
+App.boot()            -> runs as soon as js_main.html is parsed (the scripts close <body>), behind the #splash
+                         (static in index.html: team logo, indeterminate bar, step line). First Charts.ready()
+                         (Plotly downloads meanwhile); « Vérification de l’accès… »
+                         State.refreshBootstrap({useInline:true}) with the initial page (#boot-page, else
+                         google.script.url.getLocation, 1.5 s timeout); « Chargement de mai 2026… »
+                         State.loadMonth(month) (warms the cache) and, not awaited, what the first page will ask:
+                         the period's first month (dashboard / postes / apps, saved period) and the timeline
+                         (dashboard with a period, timeline page) — the page joins these pending requests.
+                         The splash waits on the month only; then renders and fades out. After 8 s a note explains the Apps Script cold start; a failure
                          shows the error + « Réessayer » on the splash; FORBIDDEN → « Accès refusé ».
                          If !configured: configuration screen (paste source sheet URL -> App.applySource:
                          api_setConfig, then a first App.syncNow()).
+                         Performance marks 'shadow:boot' (start) and 'shadow:ready' (rendered), then
+                         console.debug('[boot] ready …') (§4 Perf).
 App.syncNow(button?, {enable?}) -> Promise<{status, result}|null>: api_syncNow (api_enableSync with enable);
                          toast « Synchronisé — <changes> » / « Synchronisé — aucune modification. »; after a
                          change: State.invalidate() + State.refreshBootstrap() + re-mount. Errors: toast, then
@@ -667,11 +848,25 @@ compares the first and last months by default.
 - `test/fixtures/source.js` — `buildSourceSpreadsheet(month)` → fake live spreadsheet definition (banner row,
   header row, Date cells, `0.304` raw vs `'30,4%'` display, empty/ghost rows) built from `data.js`.
 - `test/helpers/gasFakes.js` — in-memory `SpreadsheetApp`, `PropertiesService`, `LockService`,
-  `Utilities`, `HtmlService`, `Logger`.
+  `Utilities`, `HtmlService`, `Logger`, `GroupsApp`, `CacheService` (get / getAll / put / putAll with TTLs on the
+  `Date.now()` clock; `env.__state.cacheFaults.read / .write` make them throw); counters in `env.__state.calls`
+  (Sheets, Properties and Cache calls), `env.__state.opened` (ids passed to `openById`),
+  `env.__state.propertyWrites` (keys written)
+  and `env.__state.cells` (cells read per read method); `env.__state.reads` logs every range read
+  (spreadsheet, sheet, method, A1, cells, whether the script lock was held); `env.__state.onWaitLock = fn`
+  runs fn once before the next lock acquisition (another execution taking the lock first).
 - `test/helpers/gasSandbox.js` — `loadGas({sources})` → `vm` context with fakes + every `src/*.js`
-  loaded in alphabetical order (proves load-order independence).
-- `test/helpers/render.js` — renders `src/index.html` (scriptlets `include`/`coreScript`) to static
-  HTML; optional injection of `test/fixtures/mockRun.js` + data for the browser.
+  loaded in alphabetical order (proves load-order independence); `loadGas({env})` = a new execution over
+  the same spreadsheets; `timingLines(env)` = the Perf lines captured by the fake console.
+- `test/integration/perf.test.js` — call counts (openById, reads, cells read, Properties reads, Cache reads and
+  writes, GroupsApp calls, source cells read, source reads made under the lock)
+  of the main flows on a large generated data spreadsheet, bounded by today's numbers (`BASELINE`);
+  `PERF_OUT=<file>` writes the measurement as JSON.
+- `test/helpers/render.js` — renders `src/index.html` (scriptlets `include`/`coreScript`, and
+  `inlineBoot_`/`inlinePage_` run from the real `Code.js` over the `boot` envelope / `page` options, '' when
+  left out) to static HTML; optional injection of `test/fixtures/mockRun.js` + data for the browser.
+  `bootstrapEnvelope(options)` (mockRun.js) computes in Node the envelope the mock's api_bootstrap returns;
+  the e2e harness takes `boot` / `inlinePage` (inline data) and `plotly: {delayMs}|{fail:true}`.
 - `test/fixtures/mockRun.js` — browser `google.script.run` mock implementing every `api_*` from §3
   over in-memory data from `data.js` (records enriched with `Core`), recording calls in
   `window.__calls`.

@@ -21,7 +21,10 @@
  * checked first (Access.requireRole, FORBIDDEN otherwise) and the effective compliance threshold is
  * applied to Core for the duration of the call. Errors whose `.code` is one of Core.ERROR_CODES are
  * reported as-is (their messages are ours, in French); anything else becomes INTERNAL. The stack is
- * logged with console.error and never sent to the client.
+ * logged with console.error and never sent to the client. Every call ends with one timing line
+ * (Perf.log): {api, ms, authMs (Config + role check), ok, code (failures only)}. Every call starts
+ * with empty read memos (Store, Config): in Apps Script each call is a new execution anyway, the
+ * reset keeps the test sandbox (many calls in one context) honest.
  * @param {function(Object, Object): *} fn
  * @param {string=} name used in logs
  * @param {string=} minRole 'lecteur' (default) | 'admin'
@@ -29,21 +32,34 @@
  */
 function apiWrap_(fn, name, minRole) {
   return function (argsJson) {
+    var t0 = Date.now();
+    var authMs = null;
+    var ok = false;
+    var code = null;
     try {
+      Store.clearMemo_();
+      Config.clearMemo_();
       var cfg = Config.get();
       var user = Access.requireRole(minRole || 'lecteur', cfg.access);
+      authMs = Date.now() - t0;
       Core.setThreshold(cfg.threshold);
       var args = parseArgs_(argsJson);
       var data = fn(args, user);
-      return JSON.stringify({ ok: true, data: data === undefined ? null : data });
+      var reply = JSON.stringify({ ok: true, data: data === undefined ? null : data });
+      ok = true;
+      return reply;
     } catch (err) {
       var e = err || {};
       var known = Core.ERROR_CODES.indexOf(e.code) >= 0 && e.code !== 'INTERNAL';
-      var code = known ? e.code : 'INTERNAL';
+      code = known ? e.code : 'INTERNAL';
       var message = known ? String(e.message || code) : internalMessage_(e);
       if (code === 'FORBIDDEN') console.warn('[' + (name || 'api') + '] ' + code + ': ' + message);
       else console.error('[' + (name || 'api') + '] ' + code + ': ' + (e.stack || e.message || String(err)));
       return JSON.stringify({ ok: false, error: { code: code, message: message } });
+    } finally {
+      var line = { api: name || 'api', ms: Date.now() - t0, authMs: authMs, ok: ok };
+      if (code) line.code = code;
+      Perf.log(line);
     }
   };
 }
@@ -80,6 +96,8 @@ var ApiImpl_ = (function () {
     'Niveau de risque'];
   var APP_SLIM_FIELDS = ['Équipe', 'SIP', 'Contrat', 'Galink', 'IDP', 'Niveau de risque'];
   var DATE_FR_RE = /^\d{2}\/\d{2}\/\d{4}$/;
+  var IMPORT_LOG_LIMIT = 12;     // api_getImportLog default (the « Journal des synchronisations »)
+  var IMPORT_LOG_MAX_LIMIT = 500;
 
   var hasOwn = Object.prototype.hasOwnProperty;
 
@@ -256,20 +274,18 @@ var ApiImpl_ = (function () {
     });
   }
 
-  function sourceUrl_(id) {
-    return 'https://docs.google.com/spreadsheets/d/' + id + '/edit';
-  }
-
   /**
-   * The configured source spreadsheet: {id, url, title, tabsFound|null}. When it cannot be opened, the url
-   * is built from the id and title / tabsFound stay empty (logged, never thrown).
+   * The configured source spreadsheet, checked live (Paramètres only: api_bootstrap never opens it):
+   * {id, url, title, tabsFound|null}. The url is built from the id. When the file cannot be opened,
+   * tabsFound is null (« Classeur inaccessible ») and the title is the stored one (Config SOURCE_INFO);
+   * the failure is logged, never thrown.
    */
-  function sourceInfo_(id, caller) {
-    var info = { id: id, url: id ? sourceUrl_(id) : '', title: '', tabsFound: null };
+  function liveSourceInfo_(cfg, caller) {
+    var id = cfg.sourceId;
+    var info = { id: id, url: id ? Config.spreadsheetUrl(id) : '', title: id ? cfg.sourceTitle : '', tabsFound: null };
     if (!id) return info;
     try {
       var ss = SpreadsheetApp.openById(id);
-      info.url = ss.getUrl();
       info.title = ss.getName();
       info.tabsFound = Importer.tabsFound_(ss);
     } catch (e) {
@@ -288,16 +304,17 @@ var ApiImpl_ = (function () {
     Store.ensure();
 
     var months = Store.listMonths();
-    // The spreadsheets are private to the deployer: links are only useful to admins.
-    var src = admin ? sourceInfo_(cfg.sourceId, 'api_bootstrap') : sourceInfo_('', '');
+    // The spreadsheets are private to the deployer: links are only useful to admins. Neither file is
+    // opened for them: URLs are built from the ids, the source title is the stored one (Config.get).
+    var showSource = admin && !!cfg.sourceId;
     return {
       configured: !!cfg.sourceId,
       months: months,
       latestMonth: months.length ? months[months.length - 1] : '',
       currentMonth: Config.today().slice(0, 7),
       dataUrl: admin ? Store.dataUrl() : '',
-      sourceUrl: src.url,
-      sourceTitle: src.title,
+      sourceUrl: showSource ? Config.spreadsheetUrl(cfg.sourceId) : '',
+      sourceTitle: showSource ? cfg.sourceTitle : '',
       threshold: cfg.threshold,
       user: { email: user.email, role: user.role, isOwner: user.isOwner },
       prefs: Config.getPrefs(user.email),
@@ -331,8 +348,9 @@ var ApiImpl_ = (function () {
       throw Core.makeError('SOURCE_ERROR', 'Le classeur « ' + ss.getName() + ' » ne contient ni l’onglet « ' +
         Core.SOURCE_TABS.postes + ' » ni l’onglet « ' + Core.SOURCE_TABS.applications + ' ».');
     }
-    Store.withLock(function () { Config.setSourceId(id); });
-    return { sourceId: id, sourceTitle: ss.getName(), sourceUrl: ss.getUrl(), tabsFound: tabs, sync: startSync_() };
+    var title = ss.getName();
+    Store.withLock(function () { Config.setSourceId(id, title); });
+    return { sourceId: id, sourceTitle: title, sourceUrl: Config.spreadsheetUrl(id), tabsFound: tabs, sync: startSync_() };
   }
 
   /**
@@ -387,8 +405,15 @@ var ApiImpl_ = (function () {
     };
   }
 
-  function getImportLog() {
-    return Store.getImportLog().reverse();
+  /** The `limit` latest ImportLog entries, newest first, with the fields the journal shows only. */
+  function getImportLog(args) {
+    var limit = args.limit === undefined || args.limit === null ? IMPORT_LOG_LIMIT : args.limit;
+    if (typeof limit !== 'number' || Math.floor(limit) !== limit || limit < 1 || limit > IMPORT_LOG_MAX_LIMIT) {
+      throw invalid_('« limit » doit être un entier entre 1 et ' + IMPORT_LOG_MAX_LIMIT + '.');
+    }
+    return Store.recentImportLog(limit).map(function (e) {
+      return { month: e.month, imported_at: e.imported_at, counts: e.counts, warnings: e.warnings, changes: e.changes };
+    });
   }
 
   // ------------------------------------------------------------------------- entity edits
@@ -683,7 +708,7 @@ var ApiImpl_ = (function () {
    */
   function mutateAccess_(user, change, check) {
     return Store.withLock(function () {
-      var access = Config.get().access;
+      var access = Config.get({ fresh: true }).access;
       var changed = change(access) !== false;
       if (check) check(access);
       if (changed) Config.setAccess(access);
@@ -712,7 +737,7 @@ var ApiImpl_ = (function () {
 
   function getSettings(args, user) {
     var cfg = Config.get();
-    var source = sourceInfo_(cfg.sourceId, 'api_getSettings');
+    var source = liveSourceInfo_(cfg, 'api_getSettings');
     return {
       threshold: cfg.threshold,
       defaultThreshold: Core.THRESHOLD,

@@ -55,7 +55,8 @@ font-variant-numeric: tabular-nums on everything numeric.
 ```
 Load the fonts from Google Fonts in `index.html`
 (`https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap`)
-with the system fallbacks above.
+with the system fallbacks above. The stylesheet must not block the first paint (`media="print"` switched to
+`all` on load): text shows in the fallbacks for the first moments, then in Plex.
 
 ## Components
 - **Logo**: the ghost (the Streamlit app's 👻, redrawn): inline SVG on a 24px grid, 1.75px ink
@@ -65,8 +66,9 @@ with the system fallbacks above.
   "Shadow IT" in mono 500 with a small "Industry · conformité" subtitle. Nav = text links led by a 16px « Trait »
   line icon (1.5px stroke, square caps, mitred joins, `currentColor`; `--ink-3` at rest, `--ink` on
   hover / active), with a 2px ink bar on the left of the active item; numbers on the right showing
-  counts are allowed (e.g. postes 7). Footer: text links to the data sheet and the source sheet, the
-  signed-in account, then « Réduire le menu ».
+  counts are allowed (e.g. postes 7). Footer: text links to the data sheet and the source sheet (from
+  the bootstrap: built from the ids, the source title as last stored by a sync, so the open never waits
+  on the source), the signed-in account, then « Réduire le menu ».
 - **Collapsed rail** (> 900px, remembered per Google account, with a browser copy for an instant start): 56px wide, the ghost alone (no wordmark), icons
   only (labels kept for screen readers), the page name in an ink tooltip to the right of the icon,
   footer links hidden. The active page keeps its 2px ink bar.
@@ -125,8 +127,8 @@ with the system fallbacks above.
 - **Config screen**: left-aligned within the main column like any page: title "Source de données",
   one paragraph, the input (full width up to 640px) and one primary button. No centered card.
 - **Paramètres** (admin only, last nav item): three sections on paper like any page, each saved on
-  its own: « Source de données » (`dl.kv` of the source, tabs found as status marks, data spreadsheet
-  link; a one-line form « Nouvelle source » + secondary button), « Seuil de conformité » (a 72px mono
+  its own: « Source de données » (`dl.kv` of the source, tabs found as status marks — the one live
+  check of the source, « Classeur inaccessible. » when it cannot be opened —, data spreadsheet link; a one-line form « Nouvelle source » + secondary button), « Seuil de conformité » (a 72px mono
   figure field with its `%` unit, primary « Enregistrer », quiet « Rétablir 80 % » only when changed),
   « Accès » (« Autres comptes du domaine » dropdown, ledger table Compte (mono) / Rôle (small dropdown,
   saved on change) / Ajouté le / « Retirer » quiet destructive button with a confirm; the owner and the
@@ -188,8 +190,8 @@ with the system fallbacks above.
   maintenant » secondary + « Journal » link; everybody: « Actualiser » primary when newer data exists).
   No link to the source for lecteurs (private to the deployer).
 - **Paramètres → Synchronisation**: kv list (Automatique, Mois en cours, Dernière réussite, Dernière
-  modification), the button, then « Journal des synchronisations » (one row per run that changed
-  something, warnings behind the count button).
+  modification), the button, then « Journal des synchronisations » (the 12 latest runs that changed
+  something, newest first, warnings behind the count button).
 - **Where an edit goes**, for admins above the Postes / Applications tables: an `alert-info` line, « Les
   modifications sont écrites dans le Google Sheet source. » for the current month, « Mois figé : … » for a
   past one.
@@ -206,8 +208,14 @@ with the system fallbacks above.
   Spinners + text stay only for small waits the user started (busy buttons, drawers, history panels).
 - **Progress line**: 2px indeterminate ink line on the app bar's bottom edge while anything in the
   page is `aria-busy`.
+- **Charts last**: Plotly loads on its own, so figures, tables and captions appear with the data; a
+  chart box stays empty (120px minimum height, under its label) until Plotly is there, and shows
+  « Graphique indisponible » if it does not come within 30 s; if it still comes later, the charts
+  of the page shown are drawn then, without any action from the user.
 - **Month change**: the page and the filters stay readable at 45 % opacity (not interactive) until
   the new month is in; no blank page between two months.
+- **Timings are invisible**: boot and server-call durations go to `console.debug` and the Apps Script
+  log only (docs/API.md §4 Perf), never to the interface. Judge loading changes on those numbers.
 
 ## Accessibility
 Contrast ≥ 4.5:1 for text (all tokens above pass on `--paper`), visible focus ring on everything

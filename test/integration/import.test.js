@@ -186,13 +186,16 @@ test('import 2026-04: counts, ghost-row warnings, log entry, months', () => {
 
   const log = ok(ctx, 'api_getImportLog');
   assert.equal(log.length, 1);
+  assert.deepEqual(Object.keys(log[0]), ['month', 'imported_at', 'counts', 'warnings', 'changes'], 'the journal fields only');
   assert.equal(log[0].month, '2026-04');
   assert.match(log[0].imported_at, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
-  assert.equal(log[0].source_id, SOURCE_ID);
   assert.deepEqual(log[0].counts, d.counts);
-  assert.deepEqual(log[0].postes_headers, data.POSTES_HEADERS);
-  assert.deepEqual(log[0].apps_headers, data.APPS_HEADERS);
   assert.deepEqual(log[0].warnings, GHOST_WARNINGS);
+  // The stored entry also keeps the source id and the headers (columns order of api_getMonthData).
+  const stored = plain(ctx.Store.getImportLog());
+  assert.equal(stored[0].source_id, SOURCE_ID);
+  assert.deepEqual(stored[0].postes_headers, data.POSTES_HEADERS);
+  assert.deepEqual(stored[0].apps_headers, data.APPS_HEADERS);
 
   const b = ok(ctx, 'api_bootstrap');
   assert.deepEqual(b.months, ['2026-04']);

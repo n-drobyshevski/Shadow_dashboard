@@ -49,7 +49,7 @@
  *     (App.applySource -> api_setConfig then a first synchronisation, the same path as the configuration screen).
  *   - Synchronisation: hourly trigger on / off (api_enableSync), last run, last change, error, « Synchroniser
  *     maintenant » (App.syncNow -> api_syncNow), and the journal of the runs that changed something
- *     (api_getImportLog, newest first). Re-rendered when the status changes elsewhere (app bar).
+ *     (api_getImportLog {limit: 12}, newest first). Re-rendered when the status changes elsewhere (app bar).
  *   - Seuil de conformité: integer 1–100 (api_setThreshold). Every cache is dropped and the bootstrap is
  *     reloaded so that every page re-scores with the new value.
  *   - Accès: role of the other accounts of the domain (api_setDomainRole), the access list with an inline
@@ -177,15 +177,17 @@
     return { toggle: toggle, detail: detail };
   }
 
+  var SYNC_LOG_ROWS = 12; // latest entries shown (the server reads only those: api_getImportLog {limit})
+
   function loadSyncLog(box) {
     UI.asyncBlock(box, {
-      load: function () { return api.call('api_getImportLog', null); },
+      load: function () { return api.call('api_getImportLog', { limit: SYNC_LOG_ROWS }); },
       placeholder: function () { return UI.loading('Chargement du journal…', { small: true }); },
       small: true,
       error: { prefix: 'Journal indisponible' },
       live: alive,
       render: function (log) {
-        var entries = (log || []).slice(0, 12);
+        var entries = (log || []).slice(0, SYNC_LOG_ROWS);
         if (!entries.length) { box.appendChild(UI.empty('Aucune synchronisation pour le moment.', { small: true })); return; }
         var warn = entries.map(logWarnings);
         function count(key) { return function (e) { return UI.fmtNum((e.counts || {})[key]); }; }

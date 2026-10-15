@@ -11,6 +11,29 @@ var Config = (function () {
   var PROP_ACCESS = 'ACCESS_JSON';
   var PROP_FAVICON = 'FAVICON_URL';
   /**
+   * Schema version of the data spreadsheet, copied from its Meta tab so that Store.ensure's fast path
+   * needs no Meta read: JSON {dataId, version}. Keyed by the spreadsheet id, so a new DATA_SPREADSHEET_ID
+   * never inherits the version of the previous file (Config.get reports '' until Store.ensure checks Meta).
+   */
+  var PROP_SCHEMA = 'DATA_SCHEMA_VERSION';
+  /**
+   * Title of the source spreadsheet, so that api_bootstrap shows it without opening the file: JSON
+   * {id, title}. Written together with the source id (setSourceId: api_setConfig has just opened the file)
+   * and refreshed under the lock by every import, which opens the source anyway (rememberSourceTitle), so
+   * it is at most one hourly sync old. Keyed by the source id like DATA_SCHEMA_VERSION: Config.get reports
+   * '' for a source the property is not about (e.g. a deployment that predates it, until its next sync).
+   */
+  var PROP_SOURCE_INFO = 'SOURCE_INFO';
+  /**
+   * Source write stamp: moved forward (Store.withLock, after its flush, still holding the lock) by every
+   * execution that wrote into the source spreadsheet (write-back of a live-month edit), and by every
+   * import that writes a snapshot (Importer.importMonth, under the lock, before its writes). The sync
+   * reads the source outside the lock: it notes the stamp before that read and reads the source again
+   * under the lock when the stamp moved, so neither a write-back nor a newer import that landed in
+   * between is ever reverted.
+   */
+  var PROP_SOURCE_STAMP = 'SOURCE_WRITE_STAMP';
+  /**
    * Per-account interface preferences, one Script Property per account: PREFS_<email> = JSON. The page
    * also keeps them in localStorage, but that storage is refused in the Apps Script frame when the
    * browser blocks third-party storage. PREF_VALUES = the only keys and values accepted.
@@ -64,23 +87,113 @@ var Config = (function () {
 
   var SCHEMA_VERSION = '2'; // 2: ImportLog.changes_json (hourly sync)
 
+  /**
+   * Per-execution memo of the Script Properties map (one getProperties per execution instead of one
+   * per Config.get). Only read here: get() / getPrefs() build new objects from it on every call, so a
+   * caller can change what they return. Dropped by every setter of this module, by clearMemo_() (start
+   * of each api_* call and of the hourly trigger run, Store.resetCache_) and when Store.withLock
+   * acquires the lock, so a read-modify-write under the lock always starts from the stored values.
+   */
+  var memo_ = null;
+
   function props_() {
     return PropertiesService.getScriptProperties();
   }
 
+  /** The Script Properties map: the memo, or one getProperties (always with `fresh`). */
+  function all_(fresh) {
+    if (!memo_ || fresh) memo_ = props_().getProperties() || {};
+    return memo_;
+  }
+
+  function clearMemo_() {
+    memo_ = null;
+  }
+
   /**
-   * @return {{dataId: string, sourceId: string, threshold: number, access: {users: Object[], groups: Object[], domainRole: string}}}
-   *   ids are '' when unset; threshold is Core.THRESHOLD when unset or invalid.
+   * @param {{fresh?: boolean}=} opts fresh: read the properties again instead of this execution's memo
+   * @return {{dataId: string, sourceId: string, sourceTitle: string, threshold: number, schemaVersion: string,
+   *           access: {users: Object[], groups: Object[], domainRole: string}}}
+   *   ids are '' when unset; sourceTitle is the stored title of sourceId (SOURCE_INFO), '' when none is;
+   *   threshold is Core.THRESHOLD when unset or invalid; schemaVersion is the version recorded for dataId
+   *   (setSchemaVersion), '' when none is.
    */
-  function get() {
-    var p = props_().getProperties() || {};
+  function get(opts) {
+    var p = all_(!!(opts && opts.fresh));
     var threshold = Core.validateThreshold(p[PROP_THRESHOLD] || '');
+    var dataId = p[PROP_DATA_ID] || '';
+    var sourceId = p[PROP_SOURCE_ID] || '';
     return {
-      dataId: p[PROP_DATA_ID] || '',
-      sourceId: p[PROP_SOURCE_ID] || '',
+      dataId: dataId,
+      sourceId: sourceId,
+      sourceTitle: sourceTitleFor_(p, sourceId),
       threshold: threshold === null ? Core.THRESHOLD : threshold,
+      schemaVersion: schemaVersionFor_(p, dataId),
       access: parseAccess_(readAccessJson_(p))
     };
+  }
+
+  /** Version stored in DATA_SCHEMA_VERSION when it is about `dataId`, else ''. */
+  function schemaVersionFor_(p, dataId) {
+    if (!dataId || !p[PROP_SCHEMA]) return '';
+    var v = null;
+    try { v = JSON.parse(p[PROP_SCHEMA]); } catch (e) { v = null; }
+    return v && v.dataId === dataId && typeof v.version === 'string' ? v.version : '';
+  }
+
+  /** Title stored in SOURCE_INFO when it is about the source `sourceId`, else ''. */
+  function sourceTitleFor_(p, sourceId) {
+    if (!sourceId || !p[PROP_SOURCE_INFO]) return '';
+    var v = null;
+    try { v = JSON.parse(p[PROP_SOURCE_INFO]); } catch (e) { v = null; }
+    return v && v.id === sourceId && typeof v.title === 'string' ? v.title : '';
+  }
+
+  function sourceInfoJson_(id, title) {
+    return JSON.stringify({ id: String(id || ''), title: String(title || '') });
+  }
+
+  /**
+   * Refreshes the stored title of the source `id` with the one just read from the file. Writes nothing
+   * when `id` is no longer the configured source or the title did not change (the usual case). Call under
+   * Store.withLock (the memo it compares with was then read under the lock, and setSourceId, the other
+   * writer, also runs under it). @return {boolean} whether it wrote
+   */
+  function rememberSourceTitle(id, title) {
+    var p = all_(false);
+    var t = String(title || '');
+    if (!id || p[PROP_SOURCE_ID] !== id || (p[PROP_SOURCE_INFO] && sourceTitleFor_(p, id) === t)) return false;
+    clearMemo_();
+    props_().setProperty(PROP_SOURCE_INFO, sourceInfoJson_(id, t));
+    return true;
+  }
+
+  /** Records that the data spreadsheet `dataId` carries schema `version` (Store.ensure, after checking Meta). */
+  function setSchemaVersion(dataId, version) {
+    clearMemo_();
+    props_().setProperty(PROP_SCHEMA, JSON.stringify({ dataId: String(dataId || ''), version: String(version) }));
+  }
+
+  /**
+   * The source write stamp ('' when never moved), from this execution's memo. Under Store.withLock the
+   * memo was dropped when the lock was taken, so this is the stored value; outside the lock it may be
+   * older than the stored value, which only ever causes an extra source read, never a missed one.
+   */
+  function sourceStamp() {
+    return String(all_(false)[PROP_SOURCE_STAMP] || '');
+  }
+
+  /**
+   * Moves the source write stamp forward to max(now, previous + 1) (never a value seen before, even
+   * after the property was deleted). Called under the lock only (Store.withLock after a write-back,
+   * Importer.importMonth before writing a snapshot): the memo it starts from was then read under the
+   * lock, and only lock holders write the stamp.
+   */
+  function bumpSourceStamp() {
+    var next = Math.max(Date.now(), (Number(all_(false)[PROP_SOURCE_STAMP]) || 0) + 1);
+    clearMemo_();
+    props_().setProperty(PROP_SOURCE_STAMP, String(next));
+    return String(next);
   }
 
   /** Concatenates ACCESS_JSON_0..N-1 ('' when unset or a part is missing). */
@@ -118,6 +231,7 @@ var Config = (function () {
   }
 
   function setThreshold(n) {
+    clearMemo_();
     props_().setProperty(PROP_THRESHOLD, String(n));
   }
 
@@ -129,6 +243,7 @@ var Config = (function () {
   function setAccess(access) {
     var json = JSON.stringify({ users: access.users || [], groups: access.groups || [],
       domainRole: access.domainRole || 'none' });
+    clearMemo_();
     var store = props_();
     var parts = {};
     var n = 0;
@@ -140,11 +255,22 @@ var Config = (function () {
   }
 
   function setDataId(id) {
+    clearMemo_();
     props_().setProperty(PROP_DATA_ID, String(id || ''));
   }
 
-  function setSourceId(id) {
-    props_().setProperty(PROP_SOURCE_ID, String(id || ''));
+  /** Saves the source id with its title (SOURCE_INFO) in one setProperties call. Call inside Store.withLock. */
+  function setSourceId(id, title) {
+    var parts = {};
+    parts[PROP_SOURCE_ID] = String(id || '');
+    parts[PROP_SOURCE_INFO] = sourceInfoJson_(id, title);
+    clearMemo_();
+    props_().setProperties(parts);
+  }
+
+  /** Edit URL of a Google Sheet built from its id: links are returned without opening the file for getUrl(). */
+  function spreadsheetUrl(id) {
+    return 'https://docs.google.com/spreadsheets/d/' + encodeURIComponent(String(id || '')) + '/edit';
   }
 
   function fmt_(pattern) {
@@ -177,14 +303,16 @@ var Config = (function () {
   /** @return {Object} the account's preferences ({} when none or unreadable). */
   function getPrefs(email) {
     if (!String(email || '').trim()) return {};
-    var raw = props_().getProperty(prefsKey_(email));
+    var raw = all_(false)[prefsKey_(email)];
     if (!raw) return {};
     try { return cleanPrefs_(JSON.parse(raw)); } catch (e) { return {}; }
   }
 
   /** Merges `patch` (already validated) into the account's preferences; returns the stored object. */
   function setPrefs(email, patch) {
+    all_(true); // read-modify-write: start from the stored value, not this execution's memo
     var next = cleanPrefs_(Object.assign(getPrefs(email), patch || {}));
+    clearMemo_();
     props_().setProperty(prefsKey_(email), JSON.stringify(next));
     return next;
   }
@@ -203,6 +331,9 @@ var Config = (function () {
     PROP_THRESHOLD: PROP_THRESHOLD,
     PROP_ACCESS: PROP_ACCESS,
     PROP_FAVICON: PROP_FAVICON,
+    PROP_SCHEMA: PROP_SCHEMA,
+    PROP_SOURCE_INFO: PROP_SOURCE_INFO,
+    PROP_SOURCE_STAMP: PROP_SOURCE_STAMP,
     PROP_PREFS_PREFIX: PROP_PREFS_PREFIX,
     PREF_VALUES: PREF_VALUES,
     DEFAULT_FAVICON_URL: DEFAULT_FAVICON_URL,
@@ -216,9 +347,15 @@ var Config = (function () {
     get: get,
     setDataId: setDataId,
     setSourceId: setSourceId,
+    rememberSourceTitle: rememberSourceTitle,
     setThreshold: setThreshold,
     setAccess: setAccess,
+    setSchemaVersion: setSchemaVersion,
+    sourceStamp: sourceStamp,
+    bumpSourceStamp: bumpSourceStamp,
+    clearMemo_: clearMemo_,
     faviconUrl: faviconUrl,
+    spreadsheetUrl: spreadsheetUrl,
     getPrefs: getPrefs,
     setPrefs: setPrefs,
     today: today,

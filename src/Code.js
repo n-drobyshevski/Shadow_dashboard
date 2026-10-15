@@ -2,9 +2,16 @@
  * Code — web app entry point and HtmlService template helpers (docs/API.md §4).
  */
 
-/** Web app entry: renders the index template. */
+/**
+ * Web app entry: renders the index template. The page also carries the bootstrap envelope
+ * (inlineBoot_) and the requested page (`?page=`, inlinePage_), so the client boots without waiting
+ * for a google.script.run round trip or for google.script.url.getLocation.
+ */
 function doGet(e) {
-  var out = HtmlService.createTemplateFromFile('index')
+  var template = HtmlService.createTemplateFromFile('index');
+  // Template variable read by the <?!= inlinePage_(page) ?> scriptlet.
+  template.page = (e && e.parameter && e.parameter.page) || '';
+  var out = template
     .evaluate()
     .setTitle('Shadow IT — Tableau de bord')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
@@ -35,6 +42,51 @@ function coreScript() {
 }
 
 /**
+ * Template helper: the visitor's api_bootstrap envelope as JSON for the
+ * <script type="application/json" id="boot-data"> element of index.html. It goes through the wrapped
+ * api_bootstrap, so the role check applies exactly as for google.script.run. '' when the call fails or
+ * is refused (FORBIDDEN...): the client then calls api_bootstrap itself and shows the denied screen or
+ * the splash error as before. Never throws (the page must render anyway). Logs
+ * {stage:'inlineBoot', ms, ok, bytes}.
+ */
+function inlineBoot_() {
+  var timer = Perf.start('inlineBoot');
+  var out = '';
+  try {
+    var json = api_bootstrap('null');
+    var envelope = JSON.parse(json);
+    if (envelope && envelope.ok === true) out = inlineJson_(json);
+  } catch (err) {
+    out = '';
+  }
+  timer.end({ ok: out !== '', bytes: out.length });
+  return out;
+}
+
+/**
+ * Template helper: the request's `?page=` as JSON for <script type="application/json" id="boot-page">:
+ * '"postes"' for a known page id (the NAV of js_main.html), 'null' otherwise. Whether the visitor may
+ * open it (Paramètres is admin only) is decided by the client, as for a page read from
+ * google.script.url.getLocation.
+ */
+function inlinePage_(page) {
+  var pages = ['dashboard', 'postes', 'apps', 'timeline', 'actions', 'settings'];
+  var p = page === null || page === undefined ? '' : String(page);
+  return JSON.stringify(pages.indexOf(p) >= 0 ? p : null);
+}
+
+/**
+ * JSON text made safe inside an HTML <script> element: < > & ' ` U+2028 U+2029 become \uXXXX escapes
+ * and / becomes \/ (so neither '</script' nor '<!--' can appear). Outside strings, JSON text never
+ * contains these characters, and inside strings the escapes are valid: JSON.parse returns the same value.
+ */
+function inlineJson_(json) {
+  return String(json).replace(/[<>&'`\u2028\u2029\/]/g, function (ch) {
+    return ch === '/' ? '\\/' : '\\u' + ('000' + ch.charCodeAt(0).toString(16)).slice(-4);
+  });
+}
+
+/**
  * Run once from the Apps Script editor: authorizes the script, creates the data spreadsheet and the
  * hourly synchronisation trigger. Asks first for any scope still missing (Sync.requireScopes).
  */
@@ -50,8 +102,11 @@ function setup() {
 /**
  * Time-driven trigger handler (every hour, created by Sync.enable): synchronises the current month
  * with the source spreadsheet. Public because a trigger cannot call a private (`_`) function; a call
- * from google.script.run would only run the same idempotent sync and returns nothing.
+ * from google.script.run would only run the same idempotent sync and returns nothing. Starts with
+ * empty read memos, like apiWrap_ (a new execution in Apps Script; matters in the test sandbox).
  */
 function syncHourly() {
+  Store.clearMemo_();
+  Config.clearMemo_();
   Sync.runFromTrigger();
 }
