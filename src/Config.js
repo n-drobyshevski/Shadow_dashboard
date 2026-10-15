@@ -39,6 +39,15 @@ var Config = (function () {
    * browser blocks third-party storage. PREF_VALUES = the only keys and values accepted.
    */
   var PROP_PREFS_PREFIX = 'PREFS_';
+  /**
+   * Switches of Paramètres › « Saisie dans l’application », for every admin and every month: JSON
+   * {edit, create, delete} (booleans). edit = cells of Postes / Applications and renaming an
+   * application, create = new postes and applications, delete = deleting an application. Only an
+   * explicit false turns a switch off: a missing or unreadable value means all on (the behaviour before
+   * the switches existed). Read with the other properties (Config.get, same memo, no extra read).
+   */
+  var PROP_EDITING = 'EDITING_JSON';
+  var EDITING_KEYS = ['edit', 'create', 'delete'];
   var PREF_VALUES = { sidebar: ['open', 'collapsed'], period: ['month', 'last3', 'last6', 'year', 'all'] };
   /**
    * Browser-tab icon (the ghost): assets/favicon.png (64×64) embedded as a data: URI, so nothing has to be
@@ -113,10 +122,11 @@ var Config = (function () {
   /**
    * @param {{fresh?: boolean}=} opts fresh: read the properties again instead of this execution's memo
    * @return {{dataId: string, sourceId: string, sourceTitle: string, threshold: number, schemaVersion: string,
-   *           access: {users: Object[], groups: Object[], domainRole: string}}}
+   *           access: {users: Object[], groups: Object[], domainRole: string},
+   *           editing: {edit: boolean, create: boolean, delete: boolean}}}
    *   ids are '' when unset; sourceTitle is the stored title of sourceId (SOURCE_INFO), '' when none is;
    *   threshold is Core.THRESHOLD when unset or invalid; schemaVersion is the version recorded for dataId
-   *   (setSchemaVersion), '' when none is.
+   *   (setSchemaVersion), '' when none is; editing is EDITING_JSON (all true when unset or unreadable).
    */
   function get(opts) {
     var p = all_(!!(opts && opts.fresh));
@@ -129,8 +139,20 @@ var Config = (function () {
       sourceTitle: sourceTitleFor_(p, sourceId),
       threshold: threshold === null ? Core.THRESHOLD : threshold,
       schemaVersion: schemaVersionFor_(p, dataId),
-      access: parseAccess_(readAccessJson_(p))
+      access: parseAccess_(readAccessJson_(p)),
+      editing: editingOf_(p[PROP_EDITING])
     };
+  }
+
+  /** EDITING_JSON -> {edit, create, delete}: each true unless the stored value says false. */
+  function editingOf_(raw) {
+    var v = null;
+    try { v = raw ? JSON.parse(raw) : null; } catch (e) { v = null; }
+    var out = {};
+    EDITING_KEYS.forEach(function (k) {
+      out[k] = !(v && typeof v === 'object' && v[k] === false);
+    });
+    return out;
   }
 
   /** Version stored in DATA_SCHEMA_VERSION when it is about `dataId`, else ''. */
@@ -236,6 +258,18 @@ var Config = (function () {
   }
 
   /**
+   * Writes the editing switches (all three, as booleans). Call inside Store.withLock, after merging the
+   * patch into Config.get().editing read under the lock.
+   * @param {{edit: boolean, create: boolean, delete: boolean}} editing
+   */
+  function setEditing(editing) {
+    var out = {};
+    EDITING_KEYS.forEach(function (k) { out[k] = editing[k] !== false; });
+    clearMemo_();
+    props_().setProperty(PROP_EDITING, JSON.stringify(out));
+  }
+
+  /**
    * Writes the access list in one setProperties call, then drops the parts left over from a longer
    * previous list. Call inside Store.withLock.
    * @param {{users: Object[], domainRole: string}} access
@@ -335,6 +369,8 @@ var Config = (function () {
     PROP_SOURCE_INFO: PROP_SOURCE_INFO,
     PROP_SOURCE_STAMP: PROP_SOURCE_STAMP,
     PROP_PREFS_PREFIX: PROP_PREFS_PREFIX,
+    PROP_EDITING: PROP_EDITING,
+    EDITING_KEYS: EDITING_KEYS,
     PREF_VALUES: PREF_VALUES,
     DEFAULT_FAVICON_URL: DEFAULT_FAVICON_URL,
     MAX_USERS: MAX_USERS,
@@ -349,6 +385,7 @@ var Config = (function () {
     setSourceId: setSourceId,
     rememberSourceTitle: rememberSourceTitle,
     setThreshold: setThreshold,
+    setEditing: setEditing,
     setAccess: setAccess,
     setSchemaVersion: setSchemaVersion,
     sourceStamp: sourceStamp,

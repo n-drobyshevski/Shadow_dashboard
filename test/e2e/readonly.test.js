@@ -22,7 +22,7 @@ const ADMIN_APIS = ['api_setConfig', 'api_syncNow', 'api_enableSync', 'api_saveP
   'api_getFormSchema', 'api_saveApplications',
   'api_addApplication', 'api_deleteApplication', 'api_renameApplication', 'api_addAction', 'api_updateAction',
   'api_deleteAction', 'api_addReplacement', 'api_updateReplacement', 'api_deleteReplacement',
-  'api_getSettings', 'api_setThreshold', 'api_saveUser', 'api_removeUser', 'api_setDomainRole', 'api_saveGroup',
+  'api_getSettings', 'api_setThreshold', 'api_setEditing', 'api_saveUser', 'api_removeUser', 'api_setDomainRole', 'api_saveGroup',
   'api_removeGroup'];
 
 /** Write controls of the data pages (ids, classes of row actions / inline editing, dirty bar). */

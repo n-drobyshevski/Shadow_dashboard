@@ -154,6 +154,14 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
   (`Importer.writeEdits` / `appendRecord` / `deleteRecord`), then into the snapshot, under the same lock. Past
   months are frozen history: their edits change the snapshot only. Fields without a source column (Galink /
   IDP) stay app-only.
+- **Editing switches** (Paramètres › « Saisie dans l’application », `Editing` below): after the role check and
+  before the lock, every month alike, `requireEditing_(kind)` refuses with `FORBIDDEN` and a specific message when
+  the switch is off: `edit` → `api_savePostes`, `api_saveApplications` (Galink / IDP included),
+  `api_renameApplication` (« La modification des postes et des applications est désactivée dans les Paramètres. »);
+  `create` → `api_addPoste`, `api_addApplication`, `api_addGenericPoste`, `api_getFormSchema` (« La création de
+  postes et d’applications est désactivée dans les Paramètres. »); `delete` → `api_deleteApplication` (« La
+  suppression d’applications est désactivée dans les Paramètres. »). Actions, remplacements, the sync and the
+  other settings are not concerned. A save already past the check when a switch flips still completes.
 - Writes are performed inside `Store.withLock(fn)`; lock timeout (20 s) → `BUSY`. The sync is the one
   writer that does its slowest read outside the lock: it reads the source first, then takes the lock to
   compare and write (`Importer.importMonth`, §4), so saves do not wait behind a sync that changes nothing.
@@ -180,27 +188,29 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
   ('YYYY-MM-DD HH:mm' | ''), lastChange:{month, at, created, postes:Diff, applications:Diff, referentiel}|null,
   lastError:{at, code, message}|null, warnings:[string], authError?:string}` (`SYNC_STATE` Script Property;
   `authError` only from `api_getSettings` / `api_setConfig` when the deployer has not granted the ScriptApp scope).
+- **Editing**: `{edit:bool, create:bool, delete:bool}` — the switches of Paramètres › « Saisie dans l’application »
+  (`EDITING_JSON` Script Property, §4 Config), for every admin and every month; all `true` by default.
 
 ### Functions
 
 | Function | Args | Returns `data` | Errors |
 |---|---|---|---|
-| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:'', threshold:int, user:{email, role:'admin'|'lecteur', isOwner:bool}, prefs:{sidebar?, period?}, sync:SyncStatus}` (`dataUrl` / `sourceUrl` / `sourceTitle` are `''` for lecteurs: the spreadsheets are private to the deployer). Never opens the source: the URLs are built from the ids and `sourceTitle` is the stored one (`SOURCE_INFO`, refreshed by every sync; `''` until the first sync on a deployment that predates it), so it can be one sync old and says nothing about access — Paramètres checks the source live. | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
+| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:'', threshold:int, user:{email, role:'admin'|'lecteur', isOwner:bool}, prefs:{sidebar?, period?}, editing:Editing, sync:SyncStatus}` (`dataUrl` / `sourceUrl` / `sourceTitle` are `''` for lecteurs: the spreadsheets are private to the deployer). Never opens the source: the URLs are built from the ids and `sourceTitle` is the stored one (`SOURCE_INFO`, refreshed by every sync; `''` until the first sync on a deployment that predates it), so it can be one sync old and says nothing about access — Paramètres checks the source live. | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
 | `api_savePrefs` | `{sidebar:'open'\|'collapsed', period:'month'\|'last3'\|'last6'\|'year'\|'all'}` (any subset of the known keys) | `{prefs}` = the caller's stored preferences. Every role (lecteurs included): interface state only, per account (`PREFS_<email>` Script Property). | `VALIDATION` (unknown key or value, nothing to save, no identity) |
 | `api_setConfig` | `{source:'url or id'}` | `{sourceId, sourceTitle, sourceUrl, tabsFound:{postes:bool, applications:bool, referentiel:bool}, sync:SyncStatus}` — also creates the hourly trigger (`sync.authError` when ScriptApp is not authorised; the source is saved anyway). The client then calls `api_syncNow`. | `VALIDATION` (bad id), `SOURCE_ERROR` (cannot open / no postes+apps tab). Saved only on success. |
 | `api_getMonthData` | `{month}` | `{month, postes:[rec], applications:[rec], referentiel:{cat:[v]}, columns:{postes:[h], applications:[h]}, importInfo:{imported_at, warnings:[]}\|null}` | `VALIDATION`, `NOT_FOUND` (month not imported). `columns.applications` always ends with `Galink`, `IDP` if missing from the source headers. |
-| `api_getSyncStatus` | – | `SyncStatus` | – |
+| `api_getSyncStatus` | – | `SyncStatus` plus `editing:Editing` (the client polls it every 10 min: other admins' open pages pick up a switch change) | – |
 | `api_syncNow` | – | `{status:SyncStatus, result:SyncResult}` — synchronises the current month now. `SyncResult = {month, counts:{postes, applications, referentiel}, overwritten:bool, carriedOver:n, warnings:[...], changed:bool, changes:Changes}`; nothing is written when `changed` is false. | `NOT_CONFIGURED`, `SOURCE_ERROR`, `BUSY` (recorded in `lastError`, except `BUSY`) |
 | `api_enableSync` | – | as `api_syncNow`, after creating the hourly trigger if it is missing | `NOT_CONFIGURED` (ScriptApp not authorised: the deployer must run `setup` in the editor), then as `api_syncNow` |
 | `api_getImportLog` | `{limit?}` (integer 1–500, default 12) | `[{month, imported_at, counts, warnings, changes}]`: the `limit` latest ImportLog entries, newest first, with the fields the « Journal des synchronisations » shows only (no `source_id`, no headers). Read from the bottom of the tab (`Store.recentImportLog`). | `VALIDATION` (bad `limit`) |
-| `api_savePostes` | `{month, changes:[{id, updates:{col:value}}]}` | `{updated:[rec], sourceUpdated:bool}` (`true` = current month, written into the source) | `VALIDATION` (keys starting with `_` or the key column are rejected; a source cell computed by a formula; a value refused by the source cell's data validation), `NOT_FOUND`, `SOURCE_ERROR` (row not found in the source: renamed or deleted since the last sync) |
-| `api_addGenericPoste` | `{month}` | `{created:bool, record:rec}` (existing record if already present; current month: also appended to the source with `Importer.appendRecord(…, {strict:false})`: no rule enforced, computed columns left to their formulas and their values read back into the record) | `NOT_FOUND` |
-| `api_getFormSchema` | `{entity:'postes'\|'applications', month, fresh?:bool}` | `FormSchema = {entity, month, live:bool, origin:'source'\|'fallback'\|'snapshot', keyField, readAt:'YYYY-MM-DD HH:mm'\|'', warning?:string, columns:[FormColumn]}` — the fields of a creation form. Current month (`live`): read from the source OUTSIDE the lock (`Importer.readFormSchema`, cached 5 min per entity and source; `fresh:true` reads again), `origin:'source'`, applications completed with `Galink` / `IDP` (`appOnly`) when the source has no such column; when the source is not configured or cannot be read: the snapshot's columns (`Core.snapshotFormColumns` over the month's ImportLog headers and Référentiel, nothing cached), `origin:'fallback'` with a French `warning` (never fails). Past month: `Core.snapshotFormColumns` (`origin:'snapshot'`), the source is never opened. `readAt` = when the source was read (`'source'`) or the month synchronised. | `VALIDATION` (`entity`, month), `NOT_FOUND` (past month not imported) |
-| `api_addPoste` | `{month, record:{col:value}}` | `rec` (enriched poste; current month: appended to the source first, with the computed columns as the sheet shows them right after the write) | `VALIDATION` with `error.field` (blank name / missing `Équipe`, name already in the month — snapshot — or in the source tab — normKey —, a column that does not exist, a value for a computed column, a value outside a rejecting list, a date that is no real day, a value the source sheet refuses itself), `NOT_FOUND`, `SOURCE_ERROR` |
-| `api_saveApplications` | `{month, changes:[{id, updates}]}` | `{updated:[rec], sourceUpdated:bool}` | as `api_savePostes` |
-| `api_addApplication` | `{month, record:{...}}` | `rec` (current month: also appended to the source tab, below its last application) — same path and checks as `api_addPoste` (only the name is required; `Galink` / `IDP` must be Oui/Non/blank and stay in the snapshot when the source has no such column) | `VALIDATION` with `error.field` (as `api_addPoste`), `NOT_FOUND`, `SOURCE_ERROR` |
-| `api_deleteApplication` | `{month, id}` | `{deleted:true, id}` (current month: its source row is deleted too, when there is one) | `NOT_FOUND` |
-| `api_renameApplication` | `{month, id, newName}` | `{record:rec, actionsUpdated:n}` — also renames `target_name` of every Action with `target_type==='application'` and `target_name===oldName`; current month: the source key cell too | `VALIDATION` (blank / duplicate), `NOT_FOUND`, `SOURCE_ERROR` |
+| `api_savePostes` | `{month, changes:[{id, updates:{col:value}}]}` | `{updated:[rec], sourceUpdated:bool}` (`true` = current month, written into the source) | `FORBIDDEN` (switch `edit` off), `VALIDATION` (keys starting with `_` or the key column are rejected; a source cell computed by a formula; a value refused by the source cell's data validation), `NOT_FOUND`, `SOURCE_ERROR` (row not found in the source: renamed or deleted since the last sync) |
+| `api_addGenericPoste` | `{month}` | `{created:bool, record:rec}` (existing record if already present; current month: also appended to the source with `Importer.appendRecord(…, {strict:false})`: no rule enforced, computed columns left to their formulas and their values read back into the record) | `FORBIDDEN` (switch `create` off), `NOT_FOUND` |
+| `api_getFormSchema` | `{entity:'postes'\|'applications', month, fresh?:bool}` | `FormSchema = {entity, month, live:bool, origin:'source'\|'fallback'\|'snapshot', keyField, readAt:'YYYY-MM-DD HH:mm'\|'', warning?:string, columns:[FormColumn]}` — the fields of a creation form. Current month (`live`): read from the source OUTSIDE the lock (`Importer.readFormSchema`, cached 5 min per entity and source; `fresh:true` reads again), `origin:'source'`, applications completed with `Galink` / `IDP` (`appOnly`) when the source has no such column; when the source is not configured or cannot be read: the snapshot's columns (`Core.snapshotFormColumns` over the month's ImportLog headers and Référentiel, nothing cached), `origin:'fallback'` with a French `warning` (never fails). Past month: `Core.snapshotFormColumns` (`origin:'snapshot'`), the source is never opened. `readAt` = when the source was read (`'source'`) or the month synchronised. | `FORBIDDEN` (switch `create` off), `VALIDATION` (`entity`, month), `NOT_FOUND` (past month not imported) |
+| `api_addPoste` | `{month, record:{col:value}}` | `rec` (enriched poste; current month: appended to the source first, with the computed columns as the sheet shows them right after the write) | `FORBIDDEN` (switch `create` off), `VALIDATION` with `error.field` (blank name / missing `Équipe`, name already in the month — snapshot — or in the source tab — normKey —, a column that does not exist, a value for a computed column, a value outside a rejecting list, a date that is no real day, a value the source sheet refuses itself), `NOT_FOUND`, `SOURCE_ERROR` |
+| `api_saveApplications` | `{month, changes:[{id, updates}]}` | `{updated:[rec], sourceUpdated:bool}` | as `api_savePostes` (switch `edit`) |
+| `api_addApplication` | `{month, record:{...}}` | `rec` (current month: also appended to the source tab, below its last application) — same path and checks as `api_addPoste` (only the name is required; `Galink` / `IDP` must be Oui/Non/blank and stay in the snapshot when the source has no such column) | `FORBIDDEN` (switch `create` off), `VALIDATION` with `error.field` (as `api_addPoste`), `NOT_FOUND`, `SOURCE_ERROR` |
+| `api_deleteApplication` | `{month, id}` | `{deleted:true, id}` (current month: its source row is deleted too, when there is one) | `FORBIDDEN` (switch `delete` off), `NOT_FOUND` |
+| `api_renameApplication` | `{month, id, newName}` | `{record:rec, actionsUpdated:n}` — also renames `target_name` of every Action with `target_type==='application'` and `target_name===oldName`; current month: the source key cell too | `FORBIDDEN` (switch `edit` off), `VALIDATION` (blank / duplicate), `NOT_FOUND`, `SOURCE_ERROR` |
 | `api_getTimeline` | – | `[{month, postes:[slim], applications:[slim]}]` asc by month. Slim poste = `{'Équipe','Bâtiment / Labo','EDR Decathlon','IT Decathlon','Réseau Decathlon','Niveau de risque',_score,_conforme}`; slim app = `{'Équipe','SIP','Contrat','Galink','IDP','Niveau de risque',_score,_conforme}` (so `Core.filterData` / `computeKpis` / `riskCounts` work on them). | – |
 | `api_getActions` | – | `{actions:[Action], replacements:[Replacement]}` | – |
 | `api_addAction` | `{target_type, target_name, equipe, action, responsable?, date_created?, date_completed?, deadline?, priorite?, status?, source_month?, comment?}` | `Action` (`id` generated, `status` default `'À faire'`, `date_created` default today DD/MM/YYYY, `recorded_at` today ISO) | `VALIDATION` (`target_type` not poste/application, blank `target_name` or `action`) |
@@ -210,8 +220,9 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 | `api_updateReplacement` | `{id, updates}` | `Replacement` | `NOT_FOUND` |
 | `api_deleteReplacement` | `{id}` | `{deleted:true, id}` | `NOT_FOUND` |
 | `api_getDiff` | `{oldMonth, newMonth}` | `{oldMonth, newMonth, postes:Core.diffPostes(...), applications:Core.diffApplications(...)}` (records enriched) | `VALIDATION`, `NOT_FOUND` |
-| `api_getSettings` | – | `{threshold, defaultThreshold:80, source:{id, url, title, tabsFound\|null}, dataUrl, access:AccessView, me:email, sync:SyncStatus}` (`sync.enabled` checked against the real triggers). The live check of the app: opens the source (`tabsFound:null` = not accessible, `title` then the stored one); `url` / `dataUrl` are built from the ids, the data spreadsheet is not opened. | – |
+| `api_getSettings` | – | `{threshold, defaultThreshold:80, source:{id, url, title, tabsFound\|null}, dataUrl, access:AccessView, me:email, editing:Editing, sync:SyncStatus}` (`sync.enabled` checked against the real triggers). The live check of the app: opens the source (`tabsFound:null` = not accessible, `title` then the stored one); `url` / `dataUrl` are built from the ids, the data spreadsheet is not opened. | – |
 | `api_setThreshold` | `{threshold}` | `{threshold}` | `VALIDATION` (not an integer 1–100) |
+| `api_setEditing` | `{edit?:bool, create?:bool, delete?:bool}` (at least one) | `{editing:Editing}` — under the lock the stored switches are read again and the patch merged into them (the keys not sent are kept), one property write | `VALIDATION` (« Aucun réglage à enregistrer. », « Réglage inconnu : « k ». », « « k » doit valoir true ou false. »), `BUSY` |
 | `api_saveUser` | `{email, role:'admin'\|'lecteur'}` | `AccessView` (adds or changes the role) | `VALIDATION` (bad email / role, the owner, or the caller's own account) |
 | `api_addUsers` | `{emails:[string] (1–500), role}` | `{access:AccessView, added:[email], updated:[email] (role changed), skipped:[{email, reason}]}` — one write; invalid addresses, duplicates, the owner, the caller and accounts that already have that role are skipped with a reason | `VALIDATION` (role, empty / too long list, more than 2000 accounts) |
 | `api_removeUser` | `{email}` | `AccessView` | `VALIDATION` (as above), `NOT_FOUND` |
@@ -238,7 +249,7 @@ api_getImportLog, api_savePostes,
 api_addGenericPoste, api_addPoste, api_getFormSchema, api_saveApplications, api_addApplication, api_deleteApplication,
 api_renameApplication, api_getTimeline, api_getActions, api_addAction, api_updateAction,
 api_deleteAction, api_addReplacement, api_updateReplacement, api_deleteReplacement, api_getDiff,
-api_getSettings, api_setThreshold, api_saveUser, api_addUsers, api_removeUser, api_setDomainRole,
+api_getSettings, api_setThreshold, api_setEditing, api_saveUser, api_addUsers, api_removeUser, api_setDomainRole,
 api_saveGroup, api_removeGroup`
 
 ---------------------------------------------------------------------------------------------------
@@ -272,13 +283,19 @@ Config.PROP_ACCESS    = 'ACCESS_JSON'  ({users:[{email, role, added_at, added_by
 Config.get({fresh?})         -> {dataId:''|id, sourceId:''|id, sourceTitle:''|title stored for sourceId
                                  (PROP_SOURCE_INFO), threshold:int (Core.THRESHOLD when unset),
                                  schemaVersion:''|version recorded for dataId (PROP_SCHEMA),
-                                 access:{users:[...], domainRole:'none'|'lecteur'}} (unreadable JSON -> empty list)
+                                 access:{users:[...], domainRole:'none'|'lecteur'}} (unreadable JSON -> empty list),
+                                 editing:{edit, create, delete} (PROP_EDITING; all true unless stored false)}
                                 A new object on every call, built from ONE getProperties per execution (memo);
                                 `fresh` reads the properties again. The memo is dropped by every setter below,
                                 by Config.clearMemo_() (start of each api_* call and of syncHourly,
                                 Store.resetCache_) and when Store.withLock acquires the lock, so every
                                 read-modify-write under the lock (access list, first-run creation) starts
                                 from the stored values.
+Config.PROP_EDITING = 'EDITING_JSON'  (JSON {edit, create, delete}: the switches of Paramètres › « Saisie dans
+                        l’application ». Only an explicit false turns one off: missing or unreadable = all on.
+                        Read with the other properties, so Config.get needs no extra read.)
+Config.EDITING_KEYS   = ['edit', 'create', 'delete']
+Config.setEditing(editing)   (the three switches as booleans; api_setEditing, under the lock, after merging)
 Config.setDataId(id), Config.setSourceId(id, title), Config.setThreshold(n), Config.setAccess(access)
                                 (setSourceId writes the id and PROP_SOURCE_INFO in one setProperties call)
 Config.PROP_SOURCE_INFO = 'SOURCE_INFO'  (JSON {id, title}: the source title api_bootstrap shows without
@@ -642,6 +659,7 @@ State.subscribe(fn)              -> unsubscribe()
 state = { page:'dashboard', configured:false, months:[], month:'', currentMonth:'', dataUrl:'', sourceUrl:'',
           sourceTitle:'', filters:{equipes:[], batiments:[]}, loading:false, threshold:80,
           user:{email:'', role:'', isOwner:false}, prefs:{}, sync:SyncStatus|null,
+          editing:{edit:true, create:true, delete:true} (Editing, §3; a new object only when a switch changes),
           from:'' (start of the period, '' = one month; `month` is its END), preset:'' (shortcut in use) }
 State.period()                   -> {from, to, months:[synchronised months inside], single:bool} (to = state.month)
 State.setPeriod(from, to, preset?) -> selects a period (reversed swapped; from === to = one month)
@@ -652,6 +670,14 @@ UI.sparkline(values)             -> inline SVG line of a month series (aria-hidd
 Fmt.stamp('2026-05-04 10:30')    -> '10:30' today, '04/05 10:30' this year, else '04/05/2026 10:30'
 Fmt.syncChange(changes)          -> '+2 postes · 1 application modifiée' / 'mois créé' / '' (Changes, §3)
 State.canEdit()                  -> true for admins (pages hide every write control otherwise)
+State.can(kind)                  -> canEdit() && state.editing[kind] ('edit' | 'create' | 'delete'): the controls of
+                                    that write on Postes / Applications (cells and « Renommer »; « Nouveau poste »,
+                                    « Poste générique », « Nouvelle application »; « Supprimer »). Every other write
+                                    (actions, settings, sync, « Nouvelle action » in the drawers) stays on canEdit().
+State.setEditing(editing)        -> state.editing from api_getSyncStatus / api_setEditing / api_getSettings (ignored
+                                    when not an object; the same object is kept when nothing changed)
+State.afterWriteError(err)       -> on FORBIDDEN (a switch turned off, or the role changed, since the page loaded)
+                                    reloads the bootstrap; the caller still shows the error
 State.loadMonth(month, {force}?) -> Promise<monthData>  (api_getMonthData; cached per month)
 State.getMonthData(month)        -> cached monthData | null
 State.patchRecords(month, entity:'postes'|'applications', records[]) -> replace by _id in cache (re-enrich with Core)
@@ -736,6 +762,12 @@ UI.editableTable({columns, rows, rowKey='_id', search=true, pageSize=50, onSave?
     Click on an editable cell -> inline <select> (options + current value + '' ) or <input>; edits are
     kept as dirty until "Enregistrer (n)" -> onSave(changes:[{id, updates}]) (Promise); "Annuler" reverts.
     Sorting by header click, text search across visible columns, pagination.
+UI.toggle({id, label, description?, checked, onChange?(checked) -> Promise|void, disabled?}) -> div.toggle-row
+    A setting saved at once: label + description left, <button role=switch aria-checked> right (drawn track and
+    thumb aria-hidden, visible « Activé » / « Désactivé »; aria-labelledby id-label, aria-describedby id-desc).
+    Space / Enter / click (also on the label) switch it; the new state shows at once, the button is busy
+    (aria-busy, aria-disabled, keeps the focus) while the returned promise runs and goes back on rejection.
+    getValue(), setValue(bool) (no onChange), setDisabled(bool), .control (the button). (js_controls.html)
 UI.spinner()              -> Element
 UI.downloadCsv(filename, columns:[string], rows:[object])   (client-side CSV export, ';' separator, BOM)
 ```
@@ -785,7 +817,12 @@ hand-written tokens), and render with `UI`/`Charts`. `App` re-mounts the current
 `unmount`) when `page` changes and after `App.refresh()`; a month change keeps the page dimmed until the
 month is cached, then re-mounts it. A filter change calls `update(['filters'])` first: a page that returns
 true re-rendered its data in place from the cache (dashboard, postes, apps, timeline: header, scroll and
-an open drawer stay, no server call); otherwise it is re-mounted.
+an open drawer stay, no server call); otherwise it is re-mounted. A change of `state.editing` calls
+`update(['editing'])` on Postes / Applications only: the header (create buttons) and the body (editors, edit
+note) are rebuilt from the cache, the open drawer stays (its « Renommer » / « Supprimer » follow at the next
+opening); unsaved cells dropped because modification was turned off are announced by an info toast
+« Modification des entrées désactivée : les modifications non enregistrées sont abandonnées. ». Paramètres
+follows the switches itself; no other page has such controls.
 
 Postes and Applications are built by `InventoryPage.create(spec)` (`js_page_inventory.html`, with
 `EntityDrawer`): header + CSV / create buttons, filter note, stat line, optional sections, the « Inventaire »
@@ -907,7 +944,12 @@ instead of the configuration form.
   qui a changé » (same for `apps`).
   onSave → `api_savePostes` → `State.patchRecords`; toast « N modifications enregistrées dans le Google Sheet
   source. » (current month) or « … (historique de mai 2026). ». Admins see `#postes-edit-note` (`data-live`
-  1|0) saying where an edit goes.
+  1|0) saying where an edit goes, and (`data-locked` 1|0) which switches of Paramètres are off for the page
+  (« La modification et la création des entrées sont désactivées dans les Paramètres. »; applications also name
+  « la suppression »; the where-sentence goes when no write of the page is left).
+- Editing switches (`State.can`): « Poste générique » / « Nouveau poste » (and the schema prefetch) need `create`,
+  the inline editors `edit`. A refused write (`FORBIDDEN`) shows its message (toast, or in the open creation panel,
+  which keeps its values) and `State.afterWriteError` reloads the bootstrap: the controls go without a re-mount.
 - Row click → drawer: score, conformity criteria (IT, EDR, Chiffrement, Type de compte, Réseau), installed
   applications (from `Core.buildPosteAppsRelation(apps).byPoste` + the poste's own `Application` column),
   linked actions (State.loadActions filtered by target poste) with `➕ Action` button (formModal →
@@ -922,7 +964,9 @@ instead of the configuration form.
   toast « Application « X » ajoutée. ».
 - Small summary row: counts Galink Oui/Non/vide and IDP Oui/Non/vide (migration readiness).
 - Drawer: 5-criteria checklist (✅/❌), postes it is installed on, linked actions + `➕ Action`, buttons
-  `✏️ Renommer` (formModal → api_renameApplication) and `🗑️ Supprimer` (confirm → api_deleteApplication).
+  `✏️ Renommer` (formModal → api_renameApplication; `State.can('edit')`) and `🗑️ Supprimer` (confirm →
+  api_deleteApplication; `State.can('delete')`); a refusal shows in the modal / confirm and reloads the bootstrap.
+- Editing switches as Postes: « Nouvelle application » on `create`, cells (Galink / IDP included) on `edit`.
 
 ### Suivi temporel (`timeline`)
 - `State.loadTimeline()`; apply `Core.filterData` with current filters per month; `Core.computeKpis` per month.
@@ -949,6 +993,17 @@ compares the first and last months by default.
    champ, ancien → nouveau), Actions résolues (button `✔️ Enregistrer comme terminée` → api_addAction with
    status 'Terminé', date_completed today, source_month newMonth, disabled once an identical action
    exists); same for Applications (retirées / ajoutées / actions résolues).
+
+### Paramètres (`settings`) — admin only
+Five sections, each saved on its own (`js_page_settings.html`): « Source de données », « Synchronisation »,
+« Seuil de conformité », « Saisie dans l’application » (`#settings-editing`), « Accès ». The editing section: intro
+« Ces réglages s’appliquent à tous les administrateurs et à tous les mois, en cours comme passés, pour les postes et
+les applications. Le suivi des actions et les remplacements ne sont pas concernés. », then three `UI.toggle`:
+`#settings-editing-edit` « Modifier les entrées », `#settings-editing-create` « Créer des entrées »,
+`#settings-editing-delete` « Supprimer des entrées » (each with its description). A toggle calls
+`api_setEditing({<key>: bool})` once, then `State.setEditing` and a toast (« Création d’entrées désactivée. »…);
+on failure the switch goes back and an error toast shows. The switches follow `state.editing` changes made
+elsewhere (poll, bootstrap reload).
 
 ---------------------------------------------------------------------------------------------------
 ## 7. Tests
@@ -986,7 +1041,15 @@ compares the first and last months by default.
   `window.__calls`. Creation forms: `api_getFormSchema` / `api_addPoste` / `api_addApplication` follow the server
   (`Core.snapshotFormColumns`, `Core.checkFormRecord`, duplicates with `error.field`); in the current month the
   postes' Score conformité / Niveau de risque / Statut are computed and Oui/Non / Criticité lists strict; option
-  `formSchema: {columns:{postes:[…]}, fallback, delayMs}` and `delays: {api_name: ms}` (also `window.__mock`).
+  `formSchema: {columns:{postes:[…]}, fallback, delayMs}` and `delays: {api_name: ms}` (also `window.__mock`);
+  `editing: {edit?, create?, delete?}` (the switches, same refusals as the server; `window.__mock.db.editing` at run
+  time).
+- `test/integration/editing.test.js` — the editing switches: defaults (corrupt property = all on),
+  `api_setEditing` (validation, partial patch, one property write, lecteur, BUSY), and for each switch, current and
+  past month, the gated endpoints refused with their message without opening the source or changing the snapshot
+  while the others still work; actions, remplacements, threshold and sync unaffected.
+- `test/e2e/editing.test.js` — the client half: controls hidden per switch (cells, create buttons and prefetch,
+  « Renommer », « Supprimer », edit note), Actions and Paramètres unaffected, refusals behind an open page.
 - `test/integration/form.test.js` — the forms' server half over the `form` source fixture: schema, cache and
   fallback, `api_addPoste` / `api_addApplication` / `api_addGenericPoste` writes and refusals with their field.
 - `test/e2e/forms.test.js` — the creation forms' client half: the panel (sections, notes, focus, prefetch and

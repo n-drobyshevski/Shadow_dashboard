@@ -19,7 +19,9 @@
  *   - window.__mock                 {db, failNext:{api_name: {code, message, field?} | {transport:true}},
  *                                   formSchema, delays}; a failNext key 'api_name:YYYY-MM' fails only the
  *                                   next call for that month (args.month). formSchema / delays: see
- *                                   buildMockScript (tests may change them at run time)
+ *                                   buildMockScript (tests may change them at run time). db.editing
+ *                                   {edit, create, delete}: the editing switches (Paramètres), changeable
+ *                                   at run time (e.g. turned off behind an open page)
  *
  * Records are enriched at call time with window.Core (served by coreScript()), so the mock always
  * agrees with the real Core implementation. Nothing here references Node globals at runtime.
@@ -40,6 +42,13 @@ function mockMain(FIX, OPTS) {
   var LECTEUR_APIS = ['api_bootstrap', 'api_savePrefs', 'api_getMonthData', 'api_getSyncStatus', 'api_getImportLog',
     'api_getTimeline', 'api_getActions', 'api_getDiff'];
   var PREF_VALUES = { sidebar: ['open', 'collapsed'] };
+  var EDITING_KEYS = ['edit', 'create', 'delete'];
+  // Same refusals as Api.js requireEditing_.
+  var EDITING_REFUSED = {
+    edit: 'La modification des postes et des applications est désactivée dans les Paramètres.',
+    create: 'La création de postes et d’applications est désactivée dans les Paramètres.',
+    delete: 'La suppression d’applications est désactivée dans les Paramètres.'
+  };
   var OWNER = 'owner@decathlon.com';
   var seq = 0;
 
@@ -101,6 +110,8 @@ function mockMain(FIX, OPTS) {
     actions: OPTS.empty ? [] : clone(FIX.ACTIONS),
     replacements: OPTS.empty ? [] : clone(FIX.REPLACEMENTS),
     threshold: 80,
+    // Editing switches (Config EDITING_JSON): only an explicit false in OPTS.editing turns one off.
+    editing: { edit: true, create: true, delete: true },
     // Visitor: OPTS.email ('' = identity not passed); default = the owner (deployer).
     email: OPTS.email === undefined ? OWNER : OPTS.email,
     prefs: {},           // email -> {sidebar}
@@ -134,7 +145,16 @@ function mockMain(FIX, OPTS) {
     warnings: []
   };
   if (OPTS.sync) Object.keys(OPTS.sync).forEach(function (k) { db.sync[k] = OPTS.sync[k]; });
+  if (OPTS.editing) EDITING_KEYS.forEach(function (k) { db.editing[k] = OPTS.editing[k] !== false; });
   function syncStatus() { var st = clone(db.sync); st.month = currentMonth(); return st; }
+  function editingView() {
+    var out = {};
+    EDITING_KEYS.forEach(function (k) { out[k] = db.editing[k] !== false; });
+    return out;
+  }
+  function requireEditing(kind) {
+    if (db.editing[kind] === false) fail('FORBIDDEN', EDITING_REFUSED[kind]);
+  }
 
   if (!OPTS.empty) {
     var stamps = { '2026-04': '2026-04-02 09:15', '2026-05': '2026-05-04 10:30' };
@@ -423,6 +443,7 @@ function mockMain(FIX, OPTS) {
         threshold: db.threshold,
         user: user,
         prefs: clone(db.prefs[user.email] || {}),
+        editing: editingView(),
         sync: syncStatus()
       };
     },
@@ -467,7 +488,7 @@ function mockMain(FIX, OPTS) {
       };
     },
 
-    api_getSyncStatus: function () { return syncStatus(); },
+    api_getSyncStatus: function () { var st = syncStatus(); st.editing = editingView(); return st; },
 
     api_syncNow: function () { return runSync(); },
 
@@ -486,10 +507,11 @@ function mockMain(FIX, OPTS) {
       });
     },
 
-    api_savePostes: function (args) { return saveEntity('postes', KEY_POSTE, args); },
-    api_saveApplications: function (args) { return saveEntity('applications', KEY_APP, args); },
+    api_savePostes: function (args) { requireEditing('edit'); return saveEntity('postes', KEY_POSTE, args); },
+    api_saveApplications: function (args) { requireEditing('edit'); return saveEntity('applications', KEY_APP, args); },
 
     api_addGenericPoste: function (args) {
+      requireEditing('create');
       var month = obj(args).month;
       var m = requireMonth(month);
       var names = m.postes.map(function (r) { return r[KEY_POSTE]; });
@@ -506,13 +528,14 @@ function mockMain(FIX, OPTS) {
       return { created: true, record: enrich('postes', [rec])[0] };
     },
 
-    api_addPoste: function (args) { return addEntity('postes', args); },
+    api_addPoste: function (args) { requireEditing('create'); return addEntity('postes', args); },
 
-    api_getFormSchema: function (args) { return formSchema(args); },
+    api_getFormSchema: function (args) { requireEditing('create'); return formSchema(args); },
 
-    api_addApplication: function (args) { return addEntity('applications', args); },
+    api_addApplication: function (args) { requireEditing('create'); return addEntity('applications', args); },
 
     api_deleteApplication: function (args) {
+      requireEditing('delete');
       var a = obj(args);
       var m = requireMonth(a.month);
       var i = findIndexById(m.applications, a.id);
@@ -522,6 +545,7 @@ function mockMain(FIX, OPTS) {
     },
 
     api_renameApplication: function (args) {
+      requireEditing('edit');
       var a = obj(args);
       var m = requireMonth(a.month);
       var newName = s(a.newName);
@@ -629,8 +653,21 @@ function mockMain(FIX, OPTS) {
         dataUrl: sheetUrl('1MockDataSpreadsheetId_ShadowIT_AppData'),
         access: accessView(),
         me: db.email,
+        editing: editingView(),
         sync: syncStatus()
       };
+    },
+
+    api_setEditing: function (args) {
+      var a = obj(args);
+      var keys = Object.keys(a);
+      if (!keys.length) fail('VALIDATION', 'Aucun réglage à enregistrer.');
+      keys.forEach(function (k) {
+        if (EDITING_KEYS.indexOf(k) < 0) fail('VALIDATION', 'Réglage inconnu : « ' + k + ' ».');
+        if (typeof a[k] !== 'boolean') fail('VALIDATION', '« ' + k + ' » doit valoir true ou false.');
+      });
+      keys.forEach(function (k) { db.editing[k] = a[k]; });
+      return { editing: editingView() };
     },
 
     api_setThreshold: function (args) {
@@ -854,7 +891,8 @@ function mockMain(FIX, OPTS) {
 
 /**
  * @param {{empty?:boolean, configured?:boolean, delayMs?:number, email?:string, failNext?:object,
- *          prefs?:object, currentMonth?:string, sync?:object, formSchema?:object, delays?:object}} [options]
+ *          prefs?:object, currentMonth?:string, sync?:object, formSchema?:object, delays?:object,
+ *          editing?:object}} [options]
  *   formSchema: api_getFormSchema of the current month (window.__mock.formSchema): {columns:{postes:[col],
  *   applications:[col]} (extra source columns, {name, kind?, options?, strict?, computed?, required?, rule?}),
  *   fallback:true (origin 'fallback' + warning, no computed column), delayMs (extra answer delay)}.
@@ -862,12 +900,13 @@ function mockMain(FIX, OPTS) {
  *   prefs: the visitor's stored
  *   preferences ({sidebar:'collapsed'}). currentMonth: the month the sync follows (default: today's).
  *   sync: fields of the synchronisation status to override ({lastError:{at, code, message}}, …).
+ *   editing: the editing switches of Paramètres ({edit:false} turns modification off; default all on).
  *   email: the visitor (default the owner, admin). 'lea.reader@decathlon.com' is a lecteur,
  *   'sam.admin@decathlon.com' a second admin, any other address has no access, '' = identity not passed.
  * @returns {string} browser JavaScript (no surrounding <script> tag)
  */
 function buildMockScript({ empty = false, configured = true, delayMs = 0, email, failNext, prefs, currentMonth, sync,
-  formSchema, delays } = {}) {
+  formSchema, delays, editing } = {}) {
   const fixtures = {
     POSTES_HEADERS: data.POSTES_HEADERS,
     APPS_HEADERS: data.APPS_HEADERS,
@@ -883,7 +922,8 @@ function buildMockScript({ empty = false, configured = true, delayMs = 0, email,
   const json = (v) => JSON.stringify(v).replace(/</g, '\\u003c')
     .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
   return '(' + mockMain.toString() + ')(' + json(fixtures) + ', ' + json({ empty, configured, delayMs, email, failNext: failNext || {}, prefs: prefs || null,
-    currentMonth: currentMonth || null, sync: sync || null, formSchema: formSchema || null, delays: delays || null }) + ');';
+    currentMonth: currentMonth || null, sync: sync || null, formSchema: formSchema || null, delays: delays || null,
+    editing: editing || null }) + ');';
 }
 
 /**

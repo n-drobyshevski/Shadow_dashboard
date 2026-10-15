@@ -133,10 +133,12 @@ async function waitIdle(page, timeout = 10000) {
  *   plotly: {delayMs} answers the Plotly CDN request late, {fail:true} makes it fail.
  *   formSchema / delays: see buildMockScript (extra source columns or a fallback answer of api_getFormSchema,
  *   extra answer delay per api name); both can also be changed at run time through window.__mock.
+ *   editing: the editing switches of Paramètres ({edit:false, create:false}; default all on), changeable at
+ *   run time through window.__mock.db.editing.
  */
 async function openApp({ empty = false, configured = true, page: pageId = 'dashboard',
   viewport = { width: 1400, height: 900 }, delayMs = 0, email, readySelector, failNext, beforeGoto, currentMonth, sync,
-  idle = true, prefs, boot, inlinePage, plotly = {}, formSchema, delays } = {}) {
+  idle = true, prefs, boot, inlinePage, plotly = {}, formSchema, delays, editing } = {}) {
   const browser = await launchBrowser();
   const context = await browser.newContext({ viewport, locale: 'fr-FR', timezoneId: 'Europe/Paris' });
   const page = await context.newPage();
@@ -165,7 +167,7 @@ async function openApp({ empty = false, configured = true, page: pageId = 'dashb
     return route.abort();
   });
 
-  const mockOptions = { empty, configured, delayMs, email, failNext, prefs, currentMonth, sync, formSchema, delays };
+  const mockOptions = { empty, configured, delayMs, email, failNext, prefs, currentMonth, sync, formSchema, delays, editing };
   const html = renderIndex({
     inject: '<script>' + buildMockScript(mockOptions) + '</script>',
     boot: boot === true ? bootstrapEnvelope(mockOptions) : boot,

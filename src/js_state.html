@@ -25,6 +25,9 @@
     threshold: 80,
     user: { email: '', role: '', isOwner: false },
     prefs: {},                 // the account's interface preferences (api_bootstrap.prefs)
+    // Paramètres › « Saisie dans l’application » (api_bootstrap / api_getSyncStatus / api_setEditing .editing):
+    // what admins may do on Postes / Applications. Replaced only when a switch changes (State.setEditing).
+    editing: { edit: true, create: true, delete: true },
     sync: null                 // hourly synchronisation status (api_bootstrap.sync / api_getSyncStatus)
   };
   var subscribers = [];
@@ -327,6 +330,27 @@
     });
   }
 
+  var EDITING_KEYS = ['edit', 'create', 'delete'];
+
+  /** Server editing switches -> {edit, create, delete} (only an explicit false is off); null when not an object. */
+  function normEditing(e) {
+    if (!e || typeof e !== 'object') return null;
+    var out = {};
+    EDITING_KEYS.forEach(function (k) { out[k] = e[k] !== false; });
+    return out;
+  }
+
+  /** `next` unless it says the same as `prev` (then `prev`: subscribers see no 'editing' change). */
+  function sameEditing(prev, next) {
+    return prev && EDITING_KEYS.every(function (k) { return prev[k] === next[k]; }) ? prev : next;
+  }
+
+  /** New editing switches from the server (api_getSyncStatus, api_setEditing); ignored when missing. */
+  function setEditing(e) {
+    var next = normEditing(e);
+    if (next) set({ editing: sameEditing(state.editing, next) });
+  }
+
   /** api_bootstrap data -> state (the inline snapshot and the server answer alike). */
   function applyBootstrap(b) {
     // Before set(): subscribers re-render with the threshold the server scored with.
@@ -349,6 +373,7 @@
       threshold: threshold,
       user: prev.email === user.email && prev.role === user.role && prev.isOwner === user.isOwner ? prev : user,
       prefs: b.prefs && typeof b.prefs === 'object' ? b.prefs : {},
+      editing: sameEditing(state.editing, normEditing(b.editing) || { edit: true, create: true, delete: true }),
       sync: b.sync && typeof b.sync === 'object' ? b.sync : null,
       loading: false
     });
@@ -379,11 +404,33 @@
     return !!(state.user && state.user.role === 'admin');
   }
 
+  /**
+   * State.can('edit' | 'create' | 'delete') -> whether the controls of that write on Postes / Applications
+   * show: an admin, and the switch of Paramètres › « Saisie dans l’application » is on. Other writes
+   * (actions, settings, sync) stay on canEdit().
+   */
+  function can(kind) {
+    return canEdit() && !!state.editing && state.editing[kind] !== false;
+  }
+
+  /**
+   * After a refused write: FORBIDDEN means a switch was turned off (or the role changed) since the page
+   * loaded; the bootstrap is reloaded so the controls follow (pages update in place). The caller still
+   * shows the error itself.
+   */
+  function afterWriteError(err) {
+    if (!err || err.code !== 'FORBIDDEN') return;
+    refreshBootstrap().catch(function (e) { console.warn('Bootstrap reload failed: ' + ((e && e.message) || e)); });
+  }
+
   window.State = {
     get: get,
     period: period,
     setPeriod: setPeriod,
     canEdit: canEdit,
+    can: can,
+    setEditing: setEditing,
+    afterWriteError: afterWriteError,
     set: set,
     subscribe: subscribe,
     loadMonth: loadMonth,

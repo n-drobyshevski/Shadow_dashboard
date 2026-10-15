@@ -130,6 +130,21 @@ var ApiImpl_ = (function () {
 
   function requireImportedMonth_(month, label) { return requireImported_(requireMonth_(month, label)); }
 
+  /** Refusal message of each Paramètres › « Saisie dans l’application » switch (Config EDITING_JSON). */
+  var EDITING_REFUSED = {
+    edit: 'La modification des postes et des applications est désactivée dans les Paramètres.',
+    create: 'La création de postes et d’applications est désactivée dans les Paramètres.',
+    delete: 'La suppression d’applications est désactivée dans les Paramètres.'
+  };
+
+  /**
+   * FORBIDDEN when the switch `kind` ('edit' | 'create' | 'delete') is off. First line of the postes /
+   * applications writes it covers (after the role check, before the lock), every month alike.
+   */
+  function requireEditing_(kind) {
+    if (!Config.get().editing[kind]) throw Core.makeError('FORBIDDEN', EDITING_REFUSED[kind]);
+  }
+
   function requireId_(id) {
     var s = typeof id === 'string' || typeof id === 'number' ? Core.str(id) : '';
     if (!s) throw invalid_('Identifiant manquant.');
@@ -323,6 +338,7 @@ var ApiImpl_ = (function () {
       threshold: cfg.threshold,
       user: { email: user.email, role: user.role, isOwner: user.isOwner },
       prefs: Config.getPrefs(user.email),
+      editing: cfg.editing,
       sync: Sync.status()
     };
   }
@@ -375,8 +391,11 @@ var ApiImpl_ = (function () {
 
   // ---------------------------------------------------------------------------- sync
 
+  /** Sync status, plus the editing switches: the 10-minute poll also brings other admins' changes. */
   function getSyncStatus() {
-    return Sync.status();
+    var st = Sync.status();
+    st.editing = Config.get().editing;
+    return st;
   }
 
   /** Synchronises the current month now: {status, result}. */
@@ -433,6 +452,7 @@ var ApiImpl_ = (function () {
   }
 
   function saveEntities_(tab, entity, keyField, enrich, args) {
+    requireEditing_('edit');
     var month = requireMonth_(args.month);
     var changes = normalizeChanges_(args.changes, keyField);
     if (!changes.length) return { updated: [], sourceUpdated: false };
@@ -460,6 +480,7 @@ var ApiImpl_ = (function () {
   }
 
   function addGenericPoste(args) {
+    requireEditing_('create');
     var month = requireMonth_(args.month);
     return Store.withLock(function () {
       requireImported_(month);
@@ -528,6 +549,7 @@ var ApiImpl_ = (function () {
    * given) and is appended to the snapshot. Returns the enriched record.
    */
   function addEntity_(entity, args) {
+    requireEditing_('create');
     var e = entity_(entity);
     var month = requireMonth_(args.month);
     if (!isPlainObject_(args.record)) throw invalid_('« record » doit être un objet.');
@@ -596,6 +618,7 @@ var ApiImpl_ = (function () {
    * cached). Past month: the snapshot's columns (origin 'snapshot'); the source is never opened.
    */
   function getFormSchema(args) {
+    requireEditing_('create');
     var entity = args.entity;
     if (entity !== 'postes' && entity !== 'applications') {
       throw invalid_('« entity » doit valoir « postes » ou « applications ».');
@@ -630,6 +653,7 @@ var ApiImpl_ = (function () {
   }
 
   function deleteApplication(args) {
+    requireEditing_('delete');
     var month = requireMonth_(args.month);
     var id = requireId_(args.id);
     return Store.withLock(function () {
@@ -645,6 +669,7 @@ var ApiImpl_ = (function () {
 
   /** Renames an application and the target_name of every Action pointing to its old name. */
   function renameApplication(args) {
+    requireEditing_('edit');
     var month = requireMonth_(args.month);
     var id = requireId_(args.id);
     var newName = stringField_(args.newName, 'newName');
@@ -869,6 +894,7 @@ var ApiImpl_ = (function () {
       dataUrl: cfg.dataId ? Store.dataUrl() : '',
       access: accessView_(cfg.access, user.owner),
       me: user.email,
+      editing: cfg.editing,
       sync: Sync.verifiedStatus()
     };
   }
@@ -879,6 +905,27 @@ var ApiImpl_ = (function () {
     Store.withLock(function () { Config.setThreshold(n); });
     Core.setThreshold(n);
     return { threshold: n };
+  }
+
+  /**
+   * Turns switches of « Saisie dans l’application » on or off: args = {edit?, create?, delete?}
+   * (booleans, at least one). Under the lock the stored switches are read again and the patch merged
+   * into them, so the keys not sent are kept. @return {{editing: Object}} the three switches stored
+   */
+  function setEditing(args) {
+    var keys = Object.keys(args || {});
+    if (!keys.length) throw invalid_('Aucun réglage à enregistrer.');
+    keys.forEach(function (k) {
+      if (Config.EDITING_KEYS.indexOf(k) < 0) throw invalid_('Réglage inconnu : « ' + k + ' ».');
+      if (typeof args[k] !== 'boolean') throw invalid_('« ' + k + ' » doit valoir true ou false.');
+    });
+    return Store.withLock(function () {
+      // The memo was dropped when the lock was taken: this is the stored value.
+      var editing = Config.get().editing;
+      keys.forEach(function (k) { editing[k] = args[k]; });
+      Config.setEditing(editing);
+      return { editing: editing };
+    });
   }
 
   /** Common guards of saveUser / removeUser: owner and own account are not editable. */
@@ -1025,6 +1072,7 @@ var ApiImpl_ = (function () {
     getDiff: getDiff,
     getSettings: getSettings,
     setThreshold: setThreshold,
+    setEditing: setEditing,
     saveUser: saveUser,
     addUsers: addUsers,
     saveGroup: saveGroup,
@@ -1064,6 +1112,7 @@ function api_deleteReplacement(argsJson) { return apiWrap_(ApiImpl_.deleteReplac
 function api_getDiff(argsJson) { return apiWrap_(ApiImpl_.getDiff, 'api_getDiff', 'lecteur')(argsJson); }
 function api_getSettings(argsJson) { return apiWrap_(ApiImpl_.getSettings, 'api_getSettings', 'admin')(argsJson); }
 function api_setThreshold(argsJson) { return apiWrap_(ApiImpl_.setThreshold, 'api_setThreshold', 'admin')(argsJson); }
+function api_setEditing(argsJson) { return apiWrap_(ApiImpl_.setEditing, 'api_setEditing', 'admin')(argsJson); }
 function api_saveUser(argsJson) { return apiWrap_(ApiImpl_.saveUser, 'api_saveUser', 'admin')(argsJson); }
 function api_addUsers(argsJson) { return apiWrap_(ApiImpl_.addUsers, 'api_addUsers', 'admin')(argsJson); }
 function api_saveGroup(argsJson) { return apiWrap_(ApiImpl_.saveGroup, 'api_saveGroup', 'admin')(argsJson); }

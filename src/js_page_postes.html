@@ -8,7 +8,8 @@
  *
  * Read-only mode (lecteur, !State.canEdit()): no « Nouveau poste » / « Poste générique », no inline editing
  * (plain cells, a click anywhere on a row opens the drawer), no « Nouvelle action »; CSV export and the drawer
- * stay.
+ * stay. Admins lose the create buttons when Paramètres turns creation off (State.can('create')), the inline
+ * editors when it turns modification off (State.can('edit')); « Nouvelle action » stays.
  */
 (function () {
   'use strict';
@@ -110,7 +111,11 @@
         UI.toast(label + ' existe déjà pour ' + Fmt.monthLong(ctx.month) + '.', 'info');
       }
       ctx.refresh();
-    }, function (err) { UI.errorToast(err); });
+    }, function (err) {
+      UI.errorToast(err);
+      // Creation turned off meanwhile (FORBIDDEN): the bootstrap reload removes the create buttons.
+      State.afterWriteError(err);
+    });
     UI.busy(button, p);
   }
 

@@ -64,6 +64,16 @@
  *   Custom-drawn checkbox (ink square, 2px radius) over a real visually-hidden <input type=checkbox>.
  *   Methods: getValue(), setValue(bool), setDisabled(bool); property .input.
  *
+ * UI.toggle({id, label, description?, checked, onChange?(checked) -> Promise | void, disabled?}) -> div.toggle-row
+ *   On / off switch of a setting saved at once: the label (and its description) on the left, on the right a
+ *   <button id=id role=switch aria-checked> holding a drawn track and thumb (aria-hidden) and the state word
+ *   « Activé » / « Désactivé » (the state is never told by colour alone). Named by the label
+ *   (aria-labelledby id-label), described by the description (aria-describedby id-desc). Space / Enter (native
+ *   button) and a click on the button or on the label switch it. The new state shows at once; while the
+ *   promise returned by onChange runs the button is busy (aria-busy, aria-disabled: it keeps the focus, further
+ *   presses are ignored) and on rejection it goes back to the previous state (the caller reports the error).
+ *   Methods: getValue(), setValue(bool) (never calls onChange), setDisabled(bool); property .control (the button).
+ *
  * UI.tooltip(target, text | Node, {focusable?, placement?}?) -> target
  *   Ink tooltip (white Plex 12px, 3px radius), above the target (below when there is no room), or beside it
  *   with placement:'right' (collapsed sidebar rail). Shows after 300 ms of hover and at once on keyboard focus;
@@ -230,6 +240,69 @@
     root.setValue = function (b) { input.checked = !!b; };
     root.setDisabled = function (b) { input.disabled = !!b; root.classList.toggle('is-disabled', !!b); };
     root.focus = function () { input.focus(); };
+    return root;
+  }
+
+  // ============================================================================== toggle
+
+  /** UI.toggle({id, label, description?, checked, onChange?, disabled?}): see the header. */
+  function toggle(o) {
+    var opts = o || {};
+    var id = opts.id || nextId('toggle');
+    var value = !!opts.checked;
+    var busyNow = false;
+    var hasDesc = opts.description !== undefined && opts.description !== null && opts.description !== '';
+    var stateWord = el('span', { class: 'toggle-state' });
+    var button = el('button', { type: 'button', class: 'toggle', id: id, role: 'switch', disabled: !!opts.disabled,
+      'aria-labelledby': id + '-label', 'aria-describedby': hasDesc ? id + '-desc' : null,
+      onClick: function () { flip(); } },
+      el('span', { class: 'toggle-track', 'aria-hidden': 'true' }, el('span', { class: 'toggle-thumb' })),
+      stateWord);
+    var label = el('span', { class: 'toggle-label', id: id + '-label',
+      onClick: function () { if (!button.disabled) { button.focus(); flip(); } } }, opts.label || '');
+    var root = el('div', { class: ['toggle-row', opts.disabled ? 'is-disabled' : null, opts.className] },
+      el('div', { class: 'toggle-text' }, label,
+        hasDesc ? el('span', { class: 'toggle-desc', id: id + '-desc' }, opts.description) : null),
+      button);
+
+    function show(b) {
+      value = !!b;
+      button.setAttribute('aria-checked', value ? 'true' : 'false');
+      stateWord.textContent = value ? 'Activé' : 'Désactivé';
+    }
+
+    function setBusy(on) {
+      busyNow = on;
+      button.classList.toggle('is-busy', on);
+      if (on) {
+        button.setAttribute('aria-busy', 'true');
+        button.setAttribute('aria-disabled', 'true');
+      } else {
+        button.removeAttribute('aria-busy');
+        button.removeAttribute('aria-disabled');
+      }
+    }
+
+    function flip() {
+      if (busyNow || button.disabled) return;
+      var before = value;
+      show(!before);
+      var p;
+      try { p = opts.onChange ? opts.onChange(value) : null; } catch (e) { p = Promise.reject(e); }
+      if (!p || typeof p.then !== 'function') return;
+      setBusy(true);
+      p.then(function () { setBusy(false); }, function () {
+        setBusy(false);
+        show(before);
+      });
+    }
+
+    show(value);
+    root.control = button;
+    root.getValue = function () { return value; };
+    root.setValue = function (b) { show(b); };
+    root.setDisabled = function (b) { button.disabled = !!b; root.classList.toggle('is-disabled', !!b); };
+    root.focus = function () { button.focus(); };
     return root;
   }
 
@@ -1397,6 +1470,7 @@
     popover: popover,
     dropdown: dropdown,
     checkbox: checkbox,
+    toggle: toggle,
     tooltip: tooltip,
     dateField: dateField,
     monthField: monthField,

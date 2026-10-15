@@ -12,6 +12,9 @@
 .page-settings .threshold-input { display: inline-flex; align-items: center; gap: var(--s1); }
 .page-settings .threshold-input .input { width: 72px; text-align: right; font-family: var(--font-mono); }
 .page-settings .threshold-input .unit { color: var(--ink-2); }
+/* « Saisie dans l’application »: one switch per row, rows split by a hairline. */
+.page-settings .editing-list { display: flex; flex-direction: column; gap: var(--s3); }
+.page-settings .editing-list > .toggle-row + .toggle-row { border-top: 1px solid var(--rule); padding-top: var(--s3); }
 /* Access table: account in mono, role as a small dropdown, the row action right-aligned. */
 .page-settings .access-table .access-role { width: 168px; }
 .page-settings .access-table .access-role .select-field { max-width: 160px; }
@@ -44,7 +47,7 @@
 /**
  * Pages.settings — « Paramètres » (admin only; docs/API.md §3 settings endpoints).
  *
- * Four sections, each saved on its own:
+ * Five sections, each saved on its own:
  *   - Source de données: current source spreadsheet, tabs found, data spreadsheet; change the source
  *     (App.applySource -> api_setConfig then a first synchronisation, the same path as the configuration screen).
  *   - Synchronisation: hourly trigger on / off (api_enableSync), last run, last change, error, « Synchroniser
@@ -52,6 +55,10 @@
  *     (api_getImportLog {limit: 12}, newest first). Re-rendered when the status changes elsewhere (app bar).
  *   - Seuil de conformité: integer 1–100 (api_setThreshold). Every cache is dropped and the bootstrap is
  *     reloaded so that every page re-scores with the new value.
+ *   - Saisie dans l’application: three switches (UI.toggle), saved on toggle (api_setEditing {edit | create |
+ *     delete: bool}), for every admin and every month: modify, create and delete postes / applications
+ *     (actions and remplacements are not concerned). The result goes to State.setEditing (the Postes /
+ *     Applications pages follow at once); the switches follow State 'editing' changes made elsewhere.
  *   - Accès: role of the other accounts of the domain (api_setDomainRole), the access list with an inline
  *     role dropdown and « Retirer » (api_saveUser / api_removeUser), a search over the list, an add form,
  *     and « Ajouter plusieurs comptes… »: paste any list of addresses (Core.parseEmailList), live
@@ -68,6 +75,7 @@
   var el = UI.el;
   var page = null;        // root of the mounted page: late responses do not touch a page that was left
   var syncView = null;    // the « Synchronisation » section (re-rendered when State.sync changes)
+  var editingView = null; // the « Saisie dans l’application » section (follows State.editing)
   var unsubscribe = null;
   function alive() { return !!page && page.isConnected; }
 
@@ -294,6 +302,54 @@
         'quand son score atteint le seuil. Il s’applique à tous les mois : indicateurs, jauges, histogrammes et ' +
         'suivi temporel. Valeur par défaut : ' + pct(s.defaultThreshold) + '.'),
       form);
+  }
+
+  // ------------------------------------------------------------------------------ editing switches
+
+  /** The three switches of « Saisie dans l’application »: State / api_setEditing key, copy, toasts. */
+  var EDITING_SWITCHES = [
+    { key: 'edit', label: 'Modifier les entrées',
+      description: 'Modification des cellules des tableaux Postes et Applications (Galink et IDP compris) et ' +
+        '« Renommer » une application.',
+      on: 'Modification des entrées activée.', off: 'Modification des entrées désactivée.' },
+    { key: 'create', label: 'Créer des entrées',
+      description: '« Nouveau poste », « Poste générique » et « Nouvelle application ».',
+      on: 'Création d’entrées activée.', off: 'Création d’entrées désactivée.' },
+    { key: 'delete', label: 'Supprimer des entrées',
+      description: '« Supprimer » une application. Les postes ne se suppriment pas depuis l’application.',
+      on: 'Suppression d’entrées activée.', off: 'Suppression d’entrées désactivée.' }
+  ];
+
+  function editingSection(s) {
+    var current = s.editing || State.get().editing || {};
+    var toggles = {};
+    var list = el('div', { class: 'editing-list', id: 'settings-editing-list' }, EDITING_SWITCHES.map(function (sw) {
+      toggles[sw.key] = UI.toggle({ id: 'settings-editing-' + sw.key, label: sw.label, description: sw.description,
+        checked: current[sw.key] !== false,
+        onChange: function (checked) {
+          var patch = {};
+          patch[sw.key] = checked;
+          return api.call('api_setEditing', patch).then(function (res) {
+            State.setEditing(res && res.editing);
+            UI.toast(checked ? sw.on : sw.off, 'success');
+          }, function (err) {
+            UI.errorToast(err);
+            throw err;
+          });
+        } });
+      return toggles[sw.key];
+    }));
+    var section = UI.section('Saisie dans l’application',
+      el('p', { class: 'page-lede', id: 'settings-editing-help' }, 'Ces réglages s’appliquent à tous les ' +
+        'administrateurs et à tous les mois, en cours comme passés, pour les postes et les applications. Le suivi ' +
+        'des actions et les remplacements ne sont pas concernés.'),
+      list);
+    section.id = 'settings-editing';
+    // Switches changed elsewhere (another tab's poll, a refused write's bootstrap reload): show them.
+    section.__editing = function (e) {
+      EDITING_SWITCHES.forEach(function (sw) { toggles[sw.key].setValue(!e || e[sw.key] !== false); });
+    };
+    return section;
   }
 
   // ------------------------------------------------------------------------------ access
@@ -623,6 +679,9 @@
         syncView = syncSection(s.sync);
         body.appendChild(syncView);
         body.appendChild(thresholdSection(s));
+        State.setEditing(s.editing);
+        editingView = editingSection(s);
+        body.appendChild(editingView);
         body.appendChild(accessSection(s));
       }
     });
@@ -631,8 +690,10 @@
   function mount(root) {
     page = root;
     syncView = null;
+    editingView = null;
     unsubscribe = State.subscribe(function (st, changed) {
       if (changed.indexOf('sync') >= 0 && syncView && syncView.isConnected && st.sync) syncView.__sync(st.sync);
+      if (changed.indexOf('editing') >= 0 && editingView && editingView.isConnected) editingView.__editing(st.editing);
     });
     var body = el('div', { class: 'settings-body', id: 'settings-body' });
     root.appendChild(UI.pageHeader({ title: 'Paramètres', kicker: 'Shadow IT · administration' }));
@@ -643,6 +704,7 @@
   function unmount() {
     page = null;
     syncView = null;
+    editingView = null;
     if (unsubscribe) unsubscribe();
     unsubscribe = null;
   }

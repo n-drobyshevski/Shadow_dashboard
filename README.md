@@ -144,6 +144,15 @@ synchronisation horaire ». Les mois déjà importés sont conservés.
     conformité et la liste des accès ;
   - **Lecteur** : consultation seulement (tableaux, graphiques, historique, comparaison, export CSV).
     Le serveur refuse toute écriture d'un lecteur, même appelée hors de l'interface.
+- **Saisie dans l'application** (Paramètres) : trois interrupteurs, pour tous les administrateurs et tous
+  les mois (en cours comme passés), sur les postes et les applications : « Modifier les entrées » (cellules
+  des tableaux, Galink et IDP compris, et « Renommer » une application), « Créer des entrées » (« Nouveau
+  poste », « Poste générique », « Nouvelle application »), « Supprimer des entrées » (« Supprimer » une
+  application ; les postes ne se suppriment pas depuis l'application). Tous activés par défaut. Un
+  interrupteur désactivé masque ses boutons pour tous les administrateurs, et le serveur refuse aussi
+  l'appel. Le suivi des actions, les remplacements, la synchronisation et les autres paramètres ne sont
+  pas concernés. Les autres administrateurs voient le changement à leur prochaine écriture (refusée, la
+  page se met à jour) ou dans les 10 minutes.
 - Le **propriétaire du déploiement est toujours administrateur** et n'apparaît pas comme modifiable ;
   personne ne peut modifier son propre accès, ce qui évite de se bloquer.
 - **Ajout en masse** : « Ajouter plusieurs comptes… » accepte une liste collée telle quelle (colonne
@@ -166,9 +175,10 @@ synchronisation horaire ». Les mois déjà importés sont conservés.
   *Lecteur* (tout le domaine peut consulter).
 - Un compte non autorisé voit « Accès refusé » avec son adresse, à transmettre à un administrateur.
 - La liste est stockée dans les propriétés du script (`ACCESS_JSON_N` et `ACCESS_JSON_0`, `_1`… : une
-  propriété est limitée à 9 Ko) et le seuil dans `COMPLIANCE_THRESHOLD` : Éditeur Apps Script →
-  Paramètres du projet → Propriétés du script. Supprimer `ACCESS_JSON_N` remet l'accès au seul
-  propriétaire.
+  propriété est limitée à 9 Ko), le seuil dans `COMPLIANCE_THRESHOLD` et les interrupteurs de saisie dans
+  `EDITING_JSON` (`{"edit":true,"create":false,"delete":true}`) : Éditeur Apps Script → Paramètres du
+  projet → Propriétés du script. Supprimer `ACCESS_JSON_N` remet l'accès au seul propriétaire ; supprimer
+  `EDITING_JSON` (ou une valeur illisible) réactive les trois interrupteurs.
 - **Icône d'onglet** (le fantôme) : `assets/favicon.png`, intégrée au code (URI `data:`), rien à
   héberger, le dépôt peut rester privé. Si l'onglet garde l'icône par défaut après le déploiement (Apps
   Script refuse alors l'URI `data:`, le journal d'exécution le dit), héberger le PNG (Google Sites, page
@@ -345,6 +355,15 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
       seul avertissement « not readable » apparaît dans Exécutions par compte toutes les 2 minutes.
       Vérifier que `CacheService.getScriptCache().getAll` est disponible (ce que les faux services ne
       peuvent prouver).
+- [ ] Interrupteurs de saisie, deux administrateurs : A ouvre Postes, B désactive « Créer des entrées »
+      dans Paramètres. A clique « Nouveau poste » (ou enregistre le formulaire déjà ouvert) : le message
+      « La création de postes et d’applications est désactivée dans les Paramètres. » s'affiche et les
+      boutons de création disparaissent sans recharger la page ; sans action de A, ils disparaissent au
+      plus tard 10 minutes après (ou en rouvrant le panneau de synchronisation). Même chose pour
+      « Modifier les entrées » avec une cellule modifiée non enregistrée (message, puis cellules en
+      lecture seule et la notification « Modification des entrées désactivée : les modifications non
+      enregistrées sont abandonnées. »). Propriétés du script : `EDITING_JSON` change à chaque bascule ;
+      Exécutions montre une seule ligne `api_setEditing` par clic.
 - [ ] Deux sessions admin : ajouter un compte différent dans Paramètres → Accès depuis chacune, à
       quelques instants d'intervalle (la seconde attend le verrou) ; après rechargement, la liste
       contient les deux comptes.
@@ -437,7 +456,10 @@ grant access in Paramètres → Accès.
 Access control: the app runs as the deployer with `access: DOMAIN` (deploy from a Google Workspace
 account of the users' domain). Each caller is identified by `Session.getActiveUser()` and checked on
 every server call: **admin** (everything, incl. Paramètres) or **lecteur** (read only); the deployer is
-always admin and nobody can edit their own access. Unlisted domain accounts get no access by default,
+always admin and nobody can edit their own access. Paramètres › « Saisie dans l’application » has three
+switches for every admin and every month (edit / create / delete postes and applications; the
+`EDITING_JSON` script property, all on by default): a switch that is off hides its controls and the server
+refuses the call (actions, remplacements and the sync are not concerned). Unlisted domain accounts get no access by default,
 or lecteur if « Autres comptes du domaine » is set so. « Ajouter plusieurs comptes… » takes a pasted
 list in any common shape (Sheets column, comma/semicolon separated, `Name <address>`), previews it and
 saves it in one call (500 per batch, 2000 accounts max). Google Groups can be granted a role too:

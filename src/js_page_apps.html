@@ -23,7 +23,9 @@
  *
  * Read-only mode (lecteur, !State.canEdit()): no « Nouvelle application », no inline editing (Galink / IDP
  * included: plain cells, a row click opens the drawer), no « Renommer » / « Supprimer » / « Nouvelle action »
- * in the drawer; CSV export, the migration ledger and the drawer details stay.
+ * in the drawer; CSV export, the migration ledger and the drawer details stay. Admins follow the switches of
+ * Paramètres (State.can): « Nouvelle application » on 'create', the inline editors and « Renommer » on 'edit',
+ * « Supprimer » on 'delete'.
  */
 (function () {
   'use strict';
@@ -42,10 +44,14 @@
     { key: 'champs', short: 'Champs', label: 'Champs obligatoires renseignés' }
   ];
 
-  /** A VALIDATION error of a form is shown under `field` (the modal stays open). */
+  /**
+   * A VALIDATION error of a form is shown under `field` (the modal stays open). A FORBIDDEN one (the switch
+   * was turned off meanwhile) is shown too, and the bootstrap is reloaded (State.afterWriteError).
+   */
   function onField(field) {
     return function (err) {
       if (err && err.code === 'VALIDATION' && !err.field) err.field = field;
+      State.afterWriteError(err);
       throw err;
     };
   }
@@ -64,12 +70,15 @@
     md.postes.forEach(function (p) { posteIndex[Core.normKey(p[KEY_POSTE])] = p; });
     var closed = false;
 
-    // Rename / delete are admin writes: lecteurs get no buttons at all (hidden, not disabled).
-    var buttons = !State.canEdit() ? null : el('div', { class: 'drawer-buttons' },
-      el('button', { type: 'button', class: 'btn btn-secondary btn-sm', id: 'app-rename',
-        onClick: function () { rename(rec, ctx); } }, 'Renommer'),
-      el('button', { type: 'button', class: 'btn btn-danger btn-sm', id: 'app-delete',
-        onClick: function () { remove(rec, ctx); } }, 'Supprimer'));
+    // Rename / delete are admin writes, each behind its switch of Paramètres (State.can): lecteurs, and
+    // admins while a switch is off, get no button (hidden, not disabled).
+    var canRename = State.can('edit');
+    var canDelete = State.can('delete');
+    var buttons = !canRename && !canDelete ? null : el('div', { class: 'drawer-buttons' },
+      canRename ? el('button', { type: 'button', class: 'btn btn-secondary btn-sm', id: 'app-rename',
+        onClick: function () { rename(rec, ctx); } }, 'Renommer') : null,
+      canDelete ? el('button', { type: 'button', class: 'btn btn-danger btn-sm', id: 'app-delete',
+        onClick: function () { remove(rec, ctx); } }, 'Supprimer') : null);
 
     var body = el('div', { class: 'entity-drawer apps-drawer', id: 'app-drawer', dataset: { id: rec._id } },
       el('div', { class: 'drawer-head-row' }, EntityDrawer.head(rec), buttons),
@@ -139,7 +148,12 @@
       ' de l’historique de ' + Fmt.monthLong(ctx.month) + ' ? Le Google Sheet source n’est pas modifié.') +
       ' Cette opération est irréversible (les actions liées sont conservées).',
       { title: 'Supprimer l’application', okLabel: 'Supprimer', danger: true,
-        onConfirm: function () { return api.call('api_deleteApplication', { month: ctx.month, id: rec._id }); } })
+        onConfirm: function () {
+          return api.call('api_deleteApplication', { month: ctx.month, id: rec._id }).then(null, function (err) {
+            State.afterWriteError(err);
+            throw err;
+          });
+        } })
       .then(function (ok) {
         if (!ok) return;
         State.removeRecord(ctx.month, 'applications', rec._id);

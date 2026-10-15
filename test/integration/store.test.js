@@ -89,13 +89,14 @@ test('fakes: Sheets typing rules (apostrophe, formulas, auto-conversion unless "
 test('Config: properties and date helpers', () => {
   const { ctx } = loadGas({ props: { SOURCE_SPREADSHEET_ID: 'src-id' } });
   const noAccess = { users: [], groups: [], domainRole: 'none' };
+  const allOn = { edit: true, create: true, delete: true };
   assert.deepEqual(plain(ctx.Config.get()), { dataId: '', sourceId: 'src-id', sourceTitle: '', threshold: 80,
-    schemaVersion: '', access: noAccess });
+    schemaVersion: '', access: noAccess, editing: allOn });
   ctx.Config.setDataId('data-id');
   ctx.Config.setSourceId('other', 'Classeur source');
   ctx.Config.setThreshold(75);
   assert.deepEqual(plain(ctx.Config.get()), { dataId: 'data-id', sourceId: 'other', sourceTitle: 'Classeur source',
-    threshold: 75, schemaVersion: '', access: noAccess });
+    threshold: 75, schemaVersion: '', access: noAccess, editing: allOn });
   // The sync refreshes the stored title of the configured source only, and writes only when it changed.
   assert.equal(ctx.Config.rememberSourceTitle('src-id', 'Ancienne'), false, 'not the configured source');
   assert.equal(ctx.Config.rememberSourceTitle('other', 'Classeur source'), false, 'unchanged');
