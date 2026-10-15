@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const data = require('../fixtures/data');
-const { openApp } = require('./harness');
+const { openApp, chooseOption, chooseOptions, optionLabels, dropdownValue } = require('./harness');
 
 // ---------------------------------------------------------------- expected values (Node side)
 const ctx = vm.createContext({});
@@ -33,7 +33,7 @@ function kpisFor(month, filters, opts) {
 
 // Same formatting as UI.fmtNum / UI.fmtPct.
 const fmtNum = (n) => new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 }).format(n);
-const fmtPct = (n) => new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1, useGrouping: false }).format(n) + ' %';
+const fmtPct = (n) => new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1, useGrouping: false }).format(n) + '\u202f%';
 
 async function readCards(page) {
   return page.$$eval('[data-kpi]', (cards) => Object.fromEntries(cards.map((c) => [c.dataset.kpi, {
@@ -61,6 +61,7 @@ async function withApp(options, fn) {
   }
 }
 
+/** Types the month into the UI.monthField (#import-month is its text input) and submits. */
 async function startImport(app, month) {
   await app.page.fill('#import-month', month);
   await app.page.click('#import-button');
@@ -90,14 +91,25 @@ describe('dashboard', () => {
         apps_sans_idp: 'Sans IDP=' + k.apps_sans_idp,
       });
 
-      const titles = await page.$$eval('#main .chart-card .card-title', (ns) => ns.map((n) => n.textContent));
+      const titles = await page.$$eval('#main .chart-section > .section-title', (ns) => ns.map((n) => n.textContent));
       assert.deepEqual(titles, ['Conformité des postes', 'Conformité des applications', 'Risques — Postes',
         'Risques — Applications', 'Distribution des scores — Postes', 'Distribution des scores — Applications']);
       assert.equal((await page.textContent('#import-panel h2')).trim(), 'Importer depuis Google Sheets');
+      // Import month: a UI.monthField (mono text input + month grid), no native month picker.
       assert.equal(await page.inputValue('#import-month'), await page.evaluate(() => window.State.get().currentMonth));
-      // Import log: newest first.
-      assert.deepEqual(await page.$$eval('#import-log tbody tr td:first-child', (ns) => ns.map((n) => n.textContent)),
+      assert.equal(await page.getAttribute('#import-month', 'type'), 'text');
+      assert.equal(await page.$$eval('#main input[type=month], #main input[type=date], #main select', (n) => n.length), 0);
+      // Gauge captions spell the status out (never colour only).
+      assert.deepEqual(await page.$$eval('#main .chart-section .threshold-caption', (ns) => ns.map((n) => n.textContent)), [
+        'Sous le seuil · 5 conformes sur 7 · seuil 80\u202f%', 'Sous le seuil · 3 conformes sur 5 · seuil 80\u202f%']);
+      // Import log: newest first, months as « mai 2026 », import time as DD/MM/YYYY HH:MM.
+      assert.deepEqual(await page.$$eval('#import-log tbody tr[data-month]', (ns) => ns.map((n) => n.dataset.month)),
         ['2026-05', '2026-04']);
+      assert.deepEqual(await page.$$eval('#import-log tbody tr[data-month] td:first-child', (ns) => ns.map((n) => n.textContent)),
+        ['mai 2026', 'avril 2026']);
+      assert.match(await page.textContent('#import-log tbody tr[data-month] td:nth-child(2)'), /^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
+      // No native title tooltips in the page.
+      assert.equal(await page.$$eval('#main [title]', (n) => n.length), 0);
       assert.deepEqual(app.errors, []);
     });
   });
@@ -146,8 +158,7 @@ describe('dashboard', () => {
   test('Équipe filter changes the KPIs', async () => {
     await withApp({}, async (app) => {
       const { page } = app;
-      await page.click('#filter-equipe .ms-toggle');
-      await page.check('#filter-equipe input[value="Labo Textile"]');
+      await chooseOptions(page, '#filter-equipe .dd-trigger', ['Labo Textile']);
       await page.waitForSelector('#main .filter-note');
       await app.waitIdle();
       const filtered = kpisFor('2026-05', { equipes: ['Labo Textile'], batiments: [] });
@@ -155,14 +166,13 @@ describe('dashboard', () => {
       assertCards(await readCards(page), filtered);
       assert.match(await page.textContent('#main .filter-note'), /Équipe : Labo Textile/);
 
-      await page.check('#filter-equipe input[value="R&D Vélo"]');
+      await chooseOptions(page, '#filter-equipe .dd-trigger', ['Labo Textile', 'R&D Vélo']);
       await app.waitIdle();
       await page.waitForFunction(() => /R&D Vélo/.test(document.querySelector('#main .filter-note').textContent));
       assertCards(await readCards(page), kpisFor('2026-05', { equipes: ['Labo Textile', 'R&D Vélo'], batiments: [] }));
 
       // Bâtiment filter applies to postes only.
-      await page.click('#filter-batiment .ms-toggle');
-      await page.check('#filter-batiment input[value="Bâtiment A"]');
+      await chooseOptions(page, '#filter-batiment .dd-trigger', ['Bâtiment A']);
       await app.waitIdle();
       await page.waitForFunction(() => /Bâtiment A/.test(document.querySelector('#main .filter-note').textContent));
       assertCards(await readCards(page),
@@ -175,7 +185,7 @@ describe('dashboard', () => {
 
   test('month select switches the snapshot', async () => {
     await withApp({}, async (app) => {
-      await app.page.selectOption('#month-select', '2026-04');
+      await chooseOption(app.page, '#month-select', '2026-04');
       await app.page.waitForFunction(() => document.getElementById('dashboard-caption').dataset.month === '2026-04');
       assert.equal(await app.page.textContent('#dashboard-caption'), 'Avril 2026 · Export 2026-04');
       await app.waitIdle();
@@ -190,8 +200,10 @@ describe('dashboard', () => {
       await startImport(app, '2026-05');
       await page.waitForSelector('.modal[role="dialog"]');
       const msg = await page.textContent('.modal .confirm-message');
-      assert.equal(msg, 'Le mois 2026-05 existe déjà. Ré-importer écrase les postes, applications et le référentiel ' +
+      assert.equal(msg, 'L’export de mai 2026 existe déjà. Ré-importer écrase les postes, applications et le référentiel ' +
         'de ce mois (Galink/IDP sont conservés). Continuer ?');
+      // Destructive confirm: the focus starts on « Annuler », not on « Ré-importer ».
+      await page.waitForFunction(() => document.activeElement && document.activeElement.textContent === 'Annuler');
       await page.click('.modal .btn-danger');
       await page.waitForSelector('.toast-success');
       await app.waitIdle();
@@ -239,15 +251,24 @@ describe('dashboard', () => {
       await startImport(app, '2026-06');
       await page.waitForFunction(() => ((document.getElementById('dashboard-caption') || {}).dataset || {}).month === '2026-06');
       await app.waitIdle();
-      assert.equal(await page.inputValue('#month-select'), '2026-06');
-      assert.deepEqual(await page.$$eval('#month-select option', (os) => os.map((o) => o.value)), ['2026-04', '2026-05', '2026-06']);
+      assert.equal(await dropdownValue(page, '#month-select'), '2026-06');
+      assert.deepEqual(await optionLabels(page, '#month-select', { values: true }), ['2026-04', '2026-05', '2026-06']);
       assertCards(await readCards(page), kpisFor('2026-05')); // the live source holds the 2026-05 fixture
-      assert.equal(await page.$$eval('#import-log tbody tr', (rs) => rs.length), 3);
+      assert.equal(await page.$$eval('#import-log tbody tr[data-month]', (rs) => rs.length), 3);
 
-      // Client-side validation of the month.
-      await page.evaluate(() => { const i = document.getElementById('import-month'); i.type = 'text'; i.value = '2026-13'; });
+      // Client-side validation of the month: shown under the field (UI.fieldError), nothing sent.
+      const before = (await app.calls()).filter((c) => c.name === 'api_importMonth').length;
+      await page.fill('#import-month', '2026-13');
       await page.click('#import-button');
-      assert.match(await page.textContent('#import-status'), /Mois invalide/);
+      assert.match(await page.textContent('#import-month-err'), /Mois invalide/);
+      assert.equal(await page.getAttribute('#import-month', 'aria-invalid'), 'true');
+      assert.equal(await page.isVisible('#import-status .alert-error'), false);
+      assert.equal((await app.calls()).filter((c) => c.name === 'api_importMonth').length, before);
+      // Typing a valid month clears the error.
+      await page.fill('#import-month', '2026-07');
+      await page.locator('#import-month').blur();
+      assert.equal(await page.isVisible('#import-month-err'), false);
+      assert.equal(await page.getAttribute('#import-month', 'aria-invalid'), 'false');
       assert.deepEqual(app.errors.filter((e) => !/Onglet introuvable/.test(e)), []);
     });
   });
@@ -261,6 +282,7 @@ describe('dashboard', () => {
       assert.ok(await page.isVisible('#import-panel'));
       assert.match(await page.textContent('#import-log'), /Aucun import/);
       assert.equal(await page.isDisabled('#month-select'), true);
+      assert.equal((await page.textContent('#import-button')).trim(), 'Importer');
 
       await startImport(app, '2026-05');
       await page.waitForSelector('[data-kpi="total_postes"]');
@@ -269,8 +291,65 @@ describe('dashboard', () => {
       const k = kpisFor('2026-05', null, { custom: false });
       assert.equal(k.apps_sans_galink, 0);
       assertCards(await readCards(page), k);
-      assert.equal(await page.inputValue('#month-select'), '2026-05');
+      assert.equal(await dropdownValue(page, '#month-select'), '2026-05');
       assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('import button: busy state while the import runs; label follows the month', async () => {
+    await withApp({ delayMs: 400 }, async (app) => {
+      const { page } = app;
+      assert.equal((await page.textContent('#import-button')).trim(), 'Importer');   // 2026-10 not imported yet
+      await page.fill('#import-month', '2026-05');
+      await page.waitForFunction(() => document.getElementById('import-button').textContent.trim() === 'Ré-importer');
+      await page.fill('#import-month', '2026-06');
+      await page.click('#import-button');
+      // Busy: spinner + label, colours kept (not the 45 % disabled look), the month field locked.
+      await page.waitForSelector('#import-button.is-busy[aria-busy="true"] .spinner');
+      assert.equal((await page.textContent('#import-button')).trim(), 'Import en cours…');
+      assert.equal(await page.$eval('#import-button', (b) => getComputedStyle(b).opacity), '1');
+      assert.equal(await page.isDisabled('#import-month'), true);
+      await page.waitForFunction(() => ((document.getElementById('dashboard-caption') || {}).dataset || {}).month === '2026-06',
+        null, { timeout: 10000 });
+      await app.waitIdle();
+      assert.equal(await page.$('#import-button.is-busy'), null);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('import log: warnings are revealed by the count button (no native tooltip)', async () => {
+    await withApp({}, async (app) => {
+      const { page } = app;
+      const toggle = '#import-log tr[data-month="2026-05"] .import-warn-toggle';
+      assert.equal((await page.textContent(toggle)).trim(), '1');
+      assert.equal(await page.getAttribute(toggle, 'aria-expanded'), 'false');
+      const target = await page.getAttribute(toggle, 'aria-controls');
+      assert.equal(await page.isVisible('#' + target), false);
+      await page.click(toggle);
+      assert.equal(await page.getAttribute(toggle, 'aria-expanded'), 'true');
+      assert.ok(await page.isVisible('#' + target));
+      assert.match(await page.textContent('#' + target), /ignorée/);
+      await page.click(toggle);
+      assert.equal(await page.isVisible('#' + target), false);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('month data error: alert-error line with « Réessayer »', async () => {
+    await withApp({}, async (app) => {
+      const { page } = app;
+      await page.evaluate(() => {
+        window.__mock.failNext.api_getMonthData = { code: 'INTERNAL', message: 'Feuille illisible' };
+        window.State.invalidate();
+      });
+      await chooseOption(page, '#month-select', '2026-04');
+      await page.waitForSelector('#dashboard-body .alert-error');
+      assert.equal((await page.textContent('#dashboard-body .alert-error p')).replace('Réessayer', '').trim(),
+        'Impossible de charger avril 2026 : Feuille illisible');
+      await page.click('#dashboard-body .error-retry');
+      await page.waitForSelector('[data-kpi="total_postes"]');
+      await app.waitIdle();
+      assertCards(await readCards(page), kpisFor('2026-04'));
     });
   });
 

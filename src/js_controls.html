@@ -20,7 +20,9 @@
  * UI.dropdown({id?, name?, label?, ariaLabel?, labelledBy?, options, value, onChange?, onClose?(reason),
  *              placeholder?, emptyLabel='—', allowEmpty?, searchable?, size='md'|'sm', disabled?, mono?,
  *              multiple?, combobox?, tokens?, className?}) -> Element (div.dd)
- *   options: [string | {value, label?, hint?, group?, disabled?}]. Replaces <select>.
+ *   options: [string | {value, label?, hint?, group?, disabled?, mono?}]. Replaces <select>. group: rows
+ *     under a small-caps group label; mono: that row's label in IBM Plex Mono (identifiers). When any row
+ *     sets mono, the rows decide (the dropdown's own mono then only applies to the trigger).
  *   - single (default): trigger <button id=id aria-haspopup=listbox>; value is a string.
  *   - allowEmpty: adds a first option '' labelled emptyLabel. placeholder: text shown while value is ''.
  *   - searchable: filter box at the top of the list (default: automatic above 8 options).
@@ -31,8 +33,8 @@
  *   - tokens: comma-separated multi-token combobox (« POSTE-01, POSTE-02 »); suggestions complete the
  *     token being typed; value is the normalised « a, b » string.
  *   - size 'sm': 28px trigger for table cells. mono: identifiers / months in IBM Plex Mono.
- *   Element methods: getValue(), setValue(v) (no onChange), setOptions(opts), setDisabled(bool), focus(),
- *   open(), close(), isOpen(); properties: .control (the trigger: button or input), .value (get/set).
+ *   Element methods: getValue(), setValue(v) (no onChange), setOptions(opts), setDisabled(bool),
+ *   setMono(bool), focus(), open(), close(), isOpen(); properties: .control (the trigger: button or input), .value (get/set).
  *   The trigger (button) also exposes .value (get/set), so document.getElementById(id).value works.
  *   onClose(reason): 'select' | 'escape' | 'outside' | 'tab' | 'toggle' | 'replaced' | 'scroll' | ...
  *   Keyboard: ArrowDown/ArrowUp/Enter/Space open; arrows move; Home/End; PageUp/PageDown; type-ahead;
@@ -347,7 +349,7 @@
       if (o !== null && typeof o === 'object') {
         var v = str(o.value);
         return { value: v, label: o.label !== undefined && o.label !== null ? String(o.label) : v,
-          hint: o.hint ? String(o.hint) : '', group: o.group ? String(o.group) : '', disabled: !!o.disabled };
+          hint: o.hint ? String(o.hint) : '', group: o.group ? String(o.group) : '', disabled: !!o.disabled, mono: !!o.mono };
       }
       var s = str(o);
       return { value: s, label: s, hint: '', group: '', disabled: false };
@@ -514,7 +516,7 @@
         lastGroup = op.group || '';
         var label = op.isCustom ?
           el('span', { class: 'dd-option-label' }, 'Utiliser « ', el('span', { class: opts.mono ? 'mono' : null }, op.value), ' »') :
-          el('span', { class: 'dd-option-label' }, op.label);
+          el('span', { class: 'dd-option-label' }, op.mono ? el('span', { class: 'mono' }, op.label) : op.label);
         listbox.appendChild(el('div', {
           role: 'option', id: listId + '-o' + i,
           class: ['dd-option', op.isCustom ? 'dd-option-custom' : null, op.isEmpty ? 'dd-option-empty' : null],
@@ -617,7 +619,9 @@
         content.appendChild(el('div', { class: 'dd-footer' }, footerBtn));
       }
       pop = popover({ anchor: anchor, content: content, returnFocus: trigger, onClose: onPopClose,
-        className: ['dd-popover', 'dd-popover-' + size, opts.mono ? 'dd-mono' : null].filter(Boolean).join(' ') });
+        // Options that set their own mono flag decide row by row (e.g. postes in mono, applications in sans).
+        className: ['dd-popover', 'dd-popover-' + size,
+          opts.mono && !options.some(function (op) { return op.mono; }) ? 'dd-mono' : null].filter(Boolean).join(' ') });
       trigger.setAttribute('aria-expanded', 'true');
       root.classList.add('is-open');
       renderList();
@@ -839,6 +843,12 @@
       root.classList.toggle('is-disabled', !!b);
       if (b) closePop('disabled', false);
     };
+    /** Trigger / typed text in mono (identifiers) or not; rows with their own mono flag keep it. */
+    root.setMono = function (b) {
+      opts.mono = !!b;
+      root.classList.toggle('dd-mono', !!b);
+      if (combo) trigger.classList.toggle('mono', !!b);
+    };
     root.focus = function () { focusNoScroll(trigger); };
     root.open = function () { if (combo) trigger.focus(); open(combo ? { query: '', at: 'selected' } : undefined); };
     root.close = function () { closePop('api'); };
@@ -884,10 +894,30 @@
     return d;
   }
 
+  /**
+   * Seven digits that do not read as JJ/MM/AAA… (day > 31 or month > 12), e.g. « 1032026 »: tries
+   * J/MM/AAAA, then JJ/M/AAAA, and returns the first real calendar day as 'DD/MM/YYYY' ('' otherwise).
+   */
+  function sevenDigits(raw) {
+    var d = String(raw).replace(/\D/g, '');
+    if (d.length !== 7) return '';
+    var dd = Number(d.slice(0, 2));
+    var mm = Number(d.slice(2, 4));
+    if (dd >= 1 && dd <= 31 && mm >= 1 && mm <= 12) return '';
+    var tries = [[d.slice(0, 1), d.slice(1, 3), d.slice(3)], [d.slice(0, 2), d.slice(2, 3), d.slice(3)]];
+    for (var i = 0; i < tries.length; i++) {
+      var p = parseFr(tries[i].join('/'));
+      if (p) return frOf(p);
+    }
+    return '';
+  }
+
   /** Progressive JJ/MM/AAAA mask (typing at the end of the field). */
   function maskDate(raw) {
     var iso = /^\s*(\d{4})-(\d{2})-(\d{2})\s*$/.exec(raw);
     if (iso) return Core.isoToFr(iso[1] + '-' + iso[2] + '-' + iso[3]) || raw;
+    var seven = sevenDigits(raw);
+    if (seven) return seven;
     var s = String(raw).replace(/[.\-\s]/g, '/').replace(/[^\d/]/g, '');
     var f = ['', '', ''];
     var i = 0;
@@ -924,14 +954,24 @@
     var opts = o || {};
     var id = opts.id || nextId(spec.kind);
     var size = opts.size === 'sm' ? 'sm' : 'md';
+    var hintId = id + '-hint';
+    // The input itself announces the picker (role=combobox + aria-haspopup=dialog) and how to open it.
     var input = el('input', { type: 'text', id: id, name: opts.name || null, class: ['input', 'dd-input', 'mono', spec.kind + '-input'],
+      role: 'combobox', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', 'aria-autocomplete': 'none',
+      'aria-describedby': hintId,
       inputmode: 'numeric', autocomplete: 'off', spellcheck: 'false', maxlength: String(spec.maxLength),
       placeholder: opts.placeholder || spec.placeholder, required: !!opts.required,
       'aria-label': opts.ariaLabel || null, 'aria-labelledby': opts.labelledBy || null });
     var btn = el('button', { type: 'button', class: 'dd-caret-btn', tabindex: '-1', 'aria-label': spec.openLabel,
       'aria-haspopup': 'dialog', 'aria-expanded': 'false' }, el('span', { class: 'dd-caret', 'aria-hidden': 'true' }));
     var control = el('div', { class: 'dd-control' }, input, btn);
-    var root = el('div', { class: ['dd-field', spec.kind, 'dd-' + size, opts.className] }, control);
+    var root = el('div', { class: ['dd-field', spec.kind, 'dd-' + size, opts.className] }, control,
+      el('span', { class: 'sr-only', id: hintId }, spec.placeholder + '. ' + spec.hint));
+    function setExpanded(b) {
+      input.setAttribute('aria-expanded', b ? 'true' : 'false');
+      btn.setAttribute('aria-expanded', b ? 'true' : 'false');
+      root.classList.toggle('is-open', b);
+    }
     var committed = '';
     var pop = null;
 
@@ -995,11 +1035,9 @@
         ariaLabel: spec.dialogLabel, className: 'cal-popover',
         onClose: function () {
           pop = null;
-          btn.setAttribute('aria-expanded', 'false');
-          root.classList.remove('is-open');
+          setExpanded(false);
         } });
-      btn.setAttribute('aria-expanded', 'true');
-      root.classList.add('is-open');
+      setExpanded(true);
       picker.focus();
     }
 
@@ -1207,12 +1245,18 @@
       maxLength: 10,
       openLabel: 'Ouvrir le calendrier',
       dialogLabel: 'Choisir une date',
+      hint: 'Flèche bas : calendrier.',
       allowed: /[^\d/]/g,
       mask: maskDate,
-      normalize: function (text) { var d = parseFr(text); return d ? frOf(d) : ''; },
+      normalize: function (text) { var d = parseFr(sevenDigits(text) || text); return d ? frOf(d) : ''; },
       check: function (text, opts) {
-        var d = parseFr(text);
-        if (!d) return 'Date invalide : format JJ/MM/AAAA.';
+        var d = parseFr(sevenDigits(text) || text);
+        if (!d) {
+          // Well-formed but not a calendar day (31/02/2026, 00/13/2026): say so, not « format ».
+          var m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(text);
+          if (m) return 'Date inexistante : ' + pad2(Number(m[1])) + '/' + pad2(Number(m[2])) + '/' + m[3] + '.';
+          return 'Date invalide : format JJ/MM/AAAA.';
+        }
         var min = opts.min ? parseFr(opts.min) : null;
         var max = opts.max ? parseFr(opts.max) : null;
         if (min && isoOf(d) < isoOf(min)) return 'Date antérieure au ' + frOf(min) + '.';
@@ -1231,6 +1275,7 @@
       maxLength: 7,
       openLabel: 'Choisir un mois',
       dialogLabel: 'Choisir un mois',
+      hint: 'Flèche bas : choix du mois.',
       allowed: /[^\d-]/g,
       mask: maskMonth,
       normalize: function (text) { var m = maskMonth(text); return Core.validateMonth(m) ? m : ''; },

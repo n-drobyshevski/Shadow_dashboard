@@ -63,8 +63,8 @@
                       never add the glyph in text.
    - Row actions      span.row-actions = inline row of .btn-quiet text buttons (never stacked, 32px hit area).
    - Rows             one hover token (--row-hover) for every clickable row: tr.row-clickable, .nav-link,
-                      .ms-option. Static rows have no hover.
-   - Tables           .table (32px rows) / .table.table-compact (28px rows). Header = small caps sans for
+                      .dd-option. Static rows have no hover.
+   - Tables           .table (32px rows; UI.table builds the read-only ones, td.is-wrap may wrap). Header = small caps sans for
                       every column (numeric ones are only right-aligned: th.num). Wrap any wide table in
                       .table-scroll: the right edge fades while columns are hidden (CSS scroll timeline,
                       .has-more-right as a JS fallback).
@@ -106,7 +106,6 @@
   --backdrop: rgba(22, 24, 27, .35);
   --sidebar-w: 232px;
   --row-h: 32px;
-  --row-h-compact: 28px;
   --control-h: 32px;
   --control-h-sm: 28px;
   --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px;
@@ -134,12 +133,12 @@ a[target="_blank"]::after { content: '\2009\2197\FE0E'; color: var(--ink-3); fon
 :focus { outline: none; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 [hidden] { display: none !important; }
-::selection { background: var(--selection); }
+::selection { background: var(--selection); color: var(--ink); }
 
 /* Scrollbars: thin, ruled, the same on every OS. */
 * { scrollbar-width: thin; scrollbar-color: var(--rule-2) transparent; }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--rule-2); border-radius: 0; }
 ::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }
 
@@ -210,7 +209,7 @@ a[target="_blank"]::after { content: '\2009\2197\FE0E'; color: var(--ink-3); fon
 .sidebar-heading { color: var(--ink-3); }
 .filters { display: flex; flex-direction: column; gap: var(--s3); }
 .filters .field-help, .filter-na { font-size: 12px; color: var(--ink-3); margin: 0; }
-.multiselect.is-disabled .ms-toggle, .filters .is-disabled .input { cursor: not-allowed; }
+.filters .is-disabled .input { cursor: not-allowed; }
 .sidebar-footer {
   margin-top: auto; display: flex; flex-direction: column; align-items: flex-start; gap: 0;
   padding: var(--s2) var(--s2) 0; border-top: 1px solid var(--rule); font-size: 13px;
@@ -270,6 +269,8 @@ body.unconfigured .topbar-toggle { visibility: hidden; }
 .chart-caption .num, .chart-caption .mono, .chart-caption .mark { font-size: 12px; }
 /* Threshold status caption: the status is spelled out next to its colour. */
 .threshold-caption .mark { font-weight: 500; }
+.threshold-caption .tc-item .mark { margin-left: 3px; }
+.threshold-caption .tc-item { white-space: nowrap; }
 .threshold-caption .series { color: var(--ink); font-weight: 500; }
 .threshold-caption .num { color: var(--ink); }
 
@@ -464,57 +465,17 @@ body.unconfigured .topbar-toggle { visibility: hidden; }
   width: 100%; min-height: var(--control-h); padding: 0 var(--s2);
   border: 1px solid var(--rule-2); border-radius: var(--radius);
   background-color: var(--paper); color: var(--ink); font: inherit; font-size: 13px; line-height: 30px;
-  --caret: var(--ink-2);
 }
-/* caret drawn with gradients in --caret: kept (in ink-3) on disabled controls */
-select.input, .ms-toggle.input, input[list].input { padding-right: 24px; appearance: none; -webkit-appearance: none;
-  background-image: linear-gradient(45deg, transparent 50%, var(--caret) 50%), linear-gradient(135deg, var(--caret) 50%, transparent 50%);
-  background-position: calc(100% - 13px) 13px, calc(100% - 9px) 13px; background-size: 4px 4px; background-repeat: no-repeat; }
-.multiselect.open .ms-toggle.input {
-  background-image: linear-gradient(135deg, transparent 50%, var(--caret) 50%), linear-gradient(45deg, var(--caret) 50%, transparent 50%);
-  background-position: calc(100% - 13px) 12px, calc(100% - 9px) 12px; }
-input[list]::-webkit-calendar-picker-indicator { display: none !important; opacity: 0; }
 textarea.input { line-height: 1.5; padding: 6px var(--s2); resize: vertical; min-height: 72px; }
-/* search: no native decoration / blue cancel button (Esc clears the field) */
-input[type="search"].input { appearance: none; -webkit-appearance: none; }
-input[type="search"]::-webkit-search-decoration, input[type="search"]::-webkit-search-cancel-button,
-input[type="search"]::-webkit-search-results-button, input[type="search"]::-webkit-search-results-decoration {
-  -webkit-appearance: none; appearance: none; display: none; }
-/* native date / month fields (until UI.dateField replaces them): 32px, mono, token colours */
-input[type="month"].input, input[type="date"].input {
-  height: var(--control-h); font-family: var(--font-mono); font-size: 13px; line-height: normal; font-variant-numeric: tabular-nums; }
-input[type="month"]::-webkit-datetime-edit-fields-wrapper, input[type="date"]::-webkit-datetime-edit-fields-wrapper { padding: 0; }
-input[type="month"]::-webkit-datetime-edit-month-field:focus, input[type="month"]::-webkit-datetime-edit-year-field:focus,
-input[type="date"]::-webkit-datetime-edit-day-field:focus, input[type="date"]::-webkit-datetime-edit-month-field:focus,
-input[type="date"]::-webkit-datetime-edit-year-field:focus { background: var(--selection); color: var(--ink); }
-input[type="month"]::-webkit-calendar-picker-indicator, input[type="date"]::-webkit-calendar-picker-indicator {
-  opacity: .5; cursor: pointer; width: 12px; height: 12px; padding: 0; margin-left: var(--s1); }
 .input::placeholder { color: var(--ink-3); }
 .input:hover:not(:disabled) { border-color: var(--ink-3); }
 .input:focus, .input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--rule-2); }
-.ms-toggle.input:focus:not(:focus-visible) { outline: none; }
-.input:disabled { background-color: var(--paper-2); color: var(--ink-3); --caret: var(--ink-3); cursor: not-allowed; }
+.input:disabled { background-color: var(--paper-2); color: var(--ink-3); cursor: not-allowed; }
 /* on the --paper-2 sidebar a disabled control is told apart by its lighter rule and ink-3 text */
 .sidebar .input:disabled, .sidebar .dd-trigger:disabled { background-color: transparent; border-color: var(--rule); }
-.is-disabled .ms-summary, .is-disabled .dd-value, .multiselect.is-disabled .field-label, .dd.is-disabled .field-label {
+.is-disabled .dd-value, .multiselect.is-disabled .field-label, .dd.is-disabled .field-label {
   color: var(--ink-3) !important; }
 .input[aria-invalid="true"] { border-color: var(--ko); }
-/* checkboxes: flat 14px square, ink when checked (same in every OS) */
-input[type="checkbox"] {
-  appearance: none; -webkit-appearance: none; flex: 0 0 14px; width: 14px; height: 14px; margin: 0;
-  border: 1px solid var(--rule-2); border-radius: 2px; background: var(--paper);
-  display: inline-grid; place-content: center; cursor: pointer; vertical-align: middle;
-}
-input[type="checkbox"]::before {
-  content: ''; width: 8px; height: 8px; background: var(--on-ink); transform: scale(0);
-  clip-path: polygon(12% 48%, 0 62%, 40% 100%, 100% 18%, 87% 5%, 39% 72%);
-}
-input[type="checkbox"]:checked { background: var(--ink); border-color: var(--ink); }
-input[type="checkbox"]:checked::before { transform: scale(1); }
-input[type="checkbox"]:hover:not(:disabled) { border-color: var(--ink-3); }
-input[type="checkbox"]:checked:hover:not(:disabled) { border-color: var(--ink); }
-input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-input[type="checkbox"]:disabled { background: var(--paper-2); cursor: not-allowed; }
 .field { display: flex; flex-direction: column; gap: var(--s1); }
 .field-label { font-size: 12px; font-weight: 500; color: var(--ink-2); }
 .field-error { margin: 2px 0 0; color: var(--ko); font-size: 12px; }
@@ -531,20 +492,8 @@ input[type="checkbox"]:disabled { background: var(--paper-2); cursor: not-allowe
 .import-card { display: flex; flex-direction: column; gap: var(--s3); }
 .import-status:empty { display: none; }
 
-/* multiselect (inline disclosure) */
+/* multiselect (UI.multiSelect = UI.dropdown multiple) */
 .multiselect { display: flex; flex-direction: column; gap: var(--s1); }
-.ms-toggle { display: flex; align-items: center; gap: var(--s2); text-align: left; cursor: pointer; }
-.ms-summary { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.multiselect:not(.has-value) .ms-summary { color: var(--ink-2); }
-.ms-count:not(:empty) { font-family: var(--font-mono); font-size: 12px; color: var(--ink); }
-.ms-caret { display: none; }
-.ms-panel {
-  border: 1px solid var(--rule-2); border-radius: var(--radius); padding: var(--s1) 0; background: var(--paper);
-  max-height: 240px; overflow-y: auto; display: flex; flex-direction: column;
-}
-.ms-option { display: flex; align-items: center; gap: var(--s2); padding: 0 var(--s2); min-height: 32px; cursor: pointer; font-size: 13px; }
-.ms-option:hover { background: var(--row-hover); }
-.ms-clear { align-self: flex-start; margin: 0 var(--s2); min-height: 28px; }
 
 /* ------------------------------------------------------------------ tables (ledger) */
 .table-scroll { width: 100%; overflow-x: auto; border: 0; border-radius: 0; background: none; }
@@ -565,35 +514,43 @@ input[type="checkbox"]:disabled { background: var(--paper-2); cursor: not-allowe
 .table tbody th { font-weight: 400; color: var(--ink); }
 .table td.num, .table th.num { text-align: right; }
 .table td.mono, .table td .mono { font-family: var(--font-mono); font-size: 12px; }
-.table-compact th, .table-compact td { height: var(--row-h-compact); padding-top: 3px; padding-bottom: 3px; }
+.table td.is-wrap, .table th.is-wrap { white-space: normal; line-height: 1.35; overflow-wrap: anywhere; }
+/* UI.table: read-only ledger (32px rows). Widths in a <colgroup> switch it to a fixed layout. */
+.ui-table.is-fixed { table-layout: fixed; }
+.ui-table.is-fixed th, .ui-table.is-fixed td { max-width: none; }
+.ui-table td:has(> .btn:only-child) { padding-top: 0; padding-bottom: 0; }
 /* one hover for every clickable row; static rows do not react */
 .table tbody tr { --cell-bg: var(--paper); }
 .table tbody tr.row-clickable:hover { --cell-bg: var(--row-hover); }
 .table tbody tr.row-clickable:hover > td, .table tbody tr.row-clickable:hover > th { background: var(--cell-bg); }
 /* Editable ledgers: the identifier column stays visible while the wide table scrolls sideways. Solid
-   background, a hairline, and a short paper fade to its right so no half-scrolled glyph shows. */
+   background, a hairline, and a 32px paper fade to its right (::after, drawn in the clip margin: outer
+   box-shadows are not painted on cells of a collapsed-border table) so no half-scrolled glyph shows. */
 .etable .table th:first-child, .etable .table td:first-child {
   position: sticky; left: 0; z-index: 2; max-width: 220px; background: var(--cell-bg, var(--paper));
-  box-shadow: inset -1px 0 0 var(--rule), 6px 0 0 0 var(--cell-bg, var(--paper)), 14px 0 8px -6px var(--cell-bg, var(--paper));
+  box-shadow: inset -1px 0 0 var(--rule); overflow: clip; overflow-clip-margin: 32px;
 }
+.etable .table th:first-child::after, .etable .table td:first-child::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 100%; width: 32px; pointer-events: none;
+  background: linear-gradient(to right, var(--cell-bg, var(--paper)) 10px, transparent);
+}
+/* At scrollLeft 0 nothing is hidden under the key column: no fade, so column 2 is never masked. */
+.etable .table-scroll:not(.has-more-left) .table th:first-child::after,
+.etable .table-scroll:not(.has-more-left) .table td:first-child::after { content: none; }
+.etable .table th:first-child > .th-sort { overflow: hidden; }
 .etable .table td:first-child > .postes-key, .etable .table td:first-child > .apps-key {
   display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.etable .table thead th:first-child {
-  --cell-bg: var(--paper-2); background: var(--paper-2);
-  box-shadow: inset -1px 0 0 var(--rule-2), 6px 0 0 0 var(--paper-2), 14px 0 8px -6px var(--paper-2);
-}
+.etable .table thead th:first-child { --cell-bg: var(--paper-2); background: var(--paper-2); box-shadow: inset -1px 0 0 var(--rule-2); }
 .etable .table tbody td:first-child { z-index: 4; }
 .etable .table thead th:first-child { z-index: 5 !important; }
 @media (max-width: 640px) {
   .etable .table th:first-child, .etable .table td:first-child { max-width: 38vw; }
 }
-.etable .table td.cell-dirty:first-child {
-  box-shadow: inset 2px 0 0 var(--accent), inset -1px 0 0 var(--rule), 6px 0 0 0 var(--cell-bg, var(--paper)),
-    14px 0 8px -6px var(--cell-bg, var(--paper));
-}
+.etable .table td.cell-dirty:first-child { box-shadow: inset 2px 0 0 var(--accent), inset -1px 0 0 var(--rule); }
 /* empty ledger: one plain line, no sticky key-column rule */
 .etable .table .etable-empty td { position: static; box-shadow: none; max-width: none; background: none; }
+.etable .table .etable-empty td::after, .etable .table:has(.etable-empty) thead th:first-child::after { content: none; }
 .etable .table:has(.etable-empty) thead th:first-child { box-shadow: none; }
 /* Scroll cue: the right edge fades out while more columns are hidden. JS fallback class first, then a
    CSS scroll timeline (no JS, works for every .table-scroll, e.g. « Derniers imports » on a phone). */
@@ -602,9 +559,7 @@ input[type="checkbox"]:disabled { background: var(--paper-2); cursor: not-allowe
   mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent);
 }
 @property --fade-r { syntax: '<length>'; inherits: false; initial-value: 0px; }
-@property --fade-l { syntax: '<length>'; inherits: false; initial-value: 0px; }
 @keyframes scroll-fade-r { 0%, 88% { --fade-r: 40px; } 100% { --fade-r: 0px; } }
-@keyframes scroll-fade-lr { 0% { --fade-l: 0px; --fade-r: 24px; } 12%, 88% { --fade-l: 24px; --fade-r: 24px; } 100% { --fade-l: 24px; --fade-r: 0px; } }
 @supports (animation-timeline: scroll()) {
   .table-scroll, .table-scroll.has-more-right {
     animation: scroll-fade-r linear both; animation-timeline: scroll(self inline);
@@ -721,12 +676,23 @@ dl.leaders { margin: 0; }
 .import-grid { align-items: start; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
 @media (max-width: 1100px) { .import-grid { grid-template-columns: minmax(0, 1fr); } }
 .import-history { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
-.import-warn { color: var(--warn); }
 .detail-rows { display: flex; flex-direction: column; }
 
 /* ------------------------------------------------------------------ tabs */
 .tabs { display: flex; flex-direction: column; gap: var(--s5); }
-.tablist { display: flex; gap: var(--s5); border-bottom: 1px solid var(--rule); overflow-x: auto; scroll-padding-inline: var(--s4); }
+/* The strip scrolls sideways when it does not fit (phones); no scrollbar, the clipped side fades instead
+   (has-more-left / has-more-right, set by UI.tabs on scroll and resize). */
+.tablist {
+  display: flex; gap: var(--s5); border-bottom: 1px solid var(--rule); overflow-x: auto; scroll-padding-inline: var(--s5);
+  scrollbar-width: none;
+}
+.tablist::-webkit-scrollbar { display: none; }
+.tablist.has-more-right { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); }
+.tablist.has-more-left { -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent); }
+.tablist.has-more-left.has-more-right {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
+}
 .tab {
   border: 0; background: none; font: inherit; font-size: 14px; color: var(--ink-2); padding: 6px 0 8px; cursor: pointer;
   border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; min-height: 32px;
@@ -763,6 +729,21 @@ dl.leaders { margin: 0; }
 .drawer-body { padding: var(--s4) var(--s5) var(--s6); overflow-y: auto; flex: 1 1 auto; display: flex; flex-direction: column; gap: var(--s5); }
 .drawer-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s2) var(--s4); }
 .drawer-buttons { display: flex; gap: var(--s2); flex-wrap: wrap; }
+/* Entity drawers (Postes + Applications): stack of drawer blocks, leaders centred in the flex criteria
+   rows, product names in sans inside .rel-list (mono is for poste identifiers), action list typography. */
+.entity-drawer { display: flex; flex-direction: column; gap: var(--s5); }
+.entity-drawer .checklist .leader, .entity-drawer .rel-list .leader { align-self: center; transform: none; }
+.entity-drawer .crit-label { flex: 0 1 auto; }
+.entity-drawer .crit-value { color: var(--ink-2); font-size: 13px; }
+.entity-drawer .checklist li { flex-wrap: wrap; }
+.entity-drawer .crit-missing { flex-basis: 100%; margin: -6px 0 2px; font-size: 12px; color: var(--ink-2); }
+.entity-drawer .rel-list .rel-name.is-product { font-family: var(--font-sans); font-size: 13px; }
+.entity-drawer .rel-list .rel-note, .entity-drawer .rel-list .rel-team { font-family: var(--font-sans); font-size: 12px; }
+.entity-drawer .rel-list .rel-note { color: var(--ink-3); }
+.entity-drawer .rel-list .rel-team { color: var(--ink-2); }
+.entity-drawer .action-title { font-weight: 500; font-size: 13px; }
+.entity-drawer .action-comment { margin: 0; font-size: 12px; color: var(--ink-2); }
+.entity-drawer .drawer-head-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s3); }
 
 /* ------------------------------------------------------------------ toasts + spinner */
 .toast-root {
@@ -832,16 +813,7 @@ body.unconfigured .toast-root { left: var(--s4); }
   .modal-header, .modal-body, .modal-footer { padding-left: var(--s4); padding-right: var(--s4); }
 }
 @media (max-width: 480px) {
-  .tablist { flex-wrap: nowrap; gap: var(--s4); overflow-x: auto; scrollbar-width: none; }
-  .tablist::-webkit-scrollbar { display: none; }
-  /* the clipped side of the tab strip fades (scroll timeline) */
-  @supports (animation-timeline: scroll()) {
-    .tablist {
-      animation: scroll-fade-lr linear both; animation-timeline: scroll(self inline);
-      -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--fade-l), #000 calc(100% - var(--fade-r)), transparent);
-      mask-image: linear-gradient(to right, transparent, #000 var(--fade-l), #000 calc(100% - var(--fade-r)), transparent);
-    }
-  }
+  .tablist { flex-wrap: nowrap; gap: var(--s4); }
   .inline-form { align-items: stretch; }
   .inline-form .input { min-width: 0; flex: 1 1 140px; }
   .kv { grid-template-columns: 1fr; }
@@ -850,7 +822,7 @@ body.unconfigured .toast-root { left: var(--s4); }
 
 /* Motion off, except the scroll-driven edge fades (they follow the scroll position, nothing moves). */
 @media (prefers-reduced-motion: reduce) {
-  *:not(.table-scroll):not(.tablist), *::before, *::after {
+  *:not(.table-scroll), *::before, *::after {
     animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
 

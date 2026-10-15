@@ -158,14 +158,6 @@
       onChange: function (v) { if (v) State.set({ month: v }); }
     });
     monthSelect.classList.add('month-select');
-    // Native <select> builds (older UI.select) ignore id / disabled: set them on the control.
-    var sel = monthSelect.querySelector('select');
-    if (sel) {
-      sel.id = 'month-select';
-      if (!s.months.length) sel.disabled = true;
-    } else if (!s.months.length && typeof monthSelect.setDisabled === 'function') {
-      monthSelect.setDisabled(true);
-    }
 
     filtersBox = el('div', { class: 'filters' });
     filterOptionsMonth = null;
@@ -238,15 +230,10 @@
       'Réinitialiser les filtres'));
   }
 
-  /** Shows `month` in the sidebar month control (custom dropdown or native select) without firing onChange. */
+  /** Shows `month` in the sidebar month dropdown without firing onChange. */
   function syncMonthSelect(month) {
-    var wrap = sidebar && sidebar.querySelector('.month-select');
-    if (wrap && typeof wrap.setValue === 'function') {
-      if (typeof wrap.getValue !== 'function' || wrap.getValue() !== month) wrap.setValue(month);
-      return;
-    }
-    var sel = document.getElementById('month-select');
-    if (sel && sel.value !== month) sel.value = month;
+    var dd = sidebar && sidebar.querySelector('.month-select');
+    if (dd && dd.getValue() !== month) dd.setValue(month);
   }
 
   /** Disables every control of a filter widget and adds a visible note under it (never colour only). */
@@ -282,7 +269,7 @@
 
   function sourceErrorText(err) {
     if (err && err.code === 'VALIDATION') return 'URL ou identifiant invalide. Collez l’URL complète du Google Sheet source.';
-    return (err && err.message) || 'Erreur inconnue.';
+    return UI.errorText(err);
   }
 
   function tabsWarning(res) {

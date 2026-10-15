@@ -514,7 +514,10 @@
 
   function normOptions(options) {
     return (options || []).map(function (o) {
-      if (o !== null && typeof o === 'object') return { value: Core.str(o.value), label: Core.str(o.label !== undefined ? o.label : o.value) };
+      // Keeps the dropdown option extras (hint, group, mono, disabled).
+      if (o !== null && typeof o === 'object') {
+        return Object.assign({}, o, { value: Core.str(o.value), label: Core.str(o.label !== undefined ? o.label : o.value) });
+      }
       return { value: Core.str(o), label: Core.str(o) };
     });
   }
@@ -522,7 +525,8 @@
   /**
    * UI.formModal({title, fields, submitLabel?, onSubmit?, wide?}) -> Promise<values|null>
    * fields: [{name, label, type:'text'|'textarea'|'select'|'date'|'month', options?, value?, required?,
-   *           placeholder?, allowCustom?, tokens?, hint?, min?, max?, mono?, disabled?}]
+   *           placeholder?, allowCustom?, tokens?, hint?, min?, max?, mono?, disabled?, onChange?}]
+   * onChange(value, form) (select fields): form.control(name) is another field's control (e.g. setOptions).
    * 'date' fields take and return 'DD/MM/YYYY'; 'month' fields 'YYYY-MM'. Values are trimmed strings
    * ('' when empty). Enter submits; the first invalid field is focused; errors are shown under the fields
    * (UI.fieldError). onSubmit(values) -> Promise keeps the modal open (busy submit button) until it
@@ -534,6 +538,8 @@
     return new Promise(function (resolve) {
       var result = null;
       var controls = {};
+      /** Passed to a select field's onChange(value, form): form.control(name) = another field's control. */
+      var formApi = { control: function (name) { return controls[name] ? controls[name].control : null; } };
       var busyNow = false;
       var alertBox = el('div', { class: 'form-alert', hidden: true });
       var form = el('form', { class: 'form', novalidate: true, onSubmit: function (e) { e.preventDefault(); submit(); } },
@@ -558,7 +564,8 @@
           control = UI.dropdown({ id: id, name: f.name, labelledBy: labelId, options: ops, value: value,
             combobox: !!f.allowCustom, tokens: !!(f.allowCustom && f.tokens), mono: !!f.mono, disabled: !!f.disabled,
             allowEmpty: !f.allowCustom && !f.required, emptyLabel: '—',
-            placeholder: f.placeholder || (!f.allowCustom && f.required ? 'Choisir…' : null) });
+            placeholder: f.placeholder || (!f.allowCustom && f.required ? 'Choisir…' : null),
+            onChange: f.onChange ? function (v) { f.onChange(v, formApi); } : null });
           focusEl = control.control;
           get = function () { return Core.str(control.getValue()); };
         } else if (type === 'date' || type === 'month') {
@@ -579,7 +586,7 @@
           label.addEventListener('click', function (e) { e.preventDefault(); if (!focusEl.disabled) focusEl.focus(); });
         }
         var hint = f.hint ? el('p', { class: 'field-help', id: id + '-help' }, f.hint) : null;
-        if (hint) focusEl.setAttribute('aria-describedby', id + '-help');
+        if (hint) focusEl.setAttribute('aria-describedby', ((focusEl.getAttribute('aria-describedby') || '') + ' ' + id + '-help').trim());
         var err = el('p', { class: 'field-error', id: id + '-err', hidden: true });
         focusEl.setAttribute('aria-describedby', ((focusEl.getAttribute('aria-describedby') || '') + ' ' + id + '-err').trim());
         controls[f.name] = { field: f, control: control, focusEl: focusEl, type: type, get: get };
@@ -782,8 +789,7 @@
    * UI.select({label?, ariaLabel?, options:[string|{value,label,hint?,group?}], value, onChange, id?, disabled?,
    *            mono?, searchable?, placeholder?, size?}) -> Element (div.field.select-field, a UI.dropdown).
    * The trigger button carries `id`. Returned element: getValue/setValue/setOptions/setDisabled/focus, .control.
-   * Deprecated transition shim: root.querySelector('select') returns a hidden stand-in whose id / value /
-   * disabled are forwarded to the dropdown (pages should pass `id` / `disabled` instead).
+   * No native <select> is rendered.
    */
   function select(o) {
     var opts = o || {};
@@ -793,12 +799,6 @@
       searchable: opts.searchable, placeholder: opts.placeholder, size: opts.size, allowEmpty: opts.allowEmpty,
       className: 'field select-field'
     });
-    var trigger = dd.control;
-    var shim = el('select', { hidden: true, 'aria-hidden': 'true', tabindex: '-1', class: 'dd-compat' });
-    Object.defineProperty(shim, 'id', { get: function () { return trigger.id; }, set: function (v) { trigger.id = v; } });
-    Object.defineProperty(shim, 'value', { get: function () { return dd.getValue(); }, set: function (v) { dd.setValue(v); } });
-    Object.defineProperty(shim, 'disabled', { get: function () { return trigger.disabled; }, set: function (v) { dd.setDisabled(!!v); } });
-    dd.appendChild(shim);
     return dd;
   }
 
@@ -813,6 +813,49 @@
       options: (opts.options || []).map(String), value: (opts.value || []).map(String), multiple: true,
       placeholder: opts.placeholder || 'Toutes', onChange: opts.onChange, searchable: opts.searchable,
       className: 'multiselect' });
+  }
+
+  // ------------------------------------------------------------------------------ read-only table
+
+  /**
+   * UI.table({columns, rows, id?, className?, caption?, cells?(row, i), rowAttrs?(row, i), extraRows?(row, i)})
+   * -> div.table-scroll (with .table = the <table>). Read-only ledger table on the etable markup: header on
+   * --paper-2 in small caps, 32px rows, hairline separators, no zebra.
+   *   columns: [{label, num?, mono?, wrap?, width? ('30%'), rowHeader?, className?, cell?(row, i)}]
+   *     num = right-aligned tabular figure; mono = identifier; wrap = free text that may wrap (the row grows);
+   *     rowHeader = <th scope=row>; width (any column) switches the table to a fixed layout with a <colgroup>.
+   *   cells(row, i) -> [content per column] builds a whole row at once (instead of each column.cell).
+   *   rowAttrs(row, i) -> attributes of the <tr> (dataset, class...); extraRows(row, i) -> <tr> | [<tr>] after it.
+   */
+  function table(o) {
+    var opts = o || {};
+    var cols = opts.columns || [];
+    var fixed = cols.some(function (c) { return !!c.width; });
+    function cellClass(c, extra) {
+      return [c.num ? 'num' : null, c.mono ? 'mono' : null, c.wrap ? 'is-wrap' : null, c.className || null, extra || null];
+    }
+    var body = [];
+    (opts.rows || []).forEach(function (row, i) {
+      var contents = opts.cells ? opts.cells(row, i) : null;
+      var tds = cols.map(function (c, j) {
+        var v = contents ? contents[j] : (c.cell ? c.cell(row, i) : row[c.key]);
+        if (v === undefined || v === null) v = '';
+        return c.rowHeader ? el('th', { scope: 'row', class: cellClass(c) }, v) : el('td', { class: cellClass(c) }, v);
+      });
+      body.push(el('tr', opts.rowAttrs ? opts.rowAttrs(row, i) : null, tds));
+      var extra = opts.extraRows ? opts.extraRows(row, i) : null;
+      if (extra) body.push(extra);
+    });
+    var node = el('table', { class: ['table', 'ui-table', fixed ? 'is-fixed' : null, opts.className], id: opts.id || null },
+      opts.caption ? el('caption', { class: 'sr-only' }, opts.caption) : null,
+      fixed ? el('colgroup', null, cols.map(function (c) { return el('col', { style: c.width ? { width: c.width } : null }); })) : null,
+      el('thead', null, el('tr', null, cols.map(function (c) {
+        return el('th', { scope: 'col', class: c.num ? 'num' : null }, c.label);
+      }))),
+      el('tbody', null, body));
+    var wrap = el('div', { class: 'table-scroll' }, node);
+    wrap.table = node;
+    return wrap;
   }
 
   // ------------------------------------------------------------------------------ editable table
@@ -893,6 +936,8 @@
     function updateScrollCue() {
       var more = scroller.scrollWidth - scroller.clientWidth - scroller.scrollLeft > 1;
       scroller.classList.toggle('has-more-right', more);
+      // The sticky key column's fade is only drawn once something has actually scrolled under it.
+      scroller.classList.toggle('has-more-left', scroller.scrollLeft > 1);
       // The first column is sticky: cells scrolled into view (focus, keyboard) must land right of it.
       var first = thead.querySelector('th');
       var pad = first ? first.offsetWidth + 'px' : '';
@@ -1078,14 +1123,9 @@
       }
       host.addEventListener('click', function (e) { e.stopPropagation(); });
       host.appendChild(editor);
-      // Freeze the geometry: the editor covers the cell (at least 140px wide, never past the table edge).
-      var cellW = td.offsetWidth;
-      var width = Math.max(cellW - 4, 140);
-      host.style.width = width + 'px';
-      if (td.offsetLeft + width + 2 > table.offsetWidth && width > cellW - 4) {
-        host.style.left = 'auto';
-        host.style.right = '2px';
-      }
+      // Freeze the geometry: the editor covers exactly the cell (2px inset), never the next one. Date and
+      // dropdown columns have a CSS min-width (td.cell-date / td.cell-choice) so that the editor fits.
+      host.style.width = Math.max(td.offsetWidth - 4, 0) + 'px';
       td.classList.add('cell-editing');
       td.appendChild(host);
       if (editor.open && Array.isArray(col.options)) editor.open();
@@ -1120,6 +1160,8 @@
           var td = el('td', { dataset: { col: col.key } });
           if (col.editable) {
             td.classList.add('cell-editable');
+            if (Array.isArray(col.options)) td.classList.add('cell-choice');
+            else if (isDateColumn(col)) td.classList.add('cell-date');
             td.tabIndex = 0;
             td.addEventListener('click', function (e) { e.stopPropagation(); startEdit(td, row, col); });
             td.addEventListener('keydown', function (e) {
@@ -1262,6 +1304,7 @@
     tabs: tabs,
     multiSelect: multiSelect,
     select: select,
+    table: table,
     editableTable: editableTable,
     spinner: spinner,
     downloadCsv: downloadCsv

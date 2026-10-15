@@ -544,7 +544,8 @@
   /**
    * Heatmap: {x, y, z:[[number|null]], zmin=0, zmax=100, title?, maxCellWidth?}: light sequential single hue
    * (paper-2 -> a 45 % tint of --ok, so ink text stays readable in every cell), % printed in each cell in
-   * mono (0 decimals), no colour bar. Hover: « mai 2026 · Labo Textile 50,0 % » (1 decimal).
+   * mono with 1 decimal like every other rate (« 50,0 % »), no colour bar. Hover: « mai 2026 · Labo Textile
+   * 50,0 % ».
    * `title` is ignored inside the plot (label it above).
    */
   function heatmap(el, opts) {
@@ -554,7 +555,7 @@
     var zmax = o.zmax === undefined ? 100 : o.zmax;
     var z = o.z || [];
     var text = z.map(function (row) {
-      return (row || []).map(function (v) { return isNum(v) ? fmtPct(v, 0) : ''; });
+      return (row || []).map(function (v) { return isNum(v) ? fmtPct(v, 1) : ''; });
     });
     var hover = z.map(function (row) {
       return (row || []).map(function (v) { return isNum(v) ? fmtPct(v, 1) : 'aucun poste'; });
@@ -610,8 +611,9 @@
       if (!isNum(it.rate)) { parts.push(label || '', ' —'); return; }
       var above = Number(it.rate) >= th;
       var mark = UI.statusMark(above ? 'Seuil atteint' : 'Sous le seuil', above ? 'ok' : 'ko');
-      if (label) parts.push(label, ' ', el('span', { class: 'num' }, fmtPct(it.rate)), ' ');
-      parts.push(mark);
+      // « Postes 71,4 % ■ Sous le seuil » stays on one line (it only wraps between items).
+      if (label) parts.push(el('span', { class: 'tc-item' }, label, ' ', el('span', { class: 'num' }, fmtPct(it.rate)), ' ', mark));
+      else parts.push(mark);
       if (isNum(it.total)) {
         parts.push(' · ', el('span', { class: 'num' }, fmtNum(it.ok)), ' conforme' + (Number(it.ok) > 1 ? 's' : '') + ' sur ',
           el('span', { class: 'num' }, fmtNum(it.total)));

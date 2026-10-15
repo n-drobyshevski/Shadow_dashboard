@@ -5,14 +5,8 @@
    Tokens only (css.html :root). Loaded right after css.html.
    ================================================================================================== */
 
-/* ------------------------------------------------------------------ browser chrome */
-:root { color-scheme: light; }
-* { scrollbar-width: thin; scrollbar-color: var(--rule-2) transparent; }
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--rule-2); border-radius: 0; }
-::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }
-::selection { background: color-mix(in srgb, var(--accent) 22%, var(--paper)); color: var(--ink); }
+/* ------------------------------------------------------------------ browser chrome (color-scheme and
+   scrollbars: css.html) */
 input:-webkit-autofill, input:-webkit-autofill:hover, input:-webkit-autofill:focus,
 textarea:-webkit-autofill, select:-webkit-autofill {
   -webkit-text-fill-color: var(--ink); caret-color: var(--ink);
@@ -60,6 +54,8 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
 .dd.is-placeholder:not(.dd-multiple) .dd-value { color: var(--ink-3); }
 .dd-multiple.is-placeholder .dd-value { color: var(--ink-2); }
 .dd-mono .dd-value, .dd-mono .dd-input, .dd-input.mono { font-family: var(--font-mono); font-size: 12.5px; }
+/* Placeholders are prose: always sans, whatever face the committed value uses. */
+.dd-input::placeholder { font-family: var(--font-sans); font-size: 13px; color: var(--ink-3); }
 .dd-sm .dd-trigger, .dd-sm .dd-input { height: 28px; min-height: 28px; line-height: 26px; }
 .dd-sm .dd-trigger { padding-left: 6px; }
 
@@ -230,24 +226,20 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
 /* ------------------------------------------------------------------ editable table: inline editor */
 .etable .table td.cell-editing { padding: 5px var(--s3) !important; overflow: visible !important; color: transparent; text-decoration: none !important; }
 .etable .table td.cell-editing > :not(.cell-editor-host) { visibility: hidden; }
-.cell-editor-host { position: absolute; top: 2px; bottom: 2px; left: 2px; z-index: 5; display: flex; color: var(--ink); }
+.cell-editor-host { position: absolute; top: 2px; bottom: 2px; left: 2px; z-index: 5; display: flex; min-width: 0; color: var(--ink); }
+/* The editor never grows past its cell: these columns are wide enough for it (JJ/MM/AAAA + calendar button,
+   a short choice + caret). */
+.etable .table td.cell-date { min-width: calc(10ch + 56px); }
+.etable .table td.cell-choice { min-width: 84px; }
+.cell-editor-host .dd-field, .cell-editor-host .dd-control, .cell-editor-host .dd-trigger { min-width: 0; }
+.cell-editor-host .dd-field .input { text-overflow: clip; }
 .cell-editor-host > .input.cell-editor { width: 100%; height: 100%; min-width: 0; min-height: 0; line-height: normal; padding: 0 6px; }
 .cell-editor-host > .dd, .cell-editor-host > .dd-field { width: 100%; }
+.cell-editor-host > .dd-field > .dd-control { flex: 1 1 auto; height: 100%; align-items: stretch; }
 .cell-editor-host .dd-trigger, .cell-editor-host .dd-input { height: 100%; min-height: 0; }
+.cell-editor-host .dd-field .dd-input { line-height: normal; }
 .cell-editor-host .input:focus, .cell-editor-host .dd-trigger:focus-visible { outline-offset: -2px; }
 .cell-editor-host .input[aria-invalid="true"] { border-color: var(--ko); box-shadow: inset 0 0 0 1px var(--ko); }
-/* Empty-row cell (colspan): no sticky divider from the key column. */
-.etable .table .etable-empty td { position: static; box-shadow: none; max-width: none; }
-
-/* ------------------------------------------------------------------ tabs: overflow cue on phones */
-.tablist { scroll-padding-inline: var(--s5); scrollbar-width: none; }
-.tablist::-webkit-scrollbar { display: none; }
-.tablist.has-more-right { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); }
-.tablist.has-more-left { -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent); }
-.tablist.has-more-left.has-more-right {
-  -webkit-mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
-  mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
-}
 
 @media (prefers-reduced-motion: reduce) {
   .dd-caret { transition: none; }

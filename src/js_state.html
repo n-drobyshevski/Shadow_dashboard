@@ -256,7 +256,6 @@
  *   Fmt.monthTitle('2026-05')  -> 'Mai 2026'          start of a sentence or caption, select labels
  *   Fmt.monthKicker('2026-05') -> 'Mai 2026 · Export 2026-05'   page kicker (CSS sets the small caps:
  *                                 MAI 2026 · EXPORT 2026-05). The ISO export id appears ONLY here.
- *   Fmt.monthShort('2026-05')  -> '05/2026'           dense table cells
  *   Fmt.monthRange(a, b)       -> 'Avril 2026 – mai 2026' (one month -> 'Mai 2026')
  *   Fmt.date('2026-05-04')     -> '04/05/2026'        (DD/MM/YYYY input is returned unchanged)
  *   Fmt.dateTime('2026-05-04 10:30') / ('2026-05-04T10:30:00') -> '04/05/2026 10:30'
@@ -277,7 +276,6 @@
   }
   function monthTitle(m) { return cap(monthLong(m)); }
   function monthKicker(m) { return parseMonth(m) ? monthTitle(m) + ' · Export ' + s(m).trim() : s(m); }
-  function monthShort(m) { var r = parseMonth(m); return r ? r[2] + '/' + r[1] : s(m); }
   function monthRange(a, b) {
     if (!b || a === b) return monthTitle(a);
     if (!a) return monthTitle(b);
@@ -296,7 +294,6 @@
     monthLong: monthLong,
     monthTitle: monthTitle,
     monthKicker: monthKicker,
-    monthShort: monthShort,
     monthRange: monthRange,
     date: date,
     dateTime: dateTime

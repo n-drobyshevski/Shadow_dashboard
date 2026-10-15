@@ -65,7 +65,7 @@ describe('controls', () => {
 
   test('dropdown: mouse, ARIA, value, disabled state', async () => {
     await mountHost();
-    assert.equal(await page.$('#host select:not(.dd-compat)'), null, 'no native select');
+    assert.equal(await page.$('#host select'), null, 'no native select');
     const t = '#dd-status';
     assert.equal(await page.getAttribute(t, 'aria-haspopup'), 'listbox');
     assert.equal(await page.getAttribute(t, 'aria-expanded'), 'false');
@@ -257,7 +257,19 @@ describe('controls', () => {
     await typeDate(page, d, '31/02/2026');
     assert.equal(await page.getAttribute(d, 'aria-invalid'), 'true');
     assert.equal(await page.evaluate(() => document.getElementById('df').closest('.dd-field').getValue()), '');
-    assert.match(await page.evaluate(() => document.getElementById('df').closest('.dd-field').validate()), /Date invalide/);
+    assert.equal(await page.evaluate(() => document.getElementById('df').closest('.dd-field').validate()), 'Date inexistante : 31/02/2026.');
+    await typeDate(page, d, '12/2026');
+    assert.match(await page.evaluate(() => document.getElementById('df').closest('.dd-field').validate()), /Date invalide : format JJ\/MM\/AAAA/);
+    // Seven digits that cannot be JJ/MM: J/MM/AAAA (then JJ/M/AAAA).
+    await page.fill(d, '');
+    await page.type(d, '1032026');
+    assert.equal(await page.inputValue(d), '01/03/2026');
+    // The input announces its picker.
+    assert.equal(await page.getAttribute(d, 'role'), 'combobox');
+    assert.equal(await page.getAttribute(d, 'aria-haspopup'), 'dialog');
+    assert.equal(await page.getAttribute(d, 'aria-expanded'), 'false');
+    assert.match(await page.evaluate(() => { const i = document.getElementById('df');
+      return i.getAttribute('aria-describedby').split(' ').map((x) => document.getElementById(x).textContent).join(' '); }), /Flèche bas : calendrier/);
     // min
     await typeDate(page, '#df-min', '31/12/2025');
     assert.match(await page.evaluate(() => document.getElementById('df-min').closest('.dd-field').validate()), /antérieure au 01\/01\/2026/);
@@ -266,6 +278,7 @@ describe('controls', () => {
     await page.focus(d);
     await page.keyboard.press('ArrowDown');
     await page.waitForSelector('.cal-popover .cal');
+    assert.equal(await page.getAttribute(d, 'aria-expanded'), 'true');
     assert.equal(await page.textContent('.cal-popover .cal-title'), 'Avril 2026');
     assert.equal(await page.evaluate(() => document.activeElement.dataset.iso), '2026-04-30');
     assert.deepEqual(await page.$$eval('.cal-popover thead th', (ths) => ths.map((t) => t.getAttribute('aria-label'))),

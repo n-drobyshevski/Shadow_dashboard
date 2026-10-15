@@ -43,7 +43,7 @@ describe('shell', () => {
       assert.equal(await page.getAttribute('#sidebar .nav-link[data-page="dashboard"]', 'aria-current'), 'page');
 
       // Période: ascending months, latest selected by default (custom dropdown, no native <select>).
-      assert.equal(await page.$('#sidebar select:not(.dd-compat)'), null);
+      assert.equal(await page.$('#sidebar select'), null);
       assert.equal(await page.getAttribute('#month-select', 'aria-haspopup'), 'listbox');
       assert.deepEqual(await optionLabels(page, '#month-select', { values: true }), ['2026-04', '2026-05']);
       assert.equal(await dropdownValue(page, '#month-select'), '2026-05');
@@ -250,7 +250,7 @@ describe('shell', () => {
         { name: 'poste', label: 'Poste', type: 'select', allowCustom: true, options: ['LAB-TEX-01'] },
       ] }));
       await page.waitForSelector('.modal form');
-      assert.equal(await page.$('.modal select:not(.dd-compat), .modal input[type=date], .modal datalist'), null);
+      assert.equal(await page.$('.modal select, .modal input[type=date], .modal datalist'), null);
       assert.equal(await page.inputValue('.modal input[name=deadline]'), '15/03/2026');
       await page.click('.modal .btn-primary');
       assert.equal((await page.textContent('.modal .field-error:not([hidden])')).trim(), 'Ce champ est obligatoire.');
