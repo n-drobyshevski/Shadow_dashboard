@@ -22,6 +22,8 @@
   .page-apps .apps-migration .table th, .page-apps .apps-migration .table td { padding-left: var(--s2); padding-right: var(--s2); }
 }
 .page-apps .apps-migration .count-zero { color: var(--ink-3); }
+/* The drawer title is an application name: sans, like the table key column. */
+.drawer.is-app .drawer-title { font-family: var(--font-sans); letter-spacing: 0; }
 .apps-drawer .checklist .leader { align-self: center; transform: none; }
 .apps-drawer .crit-label { flex: 0 1 auto; }
 .apps-drawer .crit-missing { flex-basis: 100%; margin: -6px 0 2px; font-size: 12px; color: var(--ink-2); }
@@ -278,11 +280,12 @@
             !poste ? el('span', { class: 'rel-note' }, 'poste absent de l’inventaire') : null,
             el('span', { class: 'spacer' }),
             poste ? UI.scoreBadge(poste._score) : null);
-        })) : UI.empty('Aucun poste renseigné (« Installé sur poste »).')),
+        })) : UI.empty('Aucun poste renseigné (« Installé sur poste »).')),
       actionsBlock(name, rec, month, isOpen));
 
     drawerHandle = UI.drawer({ title: name || '(sans nom)', body: body,
       onClose: function () { closed = true; drawerHandle = null; } });
+    if (drawerHandle.node) drawerHandle.node.classList.add('is-app');
   }
 
   function rename(rec, month) {
@@ -296,7 +299,7 @@
       return api.call('api_renameApplication', { month: month, id: rec._id, newName: values.newName }).then(function (res) {
         State.patchRecords(month, 'applications', [res.record]);
         var n = res.actionsUpdated || 0;
-        UI.toast('Application renommée en « ' + values.newName + ' »' +
+        UI.toast('Application renommée en « ' + values.newName + ' »' +
           (n ? ' — ' + plural(n, 'action mise à jour', 'actions mises à jour') : '') + '.', 'success');
         // Action targets changed server side: reload them before the drawer re-renders.
         return State.loadActions({ force: true }).catch(function () { return null; }).then(function () {
@@ -309,7 +312,7 @@
 
   function remove(rec, month) {
     var name = Core.str(rec[KEY]);
-    UI.confirm('Supprimer l’application « ' + name + ' » de l’export ' + month + ' ? Cette opération est irréversible ' +
+    UI.confirm('Supprimer l’application « ' + name + ' » de l’export ' + month + ' ? Cette opération est irréversible ' +
       '(les actions liées sont conservées).', { title: 'Supprimer l’application', okLabel: 'Supprimer', danger: true })
       .then(function (ok) {
         if (!ok) return null;
@@ -317,7 +320,7 @@
           State.removeRecord(month, 'applications', rec._id);
           if (drawerHandle) drawerHandle.close();
           refreshPage();
-          UI.toast('Application « ' + name + ' » supprimée.', 'success');
+          UI.toast('Application « ' + name + ' » supprimée.', 'success');
         }, errorToast);
       });
   }
@@ -356,7 +359,7 @@
       return api.call('api_addApplication', { month: month, record: record }).then(function (rec) {
         State.addRecord(month, 'applications', rec);
         var hidden = hasEquipeFilter(State.get()) && (State.get().filters.equipes || []).indexOf(Core.str(rec['Équipe'])) < 0;
-        UI.toast('Application « ' + Core.str(rec[KEY]) + ' » ajoutée' + (hidden ? ' (masquée par les filtres actifs).' : '.'),
+        UI.toast('Application « ' + Core.str(rec[KEY]) + ' » ajoutée' + (hidden ? ' (masquée par les filtres actifs).' : '.'),
           'success');
         onAdded(rec);
       }, errorToast);
@@ -394,7 +397,7 @@
       el('thead', null, el('tr', null,
         el('th', { scope: 'col' }, 'Champ'), el('th', { scope: 'col', class: 'num' }, 'Oui'),
         el('th', { scope: 'col', class: 'num' }, 'Non'), el('th', { scope: 'col', class: 'num' }, 'Non renseigné'),
-        el('th', { scope: 'col', class: 'num', title: 'Part des applications à « Oui »' }, 'Migrées'))),
+        el('th', { scope: 'col', class: 'num', title: 'Part des applications à « Oui »' }, 'Migrées'))),
       el('tbody', null, rows))));
   }
 
@@ -445,7 +448,7 @@
             onClick: function () { openDrawer(row._id, month); } }, Core.str(row[c]) || '(sans nom)');
         } };
       }
-      // Read view: Statut / Niveau de risque as status marks, « Non » criteria in --ko (the editor is unchanged).
+      // Read view: Statut / Niveau de risque as status marks, « Non » criteria in --ko (the editor is unchanged).
       return { key: c, label: c, editable: true, mono: !!MONO_COLUMNS[c], options: Core.optionsForColumn(c, md.referentiel),
         render: function (row) { return UI.cellMark(c, row[c]) || Core.str(row[c]); } };
     });

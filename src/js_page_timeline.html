@@ -139,14 +139,9 @@
         ' conforme' + (k.apps_conformes > 1 ? 's' : '') + ' sur ', el('span', { class: 'num' }, UI.fmtNum(k.total_apps))];
   }
 
-  /** One-line key of the counts chart: swatches drawn like the bars (outline = inventoriés, solid = conformes). */
-  function countsKey() {
-    function item(cls, label) {
-      return el('span', { class: 'tl-key-item' }, el('span', { class: 'tl-key ' + cls, 'aria-hidden': 'true' }), label);
-    }
-    return el('span', { class: 'tl-key-line' },
-      item('tl-key-postes is-outline', 'Postes inventoriés'), item('tl-key-postes', 'conformes'),
-      item('tl-key-apps is-outline', 'Applications inventoriées'), item('tl-key-apps', 'conformes'));
+  /** How to read the counts chart, in words (the bars carry their own labels: no legend to decode). */
+  function countsHowTo() {
+    return el('span', { class: 'faint' }, 'Barre en contour : inventoriés · partie pleine : conformes.');
   }
 
   function fmtValue(row, v) {
@@ -244,27 +239,26 @@
           yRange: [0, 105]
         });
       }, rateCaption(last)),
-      // Pairs: inventoried = outline, conformant = solid; postes in ink, applications in ink-3. Counts are
-      // printed above the bars and the caption carries the key (no legend to decode).
+      // Part-of-whole bars, labelled directly: per month, one outline bar per inventory (inventoriés) with
+      // the conformant part solid inside it, "5 sur 7" above, "Postes" / "Applis" under it. No legend.
       chartCard('Inventaire et conformité (nombre)', 'chart-timeline-counts', draws, function (box) {
-        Charts.bars(box, {
+        Charts.partBars(box, {
           x: x,
-          series: [
-            { name: 'Postes inventoriés', y: k.map(function (v) { return v.total_postes; }), color: t.ink, outline: true },
-            { name: 'Postes conformes', y: k.map(function (v) { return v.postes_conformes; }), color: t.ink },
-            { name: 'Applications inventoriées', y: k.map(function (v) { return v.total_apps; }), color: t.ink3, outline: t.paper2 },
-            { name: 'Applications conformes', y: k.map(function (v) { return v.apps_conformes; }), color: t.ink3 }
-          ],
-          labels: true,
-          legend: false,
-          yTitle: 'Nombre'
+          groups: [
+            { label: 'Postes', color: t.ink,
+              total: { name: 'Postes inventoriés', y: k.map(function (v) { return v.total_postes; }) },
+              part: { name: 'Postes conformes', y: k.map(function (v) { return v.postes_conformes; }) } },
+            { label: 'Applis', color: t.ink3,
+              total: { name: 'Applications inventoriées', y: k.map(function (v) { return v.total_apps; }) },
+              part: { name: 'Applications conformes', y: k.map(function (v) { return v.apps_conformes; }) } }
+          ]
         });
-      }, [countsKey(), el('br'), countsCaption(last)])));
+      }, [countsCaption(last), el('br'), countsHowTo()])));
 
     var matrix = teamMatrix(series);
     body.appendChild(matrix.teams.length ?
       chartCard('Conformité des postes par équipe', 'chart-timeline-heatmap', draws, function (box) {
-        Charts.heatmap(box, { x: x, y: matrix.teams, z: matrix.z, zmin: 0, zmax: 100 });
+        Charts.heatmap(box, { x: x, y: matrix.teams, z: matrix.z, zmin: 0, zmax: 100, maxCellWidth: 112 });
       }, 'Part des postes conformes par équipe et par mois. Case vide : aucun poste ce mois-là.') :
       UI.section('Conformité des postes par équipe', UI.empty('Aucun poste ne correspond aux filtres sélectionnés.')));
 
@@ -323,14 +317,10 @@
   // Page-specific styles only (scoped to .page-timeline); everything else comes from css.html.
   var CSS = [
     '.page-timeline .timeline-body { display: flex; flex-direction: column; gap: var(--s6); }',
-    // Counts chart key: swatches match the bars (outline = inventoried, solid = conformant).
-    '.page-timeline .tl-key-line { display: inline-flex; flex-wrap: wrap; gap: 2px var(--s4); margin-bottom: 2px; }',
-    '.page-timeline .tl-key-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }',
-    '.page-timeline .tl-key { width: 10px; height: 10px; background: var(--key-color); }',
-    '.page-timeline .tl-key.is-outline { background: none; box-shadow: inset 0 0 0 1px var(--key-color); }',
-    '.page-timeline .tl-key-postes { --key-color: var(--ink); }',
-    '.page-timeline .tl-key-apps { --key-color: var(--ink-3); }',
-    '.page-timeline .tl-key-apps.is-outline { background: var(--paper-2); }',
+    // Month column headers: same face and case as the chart axes ("avril 2026", mono), not small caps.
+    '.page-timeline .tl-kpi-table thead th[data-month] { text-transform: none; letter-spacing: 0;' +
+      ' font-family: var(--font-mono); font-size: 12px; font-weight: 400; }',
+    '.page-timeline .tl-kpi-table thead th.tl-current { font-weight: 500; }',
     // KPI ledger: label column stays visible when many months scroll horizontally.
     '.page-timeline .tl-kpi-table { width: auto; min-width: min(100%, 720px); }',
     '.page-timeline .tl-kpi-table .tl-label-col { position: sticky; left: 0; z-index: 2; background: var(--paper);' +

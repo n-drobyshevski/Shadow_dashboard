@@ -34,9 +34,21 @@
       if (c === null || c === undefined || c === false || c === true) return;
       if (Array.isArray(c)) { appendChildren(node, c); return; }
       if (c instanceof Node) { node.appendChild(c); return; }
-      node.appendChild(document.createTextNode(String(c)));
+      node.appendChild(document.createTextNode(frSpacing(String(c))));
     });
   }
+
+  /**
+   * French guillemets hold their content with a narrow no-break space (U+202F), so that « never ends a
+   * line on its own. Applied to every text child built by UI.el (server messages included).
+   */
+  var NNBSP = '\u202f';
+  function frSpacing(s) {
+    return s.indexOf('«') < 0 && s.indexOf('»') < 0 ? s : s.replace(/«[ \u00a0]/g, '«' + NNBSP).replace(/[ \u00a0]»/g, NNBSP + '»');
+  }
+
+  /** UI.quote(s) -> '« s »' with narrow no-break spaces inside the guillemets. */
+  function quote(s) { return '«' + NNBSP + String(s === null || s === undefined ? '' : s) + NNBSP + '»'; }
 
   /**
    * UI.el(tag, attrs?, ...children)
@@ -534,6 +546,15 @@
     var panel = el('div', { class: 'tabpanel', role: 'tabpanel', id: baseId + '-panel', tabindex: '0' });
     var buttons = {};
     var current = null;
+    /** Phones: the tab row scrolls sideways; keep the active tab in view (horizontal scroll only). */
+    function revealTab(b, retried) {
+      if (!b.isConnected) { if (!retried) setTimeout(function () { revealTab(b, true); }, 0); return; }
+      if (tablist.scrollWidth <= tablist.clientWidth) return;
+      var r = b.getBoundingClientRect();
+      var tr = tablist.getBoundingClientRect();
+      if (r.right > tr.right) tablist.scrollLeft += r.right - tr.right;
+      else if (r.left < tr.left) tablist.scrollLeft -= tr.left - r.left;
+    }
     function activate(id, focus) {
       if (!list.some(function (it) { return it.id === id; })) id = list.length ? list[0].id : null;
       current = id;
@@ -546,6 +567,7 @@
         if (on) {
           panel.setAttribute('aria-labelledby', b.id);
           if (focus) b.focus();
+          revealTab(b);
         }
       });
       clear(panel);
@@ -949,7 +971,9 @@
     function updateDirtyBar() {
       var n = dirtyCount();
       dirtyBar.hidden = n === 0;
-      dirtyLabel.textContent = n + ' modification' + (n > 1 ? 's' : '') + ' non enregistrée' + (n > 1 ? 's' : '');
+      // Sentence in sans, only the figure in mono (same text content as before).
+      clear(dirtyLabel).appendChild(el('span', { class: 'etable-dirty-count' }, String(n)));
+      dirtyLabel.appendChild(document.createTextNode(' modification' + (n > 1 ? 's' : '') + ' non enregistrée' + (n > 1 ? 's' : '')));
       saveBtn.textContent = saving ? 'Enregistrement…' : 'Enregistrer (' + n + ')';
       saveBtn.disabled = saving || n === 0 || !opts.onSave;
       cancelBtn.disabled = saving;
@@ -1037,6 +1061,8 @@
     card: card,
     kpiStrip: kpiStrip,
     pageHeader: pageHeader,
+    quote: quote,
+    frSpacing: frSpacing,
     leaderRow: leaderRow,
     section: section,
     empty: empty,

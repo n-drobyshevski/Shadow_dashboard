@@ -398,7 +398,7 @@ describe('applications page', () => {
       assert.equal((await page.textContent('.drawer-title')).trim(), 'Dropbox (perso)');
       // The action target was renamed server side; the drawer shows it under the new name.
       assert.deepEqual(await page.$$eval('#drawer-actions li', (lis) => lis.map((li) => li.dataset.actionId)), ['a-0003']);
-      assert.ok((await toasts(page)).includes('Application renommée en « Dropbox (perso) » — 1 action mise à jour.'));
+      assert.ok((await toasts(page)).includes('Application renommée en «\u202fDropbox (perso)\u202f» — 1 action mise à jour.'));
       assert.deepEqual(app.errors, []);
     });
   });
@@ -425,7 +425,7 @@ describe('applications page', () => {
       assert.equal((await rowIds(page, 'apps')).includes(id), false);
       assert.equal((await rowIds(page, 'apps')).length, 4);
       assert.equal(await page.$('.drawer'), null, 'drawer closed');
-      assert.ok((await toasts(page)).includes('Application « Figma » supprimée.'));
+      assert.ok((await toasts(page)).includes('Application «\u202fFigma\u202f» supprimée.'));
       assert.deepEqual(app.errors, []);
     });
   });

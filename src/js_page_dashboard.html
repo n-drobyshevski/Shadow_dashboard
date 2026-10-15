@@ -201,7 +201,7 @@
             .then(function (ok) { return ok ? runImport(month, true) : null; });
         }
         var msg = err.code === 'NOT_CONFIGURED' ?
-          'La source n’est pas configurée. Utilisez « Changer de source » dans la barre latérale.' : (err.message || 'Erreur inconnue.');
+          'La source n’est pas configurée. Utilisez « Changer de source » dans la barre latérale.' : (err.message || 'Erreur inconnue.');
         if (myToken === token) showError(msg);
         UI.toast('Erreur : ' + msg, 'error');
         return null;
@@ -229,8 +229,8 @@
     var panel = UI.section('Importer depuis Google Sheets',
       el('div', { class: 'grid grid-2 import-grid' },
         el('div', { class: 'import-card' },
-          el('p', { class: 'page-lede' }, 'Crée un instantané mensuel des onglets « Suivi des postes », « Suivi des applications » ' +
-            'et « Référentiel » du Google Sheet source.'),
+          el('p', { class: 'page-lede' }, 'Crée un instantané mensuel des onglets « Suivi des postes », « Suivi des applications » ' +
+            'et « Référentiel » du Google Sheet source.'),
           sourceLine, form, status, lastImportBlock()),
         el('div', { class: 'import-history' },
           el('h3', { class: 'subsection-title' }, 'Derniers imports'),

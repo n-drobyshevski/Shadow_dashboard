@@ -5,6 +5,8 @@
 .postes-drawer .checklist .leader, .postes-drawer .rel-list .leader { align-self: center; transform: none; }
 .postes-drawer .crit-value { color: var(--ink-2); font-size: 13px; }
 .postes-drawer .crit-label { flex: 0 1 auto; }
+/* Applications installed on the poste: product names in sans (mono is for poste identifiers). */
+.postes-drawer #poste-drawer-apps .rel-list li { font-family: var(--font-sans); font-size: 13px; }
 .postes-drawer .rel-list .rel-note { font-family: var(--font-sans); font-size: 12px; color: var(--ink-3); }
 .postes-drawer .rel-list .rel-team { font-family: var(--font-sans); font-size: 12px; color: var(--ink-2); }
 .postes-drawer .action-title { font-weight: 500; font-size: 13px; }
@@ -40,6 +42,8 @@
   /** Source columns shown as identifiers / dates (mono). */
   var MONO_COLUMNS = { 'N° Visite': 1, 'Date visite': 1, 'Prochaine revue': 1, "Date d'achat": 1, 'Deadline': 1,
     'Version OS': 1 };
+  /** Source columns holding figures (right-aligned, mono, tabular). */
+  var NUMERIC_COLUMNS = { 'Score conformité': 1 };
 
   // ------------------------------------------------------------------------------ helpers
 
@@ -108,8 +112,8 @@
   }
 
   /**
-   * Applications of a poste: relations from the applications' « Installé sur poste » plus the names
-   * declared in the poste's own « Application » column (deduplicated with Core.normKey).
+   * Applications of a poste: relations from the applications' « Installé sur poste » plus the names
+   * declared in the poste's own « Application » column (deduplicated with Core.normKey).
    * -> [{application, equipe, score|null, linked:bool, declared:bool}]
    */
   function installedApps(rec, relation) {
@@ -307,14 +311,15 @@
             onClick: function () { openDrawer(row._id, month); } }, Core.str(row[c]) || '(sans nom)');
         } };
       }
-      // Read view: Statut / Niveau de risque as status marks, « Non » criteria in --ko (the editor is unchanged).
-      return { key: c, label: c, editable: true, mono: !!MONO_COLUMNS[c], options: Core.optionsForColumn(c, md.referentiel),
+      // Read view: Statut / Niveau de risque as status marks, « Non » criteria in --ko (the editor is unchanged).
+      return { key: c, label: c, editable: true, mono: !!MONO_COLUMNS[c], numeric: !!NUMERIC_COLUMNS[c],
+        options: Core.optionsForColumn(c, md.referentiel),
         render: function (row) { return UI.cellMark(c, row[c]) || Core.str(row[c]); } };
     });
     // Computed columns right after the key column (they are what the user scans first).
     columns.splice(1, 0, {
       key: '_score', label: 'Score', editable: false, numeric: true,
-      // Live: reflects an unsaved edit of « Score conformité ».
+      // Live: reflects an unsaved edit of « Score conformité ».
       render: function (row) { return UI.scoreBadge(Core.parseScore(row['Score conformité'])); },
       sortValue: function (row) { return Core.parseScore(row['Score conformité']); }
     }, {
@@ -365,10 +370,10 @@
         if (res.created) {
           State.addRecord(month, 'postes', res.record);
           var hidden = hasFilters(State.get()) || conformity === 'ok';
-          UI.toast('« ' + Core.GENERIC_POSTE_NAME + ' » ajouté' +
+          UI.toast('« ' + Core.GENERIC_POSTE_NAME + ' » ajouté' +
             (hidden ? ' (masqué par les filtres actifs).' : '.'), 'success');
         } else {
-          UI.toast('« ' + Core.GENERIC_POSTE_NAME + ' » existe déjà pour ' + month + '.', 'info');
+          UI.toast('« ' + Core.GENERIC_POSTE_NAME + ' » existe déjà pour ' + month + '.', 'info');
         }
         if (myToken !== token) return;
         table.setRows(visible());
@@ -404,13 +409,14 @@
 
     // Page-level actions live in the header; they are wired once the month is loaded.
     var actions = {
-      generic: el('button', { type: 'button', class: 'btn btn-secondary', id: 'postes-add-generic', disabled: true,
-        title: 'Ajoute « ' + Core.GENERIC_POSTE_NAME + ' » pour rattacher les applications non liées à un poste suivi' },
+      generic: el('button', { type: 'button', class: 'btn btn-primary', id: 'postes-add-generic', disabled: true,
+        title: 'Ajoute « ' + Core.GENERIC_POSTE_NAME + ' » pour rattacher les applications non liées à un poste suivi' },
         'Ajouter un poste générique'),
       csv: el('button', { type: 'button', class: 'btn btn-secondary', id: 'postes-export-csv', disabled: true,
         title: 'Exporte les lignes affichées (filtres compris)' }, 'Exporter CSV')
     };
-    root.appendChild(header(s, [actions.generic, actions.csv]));
+    // One rule on every page: [Exporter CSV (secondary)] then [create action (primary)].
+    root.appendChild(header(s, [actions.csv, actions.generic]));
 
     var body = el('div', { class: 'postes-body', id: 'postes-body', 'aria-busy': 'true' },
       el('p', { class: 'muted' }, UI.spinner(), 'Chargement des postes…'));

@@ -33,6 +33,7 @@
   var actionFilters = { status: '', type: '', equipe: '' };
   var diffChoice = null;         // {base, oldMonth, newMonth}: user's months, valid while the global month is `base`
   var lastDiff = null;           // last api_getDiff result (re-rendered after "Enregistrer comme terminée")
+  var headerSlot = null;         // page-header actions of the active tab (create button), see setHeaderAction
 
   // ------------------------------------------------------------------------------ small helpers
 
@@ -136,6 +137,17 @@
     }, function (err) { errorToast(err, 'Actualisation impossible'); });
   }
 
+  /**
+   * Page-level create action of the active tab, in the page header like on the other pages
+   * ([Exporter CSV] then [create], right-aligned). Nothing for "Détection des changements".
+   */
+  function setHeaderAction(node) {
+    if (!headerSlot) return;
+    UI.clear(headerSlot);
+    if (node) headerSlot.appendChild(node);
+    headerSlot.hidden = !node;
+  }
+
   function loadingBox(text) {
     return el('p', { class: 'muted' }, UI.spinner(), text || 'Chargement…');
   }
@@ -211,7 +223,7 @@
   }
 
   function deleteAction(ctx, a) {
-    return UI.confirm('Supprimer l’action « ' + Core.str(a.action) + ' » (' + Core.str(a.target_name) + ') ?',
+    return UI.confirm('Supprimer l’action « ' + Core.str(a.action) + ' » (' + Core.str(a.target_name) + ') ?',
       { title: 'Supprimer l’action', okLabel: 'Supprimer', danger: true }).then(function (ok) {
       if (!ok) return null;
       return api.call('api_deleteAction', { id: a.id }).then(function () {
@@ -252,6 +264,8 @@
   }
 
   function renderRemediation(panel, ctx) {
+    setHeaderAction(el('button', { type: 'button', class: 'btn btn-primary', id: 'action-add',
+      onClick: function () { openActionForm(ctx, null); } }, 'Nouvelle action'));
     panel.appendChild(loadingBox('Chargement des actions…'));
     State.loadActions().then(function (data) {
       if (ctx.token !== token) return;
@@ -267,21 +281,26 @@
         return Core.str(a.target_name).localeCompare(Core.str(b.target_name), 'fr');
       });
 
-      // Counts per status (on all actions, independent of the filters): a KPI strip.
+      // Counts per status (on all actions, independent of the filters): one stat line, like the Postes /
+      // Applications pages ("1 à faire · 1 en cours · … · ■ 2 en retard sur 2 ouvertes"). Big figures are
+      // kept for the dashboard KPIs only.
       var c = statusCounts(actions);
       var open = actions.length - c['Terminé'] - c['Abandonné'];
-      var cards = Core.ACTION_STATUSES.map(function (s) {
-        var card = UI.card({ title: s, value: UI.fmtNum(c[s]) });
-        card.dataset.status = s;
-        return card;
-      });
-      var overdueCard = UI.card({ title: 'En retard', value: UI.fmtNum(c.overdue),
-        sub: c.overdue ? 'sur ' + UI.fmtNum(open) + ' ouverte' + (open > 1 ? 's' : '') : 'Aucune échéance dépassée',
-        tone: c.overdue ? 'ko' : null });
-      overdueCard.dataset.status = 'overdue';
-      if (c.overdue) overdueCard.querySelector('.metric-value').classList.add('is-alert');
-      panel.appendChild(el('div', { class: 'kpi-strip act-counts', id: 'action-counts', role: 'group',
-        'aria-label': 'Actions par statut' }, cards, overdueCard));
+      var STAT_WORDS = { 'À faire': ['à faire', 'à faire'], 'En cours': ['en cours', 'en cours'],
+        'Terminé': ['terminée', 'terminées'], 'Abandonné': ['abandonnée', 'abandonnées'] };
+      function stat(status, n, words) {
+        return el('span', { class: 'stat act-count', dataset: { status: status } },
+          el('span', { class: 'act-count-value num' }, UI.fmtNum(n)), ' ' + (n > 1 ? words[1] : words[0]));
+      }
+      var line = el('p', { class: 'stat-line act-counts', id: 'action-counts', role: 'group', 'aria-label': 'Actions par statut' },
+        Core.ACTION_STATUSES.map(function (s) { return stat(s, c[s], STAT_WORDS[s] || [s.toLowerCase(), s.toLowerCase()]); }));
+      var late = el('span', { class: 'act-count' + (c.overdue ? ' is-late' : ''), dataset: { status: 'overdue' } },
+        el('span', { class: 'act-count-value num' }, UI.fmtNum(c.overdue)), ' en retard');
+      line.appendChild(c.overdue ?
+        el('span', { class: 'stat' }, UI.statusMark(late, 'ko'),
+          el('span', { class: 'act-count-open' }, ' sur ' + UI.fmtNum(open) + ' ouverte' + (open > 1 ? 's' : ''))) :
+        el('span', { class: 'stat' }, late, el('span', { class: 'faint act-count-open' }, ' · aucune échéance dépassée')));
+      panel.appendChild(line);
 
       // Filters (in the table toolbar) + table.
       var equipes = distinct(actions.map(function (a) { return a.equipe; }));
@@ -306,24 +325,21 @@
         pageSize: 50,
         emptyText: actions.length ? 'Aucune action ne correspond aux filtres.' : 'Aucune action enregistrée.',
         toolbar: toolbar,
-        // The create action sits at the right end of the toolbar (filters stay left-aligned).
-        toolbarEnd: [el('button', { type: 'button', class: 'btn btn-primary btn-small etable-create', id: 'action-add',
-          onClick: function () { openActionForm(ctx, null); } }, 'Nouvelle action')],
         onRowClick: function (a) { openActionForm(ctx, a); },
         columns: [
           { key: 'target_name', label: 'Cible', render: function (a) { return targetCell(a.target_type, a.target_name); } },
           { key: 'target_type', label: 'Type', render: function (a) { return TYPE_LABELS[a.target_type] || Core.str(a.target_type); } },
           { key: 'equipe', label: 'Équipe' },
-          { key: 'action', label: 'Action', width: 150,
+          { key: 'action', label: 'Action', width: 128,
             render: function (a) { return el('span', { title: Core.str(a.action) }, Core.str(a.action)); } },
           { key: 'responsable', label: 'Responsable' },
           { key: 'priorite', label: 'Priorité', render: function (a) { return priorityBadge(a.priorite); },
             sortValue: function (a) { var i = Core.ACTION_PRIORITIES.indexOf(Core.str(a.priorite)); return i < 0 ? null : i; } },
           { key: 'deadline', label: 'Échéance', render: deadlineCell, sortValue: function (a) { return frSortValue(a.deadline); } },
           { key: 'status', label: 'Statut', render: function (a) { return statusBadge(a.status); } },
-          { key: 'date_created', label: 'Créée le', render: function (a) { return dateCell(a.date_created); },
+          { key: 'date_created', label: 'Créée', render: function (a) { return dateCell(a.date_created); },
             sortValue: function (a) { return frSortValue(a.date_created); } },
-          { key: 'date_completed', label: 'Réalisée le', render: function (a) { return dateCell(a.date_completed); },
+          { key: 'date_completed', label: 'Réalisée', render: function (a) { return dateCell(a.date_completed); },
             sortValue: function (a) { return frSortValue(a.date_completed); } },
           { key: '_actions', label: '', sortable: false, render: function (a) {
             return rowButtons(function () { openActionForm(ctx, a); }, function () { deleteAction(ctx, a); },
@@ -388,7 +404,7 @@
   }
 
   function deleteReplacement(ctx, r) {
-    return UI.confirm('Supprimer le remplacement « ' + Core.str(r.old_poste) + ' → ' + Core.str(r.new_poste) + ' » ?',
+    return UI.confirm('Supprimer le remplacement « ' + Core.str(r.old_poste) + ' → ' + Core.str(r.new_poste) + ' » ?',
       { title: 'Supprimer le remplacement', okLabel: 'Supprimer', danger: true }).then(function (ok) {
       if (!ok) return null;
       return api.call('api_deleteReplacement', { id: r.id }).then(function () {
@@ -399,6 +415,8 @@
   }
 
   function renderReplacements(panel, ctx) {
+    setHeaderAction(el('button', { type: 'button', class: 'btn btn-primary', id: 'replacement-add',
+      onClick: function () { openReplacementForm(ctx, null); } }, 'Nouveau remplacement'));
     panel.appendChild(loadingBox('Chargement des remplacements…'));
     State.loadActions().then(function (data) {
       if (ctx.token !== token) return;
@@ -412,8 +430,6 @@
       var table = UI.editableTable({
         rowKey: 'id',
         emptyText: 'Aucun remplacement enregistré.',
-        toolbarEnd: [el('button', { type: 'button', class: 'btn btn-primary btn-small etable-create', id: 'replacement-add',
-          onClick: function () { openReplacementForm(ctx, null); } }, 'Nouveau remplacement')],
         onRowClick: function (r) { openReplacementForm(ctx, r); },
         columns: [
           { key: 'old_poste', label: 'Ancien poste', mono: true },
@@ -447,13 +463,14 @@
   }
 
   /**
-   * Column widths (%) shared by the diff tables of one schema, so that stacked tables (retirés / ajoutés,
-   * postes / applications) keep the same column positions. Index = column; 'num' marks a numeric column.
+   * Column widths (%) of the diff tables. The first two columns (poste / application, équipe) are the same
+   * in every schema, so that all the stacked tables (retirés / ajoutés / modifications / actions résolues)
+   * line up. Index = column; 'num' marks a numeric column.
    */
   var DIFF_SCHEMAS = {
-    record: [[28], [18], [18], [12, 'num'], [24]],
-    change: [[22], [18], [22], [38]],
-    resolved: [[20], [16], [28], [14], [22]]
+    record: [[30], [18], [18], [12, 'num'], [22]],
+    change: [[30], [18], [20], [32]],
+    resolved: [[30], [18], [20], [12], [20]]
   };
 
   function simpleTable(id, headers, rows, schema) {
@@ -648,6 +665,7 @@
   }
 
   function renderDiff(panel, ctx) {
+    setHeaderAction(null);
     var s = State.get();
     var months = Core.sortMonths(s.months || []);
     panel.appendChild(el('p', { class: 'page-lede diff-intro' }, 'Compare deux exports mensuels : postes et applications ' +
@@ -741,9 +759,10 @@
     var myToken = ++token;
     var s = State.get();
     root.appendChild(el('style', null, CSS));
+    headerSlot = el('span', { class: 'act-header-slot', hidden: true });
     root.appendChild(UI.pageHeader({ title: 'Suivi des actions', kickerId: s.month ? 'actions-caption' : null,
       kicker: s.month ? [capitalize(UI.fmtMonth(s.month)) + ' · ', el('span', { class: 'mono' }, 'Export ' + s.month)] :
-        'Aucun export importé' }));
+        'Aucun export importé', actions: [headerSlot] }));
 
     var tabs;
     /** Context shared by the tab renderers; rerender() redraws the active tab after a write. */
@@ -779,6 +798,7 @@
 
   function unmount() {
     token++;
+    headerSlot = null;
   }
 
   // Page-specific styles only (scoped to .page-actions); everything else comes from css.html.
@@ -786,17 +806,23 @@
     // Actions table: the free-text column wraps so that the 11 columns fit without hiding the row buttons.
     // Actions table: 11 columns must fit 1072px (1400px viewport): tighter cell padding, free text wraps,
     // "en retard" goes under the overdue date.
-    '.page-actions #actions-table th, .page-actions #actions-table td { padding-left: var(--s2); padding-right: var(--s2); }',
-    '.page-actions #actions-table td[data-col="action"] { white-space: normal; min-width: 150px; max-width: 260px; line-height: 1.35; }',
+    '.page-actions #actions-table th, .page-actions #actions-table td { padding-left: 6px; padding-right: 6px; }',
+    '.page-actions #actions-table td[data-col="action"] { white-space: normal; min-width: 128px; max-width: 260px; line-height: 1.35; }',
     '.page-actions #actions-table td[data-col="equipe"], .page-actions #actions-table td[data-col="responsable"] {' +
       ' white-space: normal; line-height: 1.35; }',
-    '.page-actions #actions-table .row-actions { flex-direction: column; align-items: flex-start; gap: 0; }',
-    '.page-actions #actions-table .row-actions .btn-link { min-height: 20px; }',
-    '.page-actions .deadline-overdue { flex-wrap: wrap; row-gap: 0; line-height: 16px; }',
-    '.page-actions .deadline-overdue .act-late { flex-basis: 100%; padding-left: 12px; }',
+    // Overdue deadline: "■ 15/04/2026" on one line, "en retard" under the date (2-column grid).
+    '.page-actions .deadline-overdue { display: inline-grid; grid-template-columns: 6px auto; column-gap: 6px;' +
+      ' row-gap: 0; align-items: center; line-height: 16px; }',
+    '.page-actions .deadline-overdue::before { grid-row: 1; grid-column: 1; }',
+    '.page-actions .deadline-overdue .act-late { grid-column: 2; }',
     '.page-actions #replacements-table td[data-col="comment"] { white-space: normal; min-width: 200px; max-width: 360px; line-height: 1.35; }',
-    '.page-actions .etable-table td[data-col="_actions"] { width: 1%; padding-right: var(--s2); }',
-    '.page-actions .row-actions { gap: var(--s3); }',
+    // Row actions: "Modifier  Supprimer" on one line in both tables (32px ledger rows).
+    '.page-actions td[data-col="_actions"] { width: 132px; min-width: 132px; padding-right: 0 !important; }',
+    '.page-actions .row-actions { display: inline-flex; flex-wrap: nowrap; white-space: nowrap; gap: 10px; }',
+    '.page-actions .act-header-slot { display: contents; }',
+    // Status counts: a stat line (figures mono), overdue in --ko.
+    '.page-actions .act-counts .act-count-value { font-size: 13px; color: var(--ink); }',
+    '.page-actions .act-counts .mark-ko .act-count-value, .page-actions .act-counts .is-late { color: var(--ko); }',
     '.page-actions .row-actions .btn-link { min-height: 24px; color: var(--ink-2); }',
     '.page-actions .row-actions .btn-link:hover { color: var(--accent); }',
     '.page-actions .row-actions .btn-delete:hover { color: var(--ko); }',
@@ -822,6 +848,18 @@
     '.page-actions .diff-table td, .page-actions .diff-table th { max-width: none; }',
     '.page-actions .diff-table-change .diff-values { white-space: normal; overflow-wrap: anywhere; }',
     '.page-actions .diff-table .diff-done-cell { overflow: visible; text-overflow: clip; }',
+    // Phones: no sideways scroll; the secondary columns (équipe, bâtiment / éditeur, responsable) are
+    // dropped so that the key column and the useful values (score, ancien → nouveau, button) stay visible.
+    '@media (max-width: 640px) {' +
+      ' .page-actions .diff-table { min-width: 0; table-layout: auto; }' +
+      ' .page-actions .diff-table-record :is(th, td, col):nth-child(2), .page-actions .diff-table-record :is(th, td, col):nth-child(3),' +
+      ' .page-actions .diff-table-change :is(th, td, col):nth-child(2),' +
+      ' .page-actions .diff-table-resolved :is(th, td, col):nth-child(2), .page-actions .diff-table-resolved :is(th, td, col):nth-child(4)' +
+      ' { display: none; }' +
+      ' .page-actions .diff-table td, .page-actions .diff-table th { white-space: normal; overflow-wrap: normal; }' +
+      ' .page-actions .diff-table td.mono, .page-actions .diff-table .diff-values { overflow-wrap: anywhere; }' +
+      ' .page-actions .diff-table .btn-mark-done { white-space: normal; text-align: left; line-height: 1.25; padding-top: 4px; padding-bottom: 4px; }' +
+      ' .page-actions .diff-action-text { min-width: 0; } }',
     '.page-actions .btn-mark-done.is-done { opacity: 1; border-color: transparent; background: none; padding: 0;' +
       ' color: var(--ok); font-weight: 500; cursor: default; }',
     '.page-actions .btn-mark-done.is-done::before { content: ""; width: 6px; height: 6px; background: currentColor; }',

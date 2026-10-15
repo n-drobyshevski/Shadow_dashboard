@@ -252,9 +252,9 @@
   function tabsWarning(res) {
     var missing = [];
     var t = (res && res.tabsFound) || {};
-    if (t.postes === false) missing.push('« ' + Core.SOURCE_TABS.postes + ' »');
-    if (t.applications === false) missing.push('« ' + Core.SOURCE_TABS.applications + ' »');
-    if (t.referentiel === false) missing.push('« ' + Core.SOURCE_TABS.referentiel + ' »');
+    if (t.postes === false) missing.push('« ' + Core.SOURCE_TABS.postes + ' »');
+    if (t.applications === false) missing.push('« ' + Core.SOURCE_TABS.applications + ' »');
+    if (t.referentiel === false) missing.push('« ' + Core.SOURCE_TABS.referentiel + ' »');
     return missing.length ? 'Onglet(s) introuvable(s) : ' + missing.join(', ') : '';
   }
 
@@ -301,9 +301,9 @@
       UI.pageHeader({ kicker: BRAND + ' · configuration', title: 'Source de données' }),
       el('div', { class: 'config-card' },
         el('p', { id: 'config-help', class: 'page-lede' },
-          'Collez l’URL (ou l’identifiant) du Google Sheet source « ShadowIT_Industry ». Il doit contenir les onglets « ' +
-          Core.SOURCE_TABS.postes + ' », « ' + Core.SOURCE_TABS.applications + ' » et « ' +
-          Core.SOURCE_TABS.referentiel + ' ». Chaque import en fait un instantané mensuel dans le classeur de données.'),
+          'Collez l’URL (ou l’identifiant) du Google Sheet source « ShadowIT_Industry ». Il doit contenir les onglets « ' +
+          Core.SOURCE_TABS.postes + ' », « ' + Core.SOURCE_TABS.applications + ' » et « ' +
+          Core.SOURCE_TABS.referentiel + ' ». Chaque import en fait un instantané mensuel dans le classeur de données.'),
         form)));
     setTimeout(function () { input.focus(); }, 0);
   }

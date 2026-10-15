@@ -121,6 +121,9 @@
     var v = value === null || value === undefined || !isFinite(Number(value)) ? 0 : Number(value);
     var ok = v >= Core.THRESHOLD;
     var band = 0.2;      // thickness of the arc, as a fraction of the gauge ring
+    // Left-aligned with its label and caption (.chart-gauge caps the plot width; the arc is not centred
+    // in a wide column).
+    if (el) el.classList.add('chart-gauge');
     var p = draw(el, [{
       type: 'indicator',
       mode: 'gauge+number',
@@ -142,7 +145,7 @@
         threshold: { line: { color: t.ink, width: 2 }, thickness: band + 0.12, value: Core.THRESHOLD }
       },
       domain: { x: [0, 1], y: [0, 1] }
-    }], baseLayout(t, { height: o.height || 176, margin: { l: 24, r: 24, t: 14, b: 18 } }));
+    }], baseLayout(t, { height: o.height || 176, margin: { l: 6, r: 22, t: 14, b: 18 } }));
     if (p && typeof p.then === 'function') {
       p.then(function () {
         gaugeEnds(el);
@@ -389,6 +392,75 @@
   }
 
   /**
+   * Part-of-whole bars (no legend): {x:[category], groups:[{label, total:{name, y}, part:{name, y}, color?}]}.
+   * Per category and group, one outline bar (total, 1px in the group colour on paper) with the part drawn as
+   * a solid bar inside it from the baseline. The figure "part sur total" is printed above each bar and the
+   * group label under it, the category (month) under the group labels: everything is labelled directly.
+   * Traces, in order: [g0 total, g0 part, g1 total, g1 part, ...] (names from total.name / part.name).
+   */
+  function partBars(el, opts) {
+    var o = opts || {};
+    var t = tokens();
+    var x = o.x || [];
+    var groups = o.groups || [];
+    var n = x.length;
+    var G = Math.max(1, groups.length);
+    var slot = 0.8 / G;                  // share of a category taken by one group
+    var width = slot * 0.56;
+    var plotW = (el && el.clientWidth) || 480;
+    var px = plotW / Math.max(1, n * G); // ~pixels per bar slot
+    var compact = px < 52;               // too narrow for "5 sur 7": "5/7", no group labels
+    var palette = [t.ink, t.ink3, t.accent];
+    function pos(i, g) { return i + (g - (G - 1) / 2) * slot; }
+    var data = [];
+    var annotations = [];
+    var maxValue = 1;
+    groups.forEach(function (gr, g) {
+      var c = gr.color || palette[g % palette.length];
+      var xs = x.map(function (_, i) { return pos(i, g); });
+      var totals = (gr.total && gr.total.y) || [];
+      var parts = (gr.part && gr.part.y) || [];
+      totals.forEach(function (v) { if (isFinite(Number(v))) maxValue = Math.max(maxValue, Number(v)); });
+      var clean = String(gr.label || '').replace(/[<>%{}]/g, '');
+      data.push({
+        type: 'bar', name: gr.total && gr.total.name, x: xs, y: totals, width: width,
+        marker: { color: t.paper, line: { width: 1, color: c } },
+        text: totals.map(function (v, i) {
+          if (v === null || v === undefined) return '';
+          var p = parts[i] === null || parts[i] === undefined ? '—' : String(parts[i]);
+          return compact ? p + '/' + v : p + ' sur ' + v;
+        }),
+        textposition: 'outside', textfont: { family: t.mono, size: 11, color: t.ink2 }, cliponaxis: false,
+        customdata: x.map(function (m, i) { return [m, parts[i] === null || parts[i] === undefined ? '—' : parts[i]]; }),
+        hovertemplate: '%{customdata[0]} — ' + clean + ' : %{customdata[1]} conformes sur %{y}<extra></extra>'
+      });
+      data.push({
+        type: 'bar', name: gr.part && gr.part.name, x: xs, y: parts, width: width,
+        marker: { color: c, line: { width: 0 } }, hoverinfo: 'skip'
+      });
+      if (!compact) {
+        xs.forEach(function (xv) {
+          annotations.push({ x: xv, xref: 'x', y: 0, yref: 'paper', yanchor: 'top', yshift: -3, showarrow: false,
+            text: clean, font: { family: t.sans, size: 11, color: t.ink2 } });
+        });
+      }
+    });
+    x.forEach(function (m, i) {
+      annotations.push({ x: i, xref: 'x', y: 0, yref: 'paper', yanchor: 'top', yshift: compact ? -3 : -19,
+        showarrow: false, text: String(m), font: { family: t.mono, size: 11, color: t.ink3 } });
+    });
+    return draw(el, data, baseLayout(t, {
+      height: o.height || 280,
+      margin: { l: 4, r: 4, t: 18, b: compact ? 22 : 38 },
+      barmode: 'overlay',
+      hovermode: 'closest',
+      xaxis: axis(t, { range: [-0.5, Math.max(0, n - 1) + 0.5], showline: true, showticklabels: false }),
+      yaxis: axis(t, { visible: false, rangemode: 'tozero', range: [0, maxValue * 1.15] }),
+      annotations: annotations
+    }));
+  }
+
+  /**
    * Heatmap: {x, y, z:[[number|null]], zmin=0, zmax=100, title?}: sequential single hue (paper -> --ok),
    * % printed in each cell in mono, no colour bar. `title` is ignored inside the plot (label it above).
    */
@@ -402,6 +474,11 @@
       return (row || []).map(function (v) { return v === null || v === undefined ? '' : UI.fmtPct(v, 0).replace(' %', NBSP + '%'); });
     });
     var yLabels = o.y || [];
+    // maxCellWidth: caps each column (px) so that a few months read as a compact table, left-aligned.
+    if (el && o.maxCellWidth) {
+      var labelW = yLabels.reduce(function (m, s) { return Math.max(m, String(s).length); }, 0) * 7 + 24;
+      el.style.maxWidth = Math.round(labelW + Math.max(1, (o.x || []).length) * o.maxCellWidth + 8) + 'px';
+    }
     return draw(el, [{
       type: 'heatmap',
       x: o.x || [],
@@ -438,6 +515,7 @@
     histogram: histogram,
     line: line,
     bars: bars,
+    partBars: partBars,
     heatmap: heatmap,
     purge: purge,
     tokens: tokens

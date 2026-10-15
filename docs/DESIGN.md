@@ -78,7 +78,8 @@ with the system fallbacks above.
   Labels: "80" next to the tick, "0" and "100" in 10px mono `--ink-3` set right under the two arc ends
   (Plotly centres the arc in its ring, so its own end labels float away; the page places them). The
   value is the gauge's number in Plex Mono (tabular, `--ink`, ~30px, `71,4 %`, the narrow space set in
-  the sans face so it stays narrow). Transparent paper/plot backgrounds, tight margins (~176px tall), no
+  the sans face so it stays narrow). Transparent paper/plot backgrounds, tight margins (~176px tall, plot
+  ≤ 272px wide and left-aligned with its label and caption, never centred in a wide column), no
   title inside the plot: the small-caps label sits above, and a one-line caption below repeats the
   status in words (`■ Sous le seuil · 5 conformes sur 7 · seuil 80 %`) so it is never colour-only.
   *Pending user decision:* a horizontal bullet-chart variant (10px `--rule` track, ok/ko bar, 2px ink

@@ -111,6 +111,14 @@ describe('timeline', () => {
       assert.deepEqual(counts.data[0].y, [k4.total_postes, k5.total_postes]);
       assert.deepEqual(counts.data[1].y, [k4.postes_conformes, k5.postes_conformes]);
       assert.deepEqual(counts.data[3].y, [k4.apps_conformes, k5.apps_conformes]);
+      // Labelled directly ("5 sur 7" above each inventory bar), no legend to decode.
+      assert.deepEqual(counts.data[0].text, [k4.postes_conformes + ' sur ' + k4.total_postes,
+        k5.postes_conformes + ' sur ' + k5.total_postes]);
+      const countsLegend = await page.evaluate(() => {
+        const el = document.getElementById('chart-timeline-counts');
+        return el._fullLayout ? el._fullLayout.showlegend : null; // real Plotly only
+      });
+      if (countsLegend !== null) assert.equal(countsLegend, false);
 
       // Heatmap équipe × month.
       const heat = await lastPlot(app, 'chart-timeline-heatmap');
@@ -228,7 +236,7 @@ describe('actions — remediation', () => {
       assert.equal(rows['a-0003'].deadlineBadge !== null && /badge-ko/.test(rows['a-0003'].deadlineBadge), overdue('15/04/2026'));
 
       const counts = await page.$$eval('#action-counts [data-status]', (cs) => Object.fromEntries(cs.map((c) => [
-        c.dataset.status, c.querySelector('.metric-value').textContent])));
+        c.dataset.status, c.querySelector('.act-count-value').textContent])));
       assert.deepEqual(counts, { 'À faire': '1', 'En cours': '1', 'Terminé': '1', 'Abandonné': '0',
         overdue: String(['31/05/2026', '15/04/2026'].filter(overdue).length) });
 
