@@ -1,0 +1,15 @@
+{
+  "name": "shadow-it-dashboard-gas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Shadow IT Dashboard — Google Apps Script web app (port of the Streamlit dashboard)",
+  "scripts": {
+    "test": "node --test \"test/unit/**/*.test.js\" \"test/integration/**/*.test.js\"",
+    "test:e2e": "NODE_PATH=$(npm root -g) PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-/opt/pw-browsers} node --test \"test/e2e/**/*.test.js\"",
+    "test:all": "npm test && npm run test:e2e",
+    "render": "node test/helpers/render.js",
+    "push": "clasp push",
+    "deploy": "clasp push && clasp deploy --description \"Shadow IT Dashboard\""
+  },
+  "engines": { "node": ">=20" }
+}
