@@ -252,7 +252,7 @@
           series: [
             { name: 'Postes inventoriés', y: k.map(function (v) { return v.total_postes; }), color: t.ink, outline: true },
             { name: 'Postes conformes', y: k.map(function (v) { return v.postes_conformes; }), color: t.ink },
-            { name: 'Applications inventoriées', y: k.map(function (v) { return v.total_apps; }), color: t.ink3, outline: true },
+            { name: 'Applications inventoriées', y: k.map(function (v) { return v.total_apps; }), color: t.ink3, outline: t.paper2 },
             { name: 'Applications conformes', y: k.map(function (v) { return v.apps_conformes; }), color: t.ink3 }
           ],
           labels: true,
@@ -330,6 +330,7 @@
     '.page-timeline .tl-key.is-outline { background: none; box-shadow: inset 0 0 0 1px var(--key-color); }',
     '.page-timeline .tl-key-postes { --key-color: var(--ink); }',
     '.page-timeline .tl-key-apps { --key-color: var(--ink-3); }',
+    '.page-timeline .tl-key-apps.is-outline { background: var(--paper-2); }',
     // KPI ledger: label column stays visible when many months scroll horizontally.
     '.page-timeline .tl-kpi-table { width: auto; min-width: min(100%, 720px); }',
     '.page-timeline .tl-kpi-table .tl-label-col { position: sticky; left: 0; z-index: 2; background: var(--paper);' +

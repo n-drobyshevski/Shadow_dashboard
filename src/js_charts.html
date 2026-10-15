@@ -326,7 +326,7 @@
   }
 
   /**
-   * Bar chart: {x, y, colors?, yTitle?, horizontal?}. Extension: {x, series:[{name, y, color?, outline?}]}
+   * Bar chart: {x, y, colors?, yTitle?, horizontal?}. Extension: {x, series:[{name, y, color?, outline?:bool|fill}]}
    * draws grouped bars with a legend placed above the plot area (never over the bars).
    * Options: labels:true prints each count above its bar (mono 11px ink-2) and drops the value axis;
    * legend:false hides the legend (the page then puts a key in the caption). outline:true draws a series
@@ -340,11 +340,13 @@
     var labels = !!o.labels;
     function trace(name, y, color, i, outline) {
       var c = color || palette[i % palette.length];
+      // outline: true -> paper fill; a colour string -> that fill (e.g. --paper-2 to tell two outlines apart).
       var tr = {
         type: 'bar',
         name: name,
         orientation: horizontal ? 'h' : 'v',
-        marker: outline ? { color: t.paper, line: { width: 1, color: c } } : { color: c, line: { width: 0 } },
+        marker: outline ? { color: typeof outline === 'string' ? outline : t.paper, line: { width: 1, color: c } } :
+          { color: c, line: { width: 0 } },
         hovertemplate: (horizontal ? '%{y} : %{x}' : '%{x} : %{y}') + (name ? ' — ' + String(name).replace(/[<>%{}]/g, '') : '') +
           '<extra></extra>'
       };
@@ -359,7 +361,7 @@
     }
     var multi = !!(o.series && o.series.length > 1);
     var data = o.series && o.series.length ?
-      o.series.map(function (s, i) { return trace(s.name, s.y || [], s.color, i, !!s.outline); }) :
+      o.series.map(function (s, i) { return trace(s.name, s.y || [], s.color, i, s.outline || false); }) :
       [trace('', o.y || [], o.colors || t.ink, 0, false)];
     var maxValue = 1;
     data.forEach(function (d) {

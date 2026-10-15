@@ -388,7 +388,7 @@
       cVide.dataset.count = 'vide';
       return el('tr', { dataset: { field: f } },
         el('th', { scope: 'row' }, f), cOui, cNon, cVide,
-        el('td', { class: 'num', dataset: { count: 'share' } }, share === null ? '—' : UI.fmtPct(share)));
+        el('td', { class: 'num', dataset: { count: 'share' } }, share === null ? '—' : UI.fmtPctNode(share)));
     });
     box.appendChild(el('div', { class: 'table-scroll' }, el('table', { class: 'table table-compact' },
       el('thead', null, el('tr', null,
