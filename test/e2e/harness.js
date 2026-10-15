@@ -4,7 +4,8 @@
  *
  *   const { openApp } = require('./harness');
  *   const app = await openApp({ page: 'postes' });
- *   ... app.page (Playwright Page), app.errors (console errors + page errors), await app.calls() ...
+ *   ... app.page (Playwright Page), app.errors (console errors + page errors), await app.calls(),
+ *   app.debug (console.debug texts: the [rpc] / [boot] timing lines) ...
  *   await app.close();
  *
  * The app is rendered with test/helpers/render.js, google.script.run is mocked with
@@ -129,7 +130,11 @@ async function openApp({ empty = false, configured = true, page: pageId = 'dashb
   const context = await browser.newContext({ viewport, locale: 'fr-FR', timezoneId: 'Europe/Paris' });
   const page = await context.newPage();
   const errors = [];
-  page.on('console', (msg) => { if (msg.type() === 'error') errors.push('console: ' + msg.text()); });
+  const debug = [];
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') errors.push('console: ' + msg.text());
+    else if (msg.type() === 'debug') debug.push(msg.text());
+  });
   page.on('pageerror', (err) => errors.push('pageerror: ' + (err && err.stack ? err.stack : String(err))));
 
   await page.route(PLOTLY_URL_GLOB, (route) => route.fulfill({
@@ -166,6 +171,7 @@ async function openApp({ empty = false, configured = true, page: pageId = 'dashb
     context,
     page,
     errors,
+    debug,
     file,
     calls: () => page.evaluate(() => window.__calls),
     plots: () => page.evaluate(() => window.__plots || []),

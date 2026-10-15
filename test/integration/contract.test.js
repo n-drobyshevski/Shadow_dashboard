@@ -22,7 +22,7 @@ const INJECTED = ['SpreadsheetApp', 'PropertiesService', 'LockService', 'Utiliti
 /** Public non-api functions allowed by docs/API.md §0, plus the Core factory (shared with the client). */
 const ALLOWED_PUBLIC = ['doGet', 'include', 'coreScript', 'setup', 'syncHourly', 'CoreFactory_'];
 /** Module objects of docs/API.md §0 "Files and ownership". */
-const MODULES = ['Core', 'Config', 'Access', 'Store', 'Importer', 'Sync'];
+const MODULES = ['Core', 'Config', 'Access', 'Store', 'Importer', 'Sync', 'Perf'];
 
 /** The api_* names of the "complete list" paragraph of docs/API.md §3. */
 function contractApiNames() {

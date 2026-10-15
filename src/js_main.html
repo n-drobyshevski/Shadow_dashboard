@@ -1063,6 +1063,31 @@
     });
   }
 
+  // ------------------------------------------------------------------------------ boot timing
+
+  /**
+   * Performance marks 'shadow:boot' (boot() starts) and 'shadow:ready' (first page rendered, splash
+   * fading), then one console.debug line: `[boot] ready <ms>ms (boot <ms>ms, first paint <ms>ms)`, all
+   * counted from the navigation of the app frame. Never throws.
+   */
+  var bootTiming = {
+    start: function () {
+      try { performance.mark('shadow:boot'); } catch (e) { /* no User Timing API */ }
+    },
+    ready: function () {
+      try {
+        performance.mark('shadow:ready');
+        var boot = performance.getEntriesByName('shadow:boot');
+        var paint = performance.getEntriesByName('first-contentful-paint');
+        var ready = performance.now();
+        var parts = [];
+        if (boot.length) parts.push('boot ' + Math.round(ready - boot[boot.length - 1].startTime) + 'ms');
+        if (paint.length) parts.push('first paint ' + Math.round(paint[0].startTime) + 'ms');
+        console.debug('[boot] ready ' + Math.round(ready) + 'ms' + (parts.length ? ' (' + parts.join(', ') + ')' : ''));
+      } catch (e) { /* no User Timing API */ }
+    }
+  };
+
   // ------------------------------------------------------------------------------ startup splash
 
   /**
@@ -1137,6 +1162,7 @@
         });
       } catch (e) { /* ignore */ }
     }
+    bootTiming.start();
     splash.show();
     splash.step('Vérification de l’accès…');
     Promise.all([State.refreshBootstrap(), initialPage()]).then(function (res) {
@@ -1153,6 +1179,7 @@
       renderAll();
       if (!pollingStarted) { pollingStarted = true; startSyncPolling(); }
       splash.done();
+      bootTiming.ready();
     }, function (err) {
       if (err && err.code === 'FORBIDDEN') { booted = true; splash.done(); renderDeniedScreen(err); return; }
       console.error(err);

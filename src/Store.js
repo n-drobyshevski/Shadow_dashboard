@@ -146,8 +146,13 @@ var Store = (function () {
     return { sheet: sheet, schema: schema, raw: raw, items: items };
   }
 
+  /** readSheet_ of a data tab, with one {stage:'sheet', tab, rows, ms} timing line (Perf). */
   function readTable_(tab) {
-    return readSheet_(sheet_(tab), schema_(tab));
+    var sheet = sheet_(tab);
+    var t0 = Date.now();
+    var table = readSheet_(sheet, schema_(tab));
+    Perf.log({ stage: 'sheet', tab: tab, rows: table.raw.length, ms: Date.now() - t0 });
+    return table;
   }
 
   /**
@@ -297,15 +302,20 @@ var Store = (function () {
    * Opens the data spreadsheet (creating it only when no id is configured) and makes sure the
    * layout is in place. Idempotent and cached for the current execution. The creation runs under
    * the script lock and re-reads the property there, so concurrent first loads create ONE file.
+   * The first successful call of an execution logs {stage:'ensure', ms, open, ensureTabs, created}
+   * (Perf; a failure is reported by openData_ and the caller's {api, ok:false} line).
    */
   function ensure() {
     if (ss_) return ss_;
+    var t = Perf.start('ensure');
     var cfg = Config.get();
     var ss = null;
     var created = false;
     if (cfg.dataId) {
       ss = openData_(cfg.dataId);
+      t.lap('open');
       sheets_ = ensureTabs_(ss, false);
+      t.lap('ensureTabs');
     } else {
       withLock(function () {
         var id = Config.get().dataId; // another execution may have created it while we waited
@@ -316,9 +326,12 @@ var Store = (function () {
           Config.setDataId(ss.getId());
           created = true;
         }
+        t.lap('open');
         sheets_ = ensureTabs_(ss, created);
+        t.lap('ensureTabs');
       });
     }
+    t.end({ created: created });
     ss_ = ss;
     return ss;
   }
@@ -390,13 +403,23 @@ var Store = (function () {
     return sheet.getRange(2, 1, last - 1, 1).getValues().map(function (r) { return toText_(r[0]); });
   }
 
-  /** Months present in ImportLog ∪ Postes ∪ Applications, ascending and unique. */
+  /**
+   * Months present in ImportLog ∪ Postes ∪ Applications, ascending and unique. Logs
+   * {stage:'listMonths', ms, <tab>: ms, ..., rows, months} (Perf; `ms` includes a first ensure()).
+   */
   function listMonths() {
+    var t = Perf.start('listMonths');
     var seen = {};
+    var rows = 0;
     [Config.TABS.importLog, Config.TABS.postes, Config.TABS.applications].forEach(function (tab) {
-      readFirstColumn_(tab).forEach(function (m) { seen[m] = true; });
+      var col = readFirstColumn_(tab);
+      rows += col.length;
+      col.forEach(function (m) { seen[m] = true; });
+      t.lap(tab);
     });
-    return Core.sortMonths(Object.keys(seen));
+    var months = Core.sortMonths(Object.keys(seen));
+    t.end({ rows: rows, months: months.length });
+    return months;
   }
 
   function hasMonth(month) {

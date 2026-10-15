@@ -521,6 +521,37 @@ describe('loading states', () => {
     });
   });
 
+  test('timing: one [rpc] debug line per server call and a [boot] line, performance marks set', async () => {
+    await withApp({ failNext: { api_getImportLog: { code: 'BUSY', message: 'Occupé' } } }, async (app) => {
+      const { page } = app;
+      // Console events reach the test asynchronously.
+      const eventually = async (cond) => {
+        for (let i = 0; i < 100 && !(await cond()); i++) await page.waitForTimeout(20);
+        return cond();
+      };
+      const rpcNames = () => app.debug.filter((t) => t.startsWith('[rpc] ')).map((t) => t.split(' ')[1]).sort();
+      const callNames = async () => (await app.calls()).map((c) => c.name).sort();
+
+      assert.equal(await page.evaluate(() => performance.getEntriesByName('shadow:boot').length), 1);
+      assert.equal(await page.evaluate(() => performance.getEntriesByName('shadow:ready').length), 1);
+      assert.ok(await eventually(() => app.debug.some((t) => t.startsWith('[boot] '))));
+      assert.match(app.debug.find((t) => t.startsWith('[boot] ')), /^\[boot\] ready \d+ms \(boot \d+ms/);
+      assert.ok(await eventually(() => app.debug.some((t) => t.startsWith('[rpc] api_bootstrap '))));
+      assert.match(app.debug.find((t) => t.startsWith('[rpc] api_bootstrap ')), /^\[rpc\] api_bootstrap \d+ms$/);
+
+      // A failed call names its error code.
+      const code = await page.evaluate(() => window.api.call('api_getImportLog', {}).then(() => 'ok', (e) => e.code));
+      assert.equal(code, 'BUSY');
+      assert.ok(await eventually(() => app.debug.some((t) => /^\[rpc\] api_getImportLog \d+ms BUSY$/.test(t))),
+        app.debug.join('\n'));
+      // Every server call of the session has its line.
+      await app.waitIdle();
+      assert.ok(await eventually(async () => JSON.stringify(rpcNames()) === JSON.stringify(await callNames())),
+        JSON.stringify(rpcNames()) + ' vs ' + JSON.stringify(await callNames()));
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
   test('slow start: a note explains the wait after 8 s', async () => {
     await withApp({ delayMs: 20000, readySelector: '#splash', idle: false,
       beforeGoto: (page) => page.clock.install() }, async (app) => {

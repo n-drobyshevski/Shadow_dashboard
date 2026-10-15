@@ -208,6 +208,8 @@ with the system fallbacks above.
   page is `aria-busy`.
 - **Month change**: the page and the filters stay readable at 45 % opacity (not interactive) until
   the new month is in; no blank page between two months.
+- **Timings are invisible**: boot and server-call durations go to `console.debug` and the Apps Script
+  log only (docs/API.md §4 Perf), never to the interface. Judge loading changes on those numbers.
 
 ## Accessibility
 Contrast ≥ 4.5:1 for text (all tokens above pass on `--paper`), visible focus ring on everything

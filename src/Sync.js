@@ -121,6 +121,8 @@ var Sync = (function () {
    * Synchronises the current month. Errors are recorded in the state (lastError) and rethrown, so a
    * failed hourly run also triggers Google's failure e-mail to the owner. BUSY (a user operation held
    * the lock for 20 s) is not recorded: the next run retries.
+   * Logs {stage:'sync', ms, import, state, month, changed, ok:true} or {stage:'sync', ms, month, ok:false,
+   * code} (Perf).
    * @return {{status: Object, result: Object}}
    */
   function run() {
@@ -129,6 +131,7 @@ var Sync = (function () {
     }
     var month = currentMonth();
     var at = Config.nowStamp();
+    var t = Perf.start('sync', { month: month });
     var res;
     try {
       res = Importer.importMonth(month, true, { skipUnchanged: true });
@@ -137,15 +140,20 @@ var Sync = (function () {
         writeState_({ lastRunAt: at, lastError: { at: at, code: String(e.code || 'INTERNAL'),
           message: String((e && e.message) || e).split('\n')[0].slice(0, 300) } });
       }
+      t.end({ ok: false, code: String((e && e.code) || 'INTERNAL') });
       throw e;
     }
+    t.lap('import');
     var patch = { lastRunAt: at, lastOkAt: at, lastError: null, warnings: res.warnings || [] };
     if (res.changed) {
       patch.lastChangeAt = at;
       patch.lastChange = changeSummary_(res, at);
     }
     writeState_(patch);
-    return { status: status(), result: res };
+    var out = { status: status(), result: res };
+    t.lap('state');
+    t.end({ changed: res.changed, ok: true });
+    return out;
   }
 
   /** The hourly run: nothing to do without a source; errors are logged and rethrown (owner e-mail). */

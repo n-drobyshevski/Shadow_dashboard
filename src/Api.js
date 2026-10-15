@@ -21,7 +21,8 @@
  * checked first (Access.requireRole, FORBIDDEN otherwise) and the effective compliance threshold is
  * applied to Core for the duration of the call. Errors whose `.code` is one of Core.ERROR_CODES are
  * reported as-is (their messages are ours, in French); anything else becomes INTERNAL. The stack is
- * logged with console.error and never sent to the client.
+ * logged with console.error and never sent to the client. Every call ends with one timing line
+ * (Perf.log): {api, ms, authMs (Config + role check), ok, code (failures only)}.
  * @param {function(Object, Object): *} fn
  * @param {string=} name used in logs
  * @param {string=} minRole 'lecteur' (default) | 'admin'
@@ -29,21 +30,32 @@
  */
 function apiWrap_(fn, name, minRole) {
   return function (argsJson) {
+    var t0 = Date.now();
+    var authMs = null;
+    var ok = false;
+    var code = null;
     try {
       var cfg = Config.get();
       var user = Access.requireRole(minRole || 'lecteur', cfg.access);
+      authMs = Date.now() - t0;
       Core.setThreshold(cfg.threshold);
       var args = parseArgs_(argsJson);
       var data = fn(args, user);
-      return JSON.stringify({ ok: true, data: data === undefined ? null : data });
+      var reply = JSON.stringify({ ok: true, data: data === undefined ? null : data });
+      ok = true;
+      return reply;
     } catch (err) {
       var e = err || {};
       var known = Core.ERROR_CODES.indexOf(e.code) >= 0 && e.code !== 'INTERNAL';
-      var code = known ? e.code : 'INTERNAL';
+      code = known ? e.code : 'INTERNAL';
       var message = known ? String(e.message || code) : internalMessage_(e);
       if (code === 'FORBIDDEN') console.warn('[' + (name || 'api') + '] ' + code + ': ' + message);
       else console.error('[' + (name || 'api') + '] ' + code + ': ' + (e.stack || e.message || String(err)));
       return JSON.stringify({ ok: false, error: { code: code, message: message } });
+    } finally {
+      var line = { api: name || 'api', ms: Date.now() - t0, authMs: authMs, ok: ok };
+      if (code) line.code = code;
+      Perf.log(line);
     }
   };
 }

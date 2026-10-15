@@ -28,6 +28,7 @@ Classeur source (live)                Apps Script (src/*.js)              Naviga
 | `Store.js` | Seul module qui écrit dans le classeur de données (verrou, écriture en texte brut) |
 | `Config.js` | Propriétés du script, noms d'onglets, schémas |
 | `Core.js` | Logique pure partagée serveur/client (scores, KPI, filtres, diff) |
+| `Perf.js` | Lignes de mesure JSON (durées par appel et par étape) dans le journal des exécutions |
 
 **Client — `src/*.html`** : `index.html` (gabarit), `css*.html` (styles), `js_api.html` (promesses
 autour de `google.script.run`), `js_state.html` (état), `js_ui.html` et `js_controls.html`
@@ -203,6 +204,24 @@ WSL.
   en bas du menu de gauche passe en rouge avec le message, et Google envoie un e-mail d'échec au propriétaire
   du script. Les données affichées restent celles de la dernière synchronisation réussie.
 
+## Mesurer les temps de réponse
+
+Chaque appel serveur écrit une ligne JSON dans le journal des exécutions (Apps Script → Exécutions,
+ou Cloud Logging) : `{"api":"api_getMonthData","ms":812,"authMs":95,"ok":true}`, précédée des étapes
+(`{"stage":"ensure",…}` ouverture du classeur, `{"stage":"sheet","tab":"Postes","rows":7200,"ms":240}`
+lecture d'un onglet, `listMonths`, `importMonth`, `writeBack`, `sync`). Ces lignes ne contiennent que
+des durées, des nombres et des noms d'onglets ou de mois : jamais d'adresse e-mail ni de donnée. Le
+détail des formats est dans `docs/API.md` §4 (Perf).
+
+Côté navigateur, la console (niveau « Verbose » / « Commentaires », dans le cadre `userHtmlFrame`)
+affiche `[rpc] api_getMonthData 1350ms` pour chaque appel et `[boot] ready …` à la fin du démarrage ;
+l'écart avec le `ms` du serveur est le coût de `google.script.run` lui-même.
+
+Pour décider d'une optimisation : relever une ouverture à froid admin, une ouverture lecteur, un
+changement de mois, le Suivi temporel, une modification du mois en cours et une synchronisation
+horaire, puis comparer ouverture du classeur, lectures d'onglets et aller-retour. Les nombres d'appels
+Sheets de ces parcours sur un gros classeur sont fixés par `test/integration/perf.test.js`.
+
 ## À vérifier une fois sur de vrais Sheets
 
 Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement réel de Google Sheets.
@@ -218,6 +237,12 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
       une liste déroulante (validation des données) refuse une valeur hors liste.
 - [ ] Le déclencheur `syncHourly` apparaît dans l'éditeur (Déclencheurs) et s'exécute toutes les
       heures (Exécutions) ; une synchronisation sans changement n'ajoute rien au journal.
+- [ ] Mesures : dans Exécutions, un appel (par exemple l'ouverture de l'application) montre ses lignes
+      JSON (`ensure`, `listMonths`, `sheet`…, puis `{"api":…,"ms":…}`) en une ligne chacune, sans
+      adresse e-mail ; une synchronisation horaire montre `importMonth` et `sync`. La durée totale de
+      l'exécution reste du même ordre que le `ms` de la ligne `api` (le coût des lignes est négligeable).
+- [ ] Console du navigateur (niveau « Verbose », cadre `userHtmlFrame`) : une ligne `[rpc] <nom> <ms>ms`
+      par appel et `[boot] ready …` au démarrage, aucune erreur.
 
 ## Tests
 
@@ -226,6 +251,9 @@ npm test            # unitaires + intégration (Node, faux services Apps Script)
 npm run test:e2e    # Playwright (Chromium) sur le client rendu avec un google.script.run simulé
 npm run test:all    # les deux
 ```
+
+`PERF_OUT=/chemin/mesure.json node --test test/integration/perf.test.js` enregistre en plus les
+nombres d'appels mesurés (ouvertures, lectures, cellules lues, propriétés et cache) par parcours.
 
 `test:e2e` attend Playwright installé globalement (`npm i -g playwright`) et ses navigateurs dans
 `$PLAYWRIGHT_BROWSERS_PATH` (par défaut `/opt/pw-browsers`). Facultatif : `.artifacts/plotly.min.js`
@@ -262,7 +290,7 @@ polices ; sans eux, le harnais utilise des substituts.
 ## English summary
 
 Shadow IT Dashboard is a Google Apps Script web app (single HtmlService page) ported from a Streamlit
-app. Server code lives in `src/*.js` (`Api`, `Importer`, `Sync`, `Store`, `Config`, `Core`, `Code`); client
+app. Server code lives in `src/*.js` (`Api`, `Importer`, `Sync`, `Store`, `Config`, `Core`, `Perf`, `Code`); client
 code in `src/*.html`. A live source spreadsheet (`Suivi des postes`, `Suivi des applications`,
 `Référentiel`) is synchronised every hour (time-driven trigger `syncHourly`) into the current month of the
 app's own `ShadowIT_AppData` spreadsheet (tabs `Postes`, `Applications`, `Referentiel`, `Actions`,
@@ -294,5 +322,8 @@ deployer, set `"access": "MYSELF"` in `src/appsscript.json`.
 Updates: `DEPLOYMENT_ID=AKfy... npm run deploy` pushes and redeploys the same deployment, so the URL
 stays stable (without `DEPLOYMENT_ID` a new deployment and URL are created). If the data
 spreadsheet is really gone, delete the `DATA_SPREADSHEET_ID` script property. Verify once on real
-Sheets that values starting with `= + - @ '` round-trip unchanged. Tests: `npm test`,
-`npm run test:e2e`. Limits: 6-minute execution time, users of the deployer's Workspace domain only.
+Sheets that values starting with `= + - @ '` round-trip unchanged. Timing: every server call logs
+one-line JSON timings (`{api, ms, authMs, ok}` plus per-stage lines, see `docs/API.md` §4 Perf) to the
+Executions log, and the browser console logs `[rpc] <name> <ms>ms` at the Verbose level;
+`test/integration/perf.test.js` pins the Sheets call counts of the main flows on a large data
+spreadsheet. Tests: `npm test`, `npm run test:e2e`. Limits: 6-minute execution time, users of the deployer's Workspace domain only.

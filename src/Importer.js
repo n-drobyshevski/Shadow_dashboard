@@ -61,11 +61,13 @@ var Importer = (function () {
     return { raw: range.getValues(), display: range.getDisplayValues() };
   }
 
-  /** Records of an entity tab, or null when the tab does not exist. */
+  /** Records of an entity tab, or null when the tab does not exist. Logs {stage:'sourceSheet', tab, rows, ms}. */
   function readEntityTab_(ss, tabName, keyField, fmtDate) {
     var sheet = findTab(ss, tabName);
     if (!sheet) return null;
+    var t0 = Date.now();
     var grid = readGrid_(sheet);
+    Perf.log({ stage: 'sourceSheet', tab: tabName, rows: grid.raw.length, ms: Date.now() - t0 });
     return Core.rowsToRecords({
       display: grid.display,
       raw: grid.raw,
@@ -230,6 +232,9 @@ var Importer = (function () {
    *     import as complete.
    * With opts.skipUnchanged, an overwrite that would change nothing (records, headers, référentiel)
    * writes nothing at all, not even the ImportLog entry: `changed` is then false.
+   * Logs {stage:'importMonth', ms, lockWait, dataReads, readSource, compare, writes, flush, month,
+   * changed} (Perf) when it completes; `writes` is absent when nothing was written. A failure is
+   * reported by the caller's line (sync / api, ok:false).
    * @return {{month, counts:{postes, applications, referentiel}, overwritten:boolean, carriedOver:number,
    *           warnings:string[], changed:boolean, changes:{created:boolean, postes, applications, referentiel:boolean}}}
    */
@@ -240,14 +245,18 @@ var Importer = (function () {
     }
     if (!Config.get().sourceId) throw notConfigured_(); // fail fast, before waiting for the lock
 
-    return Store.withLock(function () {
+    var t = Perf.start('importMonth', { month: month });
+    var res = Store.withLock(function () {
+      t.lap('lockWait');
       var months = Store.listMonths();
       var exists = months.indexOf(month) >= 0;
       if (exists && !overwrite) {
         throw Core.makeError('MONTH_EXISTS', 'Le mois ' + month + ' a déjà été importé.');
       }
+      t.lap('dataReads');
 
       var src = readSource();
+      t.lap('readSource');
       var prevInfo = exists ? Store.latestImportInfo(month) : null;
       var warnings = [];
       if (!src.postes) {
@@ -299,6 +308,7 @@ var Importer = (function () {
       var referentiel = src.referentiel || null; // null = keep the stored one
       var storedRef = exists ? Store.readReferentiel(month) : null;
       var refCount = referentiel ? countCategories_(referentiel) : (exists ? countCategories_(storedRef) : 0);
+      t.lap('dataReads');
 
       // ---- what changes (an hourly sync that changes nothing writes nothing)
       var postesHeaders = src.postes ? src.postes.headers : ((prevInfo && prevInfo.postes_headers) || []);
@@ -320,6 +330,7 @@ var Importer = (function () {
       };
       var result = { month: month, counts: counts, overwritten: exists, carriedOver: carried, warnings: warnings,
         changed: changed, changes: changes };
+      t.lap('compare');
       if (!changed && o.skipUnchanged) return result;
 
       // ---- writes (Applications first, ImportLog last = completion marker)
@@ -337,8 +348,12 @@ var Importer = (function () {
         warnings: warnings,
         changes: changes
       });
+      t.lap('writes');
       return result;
     });
+    t.lap('flush');
+    t.end({ changed: res.changed });
+    return res;
   }
 
   // ------------------------------------------------------------------------------- write-back
@@ -346,13 +361,14 @@ var Importer = (function () {
   /**
    * The source tab of an entity, located for writing: {sheet, parsed (Core.rowsToRecords result),
    * formulas (grid of the data range), find(name) -> record index or -1}. SOURCE_ERROR when the tab or
-   * its header row is missing.
+   * its header row is missing. `timer` (Perf.start) gets the sourceOpen and sourceRead laps.
    */
-  function sourceTable_(entity) {
+  function sourceTable_(entity, timer) {
     var keyField = entity === 'postes' ? Core.KEY_POSTE : Core.KEY_APP;
     var tabName = Core.SOURCE_TABS[entity];
     var ss = openSource();
     var sheet = findTab(ss, tabName);
+    timer.lap('sourceOpen');
     if (!sheet) {
       throw Core.makeError('SOURCE_ERROR', 'Onglet « ' + tabName + ' » introuvable dans le Google Sheet source : ' +
         'modification non enregistrée.');
@@ -361,6 +377,7 @@ var Importer = (function () {
     var display = range.getDisplayValues();
     var parsed = Core.rowsToRecords({ display: display, anchors: [keyField], keyField: keyField });
     var formulas = range.getFormulas();
+    timer.lap('sourceRead');
     return {
       sheet: sheet,
       display: display,
@@ -393,11 +410,14 @@ var Importer = (function () {
    * edits = [{name, fields:{header: value}}] (name = the record's key in the snapshot). Fields that
    * have no column in the source (Galink / IDP when the source has none) are skipped: they live in
    * the snapshot only. Every edit is checked first (row found, no formula in the cell), then written.
+   * Like appendRecord / deleteRecord, logs {stage:'writeBack', ms, sourceOpen, sourceRead, cellWrites,
+   * op, entity} (Perf) when it completes; a refused write is reported by the caller's api line.
    * @return {number} cells written
    */
   function writeEdits(entity, edits) {
     if (!edits || !edits.length) return 0;
-    var t = sourceTable_(entity);
+    var timer = Perf.start('writeBack', { op: 'edit', entity: entity });
+    var t = sourceTable_(entity, timer);
     var cells = [];
     edits.forEach(function (e) {
       var i = t.find(e.name);
@@ -415,6 +435,8 @@ var Importer = (function () {
       });
     });
     cells.forEach(function (cell) { setCell_(t, cell); });
+    timer.lap('cellWrites');
+    timer.end();
     return cells.length;
   }
 
@@ -435,7 +457,8 @@ var Importer = (function () {
    * the last record's row: the formula is copied down (relative references follow, as with a fill).
    */
   function appendRecord(entity, rec) {
-    var t = sourceTable_(entity);
+    var timer = Perf.start('writeBack', { op: 'append', entity: entity });
+    var t = sourceTable_(entity, timer);
     if (t.find(rec[t.keyField]) >= 0) {
       throw Core.makeError('VALIDATION', '« ' + rec[t.keyField] + ' » existe déjà dans l’onglet « ' + t.tabName +
         ' » du Google Sheet source.');
@@ -454,19 +477,24 @@ var Importer = (function () {
     if (below && below.some(function (v) { return String(v) !== ''; })) t.sheet.insertRowsAfter(at - 1, 1);
     else if (at > t.sheet.getMaxRows()) t.sheet.insertRowsAfter(t.sheet.getMaxRows(), at - t.sheet.getMaxRows());
     t.sheet.getRange(at, 1, 1, width).setValues([row]);
-    if (lastIdx < 0) return;
-    (t.formulas[lastIdx] || []).forEach(function (f, c) {
-      if (f && c < width && row[c] === '') t.sheet.getRange(lastIdx + 1, c + 1).copyTo(t.sheet.getRange(at, c + 1));
-    });
+    if (lastIdx >= 0) {
+      (t.formulas[lastIdx] || []).forEach(function (f, c) {
+        if (f && c < width && row[c] === '') t.sheet.getRange(lastIdx + 1, c + 1).copyTo(t.sheet.getRange(at, c + 1));
+      });
+    }
+    timer.lap('cellWrites');
+    timer.end();
   }
 
   /** Deletes the source row of `name`; false when the source has no such row (nothing to delete). */
   function deleteRecord(entity, name) {
-    var t = sourceTable_(entity);
+    var timer = Perf.start('writeBack', { op: 'delete', entity: entity });
+    var t = sourceTable_(entity, timer);
     var i = t.find(name);
-    if (i < 0) return false;
-    t.sheet.deleteRow(t.parsed.rows[i] + 1);
-    return true;
+    if (i >= 0) t.sheet.deleteRow(t.parsed.rows[i] + 1);
+    timer.lap('cellWrites');
+    timer.end();
+    return i >= 0;
   }
 
   return {

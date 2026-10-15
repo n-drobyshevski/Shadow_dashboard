@@ -35,6 +35,7 @@ identifiers and comments are **English**.
 | `src/Store.js` | `var Store` | Data spreadsheet repository. Only module that writes to the data spreadsheet. |
 | `src/Importer.js` | `var Importer` | Reads the live source spreadsheet, snapshots a month, writes the current month's edits back into the source. |
 | `src/Sync.js` | `var Sync` | Hourly synchronisation of the current month (trigger, status). Only module that uses `ScriptApp`. |
+| `src/Perf.js` | `var Perf` | One-line JSON timing logs (`console.log`), see §4 Perf. |
 | `src/Api.js` | global `api_*` functions + `apiWrap_` | `google.script.run` entry points. |
 | `src/Code.js` | `doGet`, `include`, `coreScript`, `setup` | Web app entry + template helpers. |
 | `src/index.html` | template | Shell; includes css + scripts. |
@@ -135,7 +136,8 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
   (`Access.requireRole(minRole)`: `FORBIDDEN` when the identity is not passed, the account has no access,
   or a lecteur calls an admin endpoint) and applies the effective threshold (`Core.setThreshold`), then
   catches errors: `err.code` in `Core.ERROR_CODES` → that code, else `INTERNAL`; message in French when
-  produced by us; `console.error` the stack.
+  produced by us; `console.error` the stack. Every call ends with one timing line
+  `{api, ms, authMs, ok, code?}` (§4 Perf).
 - Roles: **lecteur** endpoints = `api_bootstrap`, `api_savePrefs`, `api_getMonthData`, `api_getSyncStatus`,
   `api_getImportLog`, `api_getTimeline`, `api_getActions`, `api_getDiff`. Every other endpoint is **admin** only.
 - **Current month = live.** The month of today (Europe/Paris) follows the source spreadsheet: the hourly sync
@@ -384,6 +386,32 @@ Sync.runFromTrigger() -> run() when a source is configured; rethrows failures (G
 syncHourly()          -> (Code.js) the trigger handler: Sync.runFromTrigger()
 ```
 
+### Perf (`src/Perf.js`)
+Timing lines for the Apps Script Executions log / Cloud Logging: one `console.log(JSON.stringify(obj))`
+each, carrying durations (ms, integers), counts, tab / API / stage names and month keys only (never an
+e-mail address, an id or record contents). Stage lines are emitted when the stage completes; a failure
+shows in the `{api, ok:false, code}` line (or the `sync` line for the hourly trigger).
+```
+Perf.log(obj)                    -> emits one line; never throws
+Perf.start(stage, fields?)       -> timer {lap(name), end(extra?)}: lap adds the time since the previous
+                                    lap to `name` (accumulates); end emits {stage, ms, <laps>, <fields>, <extra>} once
+```
+| Line | Emitted by |
+|---|---|
+| `{api, ms, authMs, ok, code?}` | `apiWrap_`, every `api_*` call (`authMs` = `Config.get` + role check, `null` when refused) |
+| `{stage:'ensure', ms, open, ensureTabs, created}` | `Store.ensure`, first successful call of an execution |
+| `{stage:'sheet', tab, rows, ms}` | every full read of a data tab (`Store` `readTable_`) |
+| `{stage:'listMonths', ms, ImportLog, Postes, Applications, rows, months}` | `Store.listMonths` (one lap per tab) |
+| `{stage:'sourceSheet', tab, rows, ms}` | `Importer.readSource`, per entity tab |
+| `{stage:'importMonth', ms, lockWait, dataReads, readSource, compare, writes?, flush, month, changed}` | `Importer.importMonth` when it completes (`writes` absent when nothing was written) |
+| `{stage:'writeBack', ms, sourceOpen, sourceRead, cellWrites, op, entity}` | `Importer.writeEdits` (`op:'edit'`), `appendRecord` (`'append'`), `deleteRecord` (`'delete'`), when they complete |
+| `{stage:'sync', ms, import, state, month, changed, ok:true}` / `{stage:'sync', ms, month, ok:false, code}` | `Sync.run` (hourly trigger and `api_syncNow` / `api_enableSync`) |
+
+Client side, `api.call` logs `[rpc] <name> <ms>ms` (plus the error code on failure) and `App.boot` logs
+`[boot] ready <ms>ms (boot <ms>ms, first paint <ms>ms)` with `console.debug` (shown at the browser
+console's « Verbose » level); the difference between `[rpc]` and the server's `{api, ms}` is the
+`google.script.run` overhead and queueing.
+
 ### Code (`src/Code.js`)
 ```
 doGet(e)        -> HtmlService.createTemplateFromFile('index').evaluate()
@@ -423,6 +451,7 @@ api.call(name, args?) -> Promise<data>
    google.script.run.withSuccessHandler(s => parse envelope).withFailureHandler(e => reject)[name](JSON.stringify(args ?? null))
    ok:false  -> reject(err) where err = new Error(message), err.code = code
    transport failure -> err.code = 'TRANSPORT'
+   every call   -> console.debug('[rpc] <name> <ms>ms[ <code>]') when it settles
 ```
 
 ### `window.State` (`js_state.html`)
@@ -551,6 +580,8 @@ App.boot()            -> called on DOMContentLoaded, behind the #splash (static 
                          shows the error + « Réessayer » on the splash; FORBIDDEN → « Accès refusé ».
                          If !configured: configuration screen (paste source sheet URL -> App.applySource:
                          api_setConfig, then a first App.syncNow()).
+                         Performance marks 'shadow:boot' (start) and 'shadow:ready' (rendered), then
+                         console.debug('[boot] ready …') (§4 Perf).
 App.syncNow(button?, {enable?}) -> Promise<{status, result}|null>: api_syncNow (api_enableSync with enable);
                          toast « Synchronisé — <changes> » / « Synchronisé — aucune modification. »; after a
                          change: State.invalidate() + State.refreshBootstrap() + re-mount. Errors: toast, then
@@ -667,9 +698,14 @@ compares the first and last months by default.
 - `test/fixtures/source.js` — `buildSourceSpreadsheet(month)` → fake live spreadsheet definition (banner row,
   header row, Date cells, `0.304` raw vs `'30,4%'` display, empty/ghost rows) built from `data.js`.
 - `test/helpers/gasFakes.js` — in-memory `SpreadsheetApp`, `PropertiesService`, `LockService`,
-  `Utilities`, `HtmlService`, `Logger`.
+  `Utilities`, `HtmlService`, `Logger`; counters in `env.__state.calls` (Sheets, Properties and Cache calls)
+  and `env.__state.cells` (cells read per read method).
 - `test/helpers/gasSandbox.js` — `loadGas({sources})` → `vm` context with fakes + every `src/*.js`
-  loaded in alphabetical order (proves load-order independence).
+  loaded in alphabetical order (proves load-order independence); `loadGas({env})` = a new execution over
+  the same spreadsheets; `timingLines(env)` = the Perf lines captured by the fake console.
+- `test/integration/perf.test.js` — call counts (openById, reads, cells read, Properties / Cache reads)
+  of the main flows on a large generated data spreadsheet, bounded by today's numbers (`BASELINE`);
+  `PERF_OUT=<file>` writes the measurement as JSON.
 - `test/helpers/render.js` — renders `src/index.html` (scriptlets `include`/`coreScript`) to static
   HTML; optional injection of `test/fixtures/mockRun.js` + data for the browser.
 - `test/fixtures/mockRun.js` — browser `google.script.run` mock implementing every `api_*` from §3

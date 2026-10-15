@@ -29,7 +29,10 @@
  * Instrumentation lives in env.__state:
  *   spreadsheets (Map id -> Spreadsheet), formulas [{spreadsheetId, sheet, a1, formula}],
  *   writes [{sheet, a1, rows, cols, plainText}], calls {methodName: count}, flushes,
+ *   cells {getValues|getValue|getDisplayValues|getFormulas: cells read},
  *   lock {acquired, released, timeouts, held}, logs [], console [], lockTimeout (mutable).
+ * calls also counts the Properties reads / writes (getProperty, getProperties, getKeys, setProperty,
+ * setProperties, deleteProperty) and the CacheService ones (cacheGet, cachePut, cacheRemove).
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -132,6 +135,7 @@ function createGasEnv(options) {
     formulas: [],
     writes: [],
     calls: {},
+    cells: {},
     flushes: 0,
     lock: { acquired: 0, released: 0, timeouts: 0, held: false },
     faults: [],
@@ -143,6 +147,7 @@ function createGasEnv(options) {
     evalContext: null,   // set by gasSandbox so template scriptlets evaluate in the GAS globals
   };
   const count = (name) => { state.calls[name] = (state.calls[name] || 0) + 1; };
+  const countCells = (name, n) => { state.cells[name] = (state.cells[name] || 0) + n; };
 
   /** Throws when an injected fault matches this call (see "Fault injection" above). */
   function maybeFail(method, info) {
@@ -349,12 +354,14 @@ function createGasEnv(options) {
 
     getValues() {
       count('getValues');
+      countCells('getValues', this._nr * this._nc);
       return this._each((r, c) => copyCell(this._sheet._value(r, c)));
     }
-    getValue() { count('getValue'); return copyCell(this._sheet._value(this._row - 1, this._col - 1)); }
+    getValue() { count('getValue'); countCells('getValue', 1); return copyCell(this._sheet._value(this._row - 1, this._col - 1)); }
 
     getDisplayValues() {
       count('getDisplayValues');
+      countCells('getDisplayValues', this._nr * this._nc);
       const tz = this._sheet._ss.getSpreadsheetTimeZone() || 'Europe/Paris';
       return this._each((r, c) => {
         const d = this._sheet._get(this._sheet._disp, r, c);
@@ -390,6 +397,7 @@ function createGasEnv(options) {
     /** Formulas: a value that is a string starting with '=' (fixtures store formulas that way). */
     getFormulas() {
       count('getFormulas');
+      countCells('getFormulas', this._nr * this._nc);
       return this._each((r, c) => { const v = this._sheet._value(r, c); return typeof v === 'string' && v.charAt(0) === '=' ? v : ''; });
     }
     getFormula() { return this.getFormulas()[0][0]; }
@@ -530,17 +538,18 @@ function createGasEnv(options) {
 
   function makePropertyStore(store) {
     const api = {
-      getProperty(key) { return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null; },
-      setProperty(key, value) { store[key] = String(value); return api; },
+      getProperty(key) { count('getProperty'); return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null; },
+      setProperty(key, value) { count('setProperty'); store[key] = String(value); return api; },
       setProperties(props, deleteAllOthers) {
+        count('setProperties');
         if (deleteAllOthers) for (const k of Object.keys(store)) delete store[k];
         for (const [k, v] of Object.entries(props || {})) store[k] = String(v);
         return api;
       },
-      deleteProperty(key) { delete store[key]; return api; },
+      deleteProperty(key) { count('deleteProperty'); delete store[key]; return api; },
       deleteAllProperties() { for (const k of Object.keys(store)) delete store[k]; return api; },
-      getProperties() { return Object.assign({}, store); },
-      getKeys() { return Object.keys(store); },
+      getProperties() { count('getProperties'); return Object.assign({}, store); },
+      getKeys() { count('getKeys'); return Object.keys(store); },
     };
     return api;
   }
@@ -623,9 +632,9 @@ function createGasEnv(options) {
   // ------------------------------------------------------------------------------ CacheService
   state.cache = new Map();
   const scriptCache = {
-    get(k) { return state.cache.has(k) ? state.cache.get(k) : null; },
-    put(k, v) { state.cache.set(k, String(v)); },
-    remove(k) { state.cache.delete(k); },
+    get(k) { count('cacheGet'); return state.cache.has(k) ? state.cache.get(k) : null; },
+    put(k, v) { count('cachePut'); state.cache.set(k, String(v)); },
+    remove(k) { count('cacheRemove'); state.cache.delete(k); },
   };
   const CacheService = { getScriptCache() { return scriptCache; } };
 
