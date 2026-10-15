@@ -58,13 +58,16 @@ Load the fonts from Google Fonts in `index.html`
 with the system fallbacks above.
 
 ## Components
-- **Sidebar**: `--paper-2`, full viewport height (sticky), 1px right rule. Wordmark "Shadow IT" in
-  mono 500 with a small "Industry · conformité" subtitle. Nav = text links led by a 16px « Trait »
+- **Logo**: the ghost (the Streamlit app's 👻, redrawn): inline SVG on a 24px grid, 1.75px ink
+  outline with round joins, rounded dome, wavy hem, two filled round eyes. Never an emoji. 28px in the
+  sidebar and the rail, 22px in the mobile top bar; decorative (`aria-hidden`), the wordmark names the app.
+- **Sidebar**: `--paper-2`, full viewport height (sticky), 1px right rule. Ghost logo, then the wordmark
+  "Shadow IT" in mono 500 with a small "Industry · conformité" subtitle. Nav = text links led by a 16px « Trait »
   line icon (1.5px stroke, square caps, mitred joins, `currentColor`; `--ink-3` at rest, `--ink` on
   hover / active), with a 2px ink bar on the left of the active item; numbers on the right showing
   counts are allowed (e.g. postes 7). Footer: text links to the data sheet and the source sheet, the
   signed-in account, then « Réduire le menu ».
-- **Collapsed rail** (> 900px, remembered per browser): 56px wide, wordmark shortened to « SI », icons
+- **Collapsed rail** (> 900px, remembered per browser): 56px wide, the ghost alone (no wordmark), icons
   only (labels kept for screen readers), the page name in an ink tooltip to the right of the icon,
   footer links hidden. The active page keeps its 2px ink bar.
 - **App bar**: sticky 48px bar on paper above every page, 1px `--rule` below. Small-caps « PÉRIODE »

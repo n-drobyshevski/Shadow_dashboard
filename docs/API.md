@@ -460,7 +460,7 @@ App.refresh()         -> re-mount current page
 App.boot()            -> called on DOMContentLoaded: State.refreshBootstrap(); if !configured show the
                          configuration screen (paste source sheet URL -> api_setConfig); render sidebar.
 ```
-Sidebar: app title `Shadow IT`, nav links (one line icon + label each), footer links "Données (Google
+Sidebar: ghost logo (inline SVG, `svg.brand-logo`) + app title `Shadow IT`, nav links (one line icon + label each), footer links "Données (Google
 Sheet)" → `dataUrl`, "Source" → `sourceUrl` (target `_blank`, admins only), then the signed-in account
 (`#side-user`: email + role) and `#nav-collapse` (« Réduire le menu »: 56px icon rail, state in
 `localStorage['shadowit.sidebar']`, wide screens only). The source is changed in Paramètres

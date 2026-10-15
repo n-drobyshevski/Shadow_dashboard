@@ -187,11 +187,14 @@ html { scroll-padding-top: var(--sticky-top); }
 .boot-loading { display: flex; align-items: center; gap: var(--s2); color: var(--ink-2); }
 
 /* brand: the mono space is a full cell wide, so the wordmark tightens it (no double-space look) */
-.brand { display: flex; flex-direction: column; gap: 2px; padding: 0 var(--s2); }
+.brand { display: flex; align-items: center; gap: 10px; padding: 0 var(--s2); }
+.brand-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .brand-name { font-family: var(--font-mono); font-weight: 500; font-size: 16px; letter-spacing: -.01em; word-spacing: -.3em; color: var(--ink); }
 .brand-sub { font-size: 12px; color: var(--ink-3); }
-.brand-short { display: none; font-family: var(--font-mono); font-weight: 500; font-size: 16px; color: var(--ink); }
-.brand-logo { display: none; }
+/* the ghost: 1.75px ink outline, round joins, filled eyes (sidebar 28px, rail 28px, top bar 22px) */
+.brand-logo { display: block; flex: 0 0 auto; width: 28px; height: 28px; color: var(--ink); fill: none; stroke: currentColor;
+  stroke-width: 1.75; stroke-linejoin: round; stroke-linecap: round; }
+.brand-logo .icon-fill { fill: currentColor; stroke: none; }
 
 /* nav: plain text links, 2px ink bar on the active item; focus ring inset (the sidebar clips overflow) */
 .nav-list { list-style: none; margin: 0 calc(-1 * var(--s4)); padding: 0; display: flex; flex-direction: column; }
@@ -254,9 +257,8 @@ body.unconfigured { --sticky-top: 0px; }
   body.nav-collapsed { --sidebar-w: var(--rail-w); }
   body.nav-collapsed .sidebar { overflow-x: hidden; }
   body.nav-collapsed .sidebar-inner { padding-left: var(--s2); padding-right: var(--s2); }
-  body.nav-collapsed .brand { padding: 0; align-items: center; }
-  body.nav-collapsed .brand-name, body.nav-collapsed .brand-sub { display: none; }
-  body.nav-collapsed .brand-short { display: block; }
+  body.nav-collapsed .brand { padding: 0; justify-content: center; }
+  body.nav-collapsed .brand-text { display: none; }
   body.nav-collapsed .nav-list { margin: 0 calc(-1 * var(--s2)); }
   body.nav-collapsed .nav-link { justify-content: center; padding: 8px 0; }
   body.nav-collapsed .nav-label {
@@ -868,7 +870,8 @@ body.unconfigured .toast-root { left: var(--s4); }
     position: sticky; top: 0; z-index: 30; height: 48px;
     padding: 0 var(--s4); background: var(--paper-2); border-bottom: 1px solid var(--rule);
   }
-  .topbar-brand { font-family: var(--font-mono); font-weight: 500; font-size: 16px; word-spacing: -.3em; }
+  .topbar-brand { display: inline-flex; align-items: center; gap: var(--s2); font-family: var(--font-mono); font-weight: 500; font-size: 16px; word-spacing: -.3em; }
+  .topbar-brand .brand-logo { width: 22px; height: 22px; }
   /* = .btn.btn-secondary (md) */
   .topbar-toggle {
     min-height: var(--control-h); padding: 0 var(--s3); border: 1px solid var(--rule-2); background: var(--paper);

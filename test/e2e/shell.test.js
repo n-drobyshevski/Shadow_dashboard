@@ -36,6 +36,9 @@ describe('shell', () => {
       PAGES.forEach((p, i) => assert.ok(nav[i].text.includes(p.title), nav[i].text));
       assert.equal(await page.textContent('#sidebar .brand .brand-name'), 'Shadow IT');
       assert.equal(await page.textContent('#sidebar .brand .brand-sub'), 'Industry · conformité');
+      // The ghost logo (inline SVG, decorative: the wordmark names the app) leads the wordmark.
+      assert.equal(await page.getAttribute('#sidebar .brand svg.brand-logo', 'aria-hidden'), 'true');
+      assert.equal(await page.$$eval('#sidebar .brand svg.brand-logo circle', (ns) => ns.length), 2);
       // Text-only navigation: no emoji anywhere in the shell chrome.
       const chrome = await page.textContent('#sidebar') + await page.textContent('.topbar');
       assert.doesNotMatch(chrome, /\p{Extended_Pictographic}/u);
@@ -234,6 +237,9 @@ describe('shell', () => {
 
       await page.click('#nav-collapse');
       await page.waitForFunction(() => Math.round(document.getElementById('sidebar').getBoundingClientRect().width) === 56);
+      // The rail keeps only the ghost, centred.
+      assert.equal(await page.isVisible('#sidebar .brand-name'), false);
+      assert.ok(await page.isVisible('#sidebar .brand-logo'));
       assert.equal(await page.evaluate(() => document.body.classList.contains('nav-collapsed')), true);
       assert.equal(await page.getAttribute('#nav-collapse', 'aria-expanded'), 'false');
       const labelW = await page.$eval('#sidebar .nav-label', (n) => n.getBoundingClientRect().width);
@@ -265,6 +271,7 @@ describe('shell', () => {
     await withApp({ viewport: { width: 700, height: 900 } }, async (app) => {
       const { page } = app;
       assert.ok(await page.isVisible('#nav-toggle'));
+      assert.ok(await page.isVisible('.topbar-brand .brand-logo'), 'ghost in the top bar');
       assert.ok(!(await page.isVisible('#sidebar')));
       await page.click('#nav-toggle');
       assert.equal(await page.getAttribute('#nav-toggle', 'aria-expanded'), 'true');

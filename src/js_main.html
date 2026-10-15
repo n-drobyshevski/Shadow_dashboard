@@ -43,6 +43,12 @@
     expand: [['rect', { x: 2, y: 2.5, width: 12, height: 11 }], ['path', { d: 'M6 2.5v11' }], ['path', { d: 'M9 6l2 2-2 2' }]]
   };
   var ROLE_LABELS = { admin: 'Administrateur', lecteur: 'Lecteur' };
+  /** Ghost logo, 24×24 grid (same drawing as the inline copy in the mobile top bar, index.html). */
+  var LOGO = [
+    ['path', { d: 'M5 19.5V11a7 7 0 0 1 14 0v8.5c-1.17 1.6-2.33 1.6-3.5 0s-2.33-1.6-3.5 0-2.33 1.6-3.5 0-2.33-1.6-3.5 0z' }],
+    ['circle', { cx: 9.75, cy: 11, r: 1.25, fill: true }],
+    ['circle', { cx: 14.25, cy: 11, r: 1.25, fill: true }]
+  ];
   var BRAND = 'Shadow IT';
   var BRAND_SUB = 'Industry · conformité';
   var COLLAPSE_KEY = 'shadowit.sidebar';
@@ -135,17 +141,17 @@
   }
 
   /** Collapsed rail (wide screens only): remembered per browser, never required to work. */
-  /** Inline SVG icon (aria-hidden: the label next to it, or the rail tooltip + sr-only label, names it). */
-  function icon(name) {
+  /** Inline SVG from [tag, attributes] parts (aria-hidden: a visible or sr-only label names it). */
+  function svgFrom(parts, cls, box, size) {
     var NS = 'http://www.w3.org/2000/svg';
     var svg = document.createElementNS(NS, 'svg');
-    svg.setAttribute('class', 'icon icon-' + name);
-    svg.setAttribute('viewBox', '0 0 16 16');
-    svg.setAttribute('width', '16');
-    svg.setAttribute('height', '16');
+    svg.setAttribute('class', cls);
+    svg.setAttribute('viewBox', '0 0 ' + box + ' ' + box);
+    svg.setAttribute('width', String(size));
+    svg.setAttribute('height', String(size));
     svg.setAttribute('aria-hidden', 'true');
     svg.setAttribute('focusable', 'false');
-    (ICONS[name] || []).forEach(function (part) {
+    parts.forEach(function (part) {
       var node = document.createElementNS(NS, part[0]);
       Object.keys(part[1]).forEach(function (k) {
         if (k === 'fill') node.setAttribute('class', 'icon-fill');
@@ -155,6 +161,11 @@
     });
     return svg;
   }
+
+  function icon(name) { return svgFrom(ICONS[name] || [], 'icon icon-' + name, 16, 16); }
+
+  /** The ghost (« Doux »: rounded dome, wavy hem, round eyes) — brought back from the Streamlit 👻. */
+  function logo() { return svgFrom(LOGO, 'brand-logo', 24, 28); }
 
   function readCollapsed() {
     try { return window.localStorage.getItem(COLLAPSE_KEY) === 'collapsed'; } catch (e) { return false; }
@@ -210,9 +221,10 @@
 
   function brand() {
     return el('div', { class: 'brand' },
-      el('span', { class: 'brand-name' }, BRAND),
-      el('span', { class: 'brand-short', 'aria-hidden': 'true' }, 'SI'),
-      el('span', { class: 'brand-sub' }, BRAND_SUB));
+      logo(),
+      el('div', { class: 'brand-text' },
+        el('span', { class: 'brand-name' }, BRAND),
+        el('span', { class: 'brand-sub' }, BRAND_SUB)));
   }
 
   /**
