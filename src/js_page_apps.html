@@ -152,7 +152,7 @@
     return d.getFullYear() + '-' + (d.getMonth() < 9 ? '0' : '') + (d.getMonth() + 1) + '-' + (d.getDate() < 10 ? '0' : '') + d.getDate();
   }
 
-  var STATUS_TONES = { 'À faire': 'warn', 'En cours': 'info', 'Terminé': 'ok', 'Abandonné': 'neutral' };
+  var STATUS_TONES = { 'À faire': 'neutral', 'En cours': 'warn', 'Terminé': 'ok', 'Abandonné': 'muted' };
 
   function actionItem(a) {
     var open = a.status !== 'Terminé' && a.status !== 'Abandonné';
@@ -433,7 +433,7 @@
       var ko = all.length - ok;
       UI.clear(stats).appendChild(el('span', { class: 'stat' }, plural(all.length, 'application', 'applications')));
       stats.appendChild(el('span', { class: 'stat' }, UI.statusMark(plural(ok, 'conforme', 'conformes'), 'ok'),
-        all.length ? el('span', { class: 'mono' }, ' ' + UI.fmtPct(ok / all.length * 100)) : null));
+        all.length ? el('span', { class: 'mono' }, ' ', UI.fmtPctNode(ok / all.length * 100)) : null));
       stats.appendChild(el('span', { class: 'stat' }, UI.statusMark(plural(ko, 'non conforme', 'non conformes'), ko ? 'ko' : 'neutral')));
       migrationSummary(migration, all);
     }
@@ -445,7 +445,9 @@
             onClick: function () { openDrawer(row._id, month); } }, Core.str(row[c]) || '(sans nom)');
         } };
       }
-      return { key: c, label: c, editable: true, mono: !!MONO_COLUMNS[c], options: Core.optionsForColumn(c, md.referentiel) };
+      // Read view: Statut / Niveau de risque as status marks, « Non » criteria in --ko (the editor is unchanged).
+      return { key: c, label: c, editable: true, mono: !!MONO_COLUMNS[c], options: Core.optionsForColumn(c, md.referentiel),
+        render: function (row) { return UI.cellMark(c, row[c]) || Core.str(row[c]); } };
     });
     // Computed columns right after the key column; computed from the displayed row so that they
     // follow unsaved edits (e.g. Galink Non -> Oui shows +20 immediately).

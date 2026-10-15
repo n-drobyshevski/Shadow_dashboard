@@ -136,7 +136,7 @@
     return d.getFullYear() + '-' + (d.getMonth() < 9 ? '0' : '') + (d.getMonth() + 1) + '-' + (d.getDate() < 10 ? '0' : '') + d.getDate();
   }
 
-  var STATUS_TONES = { 'À faire': 'warn', 'En cours': 'info', 'Terminé': 'ok', 'Abandonné': 'neutral' };
+  var STATUS_TONES = { 'À faire': 'neutral', 'En cours': 'warn', 'Terminé': 'ok', 'Abandonné': 'muted' };
 
   function actionItem(a) {
     var open = a.status !== 'Terminé' && a.status !== 'Abandonné';
@@ -295,7 +295,7 @@
       var unknown = all.filter(function (r) { return r._score === null || r._score === undefined; }).length;
       UI.clear(stats).appendChild(el('span', { class: 'stat' }, plural(all.length, 'poste', 'postes')));
       stats.appendChild(el('span', { class: 'stat' }, UI.statusMark(plural(ok, 'conforme', 'conformes'), 'ok'),
-        all.length ? el('span', { class: 'mono' }, ' ' + UI.fmtPct(ok / all.length * 100)) : null));
+        all.length ? el('span', { class: 'mono' }, ' ', UI.fmtPctNode(ok / all.length * 100)) : null));
       stats.appendChild(el('span', { class: 'stat' }, UI.statusMark(plural(ko, 'non conforme', 'non conformes'), ko ? 'ko' : 'neutral')));
       if (unknown) stats.appendChild(el('span', { class: 'stat faint' }, plural(unknown, 'sans score', 'sans score')));
     }
@@ -307,7 +307,9 @@
             onClick: function () { openDrawer(row._id, month); } }, Core.str(row[c]) || '(sans nom)');
         } };
       }
-      return { key: c, label: c, editable: true, mono: !!MONO_COLUMNS[c], options: Core.optionsForColumn(c, md.referentiel) };
+      // Read view: Statut / Niveau de risque as status marks, « Non » criteria in --ko (the editor is unchanged).
+      return { key: c, label: c, editable: true, mono: !!MONO_COLUMNS[c], options: Core.optionsForColumn(c, md.referentiel),
+        render: function (row) { return UI.cellMark(c, row[c]) || Core.str(row[c]); } };
     });
     // Computed columns right after the key column (they are what the user scans first).
     columns.splice(1, 0, {

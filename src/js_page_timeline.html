@@ -139,8 +139,18 @@
         ' conforme' + (k.apps_conformes > 1 ? 's' : '') + ' sur ', el('span', { class: 'num' }, UI.fmtNum(k.total_apps))];
   }
 
+  /** One-line key of the counts chart: swatches drawn like the bars (outline = inventoriés, solid = conformes). */
+  function countsKey() {
+    function item(cls, label) {
+      return el('span', { class: 'tl-key-item' }, el('span', { class: 'tl-key ' + cls, 'aria-hidden': 'true' }), label);
+    }
+    return el('span', { class: 'tl-key-line' },
+      item('tl-key-postes is-outline', 'Postes inventoriés'), item('tl-key-postes', 'conformes'),
+      item('tl-key-apps is-outline', 'Applications inventoriées'), item('tl-key-apps', 'conformes'));
+  }
+
   function fmtValue(row, v) {
-    return row.kind === 'pct' ? UI.fmtPct(v) : UI.fmtNum(v);
+    return row.kind === 'pct' ? UI.fmtPctNode(v) : UI.fmtNum(v);
   }
 
   /** Signed delta text: '+2', '−1', '=' for counts; '+5,0 pt', '−2,5 pt' for percentages. */
@@ -204,8 +214,10 @@
     if (note) body.appendChild(note);
 
     if (!series.length) {
-      body.appendChild(el('div', { class: 'alert alert-warning', role: 'status', id: 'timeline-empty' },
-        'Aucune donnée importée.'));
+      var empty = UI.empty('Aucune donnée importée.', el('button', { type: 'button', class: 'btn btn-link',
+        onClick: function () { App.go('dashboard'); } }, 'Importer un export depuis le tableau de bord'));
+      empty.id = 'timeline-empty';
+      body.appendChild(empty);
       return;
     }
     if (series.length < 2) {
@@ -232,19 +244,22 @@
           yRange: [0, 105]
         });
       }, rateCaption(last)),
-      // Neutral pairs: inventoried = light, conformant = dark; postes in ink, applications in ink-3.
+      // Pairs: inventoried = outline, conformant = solid; postes in ink, applications in ink-3. Counts are
+      // printed above the bars and the caption carries the key (no legend to decode).
       chartCard('Inventaire et conformité (nombre)', 'chart-timeline-counts', draws, function (box) {
         Charts.bars(box, {
           x: x,
           series: [
-            { name: 'Postes inventoriés', y: k.map(function (v) { return v.total_postes; }), color: t.rule2 },
+            { name: 'Postes inventoriés', y: k.map(function (v) { return v.total_postes; }), color: t.ink, outline: true },
             { name: 'Postes conformes', y: k.map(function (v) { return v.postes_conformes; }), color: t.ink },
-            { name: 'Applications inventoriées', y: k.map(function (v) { return v.total_apps; }), color: t.rule },
+            { name: 'Applications inventoriées', y: k.map(function (v) { return v.total_apps; }), color: t.ink3, outline: true },
             { name: 'Applications conformes', y: k.map(function (v) { return v.apps_conformes; }), color: t.ink3 }
           ],
+          labels: true,
+          legend: false,
           yTitle: 'Nombre'
         });
-      }, countsCaption(last))));
+      }, [countsKey(), el('br'), countsCaption(last)])));
 
     var matrix = teamMatrix(series);
     body.appendChild(matrix.teams.length ?
@@ -308,6 +323,13 @@
   // Page-specific styles only (scoped to .page-timeline); everything else comes from css.html.
   var CSS = [
     '.page-timeline .timeline-body { display: flex; flex-direction: column; gap: var(--s6); }',
+    // Counts chart key: swatches match the bars (outline = inventoried, solid = conformant).
+    '.page-timeline .tl-key-line { display: inline-flex; flex-wrap: wrap; gap: 2px var(--s4); margin-bottom: 2px; }',
+    '.page-timeline .tl-key-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }',
+    '.page-timeline .tl-key { width: 10px; height: 10px; background: var(--key-color); }',
+    '.page-timeline .tl-key.is-outline { background: none; box-shadow: inset 0 0 0 1px var(--key-color); }',
+    '.page-timeline .tl-key-postes { --key-color: var(--ink); }',
+    '.page-timeline .tl-key-apps { --key-color: var(--ink-3); }',
     // KPI ledger: label column stays visible when many months scroll horizontally.
     '.page-timeline .tl-kpi-table { width: auto; min-width: min(100%, 720px); }',
     '.page-timeline .tl-kpi-table .tl-label-col { position: sticky; left: 0; z-index: 2; background: var(--paper);' +

@@ -66,7 +66,7 @@
   /** One "Détail conformité" row: label ……… count (share), expandable to the affected names. */
   function detailItem(id, label, count, total, items, keyField) {
     var names = items.map(function (r) { return Core.str(r[keyField]) || '(sans nom)'; });
-    var share = total ? '(' + UI.fmtPct(count / total * 100) + ')' : '';
+    var share = total ? ['(', UI.fmtPctNode(count / total * 100), ')'] : '';
     var summary = el('summary', { class: 'detail-summary' },
       el('span', { class: 'detail-label' }, label),
       el('span', { class: 'leader', 'aria-hidden': 'true' }),
@@ -95,18 +95,17 @@
     var note = filterNote(s);
     if (note) body.appendChild(note);
     if (!postes.length && !apps.length) {
-      body.appendChild(el('div', { class: 'alert alert-info', role: 'status' },
-        'Aucun poste ni application ne correspond aux filtres sélectionnés.'));
+      body.appendChild(UI.empty('Aucun poste ni application ne correspond aux filtres sélectionnés.'));
     }
 
     // KPI strip
     body.appendChild(UI.kpiStrip([
       { key: 'total_postes', title: 'Postes inventoriés', value: UI.fmtNum(k.total_postes) },
       { key: 'postes_conformes', title: 'Postes conformes', value: UI.fmtNum(k.postes_conformes),
-        sub: UI.fmtPct(k.taux_postes), tone: toneFor(k.taux_postes, k.total_postes) },
+        sub: UI.fmtPctNode(k.taux_postes), tone: toneFor(k.taux_postes, k.total_postes) },
       { key: 'total_apps', title: 'Applications inventoriées', value: UI.fmtNum(k.total_apps) },
       { key: 'apps_conformes', title: 'Applications conformes', value: UI.fmtNum(k.apps_conformes),
-        sub: UI.fmtPct(k.taux_apps), tone: toneFor(k.taux_apps, k.total_apps) }
+        sub: UI.fmtPctNode(k.taux_apps), tone: toneFor(k.taux_apps, k.total_apps) }
     ]));
 
     // Gauges
@@ -293,8 +292,10 @@
     root.appendChild(header(s));
 
     if (!s.months.length) {
-      root.appendChild(el('div', { class: 'alert alert-warning', role: 'status', id: 'dashboard-empty' },
-        'Aucune donnée importée.'));
+      // Empty state: one line of ink-2 text; the import section right below is the action.
+      var empty = UI.empty('Aucune donnée importée.');
+      empty.id = 'dashboard-empty';
+      root.appendChild(empty);
       root.appendChild(importPanel(s, myToken));
       return;
     }

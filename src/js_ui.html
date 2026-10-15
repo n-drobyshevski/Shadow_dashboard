@@ -12,7 +12,12 @@
  *   UI.kpiStrip([{key?, title, value, sub?, tone?}]) -> div.kpi-strip of UI.card cells (data-kpi = key).
  *   UI.pageHeader({title, kicker?, kickerId?, actions?:[Node]}) -> header.page-header.
  *   UI.leaderRow(label, value, attrs?)   -> div.leaders-row "label ……… value".
- *   editableTable columns also accept {numeric?:bool, mono?:bool} (right-aligned mono / identifier cells).
+ *   editableTable columns also accept {numeric?:bool, mono?:bool} (right-aligned mono / identifier cells);
+ *   editableTable options also accept toolbarEnd:[Node] (placed at the right end, after search + count).
+ *   UI.fmtPctNode(n, digits?)           -> span.pct: same text as fmtPct, the space before % is set in the
+ *                                           sans face so that it stays narrow inside mono figures.
+ *   UI.cellMark(column, value)          -> read view of a ledger cell: Statut / Niveau de risque as marks,
+ *                                           Oui/Non criteria with « Non » in --ko; null for other columns.
  */
 (function () {
   'use strict';
@@ -112,6 +117,15 @@
       .format(Number(n)) + ' %';
   }
 
+  /** Same text as fmtPct; the narrow no-break space is wrapped so that it stays narrow in mono text. */
+  function fmtPctNode(n, digits) {
+    var txt = fmtPct(n, digits);
+    var i = txt.length - 2;
+    if (txt.charAt(i + 1) !== '%' || !/\s/.test(txt.charAt(i))) return el('span', { class: 'pct' }, txt);
+    // The space keeps its character (text content unchanged); only its face changes.
+    return el('span', { class: 'pct' }, txt.slice(0, i), el('span', { class: 'nnbsp' }, txt.charAt(i)), '%');
+  }
+
   function fmtNum(n) {
     if (!isNum(n)) return '—';
     return new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 }).format(Math.round(Number(n)));
@@ -138,7 +152,8 @@
   /** Mono figure coloured ok/ko (no square). */
   function scoreBadge(score) {
     var tone = !isNum(score) ? 'neutral' : (Number(score) >= Core.THRESHOLD ? 'ok' : 'ko');
-    var b = badge(fmtPct(score), tone);
+    var b = badge(null, tone);
+    b.appendChild(fmtPctNode(score));
     b.classList.add('badge-score');
     return b;
   }
@@ -161,6 +176,28 @@
       return el('span', { class: 'mark mark-risk ' + RISK_CLASS[t] }, text === undefined || text === null ? t : text);
     }
     return el('span', { class: 'mark mark-' + t }, text);
+  }
+
+  /** Yes/No criteria of the inventories (value that makes the record conform). */
+  var CRITERIA_OK = { 'IT Decathlon': 'Oui', 'EDR Decathlon': 'Oui', 'Chiffrement disque': 'Oui', 'Réseau Decathlon': 'Oui',
+    'Type de compte': 'Nominatif', 'Contrat': 'Oui', 'SIP': 'Oui', 'Galink': 'Oui', 'IDP': 'Oui' };
+  var STATUT_TONES = { 'conforme': 'ok', 'non conforme': 'ko', 'en cours': 'warn' };
+
+  /**
+   * UI.cellMark(column, value) -> Node|null. Read view of an inventory cell: « Statut » and « Niveau de
+   * risque » as status marks, a missing criterion (« Non », or not the conforming value) in --ko text.
+   * The text content is exactly the value. Returns null for the other columns / blank values.
+   */
+  function cellMark(column, value) {
+    var v = Core.str(value);
+    if (!v) return null;
+    if (column === 'Niveau de risque') return Object.prototype.hasOwnProperty.call(RISK_CLASS, v) ? riskBadge(v) : null;
+    if (column === 'Statut') return statusMark(v, STATUT_TONES[v.toLowerCase()] || 'neutral');
+    if (Object.prototype.hasOwnProperty.call(CRITERIA_OK, column) && v !== CRITERIA_OK[column] &&
+        (v === 'Non' || column === 'Type de compte')) {
+      return el('span', { class: 'cell-no' }, v);
+    }
+    return null;
   }
 
   /** One KPI-strip cell (no box): small-caps label, 32px mono figure, optional coloured sub line. */
@@ -690,12 +727,32 @@
       dirtyLabel, el('span', { class: 'spacer' }), cancelBtn, saveBtn);
     var toolbar = el('div', { class: 'etable-toolbar' },
       el('div', { class: 'etable-tools' }, opts.toolbar || null),
-      el('div', { class: 'etable-right' }, searchInput, countEl));
+      el('div', { class: 'etable-right' }, searchInput, countEl, opts.toolbarEnd || null));
     var thead = el('thead');
     var tbody = el('tbody');
     var table = el('table', { class: 'table etable-table' }, thead, tbody);
     var pager = el('div', { class: 'etable-pager' });
-    var node = el('div', { class: 'etable' }, toolbar, dirtyBar, el('div', { class: 'table-scroll' }, table), pager);
+    var scroller = el('div', { class: 'table-scroll' }, table);
+    var node = el('div', { class: 'etable' }, toolbar, dirtyBar, scroller, pager);
+
+    /** Right-edge fade while columns remain hidden to the right (scroll cue). */
+    function updateScrollCue() {
+      var more = scroller.scrollWidth - scroller.clientWidth - scroller.scrollLeft > 1;
+      scroller.classList.toggle('has-more-right', more);
+      // The first column is sticky: cells scrolled into view (focus, keyboard) must land right of it.
+      var first = thead.querySelector('th');
+      var pad = first ? first.offsetWidth + 'px' : '';
+      if (scroller.style.scrollPaddingLeft !== pad) scroller.style.scrollPaddingLeft = pad;
+      scroller.style.scrollPaddingRight = more ? '40px' : '';
+    }
+    scroller.addEventListener('scroll', updateScrollCue, { passive: true });
+    if (typeof ResizeObserver === 'function') {
+      var ro = new ResizeObserver(updateScrollCue);
+      ro.observe(scroller);
+      ro.observe(table);
+    } else {
+      window.addEventListener('resize', updateScrollCue);
+    }
 
     function renderHead() {
       clear(thead);
@@ -969,6 +1026,8 @@
     clear: clear,
     extLink: extLink,
     fmtPct: fmtPct,
+    fmtPctNode: fmtPctNode,
+    cellMark: cellMark,
     fmtNum: fmtNum,
     fmtMonth: fmtMonth,
     badge: badge,

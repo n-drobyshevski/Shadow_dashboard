@@ -110,34 +110,77 @@
 
   /**
    * Compliance gauge 0–100 % (kept from the Streamlit original), restyled: thin flat arc on a neutral
-   * track, bar --ok when >= threshold else --ko, 2px ink tick at the threshold, value as a mono figure.
+   * track, bar --ok when >= threshold else --ko, 1–2px ink tick at the threshold that just overshoots the
+   * arc, value as a mono figure. Plotly centres the arc in its ring (inner radius 0.75), so its own 0 / 100
+   * tick labels float away from the arc ends: they are replaced by two small mono labels placed right
+   * under the arc ends (measured from the drawn arc after every redraw); "80" stays a Plotly tick label.
    */
   function gauge(el, value, opts) {
     var o = opts || {};
     var t = tokens();
     var v = value === null || value === undefined || !isFinite(Number(value)) ? 0 : Number(value);
     var ok = v >= Core.THRESHOLD;
-    var band = 0.22;     // thickness of the arc, as a fraction of the gauge ring
-    return draw(el, [{
+    var band = 0.2;      // thickness of the arc, as a fraction of the gauge ring
+    var p = draw(el, [{
       type: 'indicator',
       mode: 'gauge+number',
       value: v,
-      number: { suffix: NBSP + '%', valueformat: '.1f', font: { family: t.mono, size: 30, color: t.ink } },
+      // The narrow space before % is set in the sans face: in Plex Mono it would take a full cell.
+      number: { suffix: '<span style="font-family:' + t.sans.replace(/"/g, "'") + '">' + NBSP + '</span>%',
+        valueformat: '.1f', font: { family: t.mono, size: 30, color: t.ink } },
       gauge: {
         shape: 'angular',
         axis: {
           range: [0, 100], tickmode: 'array', tickvals: [0, Core.THRESHOLD, 100],
-          ticktext: ['0', String(Core.THRESHOLD), '100'], ticks: '', ticklen: 0, tickwidth: 0,
+          ticktext: ['', String(Core.THRESHOLD), ''], ticks: '', ticklen: 0, tickwidth: 0,
           tickcolor: t.rule2, tickfont: { family: t.mono, size: 10, color: t.ink3 }, showticklabels: true
         },
         bar: { color: ok ? t.ok : t.ko, thickness: band, line: { width: 0 } },
         bgcolor: 'rgba(0,0,0,0)',
         borderwidth: 0,
         steps: [{ range: [0, 100], color: t.rule, thickness: band, line: { width: 0 } }],
-        threshold: { line: { color: t.ink, width: 2 }, thickness: 0.5, value: Core.THRESHOLD }
+        threshold: { line: { color: t.ink, width: 2 }, thickness: band + 0.12, value: Core.THRESHOLD }
       },
       domain: { x: [0, 1], y: [0, 1] }
-    }], baseLayout(t, { height: o.height || 176, margin: { l: 24, r: 24, t: 14, b: 12 } }));
+    }], baseLayout(t, { height: o.height || 176, margin: { l: 24, r: 24, t: 14, b: 18 } }));
+    if (p && typeof p.then === 'function') {
+      p.then(function () {
+        gaugeEnds(el);
+        if (typeof el.on === 'function' && !el.__gaugeEnds) {
+          el.__gaugeEnds = true;
+          el.on('plotly_afterplot', function () { gaugeEnds(el); });
+        }
+      }, function () {});
+    }
+    return p;
+  }
+
+  /** "0" and "100" under the two ends of the gauge arc (HTML labels, positioned from the drawn ring). */
+  function gaugeEnds(el) {
+    if (!el || !el.isConnected) return;
+    var ring = el.querySelectorAll('g.angular path');
+    var box = el.getBoundingClientRect();
+    var l = Infinity, r = -Infinity, b = -Infinity;
+    Array.prototype.forEach.call(ring, function (pth) {
+      var rc = pth.getBoundingClientRect();
+      if (!rc.width) return;
+      l = Math.min(l, rc.left); r = Math.max(r, rc.right); b = Math.max(b, rc.bottom);
+    });
+    var wrap = el.querySelector('.gauge-ends');
+    if (!isFinite(l) || !isFinite(r)) { if (wrap) wrap.hidden = true; return; }
+    if (!wrap) {
+      wrap = UI.el('div', { class: 'gauge-ends', 'aria-hidden': 'true' },
+        UI.el('span', { class: 'gauge-end gauge-end-min' }, '0'), UI.el('span', { class: 'gauge-end gauge-end-max' }, '100'));
+      el.appendChild(wrap);
+    }
+    wrap.hidden = false;
+    var radius = (r - l) / 2;
+    var mid = radius * (0.75 + 0.25 / 2);         // radius of the centre line of the arc
+    var cx = l - box.left + radius;
+    var spans = wrap.children;
+    spans[0].style.left = (cx - mid) + 'px';
+    spans[1].style.left = (cx + mid) + 'px';
+    spans[0].style.top = spans[1].style.top = (b - box.top + 2) + 'px';
   }
 
   /** One horizontal bar per risk level (Core.RISK_ORDER, top to bottom), risk colours, count at the bar end. */
@@ -283,41 +326,59 @@
   }
 
   /**
-   * Bar chart: {x, y, colors?, yTitle?, horizontal?}. Extension: {x, series:[{name, y, color?}]}
+   * Bar chart: {x, y, colors?, yTitle?, horizontal?}. Extension: {x, series:[{name, y, color?, outline?}]}
    * draws grouped bars with a legend placed above the plot area (never over the bars).
+   * Options: labels:true prints each count above its bar (mono 11px ink-2) and drops the value axis;
+   * legend:false hides the legend (the page then puts a key in the caption). outline:true draws a series
+   * as a 1px outline in its colour on paper instead of a solid bar.
    */
   function bars(el, opts) {
     var o = opts || {};
     var t = tokens();
     var horizontal = !!o.horizontal;
     var palette = [t.rule2, t.ink, t.ink3, t.accent];
-    function trace(name, y, color, i) {
+    var labels = !!o.labels;
+    function trace(name, y, color, i, outline) {
+      var c = color || palette[i % palette.length];
       var tr = {
         type: 'bar',
         name: name,
         orientation: horizontal ? 'h' : 'v',
-        marker: { color: color || palette[i % palette.length], line: { width: 0 } },
+        marker: outline ? { color: t.paper, line: { width: 1, color: c } } : { color: c, line: { width: 0 } },
         hovertemplate: (horizontal ? '%{y} : %{x}' : '%{x} : %{y}') + (name ? ' — ' + String(name).replace(/[<>%{}]/g, '') : '') +
           '<extra></extra>'
       };
       if (horizontal) { tr.x = y; tr.y = o.x || []; } else { tr.x = o.x || []; tr.y = y; }
+      if (labels) {
+        tr.texttemplate = horizontal ? '%{x}' : '%{y}';
+        tr.textposition = 'outside';
+        tr.textfont = { family: t.mono, size: 11, color: t.ink2 };
+        tr.cliponaxis = false;
+      }
       return tr;
     }
     var multi = !!(o.series && o.series.length > 1);
     var data = o.series && o.series.length ?
-      o.series.map(function (s, i) { return trace(s.name, s.y || [], s.color, i); }) :
-      [trace('', o.y || [], o.colors || t.ink, 0)];
-    var valueAxis = axis(t, { rangemode: 'tozero', showgrid: true, gridcolor: t.rule, nticks: 5 });
+      o.series.map(function (s, i) { return trace(s.name, s.y || [], s.color, i, !!s.outline); }) :
+      [trace('', o.y || [], o.colors || t.ink, 0, false)];
+    var maxValue = 1;
+    data.forEach(function (d) {
+      (horizontal ? d.x : d.y).forEach(function (v) { if (isFinite(Number(v))) maxValue = Math.max(maxValue, Number(v)); });
+    });
+    // With printed counts the value axis is redundant: no ticks, no gridlines, headroom for the labels.
+    var valueAxis = labels ? axis(t, { visible: false, rangemode: 'tozero', range: [0, maxValue * 1.15] }) :
+      axis(t, { rangemode: 'tozero', showgrid: true, gridcolor: t.rule, nticks: 5 });
+    var showLegend = multi && o.legend !== false;
     var catAxis = axis(t, { type: 'category', showline: true, ticks: 'outside',
       tickfont: { family: horizontal ? t.sans : t.mono, size: horizontal ? 12 : 11, color: horizontal ? t.ink : t.ink3 } });
     if (horizontal) catAxis.autorange = 'reversed';
     return draw(el, data, baseLayout(t, {
       height: o.height || (horizontal ? Math.max(160, 30 * (o.x || []).length + 40) : 280),
-      margin: { l: 4, r: 8, t: 8, b: 4 },
+      margin: { l: 4, r: 8, t: labels ? 16 : 8, b: 4 },
       barmode: 'group',
       bargap: 0.35,
       bargroupgap: 0.08,
-      showlegend: multi,
+      showlegend: showLegend,
       legend: { orientation: 'h', x: 0, xanchor: 'left', y: 1.02, yanchor: 'bottom', traceorder: 'normal',
         font: { family: t.sans, size: 12, color: t.ink2 }, itemwidth: 30, itemclick: false, itemdoubleclick: false },
       xaxis: horizontal ? valueAxis : catAxis,

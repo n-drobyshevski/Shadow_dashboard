@@ -22,7 +22,8 @@
   var KEY_POSTE = Core.KEY_POSTE;
   var KEY_APP = Core.KEY_APP;
   var CLOSED_STATUSES = ['Terminé', 'Abandonné'];
-  var STATUS_TONES = { 'À faire': 'info', 'En cours': 'warn', 'Terminé': 'ok', 'Abandonné': 'neutral' };
+  // À faire = hollow neutral mark (the accent blue is kept for interactive elements), Abandonné = ink-3.
+  var STATUS_TONES = { 'À faire': 'neutral', 'En cours': 'warn', 'Terminé': 'ok', 'Abandonné': 'muted' };
   var PRIORITY_TONES = { 'Haute': 'ko', 'Moyenne': 'warn', 'Basse': 'neutral' };
   var TYPE_LABELS = { poste: 'Poste', application: 'Application' };
   var NBSP = '\u202f';
@@ -294,8 +295,6 @@
         return w;
       }
       var toolbar = [
-        el('button', { type: 'button', class: 'btn btn-primary btn-small', id: 'action-add',
-          onClick: function () { openActionForm(ctx, null); } }, 'Nouvelle action'),
         filterSelect('action-filter-status', 'Statut', 'status',
           [{ value: '', label: 'Tous' }].concat(Core.ACTION_STATUSES)),
         filterSelect('action-filter-type', 'Type', 'type',
@@ -307,6 +306,9 @@
         pageSize: 50,
         emptyText: actions.length ? 'Aucune action ne correspond aux filtres.' : 'Aucune action enregistrée.',
         toolbar: toolbar,
+        // The create action sits at the right end of the toolbar (filters stay left-aligned).
+        toolbarEnd: [el('button', { type: 'button', class: 'btn btn-primary btn-small etable-create', id: 'action-add',
+          onClick: function () { openActionForm(ctx, null); } }, 'Nouvelle action')],
         onRowClick: function (a) { openActionForm(ctx, a); },
         columns: [
           { key: 'target_name', label: 'Cible', render: function (a) { return targetCell(a.target_type, a.target_name); } },
@@ -410,7 +412,7 @@
       var table = UI.editableTable({
         rowKey: 'id',
         emptyText: 'Aucun remplacement enregistré.',
-        toolbar: [el('button', { type: 'button', class: 'btn btn-primary btn-small', id: 'replacement-add',
+        toolbarEnd: [el('button', { type: 'button', class: 'btn btn-primary btn-small etable-create', id: 'replacement-add',
           onClick: function () { openReplacementForm(ctx, null); } }, 'Nouveau remplacement')],
         onRowClick: function (r) { openReplacementForm(ctx, r); },
         columns: [
@@ -444,11 +446,56 @@
     return { oldMonth: Core.previousMonth(months, newMonth) || months[0], newMonth: newMonth };
   }
 
-  function simpleTable(id, headers, rows) {
+  /**
+   * Column widths (%) shared by the diff tables of one schema, so that stacked tables (retirés / ajoutés,
+   * postes / applications) keep the same column positions. Index = column; 'num' marks a numeric column.
+   */
+  var DIFF_SCHEMAS = {
+    record: [[28], [18], [18], [12, 'num'], [24]],
+    change: [[22], [18], [22], [38]],
+    resolved: [[20], [16], [30], [14], [20]]
+  };
+
+  function simpleTable(id, headers, rows, schema) {
+    var cols = schema ? DIFF_SCHEMAS[schema] : null;
     return el('div', { class: 'table-scroll' },
-      el('table', { class: 'table table-compact', id: id },
-        el('thead', null, el('tr', null, headers.map(function (h) { return el('th', { scope: 'col' }, h); }))),
+      el('table', { class: 'table table-compact' + (cols ? ' diff-table diff-table-' + schema : ''), id: id },
+        cols ? el('colgroup', null, cols.map(function (c) { return el('col', { style: { width: c[0] + '%' } }); })) : null,
+        el('thead', null, el('tr', null, headers.map(function (h, i) {
+          return el('th', { scope: 'col', class: cols && cols[i] && cols[i][1] === 'num' ? 'num' : null }, h);
+        }))),
         el('tbody', null, rows)));
+  }
+
+  /** Conformity fields whose change has a known direction: 'better' | 'worse' | null. */
+  var CRITERIA_OK = { 'IT Decathlon': 'Oui', 'EDR Decathlon': 'Oui', 'Chiffrement disque': 'Oui', 'Réseau Decathlon': 'Oui',
+    'Type de compte': 'Nominatif', 'Contrat': 'Oui', 'SIP': 'Oui', 'Galink': 'Oui', 'IDP': 'Oui' };
+  function changeDirection(col, oldV, newV) {
+    var o = Core.str(oldV);
+    var n = Core.str(newV);
+    if (col === 'Score conformité') {
+      var so = Core.parseScore(o);
+      var sn = Core.parseScore(n);
+      if (so === null || sn === null || so === sn) return null;
+      return sn > so ? 'better' : 'worse';
+    }
+    if (col === 'Statut') {
+      if (n === 'Conforme' && o !== 'Conforme') return 'better';
+      if (n === 'Non conforme' && o !== 'Non conforme') return 'worse';
+      return null;
+    }
+    if (col === 'Niveau de risque') {
+      var io = Core.RISK_ORDER.indexOf(o);
+      var inn = Core.RISK_ORDER.indexOf(n);
+      if (io < 0 || inn < 0 || io === inn) return null;
+      return inn > io ? 'better' : 'worse';   // RISK_ORDER runs from Critique to Faible
+    }
+    if (Object.prototype.hasOwnProperty.call(CRITERIA_OK, col)) {
+      var okV = CRITERIA_OK[col];
+      if (n === okV && o !== okV && o) return 'better';
+      if (o === okV && n && n !== okV) return 'worse';
+    }
+    return null;
   }
 
   /** Sub-block of a diff group: small-caps label "Postes retirés (1)" on a hairline, table or one line. */
@@ -470,7 +517,7 @@
         cols.map(function (c) {
           if (c === 'score') return el('td', { class: 'num' }, UI.scoreBadge(r._score));
           if (c === 'risk') return el('td', null, UI.riskBadge(r['Niveau de risque']));
-          return el('td', null, Core.str(r[c]));
+          return el('td', { title: Core.str(r[c]) || null }, Core.str(r[c]));
         }));
     });
   }
@@ -554,12 +601,14 @@
     pChanges.forEach(function (ch) {
       Object.keys(ch.diffs || {}).forEach(function (col) {
         var d = ch.diffs[col];
+        var dir = changeDirection(col, d.old, d['new']);
         changeRows.push(el('tr', { dataset: { name: ch.name, col: col } },
           nameCell('poste', ch.name),
           el('td', null, ch.equipe),
           el('td', null, col),
-          el('td', { class: 'diff-values' }, el('span', { class: 'diff-old' }, d.old === '' ? '∅' : d.old), ' → ',
-            el('span', { class: 'diff-new' }, d['new'] === '' ? '∅' : d['new']))));
+          el('td', { class: 'diff-values', title: Core.str(d.old) + ' → ' + Core.str(d['new']) },
+            el('span', { class: 'diff-old' }, d.old === '' ? '∅' : d.old), ' → ',
+            el('span', { class: 'diff-new' + (dir ? ' is-' + dir : '') }, d['new'] === '' ? '∅' : d['new']))));
       });
     });
     var posteCols = ['Équipe', 'Bâtiment / Labo', 'score', 'risk'];
@@ -568,17 +617,17 @@
     box.appendChild(el('section', { class: 'diff-group', id: 'diff-postes', 'aria-labelledby': 'diff-postes-title' },
       el('h2', { class: 'diff-group-title', id: 'diff-postes-title' }, 'Postes'),
       diffSection('diff-postes-removed', 'Postes retirés', pRemoved.length,
-        simpleTable('diff-postes-removed-table', posteHeaders, recordRows(pRemoved, KEY_POSTE, posteCols, 'poste')),
+        simpleTable('diff-postes-removed-table', posteHeaders, recordRows(pRemoved, KEY_POSTE, posteCols, 'poste'), 'record'),
         'Aucun poste retiré.'),
       diffSection('diff-postes-added', 'Postes ajoutés', pAdded.length,
-        simpleTable('diff-postes-added-table', posteHeaders, recordRows(pAdded, KEY_POSTE, posteCols, 'poste')),
+        simpleTable('diff-postes-added-table', posteHeaders, recordRows(pAdded, KEY_POSTE, posteCols, 'poste'), 'record'),
         'Aucun poste ajouté.'),
       diffSection('diff-postes-changes', 'Modifications', pChanges.length,
-        simpleTable('diff-postes-changes-table', ['Poste', 'Équipe', 'Champ', 'Ancien → Nouveau'], changeRows),
+        simpleTable('diff-postes-changes-table', ['Poste', 'Équipe', 'Champ', 'Ancien → Nouveau'], changeRows, 'change'),
         'Aucune modification.'),
       diffSection('diff-postes-resolved', 'Actions résolues', pResolved.length,
         simpleTable('diff-postes-resolved-table', ['Poste'].concat(resolvedHeaders),
-          resolvedRows(ctx, pResolved, 'poste', actions, diff)),
+          resolvedRows(ctx, pResolved, 'poste', actions, diff), 'resolved'),
         'Aucune action résolue.')));
 
     // Applications
@@ -587,14 +636,14 @@
     box.appendChild(el('section', { class: 'diff-group', id: 'diff-apps', 'aria-labelledby': 'diff-apps-title' },
       el('h2', { class: 'diff-group-title', id: 'diff-apps-title' }, 'Applications'),
       diffSection('diff-apps-removed', 'Applications retirées', aRemoved.length,
-        simpleTable('diff-apps-removed-table', appHeaders, recordRows(aRemoved, KEY_APP, appCols, 'application')),
+        simpleTable('diff-apps-removed-table', appHeaders, recordRows(aRemoved, KEY_APP, appCols, 'application'), 'record'),
         'Aucune application retirée.'),
       diffSection('diff-apps-added', 'Applications ajoutées', aAdded.length,
-        simpleTable('diff-apps-added-table', appHeaders, recordRows(aAdded, KEY_APP, appCols, 'application')),
+        simpleTable('diff-apps-added-table', appHeaders, recordRows(aAdded, KEY_APP, appCols, 'application'), 'record'),
         'Aucune application ajoutée.'),
       diffSection('diff-apps-resolved', 'Actions résolues', aResolved.length,
         simpleTable('diff-apps-resolved-table', ['Application'].concat(resolvedHeaders),
-          resolvedRows(ctx, aResolved, 'application', actions, diff)),
+          resolvedRows(ctx, aResolved, 'application', actions, diff), 'resolved'),
         'Aucune action résolue.')));
   }
 
@@ -768,7 +817,10 @@
     '.page-actions .diff-action-text, .page-actions .diff-done-cell { white-space: normal; }',
     '.page-actions .diff-action-text { min-width: 160px; }',
     '@media (max-width: 480px) { .page-actions .diff-controls .diff-arrow { display: none; } }',
-    '.page-actions .diff-done-cell { width: 1%; min-width: 220px; }',
+    // Diff tables: fixed layout on shared column widths (DIFF_SCHEMAS); they scroll on phones.
+    '.page-actions .diff-table { table-layout: fixed; min-width: 680px; }',
+    '.page-actions .diff-table td, .page-actions .diff-table th { max-width: none; }',
+    '.page-actions .diff-table-change .diff-values { white-space: normal; overflow-wrap: anywhere; }',
     '.page-actions .btn-mark-done.is-done { opacity: 1; border-color: transparent; background: none; padding: 0;' +
       ' color: var(--ok); font-weight: 500; cursor: default; }',
     '.page-actions .btn-mark-done.is-done::before { content: ""; width: 6px; height: 6px; background: currentColor; }',
