@@ -449,7 +449,7 @@ Sidebar: app title `👻 Shadow IT`, nav links (5 pages), `Période` month selec
 ## 7. Tests
 
 - `test/fixtures/data.js` — canonical sample data (two months, référentiel, actions, replacements).
-- `test/fixtures/source.js` — `buildSourceSheets(month)` → fake live spreadsheet definition (banner row,
+- `test/fixtures/source.js` — `buildSourceSpreadsheet(month)` → fake live spreadsheet definition (banner row,
   header row, Date cells, `0.304` raw vs `'30,4%'` display, empty/ghost rows) built from `data.js`.
 - `test/helpers/gasFakes.js` — in-memory `SpreadsheetApp`, `PropertiesService`, `LockService`,
   `Utilities`, `HtmlService`, `Logger`.

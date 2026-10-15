@@ -20,7 +20,8 @@ const SOURCE_ID = '1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_SRC';
 
 function parseFr(s) {
   const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(String(s || ''));
-  return m ? new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1])) : null;
+  // Noon UTC is the same calendar day in Europe/Paris whatever the host time zone.
+  return m ? new Date(Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1]), 12)) : null;
 }
 
 function scoreRaw(display) {

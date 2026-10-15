@@ -98,12 +98,14 @@
     var byId = {};
     (records || []).forEach(function (r) { if (r && r._id) byId[r._id] = r; });
     md[entity] = enrich(entity, md[entity].map(function (r) { return byId[r._id] || r; }));
+    dropTimeline();
   }
 
   function removeRecord(month, entity, id) {
     var md = monthCache[month];
     if (!md || !md[entity]) return;
     md[entity] = md[entity].filter(function (r) { return r._id !== id; });
+    dropTimeline();
   }
 
   function addRecord(month, entity, record) {
@@ -112,6 +114,13 @@
     md[entity] = md[entity].filter(function (r) { return r._id !== record._id; })
       .concat(enrich(entity, [record]));
     md[entity].sort(function (a, b) { return (a._order || 0) - (b._order || 0); });
+    dropTimeline();
+  }
+
+  /** Local edits change scores, so the cached timeline (built from server snapshots) is stale. */
+  function dropTimeline() {
+    timelineCache = null;
+    timelinePending = null;
   }
 
   function invalidate(month) {
