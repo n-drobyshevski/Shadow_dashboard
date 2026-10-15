@@ -5,6 +5,8 @@
  * in Cloud Logging (filter on jsonPayload / textPayload containing "stage" or "api"). Shapes:
  *   {api, ms, authMs, ok, code?}                          one per google.script.run call (apiWrap_)
  *   {stage:'sheet', tab, rows, ms}                        one full read of a data tab (Store)
+ *   {stage:'span', tab, rows, ms}                         one partial read of a data tab: a month's rows,
+ *                                                         ImportLog rows read from the bottom (Store)
  *   {stage:<name>, ms, <lap>: ms, ..., <field>: value}    a staged operation (Perf.start)
  * Lines carry durations, counts, tab / API names and month keys only: never an e-mail address, an id
  * or record contents. The overhead is a few Date.now() calls and one console.log per line.

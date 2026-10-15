@@ -193,6 +193,26 @@ test('writes to the access list run under the lock (BUSY on timeout)', () => {
 
 // ------------------------------------------------------------------------------- threshold
 
+test('an access change under the lock starts from the stored list, not from the one read before it', () => {
+  const sb = imported();
+  // Another admin's execution adds an account while this call waits for the lock.
+  const lockObj = sb.env.LockService.getScriptLock();
+  const wait = lockObj.waitLock;
+  lockObj.waitLock = function (ms) {
+    lockObj.waitLock = wait;
+    const other = loadGas({ env: sb.env });
+    other.ctx.Config.setAccess({ users: [{ email: ADMIN2, role: 'admin' }], groups: [], domainRole: 'none' });
+    return wait.call(this, ms);
+  };
+  try {
+    ok(sb.ctx, 'api_saveUser', { email: READER, role: 'lecteur' });
+  } finally {
+    lockObj.waitLock = wait;
+  }
+  assert.deepEqual(ok(sb.ctx, 'api_getSettings').access.users.map((u) => [u.email, u.role]),
+    [[READER, 'lecteur'], [ADMIN2, 'admin']]);
+});
+
 test('threshold: validated, persisted, and applied to every later call', () => {
   const sb = imported();
   for (const threshold of [0, 101, 72.5, 'abc', null]) fail(sb.ctx, 'api_setThreshold', { threshold }, 'VALIDATION');

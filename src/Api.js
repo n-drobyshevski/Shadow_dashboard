@@ -22,7 +22,9 @@
  * applied to Core for the duration of the call. Errors whose `.code` is one of Core.ERROR_CODES are
  * reported as-is (their messages are ours, in French); anything else becomes INTERNAL. The stack is
  * logged with console.error and never sent to the client. Every call ends with one timing line
- * (Perf.log): {api, ms, authMs (Config + role check), ok, code (failures only)}.
+ * (Perf.log): {api, ms, authMs (Config + role check), ok, code (failures only)}. Every call starts
+ * with empty read memos (Store, Config): in Apps Script each call is a new execution anyway, the
+ * reset keeps the test sandbox (many calls in one context) honest.
  * @param {function(Object, Object): *} fn
  * @param {string=} name used in logs
  * @param {string=} minRole 'lecteur' (default) | 'admin'
@@ -35,6 +37,8 @@ function apiWrap_(fn, name, minRole) {
     var ok = false;
     var code = null;
     try {
+      Store.clearMemo_();
+      Config.clearMemo_();
       var cfg = Config.get();
       var user = Access.requireRole(minRole || 'lecteur', cfg.access);
       authMs = Date.now() - t0;
@@ -92,6 +96,8 @@ var ApiImpl_ = (function () {
     'Niveau de risque'];
   var APP_SLIM_FIELDS = ['Équipe', 'SIP', 'Contrat', 'Galink', 'IDP', 'Niveau de risque'];
   var DATE_FR_RE = /^\d{2}\/\d{2}\/\d{4}$/;
+  var IMPORT_LOG_LIMIT = 12;     // api_getImportLog default (the « Journal des synchronisations »)
+  var IMPORT_LOG_MAX_LIMIT = 500;
 
   var hasOwn = Object.prototype.hasOwnProperty;
 
@@ -399,8 +405,15 @@ var ApiImpl_ = (function () {
     };
   }
 
-  function getImportLog() {
-    return Store.getImportLog().reverse();
+  /** The `limit` latest ImportLog entries, newest first, with the fields the journal shows only. */
+  function getImportLog(args) {
+    var limit = args.limit === undefined || args.limit === null ? IMPORT_LOG_LIMIT : args.limit;
+    if (typeof limit !== 'number' || Math.floor(limit) !== limit || limit < 1 || limit > IMPORT_LOG_MAX_LIMIT) {
+      throw invalid_('« limit » doit être un entier entre 1 et ' + IMPORT_LOG_MAX_LIMIT + '.');
+    }
+    return Store.recentImportLog(limit).map(function (e) {
+      return { month: e.month, imported_at: e.imported_at, counts: e.counts, warnings: e.warnings, changes: e.changes };
+    });
   }
 
   // ------------------------------------------------------------------------- entity edits
@@ -695,7 +708,7 @@ var ApiImpl_ = (function () {
    */
   function mutateAccess_(user, change, check) {
     return Store.withLock(function () {
-      var access = Config.get().access;
+      var access = Config.get({ fresh: true }).access;
       var changed = change(access) !== false;
       if (check) check(access);
       if (changed) Config.setAccess(access);

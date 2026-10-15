@@ -209,7 +209,8 @@ WSL.
 Chaque appel serveur écrit une ligne JSON dans le journal des exécutions (Apps Script → Exécutions,
 ou Cloud Logging) : `{"api":"api_getMonthData","ms":812,"authMs":95,"ok":true}`, précédée des étapes
 (`{"stage":"ensure",…}` ouverture du classeur, `{"stage":"sheet","tab":"Postes","rows":7200,"ms":240}`
-lecture d'un onglet, `listMonths`, `importMonth`, `writeBack`, `sync`). Ces lignes ne contiennent que
+lecture d'un onglet entier, `{"stage":"span","tab":"Postes","rows":300,"ms":30}` lecture des seules lignes
+d'un mois (ou du bas du journal), `listMonths`, `importMonth`, `writeBack`, `sync`). Ces lignes ne contiennent que
 des durées, des nombres et des noms d'onglets ou de mois : jamais d'adresse e-mail ni de donnée. Le
 détail des formats est dans `docs/API.md` §4 (Perf).
 
@@ -243,6 +244,23 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
       l'exécution reste du même ordre que le `ms` de la ligne `api` (le coût des lignes est négligeable).
 - [ ] Console du navigateur (niveau « Verbose », cadre `userHtmlFrame`) : une ligne `[rpc] <nom> <ms>ms`
       par appel et `[boot] ready …` au démarrage, aucune erreur.
+- [ ] Lecture d'un seul mois : changer de mois ; dans Exécutions, l'appel `api_getMonthData` montre des
+      lignes `span` (Postes, Applications, ImportLog avec `rows` = 1, Referentiel) et aucune ligne
+      `sheet` ; une synchronisation horaire sans changement non plus. Ajouter une application à un mois
+      passé (elle est écrite en fin d'onglet, après les mois suivants), recharger : elle apparaît dans
+      ce mois et dans aucun autre, et le mois suivant reste complet.
+- [ ] Version du schéma : après la première ouverture, Propriétés du script contient
+      `DATA_SCHEMA_VERSION` (`{"dataId":…,"version":"2"}`, l'id du classeur de données) ; la ligne
+      `ensure` d'un appel suivant est plus courte (plus de lecture de `Meta`). Supprimer la propriété :
+      l'appel suivant relit `Meta` une fois et la recrée. Si une ancienne version du classeur de données
+      est restaurée (historique des versions), supprimer aussi cette propriété pour que la mise à niveau
+      du schéma soit refaite.
+- [ ] Paramètres → Journal des synchronisations : les 12 dernières synchronisations, la plus récente en
+      haut, avec leurs alertes ; l'appel `api_getImportLog` ne lit que le bas de l'onglet `ImportLog`
+      (ligne `span`, `rows` = 12).
+- [ ] Deux sessions admin : ajouter un compte différent dans Paramètres → Accès depuis chacune, à
+      quelques instants d'intervalle (la seconde attend le verrou) ; après rechargement, la liste
+      contient les deux comptes.
 
 ## Tests
 
@@ -326,4 +344,7 @@ Sheets that values starting with `= + - @ '` round-trip unchanged. Timing: every
 one-line JSON timings (`{api, ms, authMs, ok}` plus per-stage lines, see `docs/API.md` §4 Perf) to the
 Executions log, and the browser console logs `[rpc] <name> <ms>ms` at the Verbose level;
 `test/integration/perf.test.js` pins the Sheets call counts of the main flows on a large data
-spreadsheet. Tests: `npm test`, `npm run test:e2e`. Limits: 6-minute execution time, users of the deployer's Workspace domain only.
+spreadsheet. Server reads are scoped: one month's rows are located through column A and read as one
+block (never every month), ImportLog is read from the bottom, reads are memoized per execution (dropped
+on every write and when the script lock is taken), and the schema version is kept in the
+`DATA_SCHEMA_VERSION` script property so that each call skips the `Meta` read. Tests: `npm test`, `npm run test:e2e`. Limits: 6-minute execution time, users of the deployer's Workspace domain only.

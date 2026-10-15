@@ -30,22 +30,27 @@ const DATA_ID = '1PerfDataSpreadsheetId00000000000000000000000';
 const READER = 'lea.reader@decathlon.com';
 const ADMIN_GROUP = 'secu-admins@decathlon.com';
 
-/** Upper bounds = the numbers measured when this test was written (only ever lower them). */
+/**
+ * Upper bounds = the numbers measured when they were last lowered (only ever lower them). History:
+ * the first baseline read every month's rows to return one (getMonthData: 8 getValues, 96229 cells),
+ * ImportLog in full (getImportLog: 16020 cells) and Meta on every call; month spans, the ImportLog
+ * tail, the per-execution read memo and the schema-version property brought them to the numbers below.
+ */
 const BASELINE = {
-  bootstrapAdmin: { openById: 2, getValues: 4, getDisplayValues: 0, getFormulas: 0, cellsRead: 12805, getDataRange: 1,
-    propertiesReads: 5, cacheReads: 0 },
-  bootstrapLecteur: { openById: 1, getValues: 4, getDisplayValues: 0, getFormulas: 0, cellsRead: 12805, getDataRange: 1,
-    propertiesReads: 5, cacheReads: 1 },
-  getMonthData: { openById: 1, getValues: 8, getDisplayValues: 0, getFormulas: 0, cellsRead: 96229, getDataRange: 5,
+  bootstrapAdmin: { openById: 2, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 12801, getDataRange: 0,
     propertiesReads: 2, cacheReads: 0 },
-  getTimeline: { openById: 1, getValues: 6, getDisplayValues: 0, getFormulas: 0, cellsRead: 77617, getDataRange: 3,
+  bootstrapLecteur: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 12801, getDataRange: 0,
+    propertiesReads: 2, cacheReads: 1 },
+  getMonthData: { openById: 1, getValues: 8, getDisplayValues: 0, getFormulas: 0, cellsRead: 16265, getDataRange: 0,
+    propertiesReads: 1, cacheReads: 0 },
+  getTimeline: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 66813, getDataRange: 2,
+    propertiesReads: 1, cacheReads: 0 },
+  getImportLog: { openById: 1, getValues: 1, getDisplayValues: 0, getFormulas: 0, cellsRead: 96, getDataRange: 0,
+    propertiesReads: 1, cacheReads: 0 },
+  savePostesLive: { openById: 2, getValues: 4, getDisplayValues: 1, getFormulas: 1, cellsRead: 29701, getDataRange: 1,
     propertiesReads: 2, cacheReads: 0 },
-  getImportLog: { openById: 1, getValues: 2, getDisplayValues: 0, getFormulas: 0, cellsRead: 16020, getDataRange: 2,
-    propertiesReads: 2, cacheReads: 0 },
-  savePostesLive: { openById: 2, getValues: 6, getDisplayValues: 1, getFormulas: 1, cellsRead: 114317, getDataRange: 4,
-    propertiesReads: 3, cacheReads: 0 },
-  syncNoChange: { openById: 2, getValues: 10, getDisplayValues: 3, getFormulas: 0, cellsRead: 115929, getDataRange: 8,
-    propertiesReads: 7, cacheReads: 0 },
+  syncNoChange: { openById: 2, getValues: 10, getDisplayValues: 3, getFormulas: 0, cellsRead: 35965, getDataRange: 3,
+    propertiesReads: 4, cacheReads: 0 },
 };
 
 // ------------------------------------------------------------------------------------- fixture
@@ -261,7 +266,8 @@ test('call counts of the main flows on a large data spreadsheet stay within the 
 
   ctx = execution(env);
   m = measure(env, () => call(ctx, 'api_getImportLog'));
-  assert.equal(m.value.length, IMPORT_LOG_ROWS + 1);
+  assert.equal(m.value.length, 12, 'the default limit');
+  assert.equal(m.value[0].month, LIVE_MONTH, 'newest first: the first sync');
   results.getImportLog = m;
 
   // The hourly trigger run when the source has not changed since the last sync.
@@ -269,6 +275,10 @@ test('call counts of the main flows on a large data spreadsheet stay within the 
   m = measure(env, () => ctx.syncHourly());
   assert.deepEqual(m.lines.filter((l) => l.stage === 'sync').map((l) => [l.ok, l.changed]), [[true, false]]);
   results.syncNoChange = m;
+  // Neither the month view nor the no-change sync reads a whole data tab (only the month's rows).
+  for (const flow of ['getMonthData', 'syncNoChange']) {
+    assert.deepEqual(results[flow].lines.filter((l) => l.stage === 'sheet').map((l) => l.tab), [], flow);
+  }
 
   ctx = execution(env);
   m = measure(env, () => call(ctx, 'api_savePostes',

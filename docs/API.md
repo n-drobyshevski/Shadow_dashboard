@@ -137,7 +137,9 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
   or a lecteur calls an admin endpoint) and applies the effective threshold (`Core.setThreshold`), then
   catches errors: `err.code` in `Core.ERROR_CODES` → that code, else `INTERNAL`; message in French when
   produced by us; `console.error` the stack. Every call ends with one timing line
-  `{api, ms, authMs, ok, code?}` (§4 Perf).
+  `{api, ms, authMs, ok, code?}` (§4 Perf). Every call starts with empty per-execution read memos
+  (`Store.clearMemo_()`, `Config.clearMemo_()`, §4): one call = one execution in Apps Script, and the
+  reset keeps the test sandbox, which runs many calls in one context, honest.
 - Roles: **lecteur** endpoints = `api_bootstrap`, `api_savePrefs`, `api_getMonthData`, `api_getSyncStatus`,
   `api_getImportLog`, `api_getTimeline`, `api_getActions`, `api_getDiff`. Every other endpoint is **admin** only.
 - **Current month = live.** The month of today (Europe/Paris) follows the source spreadsheet: the hourly sync
@@ -182,7 +184,7 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 | `api_getSyncStatus` | – | `SyncStatus` | – |
 | `api_syncNow` | – | `{status:SyncStatus, result:SyncResult}` — synchronises the current month now. `SyncResult = {month, counts:{postes, applications, referentiel}, overwritten:bool, carriedOver:n, warnings:[...], changed:bool, changes:Changes}`; nothing is written when `changed` is false. | `NOT_CONFIGURED`, `SOURCE_ERROR`, `BUSY` (recorded in `lastError`, except `BUSY`) |
 | `api_enableSync` | – | as `api_syncNow`, after creating the hourly trigger if it is missing | `NOT_CONFIGURED` (ScriptApp not authorised: the deployer must run `setup` in the editor), then as `api_syncNow` |
-| `api_getImportLog` | – | `[ImportLog entry]` newest first (the « Journal des synchronisations ») | – |
+| `api_getImportLog` | `{limit?}` (integer 1–500, default 12) | `[{month, imported_at, counts, warnings, changes}]`: the `limit` latest ImportLog entries, newest first, with the fields the « Journal des synchronisations » shows only (no `source_id`, no headers). Read from the bottom of the tab (`Store.recentImportLog`). | `VALIDATION` (bad `limit`) |
 | `api_savePostes` | `{month, changes:[{id, updates:{col:value}}]}` | `{updated:[rec], sourceUpdated:bool}` (`true` = current month, written into the source) | `VALIDATION` (keys starting with `_` or the key column are rejected; a source cell computed by a formula; a value refused by the source cell's data validation), `NOT_FOUND`, `SOURCE_ERROR` (row not found in the source: renamed or deleted since the last sync) |
 | `api_addGenericPoste` | `{month}` | `{created:bool, record:rec}` (existing record if already present; current month: also appended to the source) | `NOT_FOUND` |
 | `api_saveApplications` | `{month, changes:[{id, updates}]}` | `{updated:[rec], sourceUpdated:bool}` | as `api_savePostes` |
@@ -240,16 +242,28 @@ Config.SCHEMAS = {
                  'changes_json'],
   Meta:         ['key','value']
 }
-Config.SCHEMA_VERSION = '1'
+Config.SCHEMA_VERSION = '2'   (2: ImportLog.changes_json)
+Config.PROP_SCHEMA    = 'DATA_SCHEMA_VERSION'  (JSON {dataId, version}: the schema version found in that data
+                        spreadsheet's Meta tab, so Store.ensure's fast path needs no Meta read; keyed by the id,
+                        so a new DATA_SPREADSHEET_ID never inherits it. Deleting it only costs one Meta read.)
 Config.PROP_THRESHOLD = 'COMPLIANCE_THRESHOLD'      (integer 1–100 as a string)
 Config.PROP_ACCESS    = 'ACCESS_JSON'  ({users:[{email, role, added_at, added_by}], domainRole} as JSON split in
                         3000-char parts ACCESS_JSON_0.. with the count in ACCESS_JSON_N; Config.MAX_USERS = 2000)
-Config.get()                 -> {dataId:''|id, sourceId:''|id, threshold:int (Core.THRESHOLD when unset),
+Config.get({fresh?})         -> {dataId:''|id, sourceId:''|id, threshold:int (Core.THRESHOLD when unset),
+                                 schemaVersion:''|version recorded for dataId (PROP_SCHEMA),
                                  access:{users:[...], domainRole:'none'|'lecteur'}} (unreadable JSON -> empty list)
+                                A new object on every call, built from ONE getProperties per execution (memo);
+                                `fresh` reads the properties again. The memo is dropped by every setter below,
+                                by Config.clearMemo_() (start of each api_* call and of syncHourly,
+                                Store.resetCache_) and when Store.withLock acquires the lock, so every
+                                read-modify-write under the lock (access list, first-run creation) starts
+                                from the stored values.
 Config.setDataId(id), Config.setSourceId(id), Config.setThreshold(n), Config.setAccess(access)
+Config.setSchemaVersion(dataId, version)   (Store.ensure, once Meta is known to carry `version`)
 Config.PROP_PREFS_PREFIX = 'PREFS_'  (+ lower-cased email: JSON of that account's interface preferences)
 Config.PREF_VALUES    = {sidebar:['open','collapsed']}
-Config.getPrefs(email) -> {} | {sidebar}   Config.setPrefs(email, patch) -> merged, stored, returned
+Config.getPrefs(email) -> {} | {sidebar}  (from the same memo)
+Config.setPrefs(email, patch) -> merged with the stored value (fresh read), stored, returned
 Config.PROP_FAVICON   = 'FAVICON_URL'  (optional https URL of the tab icon; '-' = none)
 Config.faviconUrl()          -> FAVICON_URL when it is an https URL, '' for '-', else DEFAULT_FAVICON_URL
                                 (assets/favicon.png embedded as a data:image/png;base64 URI).
@@ -285,8 +299,20 @@ in a plain-text cell Sheets keeps a leading `'` as a literal character (it is on
 "force text" prefix in non-plain-text cells), so a prefix would turn `'- x'`, `'+33…'`, `'@user'` or a
 Référentiel `'-'` into `"'- x"`… on read. The `'@'` format is the one and only formula guard; the fake
 mimics this (plain-text cells store strings verbatim, other cells strip one leading `'`).
-Reads use one `getDataRange().getValues()` per tab; whole-tab rewrites use `clearContents()` of the
-data area + one `setValues()`.
+Reads: a whole tab with one `getDataRange().getValues()`; one month of `Postes` / `Applications` /
+`Referentiel` with column A (one narrow read, shared with `listMonths`) + one `getValues()` of the rows
+from the month's first to its last row (rows of other months inside that block — a record appended
+after a later month — are filtered out by `row[0] === month`; when the block no longer matches column A,
+because another execution moved rows in between, the whole tab is read instead); `ImportLog` from the
+bottom. Writes: the smallest contiguous changed block with one `setValues()` (+ one `clearContent()` when
+a tab shrinks).
+
+**Read memo (per execution).** Whole-tab reads, column A and month blocks are memoized per tab for the
+current execution and shared with the callers, who copy before changing anything (`readTab` returns new
+objects, records are parsed anew). A tab's memo is dropped by every write primitive on it (block write,
+`clearContent`, row deletion), and the whole memo when `withLock` acquires the lock (another execution
+may have written while this one waited), when `ensure()` maps the tabs, by `resetCache_()` and by
+`clearMemo_()` (start of every `api_*` call and of `syncHourly`).
 
 ```
 Store.ensure()                          -> Spreadsheet. Idempotent. Cached per execution.
@@ -300,30 +326,49 @@ Store.ensure()                          -> Spreadsheet. Idempotent. Cached per e
                                              really deleted file is explicit: delete the DATA_SPREADSHEET_ID
                                              script property, the next execution creates a new spreadsheet;
                                            - then ensure every tab+header exists and Meta schema_version is
-                                             written. Fast path (all tabs + current schema_version) takes no
-                                             lock and writes nothing; any repair runs under Store.withLock.
+                                             written. Fast path (all tabs + current schema version) takes no
+                                             lock and writes nothing: getSheets() only when Config.get()
+                                             .schemaVersion (PROP_SCHEMA, keyed by the data spreadsheet id) is
+                                             current, else one Meta read (a current Meta version is then
+                                             copied into the property). Any repair runs under Store.withLock
+                                             and writes Meta and the property.
 Store.dataUrl()                         -> string
 Store.withLock(fn)                      -> fn() result; LockService.getScriptLock().waitLock(20000)
-                                           (timeout -> makeError('BUSY')); SpreadsheetApp.flush() and
-                                           releaseLock() in finally.
+                                           (timeout -> makeError('BUSY')); drops the Store and Config read
+                                           memos once acquired; SpreadsheetApp.flush() and releaseLock() in
+                                           finally. Re-entrant.
+Store.clearMemo_()                      -> forgets the read memo (apiWrap_ / syncHourly start with it)
+Store.resetCache_()                     -> clearMemo_ + drops the opened spreadsheet and Config's memo (a new
+                                           execution, for tests)
 Store.readTab(tab)                      -> [object] (header->value, values as strings; '' for empty)
 Store.writeTab(tab, objects)            -> void (rewrite all data rows in schema column order)
-Store.listMonths()                      -> ['YYYY-MM'] asc unique (from ImportLog ∪ Postes ∪ Applications)
+Store.listMonths()                      -> ['YYYY-MM'] asc unique (from column A of ImportLog ∪ Postes ∪ Applications)
 Store.hasMonth(month)                   -> bool
-Store.readEntityMonth(tab, month)       -> [record] parsed from _json + {_id,_key,_order,_updated_at}, sorted by _order
-Store.readEntityAll(tab)                -> {month:[record]} for all months
+Store.tabMonths(tab)                    -> ['YYYY-MM'] asc: the months that have rows in `tab` (column A only)
+Store.readEntityMonth(tab, month)       -> [record] parsed from _json + {_id,_key,_order,_updated_at}, sorted by
+                                           _order; reads that month's block only
+Store.readEntityAll(tab)                -> {month:[record]} for all months (whole tab: api_getTimeline)
 Store.replaceEntityMonth(tab, month, records, keyField)
                                         -> [record] stored (keeps other months' rows; assigns _id via
                                            Config.uuid() if missing, _order = index, _key = str(rec[keyField]))
 Store.updateEntityRows(tab, month, changes)   changes=[{id, updates}] -> [record] updated;
                                            unknown id -> NOT_FOUND (nothing written). Sets _updated_at.
-Store.appendEntityRow(tab, month, record, keyField) -> record (new _id, _order = max+1)
+                                           Reads and rewrites within the month's block only.
+Store.appendEntityRow(tab, month, record, keyField) -> record (new _id, _order = max+1), appended after the
+                                           last used row (reads the month's block only)
 Store.deleteEntityRow(tab, month, id)   -> bool
-Store.readReferentiel(month)            -> {cat:[values]} (ordered by position)
+Store.readReferentiel(month)            -> {cat:[values]} (ordered by position); reads that month's block only
 Store.replaceReferentiel(month, refObj) -> void
-Store.getImportLog()                    -> [ImportLog entry] in insertion order (parsed json columns)
+Store.getImportLog()                    -> [ImportLog entry] in insertion order (parsed json columns; whole tab)
+Store.recentImportLog(limit)            -> the `limit` latest entries, newest first: the last `limit` rows, then
+                                           blocks twice as large while blank rows left fewer entries
 Store.appendImportLog(entry)            -> void
-Store.latestImportInfo(month)           -> last ImportLog entry for month or null
+Store.latestImportInfo(month)           -> last ImportLog entry for month or null, parsing that row only: the
+                                           last 30 rows first unless column A is already memoized, then column
+                                           A from the bottom and that one row (a row that no longer matches
+                                           column A -> whole tab). ImportLog is append-only and never pruned:
+                                           the latest row of every month is what listMonths and the
+                                           incomplete-import repair rely on.
 Store.listRows(tab)                     -> [object] (Actions / Replacements)
 Store.insertRow(tab, obj)               -> obj
 Store.updateRow(tab, id, updates)       -> updated obj | NOT_FOUND
@@ -356,6 +401,8 @@ Importer.importMonth(month, overwrite, {skipUnchanged?}) -> SyncResult (see §3)
                                Carry-over of Galink/IDP via Core.mergeCarryOver from (a) the existing
                                snapshot of the same month when overwriting, else (b) the latest
                                EARLIER month that has applications (empty snapshots are skipped).
+                               Only those months are read (Store.readEntityMonth; (b) located with
+                               Store.tabMonths and read only when needed), never the whole history.
                                When overwriting a month whose previous import is incomplete (no
                                ImportLog entry) or has no applications, a second mergeCarryOver pass
                                fills the fields still blank from (b) (warning 'L’import précédent du
@@ -400,7 +447,8 @@ Perf.start(stage, fields?)       -> timer {lap(name), end(extra?)}: lap adds the
 |---|---|
 | `{api, ms, authMs, ok, code?}` | `apiWrap_`, every `api_*` call (`authMs` = `Config.get` + role check, `null` when refused) |
 | `{stage:'ensure', ms, open, ensureTabs, created}` | `Store.ensure`, first successful call of an execution |
-| `{stage:'sheet', tab, rows, ms}` | every full read of a data tab (`Store` `readTable_`) |
+| `{stage:'sheet', tab, rows, ms}` | every full read of a data tab (`Store` `readTable_`; memoized reads log nothing) |
+| `{stage:'span', tab, rows, ms}` | every partial read of a data tab: one month's block (`Postes`, `Applications`, `Referentiel`), `ImportLog` rows read from the bottom or the one row of `latestImportInfo` |
 | `{stage:'listMonths', ms, ImportLog, Postes, Applications, rows, months}` | `Store.listMonths` (one lap per tab) |
 | `{stage:'sourceSheet', tab, rows, ms}` | `Importer.readSource`, per entity tab |
 | `{stage:'importMonth', ms, lockWait, dataReads, readSource, compare, writes?, flush, month, changed}` | `Importer.importMonth` when it completes (`writes` absent when nothing was written) |
@@ -420,7 +468,7 @@ doGet(e)        -> HtmlService.createTemplateFromFile('index').evaluate()
 include(name)   -> HtmlService.createHtmlOutputFromFile(name).getContent()
 coreScript()    -> 'var Core = (' + CoreFactory_.toString() + ')();'   (output must not contain '</script')
 setup()         -> Store.ensure(); Sync.enable(); logs data spreadsheet URL. Run once from the editor to authorize.
-syncHourly()    -> Sync.runFromTrigger() (time-driven trigger, every hour)
+syncHourly()    -> Store.clearMemo_(); Config.clearMemo_(); Sync.runFromTrigger() (time-driven trigger, every hour)
 ```
 
 ---------------------------------------------------------------------------------------------------

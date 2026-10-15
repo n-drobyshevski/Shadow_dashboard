@@ -10,7 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const { loadGas, plain, sheetValues, SRC_DIR } = require('../helpers/gasSandbox');
+const { loadGas, plain, sheetValues, timingLines, SRC_DIR } = require('../helpers/gasSandbox');
 const { createGasEnv } = require('../helpers/gasFakes');
 const data = require('../fixtures/data');
 
@@ -89,17 +89,20 @@ test('fakes: Sheets typing rules (apostrophe, formulas, auto-conversion unless "
 test('Config: properties and date helpers', () => {
   const { ctx } = loadGas({ props: { SOURCE_SPREADSHEET_ID: 'src-id' } });
   const noAccess = { users: [], groups: [], domainRole: 'none' };
-  assert.deepEqual(plain(ctx.Config.get()), { dataId: '', sourceId: 'src-id', threshold: 80, access: noAccess });
+  assert.deepEqual(plain(ctx.Config.get()), { dataId: '', sourceId: 'src-id', threshold: 80, schemaVersion: '', access: noAccess });
   ctx.Config.setDataId('data-id');
   ctx.Config.setSourceId('other');
   ctx.Config.setThreshold(75);
-  assert.deepEqual(plain(ctx.Config.get()), { dataId: 'data-id', sourceId: 'other', threshold: 75, access: noAccess });
+  assert.deepEqual(plain(ctx.Config.get()), { dataId: 'data-id', sourceId: 'other', threshold: 75, schemaVersion: '', access: noAccess });
   ctx.Config.setAccess({ users: [{ email: 'a@decathlon.com', role: 'lecteur' }], domainRole: 'lecteur' });
   assert.deepEqual(plain(ctx.Config.get().access), { users: [{ email: 'a@decathlon.com', role: 'lecteur',
     added_at: '', added_by: '' }], groups: [], domainRole: 'lecteur' });
-  // Corrupted properties never lock anybody out with an error: defaults instead.
+  // Corrupted properties never lock anybody out with an error: defaults instead (read by a new
+  // execution: Config.get memoizes the properties for the current one).
   ctx.PropertiesService.getScriptProperties().setProperty('ACCESS_JSON_0', '{oops');
   ctx.PropertiesService.getScriptProperties().setProperty('COMPLIANCE_THRESHOLD', '250');
+  assert.equal(ctx.Config.get().threshold, 75, 'memoized within the execution');
+  ctx.Config.clearMemo_();
   assert.deepEqual(plain(ctx.Config.get().access), noAccess);
   assert.equal(ctx.Config.get().threshold, 80);
   assert.match(ctx.Config.today(), /^\d{4}-\d{2}-\d{2}$/);
@@ -174,6 +177,7 @@ test('Store.ensure never replaces a configured data spreadsheet that fails to op
   assert.ok(stale.env.__state.console.some((c) => c.level === 'error' && /deleted-spreadsheet-id/.test(String(c.args[0]))));
   // Explicit recovery: the admin deletes the property, the next execution creates a new file.
   stale.env.PropertiesService.getScriptProperties().deleteProperty('DATA_SPREADSHEET_ID');
+  stale.ctx.Store.resetCache_();
   const ss = stale.ctx.Store.ensure();
   assert.equal(stale.ctx.Config.get().dataId, ss.getId());
   assert.deepEqual(ss.getSheets().map((s) => s.getName()), TAB_NAMES);
@@ -268,10 +272,19 @@ test('replaceEntityMonth does one read and one write per tab', () => {
   sb.Store.replaceEntityMonth('Applications', '2026-05', apps('2026-05'), KEY_APP);
   assert.equal(sb.env.__state.calls.getValues - c0.getValues, 1);
   assert.equal(sb.env.__state.writes.length - w0, 1);
-  // reading a month = one getValues
+  // reading a month = column A (one narrow getValues, shared with listMonths) + one getValues of
+  // that month's rows only
   const c1 = sb.env.__state.calls.getValues;
+  const k1 = sb.env.__state.cells.getValues;
   sb.Store.readEntityMonth('Applications', '2026-05');
-  assert.equal(sb.env.__state.calls.getValues - c1, 1);
+  assert.equal(sb.env.__state.calls.getValues - c1, 2);
+  const rows = data.MONTHS['2026-04'].applications.length + data.MONTHS['2026-05'].applications.length;
+  assert.equal(sb.env.__state.cells.getValues - k1, rows + data.MONTHS['2026-05'].applications.length * 6);
+  sb.Store.clearMemo_();
+  sb.Store.listMonths();
+  const c2 = sb.env.__state.calls.getValues;
+  sb.Store.readEntityMonth('Applications', '2026-05');
+  assert.equal(sb.env.__state.calls.getValues - c2, 1, 'column A already read by listMonths');
 });
 
 test('updateEntityRows / appendEntityRow / deleteEntityRow / NOT_FOUND', () => {
@@ -327,6 +340,238 @@ test('updateEntityRows / appendEntityRow / deleteEntityRow / NOT_FOUND', () => {
   assert.ok(!may.some((r) => r[KEY_APP] === 'Dropbox perso'));
   assert.equal(sb.Store.readEntityMonth('Applications', '2026-04').length, 5);
   assertAllWritesPlainText(sb.env);
+});
+
+const getValuesCalls = (sb) => sb.env.__state.calls.getValues || 0;
+const getValuesCells = (sb) => sb.env.__state.cells.getValues || 0;
+
+test('month span: rows appended out of order stay in their month, other months are not read', () => {
+  const sb = boot();
+  const aprilApps = apps('2026-04');
+  const mayApps = apps('2026-05');
+  sb.Store.replaceEntityMonth('Applications', '2026-04', aprilApps, KEY_APP);
+  sb.Store.replaceEntityMonth('Applications', '2026-05', mayApps, KEY_APP);
+  // An April record appended after May, then a May record after it: May's block holds an April row.
+  const lateApril = sb.Store.appendEntityRow('Applications', '2026-04', { [KEY_APP]: 'Tard avril' }, KEY_APP);
+  const lateMay = sb.Store.appendEntityRow('Applications', '2026-05', { [KEY_APP]: 'Tard mai' }, KEY_APP);
+  const months = () => tabValues(sb, 'Applications').slice(1).map((r) => r[0]);
+  assert.deepEqual(months(), [...aprilApps.map(() => '2026-04'), ...mayApps.map(() => '2026-05'), '2026-04', '2026-05']);
+  const total = aprilApps.length + mayApps.length + 2;
+
+  // A new call: column A, then May's block only (first May row .. last May row).
+  sb.Store.clearMemo_();
+  const c0 = getValuesCells(sb);
+  const may = sb.Store.readEntityMonth('Applications', '2026-05');
+  assert.deepEqual(plain(may.map((r) => r[KEY_APP])), mayApps.map((r) => r[KEY_APP]).concat(['Tard mai']));
+  assert.equal(getValuesCells(sb) - c0, total + (mayApps.length + 2) * 6, 'column A + the May block, not April');
+  const april = sb.Store.readEntityMonth('Applications', '2026-04');
+  assert.deepEqual(plain(april.map((r) => r[KEY_APP])), aprilApps.map((r) => r[KEY_APP]).concat(['Tard avril']));
+  assert.equal(april[april.length - 1]._order, aprilApps.length);
+
+  // Writes through the block: only the May row changes, the April row inside it is not a May record.
+  const w0 = sb.env.__state.writes.length;
+  sb.Store.updateEntityRows('Applications', '2026-05', [{ id: lateMay._id, updates: { Galink: 'Oui' } }]);
+  assert.deepEqual(sb.env.__state.writes.slice(w0).map((w) => w.a1), ['A' + (total + 1) + ':F' + (total + 1)]);
+  assert.throws(() => sb.Store.updateEntityRows('Applications', '2026-05', [{ id: lateApril._id, updates: {} }]), { code: 'NOT_FOUND' });
+  assert.equal(sb.Store.deleteEntityRow('Applications', '2026-05', lateApril._id), false);
+  assert.equal(sb.Store.readEntityMonth('Applications', '2026-05').pop().Galink, 'Oui');
+  assert.equal(sb.Store.deleteEntityRow('Applications', '2026-05', lateMay._id), true);
+  assert.deepEqual(months(), [...aprilApps.map(() => '2026-04'), ...mayApps.map(() => '2026-05'), '2026-04']);
+  assert.equal(sb.Store.readEntityMonth('Applications', '2026-04').length, aprilApps.length + 1);
+
+  // A re-import of April makes its rows contiguous again.
+  sb.Store.replaceEntityMonth('Applications', '2026-04', sb.Store.readEntityMonth('Applications', '2026-04'), KEY_APP);
+  assert.deepEqual(months(), [...aprilApps.map(() => '2026-04'), '2026-04', ...mayApps.map(() => '2026-05')]);
+  assert.deepEqual(plain(sb.Store.readEntityMonth('Applications', '2026-05').map((r) => r[KEY_APP])), mayApps.map((r) => r[KEY_APP]));
+
+  // Référentiel: same block read.
+  sb.Store.replaceReferentiel('2026-04', data.REFERENTIEL);
+  sb.Store.replaceReferentiel('2026-05', { OS: ['Windows', 'Linux'] });
+  sb.Store.clearMemo_();
+  const r0 = getValuesCalls(sb);
+  assert.deepEqual(plain(sb.Store.readReferentiel('2026-05')), { OS: ['Windows', 'Linux'] });
+  assert.equal(getValuesCalls(sb) - r0, 2, 'column A + the month block');
+  assert.deepEqual(plain(sb.Store.readReferentiel('2026-04')), data.REFERENTIEL);
+  assert.deepEqual(plain(sb.Store.readReferentiel('2026-03')), {});
+  assertAllWritesPlainText(sb.env);
+});
+
+test('month span: rows moved by another execution after column A was read -> whole tab read instead', () => {
+  const sb = boot();
+  sb.Store.replaceEntityMonth('Applications', '2026-04', apps('2026-04'), KEY_APP);
+  sb.Store.replaceEntityMonth('Applications', '2026-05', apps('2026-05'), KEY_APP);
+  sb.Store.clearMemo_();
+  sb.Store.listMonths(); // column A memoized (a read-only call, outside the lock)
+  // Another execution re-imports April with two more records: May moves two rows down.
+  const other = loadGas({ env: sb.env });
+  other.ctx.Store.replaceEntityMonth('Applications', '2026-04',
+    apps('2026-04').concat([{ [KEY_APP]: 'Nouveau 1' }, { [KEY_APP]: 'Nouveau 2' }]), KEY_APP);
+  const l0 = timingLines(sb.env).length;
+  const may = sb.Store.readEntityMonth('Applications', '2026-05');
+  assert.deepEqual(plain(may.map((r) => r[KEY_APP])), apps('2026-05').map((r) => r[KEY_APP]));
+  assert.deepEqual(timingLines(sb.env).slice(l0).map((l) => [l.stage, l.tab]),
+    [['span', 'Applications'], ['sheet', 'Applications']]);
+  assert.equal(sb.Store.readEntityMonth('Applications', '2026-04').length, apps('2026-04').length + 2);
+});
+
+test('ImportLog: latestImportInfo parses one row (tail, then column A); recentImportLog reads from the bottom', () => {
+  const sb = boot();
+  const entry = (month, k) => ({ month, imported_at: '2026-05-01 ' + String(k % 24).padStart(2, '0') + ':00', source_id: 'SRC',
+    counts: { postes: k, applications: 1, referentiel: 1 }, postes_headers: ['A'], apps_headers: ['B'], warnings: [] });
+  sb.Store.appendImportLog(entry('2026-01', 100));
+  sb.Store.appendImportLog(entry('2026-03', 101));
+  for (let k = 0; k < 40; k++) sb.Store.appendImportLog(entry(k % 2 ? '2026-04' : '2026-05', k));
+  const width = 8;
+
+  // The latest entry of the month is in the tail: one read of the last 30 rows.
+  sb.Store.clearMemo_();
+  let c0 = getValuesCalls(sb);
+  let k0 = getValuesCells(sb);
+  assert.equal(sb.Store.latestImportInfo('2026-05').counts.postes, 38);
+  assert.deepEqual([getValuesCalls(sb) - c0, getValuesCells(sb) - k0], [1, 30 * width]);
+
+  // Only before the tail: the tail, column A from the bottom, then that one row.
+  sb.Store.clearMemo_();
+  c0 = getValuesCalls(sb);
+  k0 = getValuesCells(sb);
+  assert.deepEqual(plain(sb.Store.latestImportInfo('2026-03')), Object.assign(entry('2026-03', 101), { changes: null }));
+  assert.deepEqual([getValuesCalls(sb) - c0, getValuesCells(sb) - k0], [3, 30 * width + 42 + width]);
+
+  // Column A already read in the call (listMonths): that row only; an unknown month reads nothing more.
+  sb.Store.clearMemo_();
+  sb.Store.listMonths();
+  c0 = getValuesCalls(sb);
+  k0 = getValuesCells(sb);
+  assert.equal(sb.Store.latestImportInfo('2026-03').counts.postes, 101);
+  assert.equal(sb.Store.latestImportInfo('2026-02'), null);
+  assert.deepEqual([getValuesCalls(sb) - c0, getValuesCells(sb) - k0], [1, width]);
+
+  // A row deleted by hand after column A was read: the row no longer matches, the whole tab is read.
+  sb.Store.clearMemo_();
+  sb.Store.listMonths();
+  sb.ss.getSheetByName('ImportLog').deleteRow(2); // the 2026-01 entry
+  assert.equal(sb.Store.latestImportInfo('2026-03').counts.postes, 101);
+
+  // recentImportLog: newest first, blank rows skipped (reading further up).
+  sb.Store.clearMemo_();
+  assert.deepEqual(plain(sb.Store.recentImportLog(3).map((e) => e.counts.postes)), [39, 38, 37]);
+  const sh = sb.ss.getSheetByName('ImportLog');
+  sh.getRange(sh.getLastRow() - 2, 1, 2, width).clearContent(); // entries 37 and 38
+  sb.Store.clearMemo_();
+  assert.deepEqual(plain(sb.Store.recentImportLog(4).map((e) => e.counts.postes)), [39, 36, 35, 34]);
+  assert.equal(sb.Store.recentImportLog(500).length, 41 - 2);
+  assert.deepEqual(plain(sb.Store.recentImportLog(0)), []);
+
+  // Empty log.
+  const empty = boot();
+  assert.equal(empty.Store.latestImportInfo('2026-05'), null);
+  assert.deepEqual(plain(empty.Store.recentImportLog(12)), []);
+});
+
+test('read memo: shared within an execution, dropped by every write and when the lock is taken', () => {
+  const sb = boot();
+  sb.Store.insertRow('Actions', { id: 'a1', action: 'x' });
+  sb.Store.clearMemo_();
+  let c0 = getValuesCalls(sb);
+  sb.Store.listRows('Actions');
+  sb.Store.listRows('Actions');
+  assert.equal(getValuesCalls(sb) - c0, 1, 'read once per execution');
+  // Callers get copies: changing them does not change the memo.
+  sb.Store.listRows('Actions')[0].action = 'changed';
+  assert.equal(sb.Store.listRows('Actions')[0].action, 'x');
+
+  // Every write primitive drops the memo of its tab.
+  sb.Store.insertRow('Actions', { id: 'a2' });
+  assert.deepEqual(plain(sb.Store.listRows('Actions').map((a) => a.id)), ['a1', 'a2']);
+  sb.Store.updateRow('Actions', 'a1', { action: 'y' });
+  assert.equal(sb.Store.listRows('Actions')[0].action, 'y');
+  sb.Store.updateRowsWhere('Actions', () => true, () => ({ comment: 'c' }));
+  assert.ok(sb.Store.listRows('Actions').every((a) => a.comment === 'c'));
+  sb.Store.deleteRow('Actions', 'a2');
+  assert.deepEqual(plain(sb.Store.listRows('Actions').map((a) => a.id)), ['a1']);
+  sb.Store.writeTab('Actions', [{ id: 'w1' }, { id: 'w2' }]);
+  sb.Store.writeTab('Actions', [{ id: 'w1' }]); // shrinks: clearContent
+  assert.deepEqual(plain(sb.Store.listRows('Actions').map((a) => a.id)), ['w1']);
+
+  sb.Store.replaceEntityMonth('Postes', '2026-05', postes('2026-05'), KEY_POSTE);
+  const first = sb.Store.readEntityMonth('Postes', '2026-05')[0];
+  assert.equal(sb.Store.listMonths().indexOf('2026-05') >= 0, true);
+  sb.Store.updateEntityRows('Postes', '2026-05', [{ id: first._id, updates: { Statut: 'Revu' } }]);
+  assert.equal(sb.Store.readEntityMonth('Postes', '2026-05')[0].Statut, 'Revu');
+  const added = sb.Store.appendEntityRow('Postes', '2026-06', { [KEY_POSTE]: 'PC-NEW' }, KEY_POSTE);
+  assert.ok(sb.Store.listMonths().includes('2026-06'), 'column A re-read after the append');
+  assert.equal(sb.Store.readEntityMonth('Postes', '2026-06')[0]._id, added._id);
+  sb.Store.deleteEntityRow('Postes', '2026-06', added._id);
+  assert.deepEqual(plain(sb.Store.readEntityMonth('Postes', '2026-06')), []);
+  sb.Store.appendImportLog({ month: '2026-07', source_id: 'S' });
+  assert.ok(sb.Store.listMonths().includes('2026-07'));
+  assert.equal(sb.Store.latestImportInfo('2026-07').source_id, 'S');
+
+  // Another execution writes: this one keeps its memo outside the lock, reads again under it.
+  const other = loadGas({ env: sb.env });
+  other.ctx.Store.insertRow('Actions', { id: 'o1' });
+  assert.equal(sb.Store.listRows('Actions').length, 1, 'memoized outside the lock');
+  assert.equal(sb.Store.withLock(() => sb.Store.listRows('Actions').length), 2, 'fresh under the lock');
+
+  // Config: one getProperties per execution, dropped by its setters, by the lock and by fresh.
+  const props = sb.env.PropertiesService.getScriptProperties();
+  sb.Config.clearMemo_();
+  const p0 = sb.env.__state.calls.getProperties || 0;
+  sb.Config.get();
+  sb.Config.get();
+  sb.Config.getPrefs('a@decathlon.com');
+  assert.equal((sb.env.__state.calls.getProperties || 0) - p0, 1);
+  sb.Config.setThreshold(55);
+  assert.equal(sb.Config.get().threshold, 55);
+  props.setProperty('COMPLIANCE_THRESHOLD', '60'); // another execution
+  assert.equal(sb.Config.get().threshold, 55, 'memoized');
+  assert.equal(sb.Config.get({ fresh: true }).threshold, 60);
+  props.setProperty('COMPLIANCE_THRESHOLD', '65');
+  assert.equal(sb.Store.withLock(() => sb.Config.get().threshold), 65, 'fresh under the lock');
+
+  // Every api_* call starts with empty memos (a new execution in Apps Script).
+  other.ctx.Store.insertRow('Actions', { id: 'o2' });
+  assert.deepEqual(JSON.parse(sb.ctx.api_getActions('null')).data.actions.map((a) => a.id), ['w1', 'o1', 'o2']);
+});
+
+test('Store.ensure: the schema version property replaces the Meta read; any doubt reads Meta', () => {
+  const sb = boot();
+  const props = sb.env.PropertiesService.getScriptProperties();
+  const stored = () => JSON.parse(props.getProperty('DATA_SCHEMA_VERSION'));
+  assert.deepEqual(stored(), { dataId: sb.dataId, version: '2' }, 'written with Meta on creation');
+
+  /** ensure() in a new execution: [getDataRange reads, getValues reads, lock acquisitions]. */
+  function coldEnsure() {
+    sb.Store.resetCache_();
+    const c = Object.assign({}, sb.env.__state.calls);
+    const l = sb.env.__state.lock.acquired;
+    sb.Store.ensure();
+    const d = (k) => (sb.env.__state.calls[k] || 0) - (c[k] || 0);
+    return [d('getDataRange'), d('getValues'), sb.env.__state.lock.acquired - l];
+  }
+  assert.deepEqual(coldEnsure(), [0, 0, 0], 'no Meta read, no lock');
+
+  // Missing, unreadable or about another spreadsheet (DATA_SPREADSHEET_ID changed): Meta is read once
+  // and the property written again.
+  for (const value of [null, '{oops', JSON.stringify({ dataId: 'another-file', version: '2' })]) {
+    if (value === null) props.deleteProperty('DATA_SCHEMA_VERSION');
+    else props.setProperty('DATA_SCHEMA_VERSION', value);
+    assert.deepEqual(coldEnsure(), [1, 1, 0], String(value));
+    assert.deepEqual(stored(), { dataId: sb.dataId, version: '2' });
+    assert.deepEqual(coldEnsure(), [0, 0, 0]);
+  }
+
+  // A schema upgrade (property and Meta at an older version): repaired under the lock, both updated.
+  props.setProperty('DATA_SCHEMA_VERSION', JSON.stringify({ dataId: sb.dataId, version: '1' }));
+  sb.ss.getSheetByName('Meta').getRange(2, 2).setNumberFormat('@').setValues([['1']]);
+  assert.deepEqual(coldEnsure().slice(2), [1]);
+  assert.deepEqual(tabValues(sb, 'Meta'), [['key', 'value'], ['schema_version', '2']]);
+  assert.deepEqual(stored(), { dataId: sb.dataId, version: '2' });
+
+  // Property current but a tab deleted by hand: the tabs are always checked, so it is repaired.
+  sb.ss.deleteSheet(sb.ss.getSheetByName('Replacements'));
+  assert.deepEqual(coldEnsure().slice(2), [1]);
+  assert.ok(sb.ss.getSheetByName('Replacements'));
 });
 
 test('Store grows the sheet beyond its default 1000 rows', () => {
@@ -408,7 +653,8 @@ test('Actions CRUD and updateRowsWhere', () => {
   assert.deepEqual(plain(sb.Store.listRows('Actions').find((a) => a.id === 'a-0002')), plain(up));
   assert.throws(() => sb.Store.updateRow('Actions', 'nope', { status: 'x' }), { code: 'NOT_FOUND' });
 
-  // one read + one write
+  // one read + one write (in a new call: listRows above memoized the tab)
+  sb.Store.clearMemo_();
   const r0 = sb.env.__state.calls.getValues;
   const w0 = sb.env.__state.writes.length;
   const n = sb.Store.updateRowsWhere('Actions', (a) => a.target_type === 'poste',

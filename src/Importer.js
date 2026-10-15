@@ -149,17 +149,16 @@ var Importer = (function () {
   }
 
   /**
-   * Latest month strictly before `month` whose stored snapshot actually has records, as
+   * Latest month strictly before `month` whose stored applications snapshot actually has records, as
    * {month, records}, or null. Skipping empty snapshots (an import whose applications tab was
-   * missing, or that failed half-way) keeps the Galink/IDP carry-over chain intact.
+   * missing, or that failed half-way) keeps the Galink/IDP carry-over chain intact. Reads column A
+   * of Applications (Store.tabMonths: a month listed there has rows) and that one month's rows.
    */
-  function latestEarlierWithRecords_(byMonth, month) {
-    var earlier = Core.sortMonths(Object.keys(byMonth).filter(function (m) {
-      return Core.validateMonth(m) && m < month && (byMonth[m] || []).length > 0;
-    }));
+  function latestEarlierWithRecords_(month) {
+    var earlier = Store.tabMonths(Config.TABS.applications).filter(function (m) { return m < month; });
     if (!earlier.length) return null;
     var m = earlier[earlier.length - 1];
-    return { month: m, records: byMonth[m] };
+    return { month: m, records: Store.readEntityMonth(Config.TABS.applications, m) };
   }
 
   /** Field names of a record without the internal `_` fields. */
@@ -274,10 +273,12 @@ var Importer = (function () {
       warnings = warnings.concat((src.postes && src.postes.warnings) || [],
         (src.applications && src.applications.warnings) || []);
 
-      // ---- applications (+ Galink/IDP carry-over)
-      var appsByMonth = Store.readEntityAll(Config.TABS.applications);
-      var sameApps = exists ? (appsByMonth[month] || []) : [];
-      var earlier = latestEarlierWithRecords_(appsByMonth, month);
+      // ---- applications (+ Galink/IDP carry-over). Reads this month's rows and, only when the
+      // carry-over needs it (new month, or a previous import incomplete / without applications), the
+      // latest earlier month that has applications: never the whole history.
+      var sameApps = exists ? Store.readEntityMonth(Config.TABS.applications, month) : [];
+      var needEarlier = !!src.applications && (!exists || !prevInfo || !sameApps.length);
+      var earlier = needEarlier ? latestEarlierWithRecords_(month) : null;
       var appRecords = null; // null = keep the stored snapshot
       var carried = 0;
       if (src.applications) {

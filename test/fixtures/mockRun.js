@@ -350,7 +350,15 @@ function mockMain(FIX, OPTS) {
       return runSync();
     },
 
-    api_getImportLog: function () { return clone(db.importLog).reverse(); },
+    api_getImportLog: function (args) {
+      var limit = obj(args).limit === undefined || obj(args).limit === null ? 12 : obj(args).limit;
+      if (typeof limit !== 'number' || Math.floor(limit) !== limit || limit < 1 || limit > 500) {
+        fail('VALIDATION', '« limit » doit être un entier entre 1 et 500.');
+      }
+      return clone(db.importLog).reverse().slice(0, limit).map(function (e) {
+        return { month: e.month, imported_at: e.imported_at, counts: e.counts, warnings: e.warnings, changes: e.changes || null };
+      });
+    },
 
     api_savePostes: function (args) { return saveEntity('postes', KEY_POSTE, args); },
     api_saveApplications: function (args) { return saveEntity('applications', KEY_APP, args); },

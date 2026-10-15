@@ -188,8 +188,8 @@ with the system fallbacks above.
   maintenant » secondary + « Journal » link; everybody: « Actualiser » primary when newer data exists).
   No link to the source for lecteurs (private to the deployer).
 - **Paramètres → Synchronisation**: kv list (Automatique, Mois en cours, Dernière réussite, Dernière
-  modification), the button, then « Journal des synchronisations » (one row per run that changed
-  something, warnings behind the count button).
+  modification), the button, then « Journal des synchronisations » (the 12 latest runs that changed
+  something, newest first, warnings behind the count button).
 - **Where an edit goes**, for admins above the Postes / Applications tables: an `alert-info` line, « Les
   modifications sont écrites dans le Google Sheet source. » for the current month, « Mois figé : … » for a
   past one.

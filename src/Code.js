@@ -50,8 +50,11 @@ function setup() {
 /**
  * Time-driven trigger handler (every hour, created by Sync.enable): synchronises the current month
  * with the source spreadsheet. Public because a trigger cannot call a private (`_`) function; a call
- * from google.script.run would only run the same idempotent sync and returns nothing.
+ * from google.script.run would only run the same idempotent sync and returns nothing. Starts with
+ * empty read memos, like apiWrap_ (a new execution in Apps Script; matters in the test sandbox).
  */
 function syncHourly() {
+  Store.clearMemo_();
+  Config.clearMemo_();
   Sync.runFromTrigger();
 }

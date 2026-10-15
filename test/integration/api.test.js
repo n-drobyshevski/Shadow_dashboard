@@ -538,9 +538,14 @@ test('getDiff 2026-04 -> 2026-05', () => {
   fail(ctx, 'api_getDiff', { oldMonth: '2026-04', newMonth: '2026-06' }, 'NOT_FOUND');
 });
 
-test('getImportLog is newest first; bootstrap after imports', () => {
+test('getImportLog is newest first, limited, journal fields only; bootstrap after imports', () => {
   const { ctx } = imported();
-  assert.deepEqual(ok(ctx, 'api_getImportLog').map((l) => l.month), ['2026-05', '2026-04']);
+  const log = ok(ctx, 'api_getImportLog');
+  assert.deepEqual(log.map((l) => l.month), ['2026-05', '2026-04']);
+  assert.deepEqual(Object.keys(log[0]), ['month', 'imported_at', 'counts', 'warnings', 'changes']);
+  assert.deepEqual(ok(ctx, 'api_getImportLog', { limit: 1 }), log.slice(0, 1));
+  assert.deepEqual(ok(ctx, 'api_getImportLog', { limit: 500 }), log);
+  for (const limit of [0, 501, 1.5, '3', true]) fail(ctx, 'api_getImportLog', { limit }, 'VALIDATION');
   const b = ok(ctx, 'api_bootstrap');
   assert.deepEqual(b.months, ['2026-04', '2026-05']);
   assert.equal(b.latestMonth, '2026-05');

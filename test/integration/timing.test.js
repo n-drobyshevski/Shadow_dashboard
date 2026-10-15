@@ -91,14 +91,24 @@ test('Store: ensure, listMonths and sheet lines of a cold execution', () => {
   assert.deepEqual(Object.keys(months[0]), ['stage', 'ms', 'ImportLog', 'Postes', 'Applications', 'rows', 'months']);
   assert.equal(months[0].months, 1);
 
-  const sheets = lines.filter((l) => l.stage === 'sheet');
-  assert.deepEqual(sheets.map((l) => l.tab), ['Postes', 'Applications', 'ImportLog', 'Referentiel']);
-  for (const l of sheets) {
+  // One month is read without the other months: no full tab read, one span per tab (the ImportLog
+  // span is the one row of the month's latest entry, found through column A read by listMonths).
+  assert.deepEqual(lines.filter((l) => l.stage === 'sheet'), []);
+  const spans = lines.filter((l) => l.stage === 'span');
+  assert.deepEqual(spans.map((l) => l.tab), ['Postes', 'Applications', 'ImportLog', 'Referentiel']);
+  for (const l of spans) {
     assert.deepEqual(Object.keys(l), ['stage', 'tab', 'rows', 'ms']);
     assert.ok(isMs(l.rows) && isMs(l.ms));
   }
-  assert.equal(sheets.find((l) => l.tab === 'Postes').rows, buildSourceSpreadsheet('2026-05').sheets['Suivi des postes']
+  assert.equal(spans.find((l) => l.tab === 'Postes').rows, buildSourceSpreadsheet('2026-05').sheets['Suivi des postes']
     .values.filter((r, i) => i >= 2 && r[6]).length);
+  assert.equal(spans.find((l) => l.tab === 'ImportLog').rows, 1);
+
+  // A full tab read logs a sheet line.
+  const timeline = linesDuring(env, () => ok(ctx, 'api_getTimeline'));
+  const sheets = timeline.filter((l) => l.stage === 'sheet');
+  assert.deepEqual(sheets.map((l) => l.tab), ['Postes', 'Applications']);
+  for (const l of sheets) assert.deepEqual(Object.keys(l), ['stage', 'tab', 'rows', 'ms']);
 
   // A second call in the same execution does not open the spreadsheet again.
   const again = linesDuring(env, () => ok(ctx, 'api_getMonthData', { month: '2026-05' }));

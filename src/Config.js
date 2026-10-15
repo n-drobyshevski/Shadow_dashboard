@@ -11,6 +11,12 @@ var Config = (function () {
   var PROP_ACCESS = 'ACCESS_JSON';
   var PROP_FAVICON = 'FAVICON_URL';
   /**
+   * Schema version of the data spreadsheet, copied from its Meta tab so that Store.ensure's fast path
+   * needs no Meta read: JSON {dataId, version}. Keyed by the spreadsheet id, so a new DATA_SPREADSHEET_ID
+   * never inherits the version of the previous file (Config.get reports '' until Store.ensure checks Meta).
+   */
+  var PROP_SCHEMA = 'DATA_SCHEMA_VERSION';
+  /**
    * Per-account interface preferences, one Script Property per account: PREFS_<email> = JSON. The page
    * also keeps them in localStorage, but that storage is refused in the Apps Script frame when the
    * browser blocks third-party storage. PREF_VALUES = the only keys and values accepted.
@@ -64,23 +70,61 @@ var Config = (function () {
 
   var SCHEMA_VERSION = '2'; // 2: ImportLog.changes_json (hourly sync)
 
+  /**
+   * Per-execution memo of the Script Properties map (one getProperties per execution instead of one
+   * per Config.get). Only read here: get() / getPrefs() build new objects from it on every call, so a
+   * caller can change what they return. Dropped by every setter of this module, by clearMemo_() (start
+   * of each api_* call and of the hourly trigger run, Store.resetCache_) and when Store.withLock
+   * acquires the lock, so a read-modify-write under the lock always starts from the stored values.
+   */
+  var memo_ = null;
+
   function props_() {
     return PropertiesService.getScriptProperties();
   }
 
+  /** The Script Properties map: the memo, or one getProperties (always with `fresh`). */
+  function all_(fresh) {
+    if (!memo_ || fresh) memo_ = props_().getProperties() || {};
+    return memo_;
+  }
+
+  function clearMemo_() {
+    memo_ = null;
+  }
+
   /**
-   * @return {{dataId: string, sourceId: string, threshold: number, access: {users: Object[], groups: Object[], domainRole: string}}}
-   *   ids are '' when unset; threshold is Core.THRESHOLD when unset or invalid.
+   * @param {{fresh?: boolean}=} opts fresh: read the properties again instead of this execution's memo
+   * @return {{dataId: string, sourceId: string, threshold: number, schemaVersion: string,
+   *           access: {users: Object[], groups: Object[], domainRole: string}}}
+   *   ids are '' when unset; threshold is Core.THRESHOLD when unset or invalid; schemaVersion is the
+   *   version recorded for dataId (setSchemaVersion), '' when none is.
    */
-  function get() {
-    var p = props_().getProperties() || {};
+  function get(opts) {
+    var p = all_(!!(opts && opts.fresh));
     var threshold = Core.validateThreshold(p[PROP_THRESHOLD] || '');
+    var dataId = p[PROP_DATA_ID] || '';
     return {
-      dataId: p[PROP_DATA_ID] || '',
+      dataId: dataId,
       sourceId: p[PROP_SOURCE_ID] || '',
       threshold: threshold === null ? Core.THRESHOLD : threshold,
+      schemaVersion: schemaVersionFor_(p, dataId),
       access: parseAccess_(readAccessJson_(p))
     };
+  }
+
+  /** Version stored in DATA_SCHEMA_VERSION when it is about `dataId`, else ''. */
+  function schemaVersionFor_(p, dataId) {
+    if (!dataId || !p[PROP_SCHEMA]) return '';
+    var v = null;
+    try { v = JSON.parse(p[PROP_SCHEMA]); } catch (e) { v = null; }
+    return v && v.dataId === dataId && typeof v.version === 'string' ? v.version : '';
+  }
+
+  /** Records that the data spreadsheet `dataId` carries schema `version` (Store.ensure, after checking Meta). */
+  function setSchemaVersion(dataId, version) {
+    clearMemo_();
+    props_().setProperty(PROP_SCHEMA, JSON.stringify({ dataId: String(dataId || ''), version: String(version) }));
   }
 
   /** Concatenates ACCESS_JSON_0..N-1 ('' when unset or a part is missing). */
@@ -118,6 +162,7 @@ var Config = (function () {
   }
 
   function setThreshold(n) {
+    clearMemo_();
     props_().setProperty(PROP_THRESHOLD, String(n));
   }
 
@@ -129,6 +174,7 @@ var Config = (function () {
   function setAccess(access) {
     var json = JSON.stringify({ users: access.users || [], groups: access.groups || [],
       domainRole: access.domainRole || 'none' });
+    clearMemo_();
     var store = props_();
     var parts = {};
     var n = 0;
@@ -140,10 +186,12 @@ var Config = (function () {
   }
 
   function setDataId(id) {
+    clearMemo_();
     props_().setProperty(PROP_DATA_ID, String(id || ''));
   }
 
   function setSourceId(id) {
+    clearMemo_();
     props_().setProperty(PROP_SOURCE_ID, String(id || ''));
   }
 
@@ -177,14 +225,16 @@ var Config = (function () {
   /** @return {Object} the account's preferences ({} when none or unreadable). */
   function getPrefs(email) {
     if (!String(email || '').trim()) return {};
-    var raw = props_().getProperty(prefsKey_(email));
+    var raw = all_(false)[prefsKey_(email)];
     if (!raw) return {};
     try { return cleanPrefs_(JSON.parse(raw)); } catch (e) { return {}; }
   }
 
   /** Merges `patch` (already validated) into the account's preferences; returns the stored object. */
   function setPrefs(email, patch) {
+    all_(true); // read-modify-write: start from the stored value, not this execution's memo
     var next = cleanPrefs_(Object.assign(getPrefs(email), patch || {}));
+    clearMemo_();
     props_().setProperty(prefsKey_(email), JSON.stringify(next));
     return next;
   }
@@ -203,6 +253,7 @@ var Config = (function () {
     PROP_THRESHOLD: PROP_THRESHOLD,
     PROP_ACCESS: PROP_ACCESS,
     PROP_FAVICON: PROP_FAVICON,
+    PROP_SCHEMA: PROP_SCHEMA,
     PROP_PREFS_PREFIX: PROP_PREFS_PREFIX,
     PREF_VALUES: PREF_VALUES,
     DEFAULT_FAVICON_URL: DEFAULT_FAVICON_URL,
@@ -218,6 +269,8 @@ var Config = (function () {
     setSourceId: setSourceId,
     setThreshold: setThreshold,
     setAccess: setAccess,
+    setSchemaVersion: setSchemaVersion,
+    clearMemo_: clearMemo_,
     faviconUrl: faviconUrl,
     getPrefs: getPrefs,
     setPrefs: setPrefs,
