@@ -313,6 +313,7 @@ function CoreFactory_() {
     }
 
     var records = [];
+    var rows = [];
     var missingKey = 0;
     for (var r = headerIdx + 1; r < display.length; r++) {
       var dRow = Array.isArray(display[r]) ? display[r] : [];
@@ -336,13 +337,15 @@ function CoreFactory_() {
         continue;
       }
       records.push(rec);
+      rows.push(r);
     }
 
     var warnings = [];
     if (missingKey > 0) {
       warnings.push(missingKey + ' ligne(s) sans « ' + keyField + ' » ignorée(s)');
     }
-    return { headers: headers, records: records, warnings: warnings };
+    // rows[i] / columns[j] = grid indexes (0-based) of records[i] / headers[j], for writing back.
+    return { headers: headers, records: records, warnings: warnings, headerRow: headerIdx, rows: rows, columns: cols };
   }
 
   /**
@@ -736,6 +739,88 @@ function CoreFactory_() {
     return before.length ? before[before.length - 1] : null;
   }
 
+  // ------------------------------------------------------------------------------------------
+  // §7 Periods (a range of monthly snapshots: the state at the end, compared with the start)
+  // ------------------------------------------------------------------------------------------
+
+  /** Period shortcuts of the app bar, in display order. */
+  var PERIOD_PRESETS = ['month', 'last3', 'last6', 'year', 'all'];
+
+  /** 'YYYY-MM' moved by n months (negative = earlier); '' for an invalid month. */
+  function addMonths(month, n) {
+    if (!validateMonth(month)) return '';
+    var y = Number(month.slice(0, 4));
+    var m = Number(month.slice(5, 7)) - 1 + (Math.round(Number(n)) || 0);
+    y += Math.floor(m / 12);
+    m = ((m % 12) + 12) % 12;
+    return y + '-' + (m < 9 ? '0' : '') + (m + 1);
+  }
+
+  /** Months of `months` within [from, to] (inclusive), sorted; a reversed range is swapped. */
+  function monthsInRange(months, from, to) {
+    var a = validateMonth(from) ? from : '';
+    var b = validateMonth(to) ? to : '';
+    if (!a && !b) return [];
+    if (!a) a = b;
+    if (!b) b = a;
+    if (a > b) { var t = a; a = b; b = t; }
+    return sortMonths(months).filter(function (m) { return m >= a && m <= b; });
+  }
+
+  /**
+   * {from, to} of a period shortcut over the available months, ending at the latest one: 'month' (that
+   * month alone), 'last3' / 'last6' (calendar months, starting at the first available month inside),
+   * 'year' (its calendar year), 'all'. null when there is no month or the preset is unknown.
+   */
+  function presetPeriod(months, preset) {
+    var list = sortMonths(months);
+    if (!list.length || PERIOD_PRESETS.indexOf(preset) < 0) return null;
+    var to = list[list.length - 1];
+    var start = preset === 'month' ? to :
+      preset === 'last3' ? addMonths(to, -2) :
+      preset === 'last6' ? addMonths(to, -5) :
+      preset === 'year' ? to.slice(0, 4) + '-01' : list[0];
+    var inside = list.filter(function (m) { return m >= start; });
+    return { from: inside[0], to: to };
+  }
+
+  /**
+   * What changed for each record between two snapshots (keyed by normKey of keyField, first occurrence
+   * wins), on the score: {byKey:{key:{status:'new'|'up'|'down'|'same', from:score|null, to:score|null}},
+   * added:n, changed:n (up + down), removed:[old records absent from the new list]}.
+   * Scores are `_score` (enriched records); a difference under 0.05 point is no change.
+   */
+  function scoreEvolution(oldList, newList, keyField) {
+    var key = str(keyField);
+    var old = {};
+    toArray_(oldList).forEach(function (r) {
+      var k = normKey(r ? r[key] : null);
+      if (k !== '' && !hasOwn.call(old, k)) setOwn_(old, k, r);
+    });
+    var byKey = {};
+    var seen = {};
+    var added = 0;
+    var changed = 0;
+    toArray_(newList).forEach(function (r) {
+      var k = normKey(r ? r[key] : null);
+      if (k === '' || hasOwn.call(byKey, k)) return;
+      var to = r && typeof r._score === 'number' ? r._score : null;
+      if (!hasOwn.call(old, k)) {
+        added++;
+        setOwn_(byKey, k, { status: 'new', from: null, to: to });
+        return;
+      }
+      setOwn_(seen, k, true);
+      var o = old[k];
+      var from = o && typeof o._score === 'number' ? o._score : null;
+      var status = from !== null && to !== null && Math.abs(to - from) >= 0.05 ? (to > from ? 'up' : 'down') : 'same';
+      if (status !== 'same') changed++;
+      setOwn_(byKey, k, { status: status, from: from, to: to });
+    });
+    var removed = Object.keys(old).filter(function (k) { return !hasOwn.call(seen, k); }).map(function (k) { return old[k]; });
+    return { byKey: byKey, added: added, changed: changed, removed: removed };
+  }
+
   return {
     // §1 constants
     THRESHOLD: THRESHOLD,
@@ -789,6 +874,11 @@ function CoreFactory_() {
     optionsForColumn: optionsForColumn,
     sortMonths: sortMonths,
     previousMonth: previousMonth,
+    PERIOD_PRESETS: freeze_(PERIOD_PRESETS),
+    addMonths: addMonths,
+    monthsInRange: monthsInRange,
+    presetPeriod: presetPeriod,
+    scoreEvolution: scoreEvolution,
     threshold: threshold,
     validateThreshold: validateThreshold,
     isEmail: isEmail,

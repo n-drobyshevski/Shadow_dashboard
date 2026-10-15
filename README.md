@@ -12,18 +12,19 @@ données dans un Google Sheet.
 
 ```
 Classeur source (live)                Apps Script (src/*.js)              Navigateur (src/*.html)
-"Suivi des postes"        ──import──▶ Importer ─▶ Store ──▶ ShadowIT_AppData   index.html + js_*.html
-"Suivi des applications"   (1 mois)                  ▲                         (HtmlService, page unique)
-"Référentiel"                          Api (api_*) ◀─┴── google.script.run ◀── window.api
+"Suivi des postes"        ◀─toutes──▶ Importer ─▶ Store ──▶ ShadowIT_AppData   index.html + js_*.html
+"Suivi des applications"   les heures   ▲ Sync (déclencheur)  ▲                (HtmlService, page unique)
+"Référentiel"            (mois en cours) Api (api_*) ◀─┴── google.script.run ◀── window.api
 ```
 
 **Serveur — `src/*.js`** (Apps Script V8, un seul espace global) :
 
 | Fichier | Rôle |
 |---|---|
-| `Code.js` | `doGet` (page web), `include`, `coreScript`, `setup()` |
+| `Code.js` | `doGet` (page web), `include`, `coreScript`, `setup()`, `syncHourly()` (déclencheur horaire) |
 | `Api.js` | Les fonctions `api_*` appelées par le client (JSON en entrée et en sortie) |
-| `Importer.js` | Lit le classeur source et crée l'instantané d'un mois |
+| `Importer.js` | Lit le classeur source, crée l'instantané d'un mois, y écrit les modifications du mois en cours |
+| `Sync.js` | Synchronisation horaire du mois en cours (déclencheur, état) |
 | `Store.js` | Seul module qui écrit dans le classeur de données (verrou, écriture en texte brut) |
 | `Config.js` | Propriétés du script, noms d'onglets, schémas |
 | `Core.js` | Logique pure partagée serveur/client (scores, KPI, filtres, diff) |
@@ -33,20 +34,33 @@ autour de `google.script.run`), `js_state.html` (état), `js_ui.html` et `js_con
 (composants), `js_charts.html` (Plotly), `js_page_*.html` (une page chacun), `js_main.html` (routeur,
 barre latérale, démarrage).
 
-**Modèle de données.** Le classeur source est lu tel quel, il n'est jamais modifié. Chaque import
-fige un mois (`AAAA-MM`) dans le classeur de données `ShadowIT_AppData`, créé automatiquement dans
-votre Drive :
+**Modèle de données.** Toutes les heures, l'application relit le classeur source et met à jour le
+**mois en cours** (`AAAA-MM`, heure de Paris) dans le classeur de données `ShadowIT_AppData`, créé
+automatiquement dans votre Drive. Le 1er du mois, la première synchronisation crée le nouveau mois ; le
+précédent reste figé tel qu'à sa dernière synchronisation. Il n'y a plus d'import manuel.
+
+**Période.** La barre du haut permet de choisir un mois ou une période (raccourcis « 3 derniers mois »,
+« 6 derniers mois », « Année », « Tout l'historique », ou plage libre). Sur une période, chaque page montre
+l'état du dernier mois et ce qui a changé depuis le premier : écarts et mini-courbes au Tableau de bord,
+colonne « Évolution » dans Postes et Applications, Suivi temporel limité à la période, actions datées de la
+période. Le raccourci choisi est mémorisé par compte.
+
+Les modifications du mois en cours faites dans l'application (cellules des Postes et Applications,
+poste générique, ajout / renommage / suppression d'une application) sont **écrites dans le classeur
+source**, puis dans l'instantané : la synchronisation suivante les relit. Galink et IDP, absents de la
+source, restent dans l'application. Une cellule calculée par une formule dans la source n'est pas
+modifiable depuis l'application. Les modifications d'un mois passé ne changent que son historique.
 
 | Onglet | Contenu |
 |---|---|
 | `Postes`, `Applications` | Une ligne par enregistrement et par mois (`_month`, `_id`, `_json`…) |
 | `Referentiel` | Listes de valeurs du mois |
 | `Actions`, `Replacements` | Suivi des actions de remédiation et des remplacements de postes |
-| `ImportLog` | Journal des imports (marque la fin d'un import réussi) |
+| `ImportLog` | Journal des synchronisations qui ont changé quelque chose (marque la fin d'une écriture réussie) |
 | `Meta` | Version du schéma |
 
 Les identifiants des deux classeurs sont stockés dans les propriétés du script
-(`DATA_SPREADSHEET_ID`, `SOURCE_SPREADSHEET_ID`).
+(`DATA_SPREADSHEET_ID`, `SOURCE_SPREADSHEET_ID`), l'état de la synchronisation dans `SYNC_STATE`.
 
 ## Premier déploiement
 
@@ -87,9 +101,11 @@ Workspace que le déployeur. Avec un compte Gmail personnel, seul le déployeur 
    `clasp push -f` remplace tout le contenu du projet distant, manifeste `appsscript.json` compris.
 6. **Autoriser le script** : `npx clasp open-script` → dans l'éditeur, choisir la fonction `setup`
    → Exécuter → accepter l'autorisation (Google Sheets ; l'adresse e-mail du compte et la lecture
-   des membres de Google Groups pour le contrôle d'accès ; écran « Google n'a pas validé cette application » → Paramètres avancés →
+   des membres de Google Groups pour le contrôle d'accès ; les déclencheurs, pour la synchronisation
+   horaire ; écran « Google n'a pas validé cette application » → Paramètres avancés →
    Accéder au projet). Le journal d'exécution
-   affiche l'URL du classeur `ShadowIT_AppData` qui vient d'être créé.
+   affiche l'URL du classeur `ShadowIT_AppData` qui vient d'être créé ; le déclencheur horaire
+   `syncHourly` est créé (visible dans Déclencheurs).
 7. **Déployer l'application web** : dans l'éditeur, Déployer → Nouveau déploiement → type
    « Application Web » → Exécuter en tant que : **Moi**, Qui a accès : **Tous les utilisateurs de
    <votre domaine>** (déjà imposé par `appsscript.json`) → Déployer. Noter l'**URL** et l'**ID de déploiement**
@@ -98,8 +114,14 @@ Workspace que le déployeur. Avec un compte Gmail personnel, seul le déployeur 
    affiche `Deployed <ID> @<version>`.
 8. **Ouvrir l'URL**, coller l'URL du Google Sheet source sur l'écran « Source de données »
    (onglets attendus : `Suivi des postes`, `Suivi des applications`, et `Référentiel` si
-   disponible), puis sur le Tableau de bord, section « Importer depuis Google Sheets », choisir le
-   mois et cliquer sur « Importer ».
+   disponible). L'application synchronise aussitôt le mois en cours, puis toutes les heures. L'état
+   est visible à droite de la barre du haut ; le journal et « Synchroniser maintenant » sont dans
+   Paramètres → Synchronisation.
+
+**Mise à jour d'une installation existante** (version avec import manuel) : après `npm run deploy`,
+le compte qui déploie ouvre l'application une fois (ou exécute `setup` dans l'éditeur) et accepte la
+nouvelle autorisation (déclencheurs), puis Paramètres → Synchronisation → « Activer la synchronisation
+horaire ». Les mois déjà importés sont conservés.
 9. **Donner les accès** : Paramètres → Accès → « Ajouter un compte » (rôle Lecteur ou
    Administrateur), puis partager l'URL de l'application. Tant que personne n'est ajouté, seul le
    déployeur peut l'ouvrir.
@@ -109,7 +131,8 @@ Workspace que le déployeur. Avec un compte Gmail personnel, seul le déployeur 
 - L'application s'exécute **avec le compte du déployeur** : les classeurs source et de données
   restent privés, inutile de les partager. Les visiteurs n'y accèdent qu'à travers l'application.
 - Deux rôles, gérés dans **Paramètres → Accès** :
-  - **Administrateur** : tout, y compris les imports, les modifications, la source, le seuil de
+  - **Administrateur** : tout, y compris la synchronisation, les modifications (écrites dans la
+    source pour le mois en cours), la source, le seuil de
     conformité et la liste des accès ;
   - **Lecteur** : consultation seulement (tableaux, graphiques, historique, comparaison, export CSV).
     Le serveur refuse toute écriture d'un lecteur, même appelée hors de l'interface.
@@ -170,8 +193,12 @@ WSL.
 - S'il a réellement été supprimé : restaurer le fichier depuis la corbeille Drive si possible ;
   sinon, dans l'éditeur, Paramètres du projet → Propriétés du script → supprimer
   `DATA_SPREADSHEET_ID`. Le prochain chargement crée un nouveau classeur `ShadowIT_AppData` vide
-  (les mois sont à ré-importer ; les actions et remplacements sont perdus).
-- Pour changer de classeur source : bouton « Changer de source » dans la barre latérale.
+  (seul le mois en cours revient, à la synchronisation suivante ; l'historique, les actions et les
+  remplacements sont perdus).
+- Pour changer de classeur source : Paramètres → Source de données → « Changer de source ».
+- Si la synchronisation échoue (source supprimée, droits retirés, onglet renommé), le bouton d'état de
+  la barre du haut passe en rouge avec le message, et Google envoie un e-mail d'échec au propriétaire
+  du script. Les données affichées restent celles de la dernière synchronisation réussie.
 
 ## À vérifier une fois sur de vrais Sheets
 
@@ -182,7 +209,12 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
       `+33 6 00 00 00 00`, `- à faire`, `@jdupont`, `'apostrophe` ; recharger l'application ; la
       valeur affichée est identique, et dans `ShadowIT_AppData` → onglet `Actions`, la cellule
       contient le texte littéral (formule non évaluée, aucune apostrophe ajoutée). Même contrôle sur
-      une valeur `-` du référentiel après un import.
+      une valeur `-` du référentiel après une synchronisation.
+- [ ] Écriture dans la source : modifier une cellule d'un poste du mois en cours, vérifier qu'elle
+      change dans le classeur source ; une colonne calculée par formule est refusée avec un message ;
+      une liste déroulante (validation des données) refuse une valeur hors liste.
+- [ ] Le déclencheur `syncHourly` apparaît dans l'éditeur (Déclencheurs) et s'exécute toutes les
+      heures (Exécutions) ; une synchronisation sans changement n'ajoute rien au journal.
 
 ## Tests
 
@@ -206,36 +238,41 @@ polices ; sans eux, le harnais utilise des substituts.
 | Applications | `apps` | `src/js_page_apps.html` |
 | Suivi temporel | `timeline` | `src/js_page_timeline.html` |
 | Suivi actions | `actions` | `src/js_page_actions.html` |
-| Lecture du Google Sheet, stockage | — | `src/Importer.js`, `src/Store.js` (serveur) |
+| Lecture du Google Sheet, stockage | — | `src/Importer.js`, `src/Sync.js`, `src/Store.js` (serveur) |
 | Calculs (scores, KPI, diff) | — | `src/Core.js` (partagé serveur/client) |
 
 ## Limites
 
-- **6 minutes par exécution** Apps Script : un import lit et écrit un mois entier en un seul appel ;
-  un classeur source très volumineux peut dépasser cette limite.
+- **6 minutes par exécution** Apps Script : une synchronisation lit et écrit un mois entier en un seul
+  appel ; un classeur source très volumineux peut dépasser cette limite.
+- **Durée des déclencheurs** : 90 min/jour (compte Gmail) ou 6 h/jour (Workspace) pour toutes les
+  exécutions déclenchées ; une synchronisation horaire sans changement ne fait que lire la source.
 - **Comptes du domaine uniquement** : l'adresse des visiteurs d'un autre domaine n'est pas transmise
   par Google, ils ne peuvent donc pas être autorisés. Les écritures passent par un verrou (attente 20 s, sinon « Une autre opération est en cours. Réessayez dans quelques instants. »).
 - Les modifications de code ne sont visibles sur l'URL publiée qu'après `npm run deploy`.
 - Le navigateur doit pouvoir charger Plotly (cdnjs.cloudflare.com) et Google Fonts.
-- Chaque import ajoute une ligne par poste et par application au classeur de données ; Google Sheets
-  plafonne à 10 millions de cellules par classeur.
+- Chaque mois ajoute une ligne par poste et par application au classeur de données (le mois en cours
+  est réécrit, pas dupliqué) ; Google Sheets plafonne à 10 millions de cellules par classeur.
 
 ---
 
 ## English summary
 
 Shadow IT Dashboard is a Google Apps Script web app (single HtmlService page) ported from a Streamlit
-app. Server code lives in `src/*.js` (`Api`, `Importer`, `Store`, `Config`, `Core`, `Code`); client
+app. Server code lives in `src/*.js` (`Api`, `Importer`, `Sync`, `Store`, `Config`, `Core`, `Code`); client
 code in `src/*.html`. A live source spreadsheet (`Suivi des postes`, `Suivi des applications`,
-`Référentiel`) is snapshotted month by month into the app's own `ShadowIT_AppData` spreadsheet
-(tabs `Postes`, `Applications`, `Referentiel`, `Actions`, `Replacements`, `ImportLog`, `Meta`).
+`Référentiel`) is synchronised every hour (time-driven trigger `syncHourly`) into the current month of the
+app's own `ShadowIT_AppData` spreadsheet (tabs `Postes`, `Applications`, `Referentiel`, `Actions`,
+`Replacements`, `ImportLog`, `Meta`); past months stay frozen. Edits of the current month made in the app
+are written into the source first, so the next sync reads them back (Galink / IDP stay app-only).
 
 First deployment: `npm install`; enable the Apps Script API at
 <https://script.google.com/home/usersettings>; `npm run login`; create a project (in the browser, or
 with `clasp create-script --type webapp` run in an empty directory, since it refuses an existing
 `.clasp.json` and pulls default files into `rootDir`) and put its `scriptId` in `.clasp.json`;
 `npm run push`; run `setup()` once in the editor to authorise; Deploy → New deployment → Web app
-(execute as me, anyone in the domain); open the URL, paste the source sheet URL, import a month; then
+(execute as me, anyone in the domain); open the URL, paste the source sheet URL (the first sync runs at
+once); then
 grant access in Paramètres → Accès.
 
 Access control: the app runs as the deployer with `access: DOMAIN` (deploy from a Google Workspace

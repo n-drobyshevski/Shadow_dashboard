@@ -3,10 +3,12 @@
  * Pages.dashboard — port of Tableau_de_bord.py (docs/API.md §6), typeset per docs/DESIGN.md.
  *
  * KPI strip, compliance gauges, risk bars, "Détail conformité" leader rows, score histograms (all on
- * the filtered data of the selected month), then the Google Sheets import section + import ledger.
+ * the filtered data of the selected month). The data comes from the hourly synchronisation (status in
+ * the app bar, journal in Paramètres): there is no import section any more.
  *
- * Read-only mode (lecteur, !State.canEdit()): no import form (api_importMonth is admin only); the import
- * ledger stays, alone in a « Derniers imports » section (api_getImportLog is allowed).
+ * Period (« avril → octobre », State.period()): every figure and chart is the state of the LAST month; each
+ * headline KPI also says how it moved since the first month (delta) and draws a month-by-month sparkline
+ * (from the slim history of State.loadTimeline, same filters).
  */
 (function () {
   'use strict';
@@ -17,8 +19,6 @@
 
   var board = null;         // Charts.board of the rendered body (purged on re-render / leave)
   var view = null;          // {body, month} of the mounted page (filter changes re-render the body in place)
-  var lastImport = null;    // result of the last successful import (warnings survive the re-mount)
-  var importLogCache = null;
 
   // ------------------------------------------------------------------------------ helpers
 
@@ -56,11 +56,57 @@
 
   // ------------------------------------------------------------------------------ dashboard body
 
-  function renderDashboard(body, s, md) {
+  /** '+12' / '−3' / '0' (true minus sign). */
+  function signed(n, digits) {
+    var abs = UI.fmtNum ? (digits ? Math.abs(n).toFixed(digits).replace('.', ',') : UI.fmtNum(Math.abs(n))) : String(Math.abs(n));
+    return (n > 0 ? '+' : n < 0 ? '−' : '') + abs;
+  }
+
+  /**
+   * Period extras of the KPI strip: {key: {delta, deltaTone, spark}} — counts « +12 depuis avril », rates
+   * « ▲ +6,0 pts depuis avril » (ok / ko), sparklines over the months of the period. {} for a single month.
+   */
+  function periodExtras(s, k, extra) {
+    if (!extra || !extra.fromMd) return {};
+    var since = ' depuis ' + Fmt.MONTHS[Number(extra.from.slice(5, 7)) - 1];
+    var f0 = State.filtered(extra.fromMd);
+    var k0 = Core.computeKpis(f0.postes, f0.applications);
+    var series = null;
+    if (extra.timeline) {
+      var byMonth = {};
+      extra.timeline.forEach(function (m) { byMonth[m.month] = m; });
+      series = extra.months.map(function (m) {
+        var t = byMonth[m];
+        if (!t) return null;
+        var f = Core.filterData({ postes: t.postes || [], applications: t.applications || [] }, s.filters);
+        return Core.computeKpis(f.postes, f.applications);
+      });
+    }
+    function spark(key, totalKey) {
+      return series ? UI.sparkline(series.map(function (x) { return x && (!totalKey || x[totalKey]) ? x[key] : null; })) : null;
+    }
+    function count(key) {
+      var d = k[key] - k0[key];
+      return { delta: (d ? signed(d) : 'inchangé') + since, spark: spark(key) };
+    }
+    function rate(key, totalKey) {
+      if (!k[totalKey] || !k0[totalKey]) return { spark: spark(key, totalKey) };
+      var d = k[key] - k0[key];
+      var flat = Math.abs(d) < 0.05;
+      return { delta: (flat ? '= ' : d > 0 ? '▲ ' : '▼ ') + signed(flat ? 0 : d, 1) + ' pts' + since,
+        deltaTone: flat ? null : d > 0 ? 'ok' : 'ko', spark: spark(key, totalKey) };
+    }
+    return { total_postes: count('total_postes'), postes_conformes: rate('taux_postes', 'total_postes'),
+      total_apps: count('total_apps'), apps_conformes: rate('taux_apps', 'total_apps') };
+  }
+
+  function renderDashboard(body, s, md, extra) {
     var f = State.filtered(md);
     var postes = f.postes;
     var apps = f.applications;
     var k = Core.computeKpis(postes, apps);
+    var px = periodExtras(s, k, extra);
+    function kpi(o) { return Object.assign(o, px[o.key] || {}); }
     board = Charts.board();
 
     var note = UI.filterNote('all');
@@ -71,12 +117,12 @@
 
     // KPI strip
     body.appendChild(UI.kpiStrip([
-      { key: 'total_postes', title: 'Postes inventoriés', value: UI.fmtNum(k.total_postes) },
-      { key: 'postes_conformes', title: 'Postes conformes', value: UI.fmtNum(k.postes_conformes),
-        sub: UI.fmtPctNode(k.taux_postes), tone: toneFor(k.taux_postes, k.total_postes) },
-      { key: 'total_apps', title: 'Applications inventoriées', value: UI.fmtNum(k.total_apps) },
-      { key: 'apps_conformes', title: 'Applications conformes', value: UI.fmtNum(k.apps_conformes),
-        sub: UI.fmtPctNode(k.taux_apps), tone: toneFor(k.taux_apps, k.total_apps) }
+      kpi({ key: 'total_postes', title: 'Postes inventoriés', value: UI.fmtNum(k.total_postes) }),
+      kpi({ key: 'postes_conformes', title: 'Postes conformes', value: UI.fmtNum(k.postes_conformes),
+        sub: UI.fmtPctNode(k.taux_postes), tone: toneFor(k.taux_postes, k.total_postes) }),
+      kpi({ key: 'total_apps', title: 'Applications inventoriées', value: UI.fmtNum(k.total_apps) }),
+      kpi({ key: 'apps_conformes', title: 'Applications conformes', value: UI.fmtNum(k.apps_conformes),
+        sub: UI.fmtPctNode(k.taux_apps), tone: toneFor(k.taux_apps, k.total_apps) })
     ]));
 
     // Gauges
@@ -120,173 +166,6 @@
     board.draw();
   }
 
-  // ------------------------------------------------------------------------------ import section
-
-  function confirmMessage(month) {
-    return 'L’export de ' + Fmt.monthLong(month) + ' existe déjà. Ré-importer écrase les postes, applications et le ' +
-      'référentiel de ce mois (Galink/IDP sont conservés). Continuer ?';
-  }
-
-  function importLabel(month) { return State.get().months.indexOf(month) >= 0 ? 'Ré-importer' : 'Importer'; }
-
-  function importPanel(s) {
-    var button = el('button', { type: 'submit', class: 'btn btn-primary', id: 'import-button' }, importLabel(s.currentMonth));
-    var field = UI.monthField({ id: 'import-month', name: 'month', value: s.currentMonth || '', options: s.months,
-      required: true, labelledBy: 'import-month-label',
-      onValidate: function (msg) { UI.fieldError(field, msg ? 'Mois invalide (format attendu : AAAA-MM).' : ''); },
-      onChange: function (v) { button.textContent = importLabel(v); } });
-    field.control.addEventListener('input', function () {
-      var v = field.getValue();
-      if (v) button.textContent = importLabel(v);
-    });
-    // Server errors only (field errors go under the field, UI.fieldError).
-    var status = el('div', { id: 'import-status', class: 'import-status', role: 'status', 'aria-live': 'polite' });
-
-    function showError(err) {
-      UI.clear(status).appendChild(UI.errorState(err));
-    }
-
-    function runImport(month, overwrite) {
-      UI.clear(status);
-      field.setDisabled(true);
-      var p = api.call('api_importMonth', { month: month, overwrite: !!overwrite });
-      UI.busy(button, p, 'Import en cours…').then(null, function () {});
-      return p.then(function (res) {
-        lastImport = res;
-        importLogCache = null;
-        field.setDisabled(false);
-        var c = res.counts || {};
-        UI.toast('Import terminé — ' + UI.fmtNum(c.postes) + ' postes, ' + UI.fmtNum(c.applications) + ' applications.', 'success');
-        var before = State.get().month;
-        State.invalidate();
-        return State.refreshBootstrap().then(function () {
-          var now = State.get().month;
-          if (now !== res.month) State.set({ month: res.month });       // triggers a re-mount
-          else if (before === res.month) App.refresh();                  // same month: re-mount explicitly
-          // else: refreshBootstrap already switched to res.month and the App re-mounted.
-        });
-      }, function (err) {
-        field.setDisabled(false);
-        if (err.code === 'MONTH_EXISTS' && !overwrite) {
-          return UI.confirm(confirmMessage(month), { title: 'Mois déjà importé', okLabel: 'Ré-importer', danger: true })
-            .then(function (ok) { return ok ? runImport(month, true) : null; });
-        }
-        var shown = err.code === 'NOT_CONFIGURED' ?
-          new Error('La source n’est pas configurée. Renseignez-la dans ' + UI.quote('Paramètres') + '.') : err;
-        if (status.isConnected) showError(shown);
-        UI.errorToast(shown);
-        return null;
-      });
-    }
-
-    var errorLine = el('p', { class: 'field-error', id: 'import-month-err', hidden: true });
-    var form = el('form', { class: 'import-form', novalidate: true, onSubmit: function (e) {
-      e.preventDefault();
-      if (button.getAttribute('aria-busy') === 'true') return;
-      var msg = field.validate();
-      UI.fieldError(field, msg ? 'Mois invalide (format attendu : AAAA-MM).' : '');
-      if (msg) { field.focus(); return; }
-      runImport(field.getValue(), false);
-    } },
-      el('label', { for: 'import-month', id: 'import-month-label', class: 'field-label' }, 'Mois de l’export'),
-      el('div', { class: 'inline-form' }, field, button),
-      errorLine);
-
-    var sourceLine = s.sourceUrl ?
-      el('p', { class: 'muted small' }, 'Source : ', UI.extLink(s.sourceUrl, s.sourceTitle || 'Google Sheet source')) :
-      el('p', { class: 'muted small' }, 'Aucune source configurée.');
-
-    var logBox = el('div', { class: 'import-log', id: 'import-log' });
-    var panel = UI.section('Importer depuis Google Sheets',
-      el('div', { class: 'grid grid-2 import-grid' },
-        el('div', { class: 'import-card' },
-          el('p', { class: 'page-lede' }, 'Crée un instantané mensuel des onglets ' + UI.quote('Suivi des postes') + ', ' +
-            UI.quote('Suivi des applications') + ' et ' + UI.quote('Référentiel') + ' du Google Sheet source.'),
-          sourceLine, form, status, lastImportBlock()),
-        el('div', { class: 'import-history' },
-          el('h3', { class: 'subsection-title' }, 'Derniers imports'),
-          logBox)));
-    panel.id = 'import-panel';
-    loadImportLog(logBox);
-    return panel;
-  }
-
-  /** Lecteurs: the import ledger alone (no form, no source line: the source sheet is private to admins). */
-  function importHistoryPanel() {
-    var logBox = el('div', { class: 'import-log', id: 'import-log' });
-    var panel = UI.section('Derniers imports', logBox);
-    panel.id = 'import-history-panel';
-    loadImportLog(logBox);
-    return panel;
-  }
-
-  function lastImportBlock() {
-    if (!lastImport) return null;
-    var c = lastImport.counts || {};
-    var warnings = lastImport.warnings || [];
-    return el('div', { class: 'alert ' + (warnings.length ? 'alert-warning' : 'alert-success'), id: 'import-result',
-      dataset: { month: lastImport.month } },
-      el('p', null, 'Dernier import : ' + Fmt.monthLong(lastImport.month) + ' — ',
-        el('span', { class: 'num' }, UI.fmtNum(c.postes)), ' postes, ',
-        el('span', { class: 'num' }, UI.fmtNum(c.applications)), ' applications, ',
-        el('span', { class: 'num' }, UI.fmtNum(c.referentiel)), ' catégories de référentiel' +
-        (lastImport.overwritten ? ' (mois écrasé)' : '') +
-        (lastImport.carriedOver ? ' · ' + lastImport.carriedOver + ' valeur(s) Galink/IDP reprise(s)' : '') + '.'),
-      warnings.length ? el('ul', { class: 'warning-list' }, warnings.map(function (w) { return el('li', null, w); })) : null);
-  }
-
-  /** Warnings of one import: a hidden row listing them, revealed by the count button of its row. */
-  function importWarnings(e, i) {
-    var w = e.warnings || [];
-    if (!w.length) return { toggle: null, detail: null };
-    var detailId = 'import-warnings-' + i;
-    var detail = el('tr', { class: 'import-warnings-row', id: detailId, hidden: true },
-      el('td', { colspan: '6' }, el('ul', { class: 'warning-list' }, w.map(function (t) { return el('li', null, t); }))));
-    var toggle = el('button', { type: 'button', class: 'btn btn-quiet btn-sm import-warn-toggle',
-      'aria-expanded': 'false', 'aria-controls': detailId,
-      'aria-label': w.length + ' alerte' + (w.length > 1 ? 's' : '') + ' d’import — afficher le détail',
-      onClick: function () {
-        var open = toggle.getAttribute('aria-expanded') !== 'true';
-        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-        detail.hidden = !open;
-      } }, String(w.length));
-    return { toggle: toggle, detail: detail };
-  }
-
-  function loadImportLog(box) {
-    UI.asyncBlock(box, {
-      load: function () {
-        return importLogCache ? importLogCache : api.call('api_getImportLog', null).then(function (log) {
-          importLogCache = log || [];
-          return importLogCache;
-        });
-      },
-      placeholder: function () { return UI.loading('Chargement de l’historique…', { small: true }); },
-      small: true,
-      error: { prefix: 'Historique indisponible' },
-      render: function (log) {
-        var entries = log.slice(0, 5);
-        if (!entries.length) { box.appendChild(UI.empty('Aucun import pour le moment.', { small: true })); return; }
-        var warn = entries.map(importWarnings);
-        function count(key) { return function (e) { return UI.fmtNum((e.counts || {})[key]); }; }
-        box.appendChild(UI.table({
-          className: 'import-table',
-          columns: [
-            { label: 'Mois', cell: function (e) { return Fmt.monthLong(e.month); } },
-            { label: 'Importé le', mono: true, cell: function (e) { return Fmt.dateTime(e.imported_at); } },
-            { label: 'Postes', num: true, cell: count('postes') },
-            { label: 'Applis', num: true, cell: count('applications') },
-            { label: 'Référentiel', num: true, cell: count('referentiel') },
-            { label: 'Alertes', num: true, cell: function (e, i) { return warn[i].toggle || el('span', { class: 'faint' }, '—'); } }
-          ],
-          rows: entries,
-          rowAttrs: function (e) { return { dataset: { month: e.month } }; },
-          extraRows: function (e, i) { return warn[i].detail; }
-        }));
-      }
-    });
-  }
-
   // ------------------------------------------------------------------------------ page
 
   function mount(root) {
@@ -294,38 +173,51 @@
     view = null;
     var s = State.get();
     var canEdit = State.canEdit();
-    root.appendChild(UI.monthHeader({ title: 'Tableau de bord', month: s.month, kickerId: 'dashboard-caption' }));
+    var per = State.period();
+    root.appendChild(UI.monthHeader({ title: 'Tableau de bord', month: s.month, from: per.from, kickerId: 'dashboard-caption' }));
 
     if (!s.months.length) {
-      // Empty state: one line of ink-2 text; the import section right below is the action (admins only).
-      var empty = UI.empty(canEdit ? 'Aucune donnée importée.' :
-        'Aucun mois importé. Un administrateur doit importer les données.');
+      // Empty state: one line of ink-2 text; admins can run the first synchronisation from here.
+      var empty = UI.empty('Aucune donnée pour le moment. ' + (canEdit ?
+        'La synchronisation crée le mois en cours à partir du Google Sheet source.' :
+        'Les données arrivent à la prochaine synchronisation horaire.'));
       empty.id = 'dashboard-empty';
       root.appendChild(empty);
-      if (canEdit) root.appendChild(importPanel(s));
+      if (canEdit) {
+        var first = el('button', { type: 'button', class: 'btn btn-primary', id: 'dashboard-sync',
+          onClick: function () { App.syncNow(first); } }, 'Synchroniser maintenant');
+        root.appendChild(el('div', { class: 'form-actions' }, first));
+      }
       return;
     }
 
     var body = el('div', { class: 'dashboard-body', id: 'dashboard-body' });
     root.appendChild(body);
-    root.appendChild(canEdit ? importPanel(s) : importHistoryPanel());
-    view = { body: body, month: s.month, ready: false };
+    view = { body: body, month: s.month, ready: false, extra: null };
     var v = view;
     UI.asyncBlock(body, {
-      load: function () { return State.loadMonth(v.month); },
+      // A period also needs its first month and the history (sparklines; the page works without it).
+      load: function () {
+        if (per.single) return State.loadMonth(v.month);
+        return Promise.all([State.loadMonth(v.month), State.loadMonth(per.from),
+          State.loadTimeline().catch(function () { return null; })]).then(function (r) {
+          v.extra = { from: per.from, months: per.months, fromMd: r[1], timeline: r[2] };
+          return r[0];
+        });
+      },
       placeholder: function () { return UI.skeleton('dashboard', { label: 'Chargement des données…' }); },
       error: UI.monthError(v.month),
-      render: function (md) { v.ready = true; renderDashboard(body, State.get(), md); }
+      render: function (md) { v.ready = true; renderDashboard(body, State.get(), md, v.extra); }
     });
   }
 
-  /** Filter change: only the figures and charts re-render (the import section and its history stay). */
+  /** Filter change: only the figures and charts re-render (the header stays). */
   function update(changed) {
     var md = view && view.ready && State.getMonthData(view.month);
     if (!md || changed.length !== 1 || changed[0] !== 'filters') return false;
     purgeCharts();
     UI.clear(view.body);
-    renderDashboard(view.body, State.get(), md);
+    renderDashboard(view.body, State.get(), md, view.extra);
     return true;
   }
 

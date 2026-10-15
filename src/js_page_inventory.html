@@ -118,6 +118,7 @@
   function create(spec) {
     var p = spec.id;
     var conformity = 'all';   // kept across re-mounts (month / filter changes)
+    var changedOnly = false;  // period: « Seulement ce qui a changé » (kept across re-mounts)
     var view = null;          // {root, body, month, buttons, ctx}
     var drawerHandle = null;
 
@@ -138,7 +139,9 @@
         root.appendChild(UI.noData(p + '-empty'));
         return;
       }
-      var v = { root: root, month: s.month, ctx: null, buttons: {} };
+      var per = State.period();
+      // A period shows the inventory of its last month, compared with its first one (fromMonth).
+      var v = { root: root, month: s.month, fromMonth: per.single ? '' : per.from, ctx: null, buttons: {} };
       // Page-level actions live in the header, enabled once the month is loaded. Lecteurs: CSV only.
       // One rule on every page: [Exporter CSV (secondary)] then [create action (primary)].
       v.buttons.csv = el('button', { type: 'button', class: 'btn btn-secondary', id: p + '-export-csv', disabled: true,
@@ -152,13 +155,16 @@
           tooltip: spec.primary.tooltip || null,
           onClick: function () { if (v.ctx) spec.primary.run(v.ctx, v.buttons.primary); } }, spec.primary.label);
       }
-      root.appendChild(UI.monthHeader({ title: spec.title, month: s.month, kickerId: p + '-caption',
-        actions: [v.buttons.csv, v.buttons.primary].filter(Boolean) }));
+      root.appendChild(UI.monthHeader({ title: spec.title, month: s.month, from: v.fromMonth, endLabel: 'inventaire',
+        kickerId: p + '-caption', actions: [v.buttons.csv, v.buttons.primary].filter(Boolean) }));
       v.body = el('div', { class: 'block-stack ' + p + '-body', id: p + '-body' });
       root.appendChild(v.body);
       view = v;
       UI.asyncBlock(v.body, {
-        load: function () { return State.loadMonth(v.month); },
+        load: function () {
+          if (!v.fromMonth) return State.loadMonth(v.month);
+          return Promise.all([State.loadMonth(v.month), State.loadMonth(v.fromMonth)]).then(function (r) { return r[0]; });
+        },
         placeholder: function () { return UI.skeleton('table', { label: spec.nouns.loading, columns: 7 }); },
         error: UI.monthError(v.month),
         render: function (md) { renderBody(v, md); }
@@ -184,14 +190,29 @@
       ctx.md = function () { return State.getMonthData(month) || md; };
       ctx.conformity = function () { return conformity; };
       ctx.all = function () { return State.filtered(ctx.md())[spec.entity]; };
+      // Period: Core.scoreEvolution of the first month -> this one (same filters), memoised until refresh().
+      var evo = null;
+      ctx.evolution = function () {
+        if (!v.fromMonth) return null;
+        var fmd = State.getMonthData(v.fromMonth);
+        if (!fmd) return null;
+        if (!evo) evo = Core.scoreEvolution(State.filtered(fmd)[spec.entity], ctx.all(), spec.keyField);
+        return evo;
+      };
+      function evoOf(row) {
+        var e = ctx.evolution();
+        return e ? e.byKey[Core.normKey(row[spec.keyField])] || null : null;
+      }
       ctx.visible = function () {
         var list = ctx.all();
-        if (conformity === 'ok') return list.filter(function (r) { return r._conforme; });
-        if (conformity === 'ko') return list.filter(function (r) { return !r._conforme; });
+        if (conformity === 'ok') list = list.filter(function (r) { return r._conforme; });
+        if (conformity === 'ko') list = list.filter(function (r) { return !r._conforme; });
+        if (changedOnly && ctx.evolution()) list = list.filter(function (r) { var x = evoOf(r); return x && x.status !== 'same'; });
         return list;
       };
       ctx.refresh = function () {
         if (!ctx.live()) return;
+        evo = null;
         ctx.table.setRows(ctx.visible());
         renderStats();
       };
@@ -223,8 +244,36 @@
           [UI.statusMark(count(ok, 'conforme', 'conformes'), 'ok'),
             all.length ? [' ', el('span', { class: 'num' }, UI.fmtPctNode(ok / all.length * 100))] : null],
           UI.statusMark(count(ko, 'non conforme', 'non conformes'), ko ? 'ko' : 'neutral')
-        ].concat(spec.statsExtra ? spec.statsExtra(all) : [])));
+        ].concat(spec.statsExtra ? spec.statsExtra(all) : [], periodStats())));
+        renderRemoved();
         if (spec.onStats) spec.onStats(all, ctx);
+      }
+
+      // Period summary: « +14 nouveaux · 2 retirés · 9 scores modifiés depuis avril » and the removed records.
+      var fromName = v.fromMonth ? Fmt.MONTHS[Number(v.fromMonth.slice(5, 7)) - 1] : '';
+      var removedBox = el('p', { class: 'field-help evo-removed', id: p + '-removed', hidden: true });
+      var fem = spec.entity === 'applications';
+      function periodStats() {
+        var e = ctx.evolution();
+        if (!e) return [];
+        return [el('span', { class: 'evo-stats', id: p + '-evo-stats' },
+          el('span', { class: 'num' }, '+' + UI.fmtNum(e.added)), ' ' + (fem ? (e.added > 1 ? 'nouvelles' : 'nouvelle') : (e.added > 1 ? 'nouveaux' : 'nouveau')) + ' · ',
+          el('span', { class: 'num' }, UI.fmtNum(e.removed.length)), ' ' + (e.removed.length > 1 ? 'retiré' + (fem ? 'es' : 's') : 'retiré' + (fem ? 'e' : '')) + ' · ',
+          el('span', { class: 'num' }, UI.fmtNum(e.changed)), ' ' + (e.changed > 1 ? 'scores modifiés' : 'score modifié') +
+          ' depuis ' + fromName)];
+      }
+      function renderRemoved() {
+        var e = ctx.evolution();
+        UI.clear(removedBox);
+        removedBox.hidden = !e || !e.removed.length;
+        if (removedBox.hidden) return;
+        var names = e.removed.map(function (r) { return Core.str(r[spec.keyField]) || '(sans nom)'; });
+        removedBox.appendChild(document.createTextNode(UI.plural(names.length, spec.nouns.one + (fem ? ' retirée' : ' retiré'), spec.nouns.many + (fem ? ' retirées' : ' retirés')) +
+          ' depuis ' + Fmt.monthLong(v.fromMonth) + ' : '));
+        names.forEach(function (n, i) {
+          removedBox.appendChild(el('span', { class: spec.entity === 'postes' ? 'mono' : null }, n));
+          if (i < names.length - 1) removedBox.appendChild(document.createTextNode(', '));
+        });
       }
 
       var mono = spec.monoColumns || {};
@@ -246,10 +295,28 @@
       });
       // Computed columns right after the key column (what the user scans first); they are computed from
       // the displayed row (re-rendered after every edit), so they follow unsaved edits.
-      Array.prototype.splice.apply(columns, [1, 0].concat(spec.computedColumns(ctx)));
+      var computed = spec.computedColumns(ctx);
+      if (v.fromMonth) {
+        computed.push({ key: '_evo', label: 'Évolution depuis ' + fromName, editable: false,
+          render: function (row) {
+            var x = evoOf(row);
+            if (!x) return el('span', { class: 'faint' }, '—');
+            if (x.status === 'new') return el('span', { class: 'evo evo-new' }, fem ? 'Nouvelle' : 'Nouveau');
+            if (x.status === 'same') return el('span', { class: 'faint' }, '—');
+            return el('span', { class: 'evo evo-' + x.status }, UI.fmtPctNode(x.from), ' → ', UI.fmtPctNode(x.to));
+          },
+          sortValue: function (row) {
+            var x = evoOf(row);
+            return !x ? 0 : x.status === 'new' ? 1000 : x.status === 'same' ? 0 : x.to - x.from;
+          } });
+      }
+      Array.prototype.splice.apply(columns, [1, 0].concat(computed));
 
       var conformitySelect = UI.select({ id: p + '-conformity', label: 'Conformité', options: CONFORMITY_OPTIONS,
         value: conformity, onChange: function (val) { conformity = val; ctx.table.setRows(ctx.visible()); } });
+
+      var changedBox = v.fromMonth ? UI.checkbox({ id: p + '-changed-only', label: 'Seulement ce qui a changé',
+        checked: changedOnly, onChange: function (b) { changedOnly = b; ctx.table.setRows(ctx.visible()); } }) : null;
 
       var canEdit = State.canEdit();
       var n = spec.nouns;
@@ -257,7 +324,7 @@
         columns: columns,
         rows: ctx.visible(),
         readOnly: !canEdit,
-        toolbar: [conformitySelect],
+        toolbar: [conformitySelect, changedBox].filter(Boolean),
         emptyText: !md[spec.entity].length ? n.inExport :
           (spec.filtered(State.get()) || conformity !== 'all' ? n.noMatch : n.none),
         onRowClick: function (row) { ctx.openDrawer(row._id); },
@@ -266,7 +333,8 @@
             State.patchRecords(month, spec.entity, (res && res.updated) || []);
             ctx.refresh();
             var edits = changes.reduce(function (sum, c) { return sum + Object.keys(c.updates || {}).length; }, 0);
-            UI.toast(UI.plural(edits, 'modification enregistrée', 'modifications enregistrées') + '.', 'success');
+            UI.toast(UI.plural(edits, 'modification enregistrée', 'modifications enregistrées') +
+              (res && res.sourceUpdated ? ' dans le Google Sheet source.' : ' (historique de ' + Fmt.monthLong(month) + ').'), 'success');
           });
         }
       });
@@ -274,10 +342,18 @@
 
       var note = UI.filterNote(spec.filterScope);
       if (note) v.body.appendChild(note);
+      // Where an edit goes: the current month follows the source (written there), a past month is history.
+      if (canEdit) {
+        var live = month === State.get().currentMonth;
+        v.body.appendChild(el('p', { class: 'alert alert-info edit-note', id: p + '-edit-note', dataset: { live: live ? '1' : '0' } },
+          live ? 'Les modifications sont écrites dans le Google Sheet source' +
+            (spec.entity === 'applications' ? ' (Galink et IDP restent dans l’application).' : '.') :
+            'Mois figé : les modifications ne changent que l’historique de ' + Fmt.monthLong(month) + ', pas le Google Sheet source.'));
+      }
       v.body.appendChild(stats);
       (spec.sections ? spec.sections(ctx) : []).forEach(function (section) { v.body.appendChild(section); });
       renderStats();
-      var tableSection = UI.section('Inventaire', ctx.table.node);
+      var tableSection = UI.section('Inventaire', ctx.table.node, removedBox);
       tableSection.id = p + '-inventory';
       v.body.appendChild(tableSection);
       if (v.buttons.primary) v.buttons.primary.disabled = false;

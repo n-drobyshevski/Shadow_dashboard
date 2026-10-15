@@ -270,3 +270,40 @@ test('isEmail / parseEmailList: pasted lists in every common shape', () => {
   assert.deepEqual(Core.parseEmailList(null), { emails: [], invalid: [] });
   assert.deepEqual(Core.parseEmailList('   '), { emails: [], invalid: [] });
 });
+
+test('periods: addMonths / monthsInRange / presetPeriod', () => {
+  assert.equal(Core.addMonths('2026-10', -5), '2026-05');
+  assert.equal(Core.addMonths('2026-02', -3), '2025-11');
+  assert.equal(Core.addMonths('2025-12', 1), '2026-01');
+  assert.equal(Core.addMonths('2026-01', 0), '2026-01');
+  assert.equal(Core.addMonths('bad', 1), '');
+  const months = ['2025-11', '2026-01', '2026-04', '2026-05', '2026-08', '2026-10'];
+  assert.deepEqual(Core.monthsInRange(months, '2026-04', '2026-08'), ['2026-04', '2026-05', '2026-08']);
+  assert.deepEqual(Core.monthsInRange(months, '2026-08', '2026-04'), ['2026-04', '2026-05', '2026-08'], 'swapped');
+  assert.deepEqual(Core.monthsInRange(months, '2026-05', ''), ['2026-05'], 'one end = one month');
+  assert.deepEqual(Core.monthsInRange(months, null, null), []);
+  assert.deepEqual(Core.PERIOD_PRESETS, ['month', 'last3', 'last6', 'year', 'all']);
+  assert.deepEqual(Core.presetPeriod(months, 'month'), { from: '2026-10', to: '2026-10' });
+  assert.deepEqual(Core.presetPeriod(months, 'last3'), { from: '2026-08', to: '2026-10' }, 'aug–oct calendar months');
+  assert.deepEqual(Core.presetPeriod(months, 'last6'), { from: '2026-05', to: '2026-10' });
+  assert.deepEqual(Core.presetPeriod(months, 'year'), { from: '2026-01', to: '2026-10' });
+  assert.deepEqual(Core.presetPeriod(months, 'all'), { from: '2025-11', to: '2026-10' });
+  assert.equal(Core.presetPeriod([], 'all'), null);
+  assert.equal(Core.presetPeriod(months, 'nope'), null);
+});
+
+test('scoreEvolution: new / up / down / same per key, removed records', () => {
+  const K = 'Nom du poste';
+  const old = [{ [K]: 'A', _score: 40 }, { [K]: 'B', _score: 80 }, { [K]: 'C', _score: 60 }, { [K]: 'gone', _score: 20 },
+    { [K]: 'D', _score: null }];
+  const now = [{ [K]: ' a ', _score: 80 }, { [K]: 'B', _score: 40 }, { [K]: 'C', _score: 60.01 }, { [K]: 'new', _score: 100 },
+    { [K]: 'D', _score: 50 }];
+  const e = Core.scoreEvolution(old, now, K);
+  assert.deepEqual(e.byKey, {
+    a: { status: 'up', from: 40, to: 80 }, b: { status: 'down', from: 80, to: 40 }, c: { status: 'same', from: 60, to: 60.01 },
+    new: { status: 'new', from: null, to: 100 }, d: { status: 'same', from: null, to: 50 } });
+  assert.equal(e.added, 1);
+  assert.equal(e.changed, 2);
+  assert.deepEqual(e.removed.map((r) => r[K]), ['gone']);
+  assert.deepEqual(Core.scoreEvolution(null, null, null), { byKey: {}, added: 0, changed: 0, removed: [] });
+});

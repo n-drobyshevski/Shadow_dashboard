@@ -29,8 +29,8 @@ gauge styling, copy with emoji). Data, behaviour and API contracts are unchanged
 3. **Colour is data, not decoration.** The UI is ink-on-paper neutral. Colour appears only to encode
    status (conforme / non conforme, risk level) and for the single interactive accent.
 4. **Density with air.** Compact rows (32px), generous outer margins, consistent 8px grid.
-5. **Plain French.** Short, factual, no emoji, no exclamation marks. « Import terminé — 7 postes,
-   5 applications. » not « ✅ Import réussi ! ».
+5. **Plain French.** Short, factual, no emoji, no exclamation marks. « Synchronisé — +2 postes. »
+   not « ✅ Synchronisation réussie ! ».
 
 ## Tokens
 ```
@@ -142,11 +142,45 @@ with the system fallbacks above.
 
 ## Copy
 - Titles: « Tableau de bord », « Postes », « Applications », « Suivi temporel », « Suivi des actions ».
-- Buttons: « Importer », « Ré-importer », « Enregistrer », « Annuler », « Ajouter un poste générique »,
+- Buttons: « Synchroniser maintenant », « Activer la synchronisation horaire », « Actualiser »,
+  « Enregistrer », « Annuler », « Ajouter un poste générique »,
   « Nouvelle application », « Renommer », « Supprimer », « Exporter CSV », « Nouvelle action ».
-- Toasts: « Import terminé — 7 postes, 5 applications. », « 3 modifications enregistrées. »,
+- Toasts: « Synchronisé — +2 postes · 1 application modifiée. », « Synchronisé — aucune modification. »,
+  « 3 modifications enregistrées dans le Google Sheet source. », « 1 modification enregistrée (historique de
+  mai 2026). »,
   « Erreur : <message> ».
 - Numbers fr-FR: `71,4 %` (narrow no-break space before %), thousands with narrow no-break space.
+
+## Période
+- **Button** in the app bar between ‹ › (one control, like a dropdown trigger): « Mai 2026 » or
+  « Avr. – oct. 2026 » (compact month names, year once when shared). ‹ › move the whole period.
+- **Panel** (popover, 400px; one column on phones): shortcuts on the left, ink rule on the active one; a
+  4 × 3 month grid on the right — range ends in ink, months inside on the row-hover tint, months without data
+  in `--rule-2` and not clickable; a hint line; footer « Avril → octobre 2026 · 7 mois » + « Annuler » (quiet)
+  + « Appliquer » (primary). Shortcuts apply at once; the grid needs « Appliquer ».
+- **Reading a period** = the state of its last month compared with its first: kicker « Avril → octobre 2026 ·
+  état fin octobre »; KPI cells add a mono delta line (« ▲ +6,0 pts depuis avril » in ok / ko, counts neutral)
+  and a 20px ink-2 sparkline ending on a dot; inventories add « Évolution depuis avril » (« Nouveau » in sans
+  500, « 40,0 % → 80,0 % » in ok / ko mono, « — »), a summary in the stat line, the removed names under the
+  table, and « Seulement ce qui a changé ».
+
+## Synchronisation
+- **Status button**, last item of the app bar (`#sync-chip`): a 7px square + the time of the last
+  successful run in mono (« ■ 14:02 », « 04/05 10:30 » on another day). The square carries the state:
+  green ok, amber when the source had warnings, hollow before the first run; the whole button turns
+  `--ko` on failure (« ■ Échec 11:02 ») and ink, in sans, for « Nouvelles données ». While a run is in
+  progress: spinner + « Synchronisation… ». Below 900px it wraps under the period.
+- **Panel** (a popover under the button, 340px): status sentence as a status mark, the error in an
+  `alert-error` line saying how old the shown data is, one ink-2 line explaining the hourly run, « Dernière
+  modification <time> · <what changed> », source warnings, then the actions (admins: « Synchroniser
+  maintenant » secondary + « Journal » link; everybody: « Actualiser » primary when newer data exists).
+  No link to the source for lecteurs (private to the deployer).
+- **Paramètres → Synchronisation**: kv list (Automatique, Mois en cours, Dernière réussite, Dernière
+  modification), the button, then « Journal des synchronisations » (one row per run that changed
+  something, warnings behind the count button).
+- **Where an edit goes**, for admins above the Postes / Applications tables: an `alert-info` line, « Les
+  modifications sont écrites dans le Google Sheet source. » for the current month, « Mois figé : … » for a
+  past one.
 
 ## Loading
 - **Startup splash** (the only screen with the team brand): on paper, the Value Chain Information

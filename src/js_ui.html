@@ -252,12 +252,17 @@
     var node = el('div', { class: 'kpi metric-card' + (opts.tone ? ' tone-' + opts.tone : '') },
       el('div', { class: 'metric-title' }, opts.title),
       el('div', { class: 'metric-value' }, opts.value === null || opts.value === undefined ? '—' : opts.value),
-      opts.sub !== undefined && opts.sub !== null && opts.sub !== '' ? el('div', { class: 'metric-sub' }, opts.sub) : null);
+      opts.sub !== undefined && opts.sub !== null && opts.sub !== '' ? el('div', { class: 'metric-sub' }, opts.sub) : null,
+      opts.delta ? el('div', { class: 'metric-delta' + (opts.deltaTone ? ' is-' + opts.deltaTone : '') }, opts.delta) : null,
+      opts.spark || null);
     if (opts.key) node.dataset.kpi = opts.key;
     return node;
   }
 
-  /** UI.kpiStrip([{key?, title, value, sub?, tone?}]) -> one row of cells divided by vertical hairlines. */
+  /**
+   * UI.kpiStrip([{key?, title, value, sub?, tone?, delta?, deltaTone?, spark?}]) -> one row of cells divided by
+   * vertical hairlines. delta: change over the period (text, ok / ko tone); spark: UI.sparkline node.
+   */
   function kpiStrip(items) {
     return el('div', { class: 'kpi-strip', role: 'group' }, (items || []).map(function (it) { return card(it); }));
   }
@@ -292,14 +297,18 @@
   }
 
   /**
-   * UI.noData(id) -> the empty state of a page when no month is imported: admins get a link to the import
-   * form of the dashboard, lecteurs are told an administrator has to import.
+   * UI.noData(id) -> the empty state of a page when no month is synchronised yet: admins can run the first
+   * synchronisation (App.syncNow), lecteurs are told the data comes with the next hourly run.
    */
   function noData(id) {
-    var node = State.canEdit() ?
-      empty('Aucune donnée importée.', el('button', { type: 'button', class: 'btn btn-link',
-        onClick: function () { App.go('dashboard'); } }, 'Importer un export depuis le tableau de bord')) :
-      empty('Aucun mois importé. Un administrateur doit importer les données.');
+    var node;
+    if (State.canEdit()) {
+      var run = el('button', { type: 'button', class: 'btn btn-link', onClick: function () { App.syncNow(run); } },
+        'Synchroniser maintenant');
+      node = empty('Aucune donnée pour le moment.', run);
+    } else {
+      node = empty('Aucune donnée pour le moment. Les données arrivent à la prochaine synchronisation horaire.');
+    }
     node.id = id;
     return node;
   }
@@ -317,17 +326,56 @@
   function errorToast(err, context) { toast('Erreur : ' + (context ? context + '. ' : '') + errorText(err), 'error'); }
 
   /**
-   * UI.monthHeader({title, month, kickerId, actions?}) -> UI.pageHeader with the month kicker
+   * UI.monthHeader({title, month, from?, endLabel?, kickerId, actions?}) -> UI.pageHeader with the month kicker
    * « Mai 2026 · Export 2026-05 » (kicker carries data-month and kickerId), « Aucun export importé » when
-   * there is no month.
+   * there is no month. A period (from before month): « Avril → octobre 2026 · état fin octobre » (endLabel
+   * replaces « état »; data-from too).
    */
   function monthHeader(o) {
     var m = o.month;
-    var h = pageHeader({ title: o.title, actions: o.actions, kickerId: m ? o.kickerId : null,
-      kicker: m ? [Fmt.monthTitle(m) + ' · ', el('span', { class: 'mono' }, 'Export ' + m)] : 'Aucun export importé' });
+    var range = m && o.from && o.from < m;
+    var kicker = !m ? 'Aucun export importé' : range ?
+      Fmt.periodTitle(o.from, m) + ' · ' + (o.endLabel || 'état') + ' fin ' + Fmt.MONTHS[Number(m.slice(5, 7)) - 1] :
+      [Fmt.monthTitle(m) + ' · ', el('span', { class: 'mono' }, 'Export ' + m)];
+    var h = pageHeader({ title: o.title, actions: o.actions, kickerId: m ? o.kickerId : null, kicker: kicker });
     var k = h.querySelector('.page-kicker');
     if (k && m) k.dataset.month = m;
+    if (k && range) k.dataset.from = o.from;
     return h;
+  }
+
+  /**
+   * UI.sparkline(values) -> small inline SVG line of a month-by-month series (nulls skipped), the last point
+   * marked; null when fewer than two points. Decorative: the figure and its delta say the same in words.
+   */
+  function sparkline(values) {
+    var pts = [];
+    (values || []).forEach(function (v, i) { if (typeof v === 'number' && isFinite(v)) pts.push([i, v]); });
+    if (pts.length < 2) return null;
+    var n = Math.max(1, (values.length - 1));
+    var lo = Math.min.apply(null, pts.map(function (p) { return p[1]; }));
+    var hi = Math.max.apply(null, pts.map(function (p) { return p[1]; }));
+    var span = hi - lo || 1;
+    var W = 100;
+    var H = 20;
+    var xy = pts.map(function (p) { return [p[0] / n * (W - 4) + 2, H - 3 - (p[1] - lo) / span * (H - 6)]; });
+    var NS = 'http://www.w3.org/2000/svg';
+    var svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.setAttribute('class', 'sparkline');
+    svg.setAttribute('aria-hidden', 'true');
+    var path = document.createElementNS(NS, 'polyline');
+    path.setAttribute('points', xy.map(function (p) { return p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' '));
+    path.setAttribute('vector-effect', 'non-scaling-stroke');
+    svg.appendChild(path);
+    var last = xy[xy.length - 1];
+    var dot = document.createElementNS(NS, 'circle');
+    dot.setAttribute('cx', last[0].toFixed(1));
+    dot.setAttribute('cy', last[1].toFixed(1));
+    dot.setAttribute('r', '2');
+    svg.appendChild(dot);
+    return svg;
   }
 
   /**
@@ -1410,6 +1458,7 @@
     plural: plural,
     errorToast: errorToast,
     monthHeader: monthHeader,
+    sparkline: sparkline,
     asyncBlock: asyncBlock,
     monthError: monthError,
     loading: loading,

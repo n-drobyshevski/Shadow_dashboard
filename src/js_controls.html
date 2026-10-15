@@ -8,12 +8,13 @@
  * PUBLIC API
  * ------------------------------------------------------------------------------------------------
  * UI.popover({anchor, content, className?, id?, role?, ariaLabel?, labelledBy?, returnFocus?, ignore?,
- *             matchWidth=true, maxHeight=320, align='start'|'end', onClose?(reason)})
+ *             matchWidth=true, maxHeight=320, align='start'|'end', keepOnTab=false, onClose?(reason)})
  *     -> {node, anchor, close(reason?, {restoreFocus=true}?), reposition(), isOpen()}
  *   Overlay surface portalled to <body> (position: fixed, z-index above modal and drawer), placed under the
  *   anchor (flips above when there is no room), min-width = anchor width, repositioned on scroll/resize.
  *   Closes on outside pointerdown ('outside'), Esc ('escape', focus back to returnFocus || anchor), Tab
- *   inside the panel ('tab', unless the keydown was defaultPrevented), anchor scrolled out ('scroll').
+ *   inside the panel ('tab', unless the keydown was defaultPrevented; with keepOnTab, Tab moves between the
+ *   panel's controls and only focus leaving the panel closes it), anchor scrolled out ('scroll').
  *   Only one popover is open at a time: opening one closes the previous one ('replaced').
  *   UI.popover.current() -> the open popover or null; UI.popover.closeAll().
  *
@@ -145,7 +146,11 @@
       e.stopPropagation();
       close('escape');
     }
-    function onPanelKey(e) { if (e.key === 'Tab' && !e.defaultPrevented) close('tab'); }
+    function onPanelKey(e) { if (e.key === 'Tab' && !e.defaultPrevented && !opts.keepOnTab) close('tab'); }
+    // keepOnTab (a panel with several controls): Tab moves inside; leaving the panel closes it.
+    function onFocusOut(e) {
+      if (opts.keepOnTab && e.relatedTarget instanceof Node && !inside(e.relatedTarget)) close('tab', { restoreFocus: false });
+    }
     function onScroll(e) {
       if (e.target instanceof Node && panel.contains(e.target)) return;
       reposition();
@@ -197,6 +202,7 @@
     document.addEventListener('pointerdown', onPointerDown, true);
     document.addEventListener('keydown', onKey, true);
     panel.addEventListener('keydown', onPanelKey);
+    panel.addEventListener('focusout', onFocusOut);
     window.addEventListener('scroll', onScroll, true);
     window.addEventListener('resize', reposition);
     api = { node: panel, anchor: anchor, close: close, reposition: reposition, isOpen: function () { return !closed; } };

@@ -16,7 +16,7 @@ var Config = (function () {
    * browser blocks third-party storage. PREF_VALUES = the only keys and values accepted.
    */
   var PROP_PREFS_PREFIX = 'PREFS_';
-  var PREF_VALUES = { sidebar: ['open', 'collapsed'] };
+  var PREF_VALUES = { sidebar: ['open', 'collapsed'], period: ['month', 'last3', 'last6', 'year', 'all'] };
   /**
    * Browser-tab icon (the ghost): assets/favicon.png (64×64) embedded as a data: URI, so nothing has to be
    * hosted (the repository may be private). The FAVICON_URL Script Property overrides it with a hosted
@@ -58,11 +58,11 @@ var Config = (function () {
     Replacements: ['id', 'old_poste', 'new_poste', 'equipe', 'responsable', 'date_replacement', 'comment',
       'recorded_at'],
     ImportLog: ['month', 'imported_at', 'source_id', 'counts_json', 'postes_headers_json', 'apps_headers_json',
-      'warnings_json'],
+      'warnings_json', 'changes_json'],
     Meta: ['key', 'value']
   };
 
-  var SCHEMA_VERSION = '1';
+  var SCHEMA_VERSION = '2'; // 2: ImportLog.changes_json (hourly sync)
 
   function props_() {
     return PropertiesService.getScriptProperties();

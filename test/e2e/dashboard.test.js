@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const data = require('../fixtures/data');
-const { openApp, chooseOption, chooseOptions, optionLabels, dropdownValue } = require('./harness');
+const { openApp, chooseOption, chooseOptions, optionLabels, dropdownValue, choosePeriod, periodValue } = require('./harness');
 
 // ---------------------------------------------------------------- expected values (Node side)
 const ctx = vm.createContext({});
@@ -61,10 +61,11 @@ async function withApp(options, fn) {
   }
 }
 
-/** Types the month into the UI.monthField (#import-month is its text input) and submits. */
-async function startImport(app, month) {
-  await app.page.fill('#import-month', month);
-  await app.page.click('#import-button');
+/** 'YYYY-MM-DD HH:mm' stamp of today in the browser's zone (the chip shows only HH:mm for today). */
+function todayStamp(hhmm) {
+  const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Paris' }));
+  const pad = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + hhmm;
 }
 
 describe('dashboard', () => {
@@ -94,20 +95,13 @@ describe('dashboard', () => {
       const titles = await page.$$eval('#main .chart-section > .section-title', (ns) => ns.map((n) => n.textContent));
       assert.deepEqual(titles, ['Conformité des postes', 'Conformité des applications', 'Risques — Postes',
         'Risques — Applications', 'Distribution des scores — Postes', 'Distribution des scores — Applications']);
-      assert.equal((await page.textContent('#import-panel h2')).trim(), 'Importer depuis Google Sheets');
-      // Import month: a UI.monthField (mono text input + month grid), no native month picker.
-      assert.equal(await page.inputValue('#import-month'), await page.evaluate(() => window.State.get().currentMonth));
-      assert.equal(await page.getAttribute('#import-month', 'type'), 'text');
+      // No import section any more: the data comes from the hourly sync (status in the app bar).
+      assert.equal(await page.$('#import-panel'), null);
+      assert.equal(await page.$('#import-month'), null);
       assert.equal(await page.$$eval('#main input[type=month], #main input[type=date], #main select', (n) => n.length), 0);
       // Gauge captions spell the status out (never colour only).
       assert.deepEqual(await page.$$eval('#main .chart-section .threshold-caption', (ns) => ns.map((n) => n.textContent)), [
         'Sous le seuil · 5 conformes sur 7 · seuil 80\u202f%', 'Sous le seuil · 3 conformes sur 5 · seuil 80\u202f%']);
-      // Import log: newest first, months as « mai 2026 », import time as DD/MM/YYYY HH:MM.
-      assert.deepEqual(await page.$$eval('#import-log tbody tr[data-month]', (ns) => ns.map((n) => n.dataset.month)),
-        ['2026-05', '2026-04']);
-      assert.deepEqual(await page.$$eval('#import-log tbody tr[data-month] td:first-child', (ns) => ns.map((n) => n.textContent)),
-        ['mai 2026', 'avril 2026']);
-      assert.match(await page.textContent('#import-log tbody tr[data-month] td:nth-child(2)'), /^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
       // No native title tooltips in the page.
       assert.equal(await page.$$eval('#main [title]', (n) => n.length), 0);
       assert.deepEqual(app.errors, []);
@@ -185,7 +179,7 @@ describe('dashboard', () => {
 
   test('month select switches the snapshot', async () => {
     await withApp({}, async (app) => {
-      await chooseOption(app.page, '#month-select', '2026-04');
+      await choosePeriod(app.page, '2026-04');
       await app.page.waitForFunction(() => document.getElementById('dashboard-caption').dataset.month === '2026-04');
       assert.equal(await app.page.textContent('#dashboard-caption'), 'Avril 2026 · Export 2026-04');
       await app.waitIdle();
@@ -194,143 +188,137 @@ describe('dashboard', () => {
     });
   });
 
-  test('import of an existing month asks for confirmation, then overwrites', async () => {
+  test('app bar: time of the last sync; the panel tells what changed; « Synchroniser maintenant »', async () => {
     await withApp({}, async (app) => {
       const { page } = app;
-      await startImport(app, '2026-05');
-      await page.waitForSelector('.modal[role="dialog"]');
-      const msg = await page.textContent('.modal .confirm-message');
-      assert.equal(msg, 'L’export de mai 2026 existe déjà. Ré-importer écrase les postes, applications et le référentiel ' +
-        'de ce mois (Galink/IDP sont conservés). Continuer ?');
-      // Destructive confirm: the focus starts on « Annuler », not on « Ré-importer ».
-      await page.waitForFunction(() => document.activeElement && document.activeElement.textContent === 'Annuler');
-      await page.click('.modal .btn-danger');
+      const chip = '#sync-chip';
+      assert.equal(await page.getAttribute(chip, 'data-tone'), 'ok');
+      assert.match((await page.textContent(chip)).trim(), /^\d{2}:\d{2}$/);
+      assert.match(await page.getAttribute(chip, 'aria-label'), /^Synchronisation : Synchronisé à \d{2}:\d{2}\. Afficher le détail\.$/);
+      assert.equal(await page.getAttribute(chip, 'aria-expanded'), 'false');
+      await page.click(chip);
+      await page.waitForSelector('#sync-popover #sync-panel');
+      assert.equal(await page.getAttribute(chip, 'aria-expanded'), 'true');
+      assert.match(await page.textContent('#sync-panel-status'), /^Synchronisé à \d{2}:\d{2}$/);
+      assert.equal(await page.textContent('#sync-panel-change'),
+        'Dernière modification 04/05 10:30 · +1 poste · −1 poste · 2 postes modifiés (3 valeurs) · +1 application · −1 application');
+      assert.match(await page.textContent('#sync-panel'), /\(le mois en cours\) est relu depuis le Google Sheet source ShadowIT_Industry/);
+      // Tab moves between the panel's controls (the panel stays open); Escape closes it, focus back on the chip.
+      await page.focus('#sync-now');
+      await page.keyboard.press('Tab');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'sync-journal');
+      assert.ok(await page.isVisible('#sync-popover'));
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('#sync-popover', { state: 'detached' });
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'sync-chip');
+
+      // The current month is not in the data yet: the sync creates it (the live source = the 2026-05 fixture).
+      const current = await page.evaluate(() => window.State.get().currentMonth);
+      await page.click(chip);
+      await page.click('#sync-now');
       await page.waitForSelector('.toast-success');
       await app.waitIdle();
-      await page.waitForSelector('#import-result');
-      assert.equal(await page.textContent('.toast-success .toast-msg'), 'Import terminé — 7 postes, 5 applications.');
-
-      const imports = (await app.calls()).filter((c) => c.name === 'api_importMonth');
-      assert.deepEqual(imports.map((c) => c.args), [
-        { month: '2026-05', overwrite: false },
-        { month: '2026-05', overwrite: true },
-      ]);
-      // Re-mounted with fresh data (cache invalidated) and the warnings of the import are shown.
+      assert.equal(await page.textContent('.toast-success .toast-msg'), 'Synchronisé — mois créé.');
+      assert.deepEqual(await page.evaluate(() => window.State.get().months), ['2026-04', '2026-05', current]);
+      assert.deepEqual(await periodValue(page), { from: '2026-05', to: '2026-05' }, 'the month being read stays selected');
       const calls = (await app.calls()).map((c) => c.name);
-      assert.ok(calls.lastIndexOf('api_getMonthData') > calls.lastIndexOf('api_importMonth'));
-      assert.ok(calls.lastIndexOf('api_bootstrap') > calls.lastIndexOf('api_importMonth'));
-      assert.match(await page.textContent('#import-result'), /ignorée/);
-      assert.equal(await page.getAttribute('#dashboard-caption', 'data-month'), '2026-05');
+      assert.ok(calls.lastIndexOf('api_bootstrap') > calls.lastIndexOf('api_syncNow'), 'bootstrap reloaded after a change');
+      assert.ok(calls.lastIndexOf('api_getMonthData') > calls.lastIndexOf('api_syncNow'), 'page re-mounted with fresh data');
+
+      // Nothing new on a second run.
+      await page.click('.toast-success .toast-close').catch(() => {});
+      if (!(await page.isVisible('#sync-popover'))) await page.click(chip);
+      await page.click('#sync-now');
+      await page.waitForFunction(() => [...document.querySelectorAll('.toast-success .toast-msg')]
+        .some((n) => n.textContent === 'Synchronisé — aucune modification.'));
       assert.deepEqual(app.errors, []);
     });
   });
 
-  test('cancelling the confirmation does not overwrite', async () => {
-    await withApp({}, async (app) => {
+  test('sync button: busy while the sync runs, then back to the time', async () => {
+    await withApp({ delayMs: 400 }, async (app) => {
       const { page } = app;
-      await startImport(app, '2026-04');
-      await page.waitForSelector('.modal[role="dialog"]');
-      await page.keyboard.press('Escape');
-      await page.waitForSelector('.modal[role="dialog"]', { state: 'detached' });
+      await page.click('#sync-chip');
+      await page.click('#sync-now');
+      await page.waitForSelector('#sync-chip[data-tone="busy"] .spinner');
+      assert.equal((await page.textContent('#sync-chip')).trim(), 'Synchronisation…');
+      await page.waitForSelector('#sync-now.is-busy[aria-busy="true"]');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'sync-now', 'focus kept across re-renders');
+      // The new month was created with the source's warnings: the mark turns amber, the text is the time again.
+      await page.waitForSelector('#sync-chip[data-tone="warn"]', { timeout: 10000 });
+      assert.match((await page.textContent('#sync-chip')).trim(), /^\d{2}:\d{2}$/);
+      // A new month re-renders the app bar (the panel closes with its button); reopened, it lists the warnings.
       await app.waitIdle();
-      const imports = (await app.calls()).filter((c) => c.name === 'api_importMonth');
-      assert.deepEqual(imports.map((c) => c.args), [{ month: '2026-04', overwrite: false }]);
-      assert.equal(await page.isEnabled('#import-button'), true);
+      if (!(await page.$('#sync-panel'))) await page.click('#sync-chip');
+      assert.match(await page.textContent('#sync-panel .alert-warning'), /ignorée/);
+      await app.waitIdle();
       assert.deepEqual(app.errors, []);
     });
   });
 
-  test('importing a new month selects it; server errors are shown', async () => {
-    await withApp({}, async (app) => {
+  test('a failed sync shows in the app bar until the next success', async () => {
+    const sync = { lastOkAt: todayStamp('10:02'), lastRunAt: todayStamp('11:02'),
+      lastError: { at: todayStamp('11:02'), code: 'SOURCE_ERROR', message: 'Impossible d’ouvrir le classeur source.' } };
+    await withApp({ sync }, async (app) => {
       const { page } = app;
-      await page.evaluate(() => { window.__mock.failNext.api_importMonth = { code: 'SOURCE_ERROR', message: 'Onglet introuvable' }; });
-      await startImport(app, '2026-06');
-      await page.waitForSelector('#import-status .alert-error');
-      assert.match(await page.textContent('#import-status'), /Onglet introuvable/);
+      assert.equal(await page.getAttribute('#sync-chip', 'data-tone'), 'ko');
+      assert.equal((await page.textContent('#sync-chip')).trim(), 'Échec 11:02');
+      await page.click('#sync-chip');
+      await page.waitForSelector('#sync-panel-error');
+      assert.equal(await page.textContent('#sync-panel-status'), 'Échec de la synchronisation à 11:02');
+      assert.equal(await page.textContent('#sync-panel-error'),
+        'Impossible d’ouvrir le classeur source. Les données affichées datent de la synchronisation à 10:02.');
 
-      await startImport(app, '2026-06');
-      await page.waitForFunction(() => ((document.getElementById('dashboard-caption') || {}).dataset || {}).month === '2026-06');
+      await page.evaluate(() => { window.__mock.failNext.api_syncNow = { code: 'SOURCE_ERROR', message: 'Onglet introuvable' }; });
+      await page.click('#sync-now');
+      await page.waitForSelector('.toast-error');
+      assert.match(await page.textContent('.toast-error .toast-msg'), /Synchronisation impossible\. Onglet introuvable/);
       await app.waitIdle();
-      assert.equal(await dropdownValue(page, '#month-select'), '2026-06');
-      assert.deepEqual(await optionLabels(page, '#month-select', { values: true }), ['2026-04', '2026-05', '2026-06']);
-      assertCards(await readCards(page), kpisFor('2026-05')); // the live source holds the 2026-05 fixture
-      assert.equal(await page.$$eval('#import-log tbody tr[data-month]', (rs) => rs.length), 3);
-
-      // Client-side validation of the month: shown under the field (UI.fieldError), nothing sent.
-      const before = (await app.calls()).filter((c) => c.name === 'api_importMonth').length;
-      await page.fill('#import-month', '2026-13');
-      await page.click('#import-button');
-      assert.match(await page.textContent('#import-month-err'), /Mois invalide/);
-      assert.equal(await page.getAttribute('#import-month', 'aria-invalid'), 'true');
-      assert.equal(await page.isVisible('#import-status .alert-error'), false);
-      assert.equal((await app.calls()).filter((c) => c.name === 'api_importMonth').length, before);
-      // Typing a valid month clears the error.
-      await page.fill('#import-month', '2026-07');
-      await page.locator('#import-month').blur();
-      assert.equal(await page.isVisible('#import-month-err'), false);
-      assert.equal(await page.getAttribute('#import-month', 'aria-invalid'), 'false');
+      await page.click('#sync-now');
+      await page.waitForSelector('#sync-chip[data-tone="warn"]');
+      assert.equal(await page.$('#sync-panel-error'), null);
       assert.deepEqual(app.errors.filter((e) => !/Onglet introuvable/.test(e)), []);
     });
   });
 
-  test('empty state: warning + import panel only, then import', async () => {
+  test('newer data on the server: « Nouvelles données », then « Actualiser » reloads', async () => {
+    await withApp({}, async (app) => {
+      const { page } = app;
+      await page.evaluate(() => { window.__mock.db.sync.lastChangeAt = '2026-05-05 08:00'; });
+      await page.click('#sync-chip');   // opening the panel refreshes the status
+      await page.waitForSelector('#sync-chip[data-tone="new"]');
+      assert.equal((await page.textContent('#sync-chip')).trim(), 'Nouvelles données');
+      await page.waitForSelector('#sync-reload');
+      const before = (await app.calls()).length;
+      await page.click('#sync-reload');
+      await page.waitForSelector('#sync-chip[data-tone="ok"]');
+      await app.waitIdle();
+      const after = (await app.calls()).slice(before).map((c) => c.name);
+      assert.ok(after.includes('api_bootstrap') && after.includes('api_getMonthData'), after.join(','));
+      assert.equal(await page.$('#sync-popover'), null);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('empty state: admins run the first sync from the dashboard', async () => {
     await withApp({ empty: true }, async (app) => {
       const { page } = app;
-      assert.equal((await page.textContent('#dashboard-empty')).trim(), 'Aucune donnée importée.');
+      assert.equal((await page.textContent('#dashboard-empty')).trim(),
+        'Aucune donnée pour le moment. La synchronisation crée le mois en cours à partir du Google Sheet source.');
       assert.equal(await page.$('#dashboard-body'), null);
       assert.equal(await page.$$eval('[data-kpi]', (n) => n.length), 0);
-      assert.ok(await page.isVisible('#import-panel'));
-      assert.match(await page.textContent('#import-log'), /Aucun import/);
-      assert.equal(await page.isDisabled('#month-select'), true);
-      assert.equal((await page.textContent('#import-button')).trim(), 'Importer');
+      assert.equal(await page.isDisabled('#period-button'), true);
+      assert.equal((await page.textContent('#sync-chip')).trim(), 'En attente');
 
-      await startImport(app, '2026-05');
+      await page.click('#dashboard-sync');
       await page.waitForSelector('[data-kpi="total_postes"]');
       await app.waitIdle();
       // First snapshot: no previous month to carry Galink/IDP over from, so they are empty.
       const k = kpisFor('2026-05', null, { custom: false });
       assert.equal(k.apps_sans_galink, 0);
       assertCards(await readCards(page), k);
-      assert.equal(await dropdownValue(page, '#month-select'), '2026-05');
-      assert.deepEqual(app.errors, []);
-    });
-  });
-
-  test('import button: busy state while the import runs; label follows the month', async () => {
-    await withApp({ delayMs: 400 }, async (app) => {
-      const { page } = app;
-      assert.equal((await page.textContent('#import-button')).trim(), 'Importer');   // 2026-10 not imported yet
-      await page.fill('#import-month', '2026-05');
-      await page.waitForFunction(() => document.getElementById('import-button').textContent.trim() === 'Ré-importer');
-      await page.fill('#import-month', '2026-06');
-      await page.click('#import-button');
-      // Busy: spinner + label, colours kept (not the 45 % disabled look), the month field locked.
-      await page.waitForSelector('#import-button.is-busy[aria-busy="true"] .spinner');
-      assert.equal((await page.textContent('#import-button')).trim(), 'Import en cours…');
-      assert.equal(await page.$eval('#import-button', (b) => getComputedStyle(b).opacity), '1');
-      assert.equal(await page.isDisabled('#import-month'), true);
-      await page.waitForFunction(() => ((document.getElementById('dashboard-caption') || {}).dataset || {}).month === '2026-06',
-        null, { timeout: 10000 });
-      await app.waitIdle();
-      assert.equal(await page.$('#import-button.is-busy'), null);
-      assert.deepEqual(app.errors, []);
-    });
-  });
-
-  test('import log: warnings are revealed by the count button (no native tooltip)', async () => {
-    await withApp({}, async (app) => {
-      const { page } = app;
-      const toggle = '#import-log tr[data-month="2026-05"] .import-warn-toggle';
-      assert.equal((await page.textContent(toggle)).trim(), '1');
-      assert.equal(await page.getAttribute(toggle, 'aria-expanded'), 'false');
-      const target = await page.getAttribute(toggle, 'aria-controls');
-      assert.equal(await page.isVisible('#' + target), false);
-      await page.click(toggle);
-      assert.equal(await page.getAttribute(toggle, 'aria-expanded'), 'true');
-      assert.ok(await page.isVisible('#' + target));
-      assert.match(await page.textContent('#' + target), /ignorée/);
-      await page.click(toggle);
-      assert.equal(await page.isVisible('#' + target), false);
+      assert.equal((await periodValue(page)).to, await page.evaluate(() => window.State.get().currentMonth));
+      assert.equal(await page.getAttribute('#sync-chip', 'data-tone'), 'warn'); // ghost-row warning of the source
       assert.deepEqual(app.errors, []);
     });
   });
@@ -342,7 +330,7 @@ describe('dashboard', () => {
         window.__mock.failNext.api_getMonthData = { code: 'INTERNAL', message: 'Feuille illisible' };
         window.State.invalidate();
       });
-      await chooseOption(page, '#month-select', '2026-04');
+      await choosePeriod(page, '2026-04');
       await page.waitForSelector('#dashboard-body .alert-error');
       assert.equal((await page.textContent('#dashboard-body .alert-error p')).replace('Réessayer', '').trim(),
         'Impossible de charger avril 2026 : Feuille illisible');

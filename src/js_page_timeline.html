@@ -218,8 +218,15 @@
 
   function renderTimeline(body, s, timeline, kicker) {
     board = Charts.board({ sectionClass: 'chart-card' });
-    var series = computeSeries(timeline, s.filters || { equipes: [], batiments: [] });
-    if (kicker) kicker.textContent = kickerText(series);
+    // A period (app bar) limits the history to its months; a single month shows the whole history.
+    var per = State.period();
+    var all = timeline || [];
+    var shown = per.single ? all : all.filter(function (m) { return m.month >= per.from && m.month <= per.to; });
+    var series = computeSeries(shown, s.filters || { equipes: [], batiments: [] });
+    if (kicker) {
+      kicker.textContent = kickerText(series) + (shown.length < all.length ? ' sur ' + all.length : '');
+      if (per.single) delete kicker.dataset.from; else kicker.dataset.from = per.from;
+    }
 
     var note = UI.filterNote('all');
     if (note) body.appendChild(note);

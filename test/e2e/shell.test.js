@@ -7,7 +7,7 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const { openApp, chooseOption, chooseOptions, optionLabels, dropdownValue, typeDate } = require('./harness');
+const { openApp, chooseOption, chooseOptions, optionLabels, dropdownValue, typeDate, choosePeriod, periodValue } = require('./harness');
 
 const PAGES = [
   { id: 'dashboard', title: 'Tableau de bord' },
@@ -47,11 +47,11 @@ describe('shell', () => {
       assert.equal(await page.textContent('#sidebar .nav-count[data-count="apps"]'), '5');
       assert.equal(await page.getAttribute('#sidebar .nav-link[data-page="dashboard"]', 'aria-current'), 'page');
 
-      // Période: ascending months, latest selected by default (custom dropdown, no native <select>).
+      // Période: the latest month by default (a button with its panel, no native <select>).
       assert.equal(await page.$('#sidebar select'), null);
-      assert.equal(await page.getAttribute('#month-select', 'aria-haspopup'), 'listbox');
-      assert.deepEqual(await optionLabels(page, '#month-select', { values: true }), ['2026-04', '2026-05']);
-      assert.equal(await dropdownValue(page, '#month-select'), '2026-05');
+      assert.equal(await page.getAttribute('#period-button', 'aria-haspopup'), 'dialog');
+      assert.equal((await page.textContent('#period-button')).trim(), 'Mai 2026');
+      assert.deepEqual(await periodValue(page), { from: '2026-05', to: '2026-05' });
 
       // Footer links open in a new tab without opener.
       for (const id of ['#link-data', '#link-source']) {
@@ -162,7 +162,7 @@ describe('shell', () => {
       }
 
       // Month change keeps the filters too.
-      await chooseOption(page, '#month-select', '2026-04');
+      await choosePeriod(page, '2026-04');
       await page.waitForFunction(() => ((document.getElementById('dashboard-caption') || {}).dataset || {}).month === '2026-04');
       await app.waitIdle();
       assert.deepEqual(await page.evaluate(() => window.State.get().filters), expected);
@@ -179,7 +179,7 @@ describe('shell', () => {
     await withApp({}, async (app) => {
       const { page } = app;
       // Période / Filtres live in the sticky app bar, no longer in the sidebar.
-      for (const id of ['#month-select', '#filter-equipe', '#filter-batiment']) {
+      for (const id of ['#period-button', '#filter-equipe', '#filter-batiment']) {
         assert.equal(await page.$(`#appbar ${id}`) !== null, true, `${id} in the app bar`);
         assert.equal(await page.$(`#sidebar ${id}`), null, `${id} not in the sidebar`);
       }
@@ -192,7 +192,7 @@ describe('shell', () => {
       await page.click('#month-prev');
       await page.waitForFunction(() => ((document.getElementById('dashboard-caption') || {}).dataset || {}).month === '2026-04');
       await app.waitIdle();
-      assert.equal(await dropdownValue(page, '#month-select'), '2026-04');
+      assert.deepEqual(await periodValue(page), { from: '2026-04', to: '2026-04' });
       assert.equal(await page.isDisabled('#month-prev'), true);
       assert.equal(await page.isDisabled('#month-next'), false);
       await page.click('#month-next');
@@ -311,7 +311,7 @@ describe('shell', () => {
       await page.waitForSelector('#main .page[data-page="postes"]');
       assert.ok(!(await page.isVisible('#sidebar')), 'menu closes after navigation');
       // Période stays visible; the filters fold behind « Filtres » (with the number of active values).
-      assert.ok(await page.isVisible('#month-select'));
+      assert.ok(await page.isVisible('#period-button'));
       assert.equal(await page.isVisible('#filter-equipe'), false);
       await page.click('#filters-toggle');
       assert.equal(await page.getAttribute('#filters-toggle', 'aria-expanded'), 'true');

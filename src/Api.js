@@ -300,7 +300,8 @@ var ApiImpl_ = (function () {
       sourceTitle: src.title,
       threshold: cfg.threshold,
       user: { email: user.email, role: user.role, isOwner: user.isOwner },
-      prefs: Config.getPrefs(user.email)
+      prefs: Config.getPrefs(user.email),
+      sync: Sync.status()
     };
   }
 
@@ -331,7 +332,39 @@ var ApiImpl_ = (function () {
         Core.SOURCE_TABS.postes + ' » ni l’onglet « ' + Core.SOURCE_TABS.applications + ' ».');
     }
     Store.withLock(function () { Config.setSourceId(id); });
-    return { sourceId: id, sourceTitle: ss.getName(), sourceUrl: ss.getUrl(), tabsFound: tabs };
+    return { sourceId: id, sourceTitle: ss.getName(), sourceUrl: ss.getUrl(), tabsFound: tabs, sync: startSync_() };
+  }
+
+  /**
+   * After a source is saved: makes sure the hourly trigger exists. Never throws (the source is saved
+   * either way): without the ScriptApp authorisation the returned status carries `authError`. The
+   * client then calls api_syncNow for the first synchronisation.
+   */
+  function startSync_() {
+    try {
+      return Sync.enable();
+    } catch (e) {
+      var st = Sync.status();
+      st.authError = e.message;
+      return st;
+    }
+  }
+
+  // ---------------------------------------------------------------------------- sync
+
+  function getSyncStatus() {
+    return Sync.status();
+  }
+
+  /** Synchronises the current month now: {status, result}. */
+  function syncNow() {
+    return Sync.run();
+  }
+
+  /** Creates the hourly trigger (if missing), then synchronises: {status, result}. */
+  function enableSync() {
+    Sync.enable();
+    return Sync.run();
   }
 
   // ---------------------------------------------------------------------------- month data
@@ -354,33 +387,46 @@ var ApiImpl_ = (function () {
     };
   }
 
-  function importMonth(args) {
-    var month = requireMonth_(args.month);
-    return Importer.importMonth(month, args.overwrite === true);
-  }
-
   function getImportLog() {
     return Store.getImportLog().reverse();
   }
 
   // ------------------------------------------------------------------------- entity edits
 
-  function saveEntities_(tab, keyField, enrich, args) {
+  /**
+   * The current month follows the source (Sync): its edits are written into the source spreadsheet
+   * first (Importer write-back), then into the snapshot, so the next hourly sync reads them back. Past
+   * months are frozen history: their edits change the snapshot only.
+   */
+  function isLive_(month) {
+    return month === Sync.currentMonth();
+  }
+
+  function saveEntities_(tab, entity, keyField, enrich, args) {
     var month = requireMonth_(args.month);
     var changes = normalizeChanges_(args.changes, keyField);
-    if (!changes.length) return { updated: [] };
+    if (!changes.length) return { updated: [], sourceUpdated: false };
     return Store.withLock(function () {
       requireImported_(month);
-      return { updated: enrich(Store.updateEntityRows(tab, month, changes)) };
+      var live = isLive_(month);
+      if (live) {
+        var stored = Store.readEntityMonth(tab, month);
+        Importer.writeEdits(entity, changes.map(function (c) {
+          var rec = findById_(stored, c.id);
+          if (!rec) throw notFound_(entity === 'postes' ? 'Poste' : 'Application');
+          return { name: Core.str(rec[keyField]), fields: c.updates };
+        }));
+      }
+      return { updated: enrich(Store.updateEntityRows(tab, month, changes)), sourceUpdated: live };
     });
   }
 
   function savePostes(args) {
-    return saveEntities_(Config.TABS.postes, Core.KEY_POSTE, Core.enrichPostes, args);
+    return saveEntities_(Config.TABS.postes, 'postes', Core.KEY_POSTE, Core.enrichPostes, args);
   }
 
   function saveApplications(args) {
-    return saveEntities_(Config.TABS.applications, Core.KEY_APP, enrichApps_, args);
+    return saveEntities_(Config.TABS.applications, 'applications', Core.KEY_APP, enrichApps_, args);
   }
 
   function addGenericPoste(args) {
@@ -397,6 +443,7 @@ var ApiImpl_ = (function () {
         var found = existing.filter(function (r) { return Core.normKey(r[Core.KEY_POSTE]) === target; })[0];
         return { created: false, record: Core.enrichPostes([found])[0] };
       }
+      if (isLive_(month)) Importer.appendRecord('postes', rec);
       var stored = Store.appendEntityRow(Config.TABS.postes, month, rec, Core.KEY_POSTE);
       return { created: true, record: Core.enrichPostes([stored])[0] };
     });
@@ -427,6 +474,7 @@ var ApiImpl_ = (function () {
       columns_(info && info.apps_headers, [], Core.APP_CUSTOM_FIELDS).forEach(function (h) { rec[h] = null; });
       Object.keys(fields).forEach(function (k) { rec[k] = fields[k]; });
       rec[Core.KEY_APP] = name;
+      if (isLive_(month)) Importer.appendRecord('applications', rec);
       var stored = Store.appendEntityRow(Config.TABS.applications, month, rec, Core.KEY_APP);
       return enrichApps_([stored])[0];
     });
@@ -436,6 +484,11 @@ var ApiImpl_ = (function () {
     var month = requireMonth_(args.month);
     var id = requireId_(args.id);
     return Store.withLock(function () {
+      if (isLive_(month)) {
+        var rec = findById_(Store.readEntityMonth(Config.TABS.applications, month), id);
+        if (!rec) throw notFound_('Application');
+        Importer.deleteRecord('applications', Core.str(rec[Core.KEY_APP]));
+      }
       if (!Store.deleteEntityRow(Config.TABS.applications, month, id)) throw notFound_('Application');
       return { deleted: true, id: id };
     });
@@ -458,6 +511,7 @@ var ApiImpl_ = (function () {
 
       var upd = {};
       upd[Core.KEY_APP] = newName;
+      if (isLive_(month)) Importer.writeEdits('applications', [{ name: oldName, fields: upd }]);
       var updated = Store.updateEntityRows(Config.TABS.applications, month, [{ id: id, updates: upd }])[0];
       var n = Store.updateRowsWhere(Config.TABS.actions,
         function (a) { return a.target_type === 'application' && a.target_name === oldName; },
@@ -665,7 +719,8 @@ var ApiImpl_ = (function () {
       source: source,
       dataUrl: cfg.dataId ? Store.dataUrl() : '',
       access: accessView_(cfg.access, user.owner),
-      me: user.email
+      me: user.email,
+      sync: Sync.verifiedStatus()
     };
   }
 
@@ -798,7 +853,9 @@ var ApiImpl_ = (function () {
     savePrefs: savePrefs,
     setConfig: setConfig,
     getMonthData: getMonthData,
-    importMonth: importMonth,
+    getSyncStatus: getSyncStatus,
+    syncNow: syncNow,
+    enableSync: enableSync,
     getImportLog: getImportLog,
     savePostes: savePostes,
     addGenericPoste: addGenericPoste,
@@ -833,7 +890,9 @@ function api_bootstrap(argsJson) { return apiWrap_(ApiImpl_.bootstrap, 'api_boot
 function api_savePrefs(argsJson) { return apiWrap_(ApiImpl_.savePrefs, 'api_savePrefs', 'lecteur')(argsJson); }
 function api_setConfig(argsJson) { return apiWrap_(ApiImpl_.setConfig, 'api_setConfig', 'admin')(argsJson); }
 function api_getMonthData(argsJson) { return apiWrap_(ApiImpl_.getMonthData, 'api_getMonthData', 'lecteur')(argsJson); }
-function api_importMonth(argsJson) { return apiWrap_(ApiImpl_.importMonth, 'api_importMonth', 'admin')(argsJson); }
+function api_getSyncStatus(argsJson) { return apiWrap_(ApiImpl_.getSyncStatus, 'api_getSyncStatus', 'lecteur')(argsJson); }
+function api_syncNow(argsJson) { return apiWrap_(ApiImpl_.syncNow, 'api_syncNow', 'admin')(argsJson); }
+function api_enableSync(argsJson) { return apiWrap_(ApiImpl_.enableSync, 'api_enableSync', 'admin')(argsJson); }
 function api_getImportLog(argsJson) { return apiWrap_(ApiImpl_.getImportLog, 'api_getImportLog', 'lecteur')(argsJson); }
 function api_savePostes(argsJson) { return apiWrap_(ApiImpl_.savePostes, 'api_savePostes', 'admin')(argsJson); }
 function api_addGenericPoste(argsJson) { return apiWrap_(ApiImpl_.addGenericPoste, 'api_addGenericPoste', 'admin')(argsJson); }

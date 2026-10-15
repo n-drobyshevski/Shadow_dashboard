@@ -276,7 +276,7 @@ test('savePostes: updates, re-enrichment, persistence; rejects _fields and the k
     { id: mec._id, updates: { Statut: 'Non conforme' } }, { id: 'nope', updates: {} }] }, 'NOT_FOUND');
   assert.equal(byName(monthData(ctx, '2026-05').postes, KEY_POSTE, 'LAB-MEC-01').Statut, 'Conforme');
   fail(ctx, 'api_savePostes', { month: '2025-01', changes: [{ id: mec._id, updates: { Statut: 'x' } }] }, 'NOT_FOUND');
-  assert.deepEqual(ok(ctx, 'api_savePostes', { month: '2026-05', changes: [] }), { updated: [] });
+  assert.deepEqual(ok(ctx, 'api_savePostes', { month: '2026-05', changes: [] }), { updated: [], sourceUpdated: false });
 });
 
 test('saveApplications: Galink/IDP edits re-score; validation', () => {

@@ -14,8 +14,8 @@ const OWNER = 'owner@decathlon.com';
 const READER = 'lea.reader@decathlon.com';
 const ADMIN2 = 'sam.admin@decathlon.com';
 
-const LECTEUR_APIS = ['api_bootstrap', 'api_savePrefs', 'api_getMonthData', 'api_getImportLog', 'api_getTimeline',
-  'api_getActions', 'api_getDiff'];
+const LECTEUR_APIS = ['api_bootstrap', 'api_savePrefs', 'api_getMonthData', 'api_getSyncStatus', 'api_getImportLog',
+  'api_getTimeline', 'api_getActions', 'api_getDiff'];
 
 function call(ctx, name, args) {
   const out = ctx[name](args === undefined ? 'null' : JSON.stringify(args));
@@ -91,12 +91,13 @@ test('lecteur: read endpoints work, every write endpoint is FORBIDDEN, links are
   const md = ok(sb.ctx, 'api_getMonthData', { month: '2026-05' });
   assert.ok(md.postes.length > 0);
   ok(sb.ctx, 'api_getImportLog');
+  assert.equal(typeof ok(sb.ctx, 'api_getSyncStatus').enabled, 'boolean');
   ok(sb.ctx, 'api_getTimeline');
   ok(sb.ctx, 'api_getActions');
   ok(sb.ctx, 'api_getDiff', { oldMonth: '2026-05', newMonth: '2026-05' });
 
   const writes = apiNames(sb.ctx).filter((n) => !LECTEUR_APIS.includes(n));
-  assert.equal(writes.length, 22);
+  assert.equal(writes.length, 24); // 23 admin endpoints + the test-only api_importMonth
   const poste = md.postes[0];
   for (const name of writes) {
     const err = fail(sb.ctx, name, { month: '2026-05', id: poste._id, changes: [], email: ADMIN2, role: 'admin',
@@ -405,6 +406,11 @@ test('interface preferences: stored per account, allowed to every role, validate
   fail(sb.ctx, 'api_savePrefs', { theme: 'dark' }, 'VALIDATION');
   fail(sb.ctx, 'api_savePrefs', {}, 'VALIDATION');
   assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), { sidebar: 'collapsed' }, 'refused saves changed nothing');
+  // The period shortcut (app bar) is a preference too; prefs are merged, not replaced.
+  fail(sb.ctx, 'api_savePrefs', { period: 'last12' }, 'VALIDATION');
+  ok(sb.ctx, 'api_savePrefs', { period: 'last6' });
+  assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), { sidebar: 'collapsed', period: 'last6' });
+  ok(sb.ctx, 'api_savePrefs', { period: 'month' });
 
   // A lecteur saves their own, separate preferences.
   ok(sb.ctx, 'api_saveUser', { email: READER, role: 'lecteur' });
@@ -413,7 +419,7 @@ test('interface preferences: stored per account, allowed to every role, validate
   ok(sb.ctx, 'api_savePrefs', { sidebar: 'open' });
   assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), { sidebar: 'open' });
   as(sb, undefined);
-  assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), { sidebar: 'collapsed' });
+  assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), { sidebar: 'collapsed', period: 'month' });
 
   // Unreadable or unknown stored values are ignored.
   props.setProperty('PREFS_' + OWNER, '{oops');

@@ -122,6 +122,8 @@ test('import before configuration -> NOT_CONFIGURED', () => {
 test('setConfig accepts a full URL or a bare id and reports the tabs found', () => {
   const { ctx } = loadGas({ sources: [source('2026-04')] });
   const d = ok(ctx, 'api_setConfig', { source: SOURCE_URL });
+  assert.equal(d.sync.enabled, true, 'saving a source creates the hourly trigger');
+  delete d.sync;
   assert.deepEqual(d, {
     sourceId: SOURCE_ID,
     sourceTitle: 'ShadowIT_Industry',
@@ -177,6 +179,9 @@ test('import 2026-04: counts, ghost-row warnings, log entry, months', () => {
     overwritten: false,
     carriedOver: 0,
     warnings: GHOST_WARNINGS,
+    changed: true,
+    changes: { created: true, postes: { added: 6, removed: 0, changed: 0, values: 0 },
+      applications: { added: 5, removed: 0, changed: 0, values: 0 }, referentiel: true },
   });
 
   const log = ok(ctx, 'api_getImportLog');
