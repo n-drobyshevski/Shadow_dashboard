@@ -217,7 +217,7 @@ describe('actions — remediation', () => {
       assert.equal(rows['a-0003'].type, 'Application');
       assert.equal(rows['a-0001'].status, 'badge badge-ok|Terminé');
       assert.equal(rows['a-0002'].status, 'badge badge-warn|En cours');
-      assert.equal(rows['a-0003'].status, 'badge badge-info|À faire');
+      assert.equal(rows['a-0003'].status, 'badge badge-neutral|À faire'); // neutral mark: accent blue is for links
       // Closed actions are never overdue; open ones with a past deadline are (fixture deadlines are in 2026).
       assert.equal(rows['a-0001'].deadlineBadge, null);
       assert.equal(rows['a-0001'].deadline, '30/06/2026');

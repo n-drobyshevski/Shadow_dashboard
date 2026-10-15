@@ -453,7 +453,7 @@
   var DIFF_SCHEMAS = {
     record: [[28], [18], [18], [12, 'num'], [24]],
     change: [[22], [18], [22], [38]],
-    resolved: [[20], [16], [30], [14], [20]]
+    resolved: [[20], [16], [28], [14], [22]]
   };
 
   function simpleTable(id, headers, rows, schema) {
@@ -821,6 +821,7 @@
     '.page-actions .diff-table { table-layout: fixed; min-width: 680px; }',
     '.page-actions .diff-table td, .page-actions .diff-table th { max-width: none; }',
     '.page-actions .diff-table-change .diff-values { white-space: normal; overflow-wrap: anywhere; }',
+    '.page-actions .diff-table .diff-done-cell { overflow: visible; text-overflow: clip; }',
     '.page-actions .btn-mark-done.is-done { opacity: 1; border-color: transparent; background: none; padding: 0;' +
       ' color: var(--ok); font-weight: 500; cursor: default; }',
     '.page-actions .btn-mark-done.is-done::before { content: ""; width: 6px; height: 6px; background: currentColor; }',
