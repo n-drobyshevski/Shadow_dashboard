@@ -76,10 +76,15 @@ var Sync = (function () {
     return s;
   }
 
+  /**
+   * An « execute as me » web app runs with the deployer's existing grant: opening it never asks for a
+   * new scope, only a run from the editor (setup) does.
+   */
   function authMessage_(e) {
     console.warn('Sync: ScriptApp unavailable (' + (e && e.message) + ')');
-    return 'Autorisation Google manquante pour la synchronisation automatique : le compte qui déploie ' +
-      'l’application doit l’ouvrir une fois et accepter la nouvelle autorisation.';
+    return 'Autorisation Google manquante pour la synchronisation automatique. Le compte qui a déployé ' +
+      'l’application doit ouvrir le projet dans l’éditeur Apps Script, exécuter la fonction « setup » et ' +
+      'accepter l’autorisation demandée (déclencheurs).';
   }
 
   /** Creates the hourly trigger (once; duplicates are removed). */
@@ -90,7 +95,7 @@ var Sync = (function () {
       if (!existing.length) ScriptApp.newTrigger(HANDLER).timeBased().everyHours(1).create();
       existing.slice(1).forEach(function (t) { ScriptApp.deleteTrigger(t); });
     } catch (e) {
-      throw Core.makeError('INTERNAL', authMessage_(e));
+      throw Core.makeError('NOT_CONFIGURED', authMessage_(e));
     }
     writeState_({ enabled: true });
     return status();

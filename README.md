@@ -119,9 +119,10 @@ Workspace que le déployeur. Avec un compte Gmail personnel, seul le déployeur 
    Paramètres → Synchronisation.
 
 **Mise à jour d'une installation existante** (version avec import manuel) : après `npm run deploy`,
-le compte qui déploie ouvre l'application une fois (ou exécute `setup` dans l'éditeur) et accepte la
-nouvelle autorisation (déclencheurs), puis Paramètres → Synchronisation → « Activer la synchronisation
-horaire ». Les mois déjà importés sont conservés.
+le compte qui déploie exécute `setup` dans l'éditeur Apps Script et accepte la nouvelle autorisation
+(déclencheurs) — ouvrir l'application web ne la demande pas, elle s'exécute avec l'autorisation déjà
+accordée. `setup` crée aussi le déclencheur horaire ; sinon, Paramètres → Synchronisation → « Activer la
+synchronisation horaire ». Les mois déjà importés sont conservés.
 9. **Donner les accès** : Paramètres → Accès → « Ajouter un compte » (rôle Lecteur ou
    Administrateur), puis partager l'URL de l'application. Tant que personne n'est ajouté, seul le
    déployeur peut l'ouvrir.
