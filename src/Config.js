@@ -11,6 +11,13 @@ var Config = (function () {
   var PROP_ACCESS = 'ACCESS_JSON';
   var PROP_FAVICON = 'FAVICON_URL';
   /**
+   * Per-account interface preferences, one Script Property per account: PREFS_<email> = JSON. The page
+   * also keeps them in localStorage, but that storage is refused in the Apps Script frame when the
+   * browser blocks third-party storage. PREF_VALUES = the only keys and values accepted.
+   */
+  var PROP_PREFS_PREFIX = 'PREFS_';
+  var PREF_VALUES = { sidebar: ['open', 'collapsed'] };
+  /**
    * Browser-tab icon (the ghost): assets/favicon.png (64×64) embedded as a data: URI, so nothing has to be
    * hosted (the repository may be private). The FAVICON_URL Script Property overrides it with a hosted
    * https image (URL ending with .png / .ico) — in case a deployment refuses the data: URI — and '-'
@@ -155,6 +162,33 @@ var Config = (function () {
 
   function uuid() { return Utilities.getUuid(); }
 
+  function prefsKey_(email) { return PROP_PREFS_PREFIX + String(email || '').trim().toLowerCase(); }
+
+  /** Keeps the known keys with an allowed value. */
+  function cleanPrefs_(o) {
+    var out = {};
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return out;
+    Object.keys(PREF_VALUES).forEach(function (k) {
+      if (PREF_VALUES[k].indexOf(o[k]) >= 0) out[k] = o[k];
+    });
+    return out;
+  }
+
+  /** @return {Object} the account's preferences ({} when none or unreadable). */
+  function getPrefs(email) {
+    if (!String(email || '').trim()) return {};
+    var raw = props_().getProperty(prefsKey_(email));
+    if (!raw) return {};
+    try { return cleanPrefs_(JSON.parse(raw)); } catch (e) { return {}; }
+  }
+
+  /** Merges `patch` (already validated) into the account's preferences; returns the stored object. */
+  function setPrefs(email, patch) {
+    var next = cleanPrefs_(Object.assign(getPrefs(email), patch || {}));
+    props_().setProperty(prefsKey_(email), JSON.stringify(next));
+    return next;
+  }
+
   /** @return {string} favicon URL for doGet: FAVICON_URL (https), '' for '-', else the embedded ghost. */
   function faviconUrl() {
     var v = '';
@@ -169,6 +203,8 @@ var Config = (function () {
     PROP_THRESHOLD: PROP_THRESHOLD,
     PROP_ACCESS: PROP_ACCESS,
     PROP_FAVICON: PROP_FAVICON,
+    PROP_PREFS_PREFIX: PROP_PREFS_PREFIX,
+    PREF_VALUES: PREF_VALUES,
     DEFAULT_FAVICON_URL: DEFAULT_FAVICON_URL,
     MAX_USERS: MAX_USERS,
     MAX_GROUPS: MAX_GROUPS,
@@ -183,6 +219,8 @@ var Config = (function () {
     setThreshold: setThreshold,
     setAccess: setAccess,
     faviconUrl: faviconUrl,
+    getPrefs: getPrefs,
+    setPrefs: setPrefs,
     today: today,
     todayFr: todayFr,
     nowStamp: nowStamp,

@@ -170,16 +170,50 @@
   /** The ghost (« Doux »: rounded dome, wavy hem, round eyes) — brought back from the Streamlit 👻. */
   function logo() { return svgFrom(LOGO, 'brand-logo', 24, 28); }
 
-  function readCollapsed() {
-    try { return window.localStorage.getItem(COLLAPSE_KEY) === 'collapsed'; } catch (e) { return false; }
+  /**
+   * Collapsed rail (wide screens only), remembered twice: in localStorage (read at once, before the
+   * server answers) and per Google account on the server (api_savePrefs / bootstrap.prefs), because the
+   * Apps Script frame loses localStorage whenever the browser blocks third-party storage.
+   */
+  function readLocalSidebar() {
+    try {
+      var v = window.localStorage.getItem(COLLAPSE_KEY);
+      return v === 'collapsed' || v === 'open' ? v : null;
+    } catch (e) { return null; }
+  }
+  function writeLocalSidebar(v) {
+    try { window.localStorage.setItem(COLLAPSE_KEY, v); } catch (e) { /* storage refused: the server copy remains */ }
   }
   function isCollapsed() { return document.body.classList.contains('nav-collapsed'); }
 
-  function setCollapsed(on) {
+  function applyCollapsed(on) {
     document.body.classList.toggle('nav-collapsed', !!on);
-    try { window.localStorage.setItem(COLLAPSE_KEY, on ? 'collapsed' : 'open'); } catch (e) { /* private mode */ }
     syncCollapseButton();
     syncRailTooltips();
+  }
+
+  /** User toggle: apply, then remember in both places (a failed save only logs: the state is cosmetic). */
+  function setCollapsed(on) {
+    var v = on ? 'collapsed' : 'open';
+    applyCollapsed(on);
+    writeLocalSidebar(v);
+    savePrefs({ sidebar: v });
+  }
+
+  function savePrefs(patch) {
+    api.call('api_savePrefs', patch).catch(function (err) { console.warn('Préférence non enregistrée : ' + UI.errorText(err)); });
+  }
+
+  /** After bootstrap: the account's stored state wins (latest choice, any browser); a local-only one is uploaded. */
+  function syncSidebarPref() {
+    var server = (State.get().prefs || {}).sidebar;
+    var local = readLocalSidebar();
+    if (server) {
+      applyCollapsed(server === 'collapsed');
+      if (local !== server) writeLocalSidebar(server);
+    } else if (local && State.get().user && State.get().user.email) {
+      savePrefs({ sidebar: local });
+    }
   }
 
   function syncCollapseButton() {
@@ -723,7 +757,7 @@
     sidebar = document.getElementById('sidebar');
     appbar = document.getElementById('appbar');
     main = document.getElementById('main');
-    document.body.classList.toggle('nav-collapsed', readCollapsed());
+    document.body.classList.toggle('nav-collapsed', readLocalSidebar() === 'collapsed');
     var toggle = document.getElementById('nav-toggle');
     if (toggle && !toggle.dataset.bound) {
       toggle.dataset.bound = '1';
@@ -749,6 +783,7 @@
       return State.loadMonth(s.month).catch(function () { return null; }); // the page shows its own error
     }).then(function () {
       booted = true;
+      syncSidebarPref();
       renderAll();
       splash.done();
     }, function (err) {

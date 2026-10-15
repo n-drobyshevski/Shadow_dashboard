@@ -288,8 +288,23 @@ var ApiImpl_ = (function () {
       sourceUrl: sourceUrl,
       sourceTitle: sourceTitle,
       threshold: cfg.threshold,
-      user: { email: user.email, role: user.role, isOwner: user.isOwner }
+      user: { email: user.email, role: user.role, isOwner: user.isOwner },
+      prefs: Config.getPrefs(user.email)
     };
+  }
+
+  /** Interface preferences of the calling account (every role): {sidebar:'open'|'collapsed'}. */
+  function savePrefs(args, user) {
+    if (!user.email) throw Core.makeError('VALIDATION', 'Identité Google non transmise : préférence non enregistrée.');
+    var keys = Object.keys(args || {});
+    if (!keys.length) throw Core.makeError('VALIDATION', 'Aucune préférence à enregistrer.');
+    var patch = {};
+    keys.forEach(function (k) {
+      var allowed = Config.PREF_VALUES[k];
+      if (!allowed || allowed.indexOf(args[k]) < 0) throw Core.makeError('VALIDATION', 'Préférence invalide : ' + k + '.');
+      patch[k] = args[k];
+    });
+    return { prefs: Config.setPrefs(user.email, patch) };
   }
 
   function setConfig(args) {
@@ -807,6 +822,7 @@ var ApiImpl_ = (function () {
 
   return {
     bootstrap: bootstrap,
+    savePrefs: savePrefs,
     setConfig: setConfig,
     getMonthData: getMonthData,
     importMonth: importMonth,
@@ -841,6 +857,7 @@ var ApiImpl_ = (function () {
 // Function declarations (not vars) so that google.script.run and the editor can see them.
 
 function api_bootstrap(argsJson) { return apiWrap_(ApiImpl_.bootstrap, 'api_bootstrap', 'lecteur')(argsJson); }
+function api_savePrefs(argsJson) { return apiWrap_(ApiImpl_.savePrefs, 'api_savePrefs', 'lecteur')(argsJson); }
 function api_setConfig(argsJson) { return apiWrap_(ApiImpl_.setConfig, 'api_setConfig', 'admin')(argsJson); }
 function api_getMonthData(argsJson) { return apiWrap_(ApiImpl_.getMonthData, 'api_getMonthData', 'lecteur')(argsJson); }
 function api_importMonth(argsJson) { return apiWrap_(ApiImpl_.importMonth, 'api_importMonth', 'admin')(argsJson); }

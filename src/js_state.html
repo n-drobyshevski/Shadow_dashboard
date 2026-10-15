@@ -21,7 +21,8 @@
     filters: { equipes: [], batiments: [] },
     loading: false,
     threshold: 80,
-    user: { email: '', role: '', isOwner: false }
+    user: { email: '', role: '', isOwner: false },
+    prefs: {}                  // the account's interface preferences (api_bootstrap.prefs)
   };
   var subscribers = [];
 
@@ -243,6 +244,7 @@
         sourceTitle: b.sourceTitle || '',
         threshold: threshold,
         user: prev.email === user.email && prev.role === user.role && prev.isOwner === user.isOwner ? prev : user,
+        prefs: b.prefs && typeof b.prefs === 'object' ? b.prefs : {},
         loading: false
       });
       return state;

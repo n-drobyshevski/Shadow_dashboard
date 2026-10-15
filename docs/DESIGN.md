@@ -67,7 +67,7 @@ with the system fallbacks above.
   hover / active), with a 2px ink bar on the left of the active item; numbers on the right showing
   counts are allowed (e.g. postes 7). Footer: text links to the data sheet and the source sheet, the
   signed-in account, then « Réduire le menu ».
-- **Collapsed rail** (> 900px, remembered per browser): 56px wide, the ghost alone (no wordmark), icons
+- **Collapsed rail** (> 900px, remembered per Google account, with a browser copy for an instant start): 56px wide, the ghost alone (no wordmark), icons
   only (labels kept for screen readers), the page name in an ink tooltip to the right of the icon,
   footer links hidden. The active page keeps its 2px ink bar.
 - **App bar**: sticky 48px bar on paper above every page, 1px `--rule` below. Small-caps « PÉRIODE »

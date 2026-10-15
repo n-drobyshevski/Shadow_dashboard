@@ -237,6 +237,10 @@ describe('shell', () => {
 
       await page.click('#nav-collapse');
       await page.waitForFunction(() => Math.round(document.getElementById('sidebar').getBoundingClientRect().width) === 56);
+      // Saved for the account too (the Apps Script frame may lose localStorage).
+      await app.waitIdle();
+      const saves = (await app.calls()).filter((c) => c.name === 'api_savePrefs');
+      assert.deepEqual(saves.map((c) => c.args), [{ sidebar: 'collapsed' }]);
       // The rail keeps only the ghost, centred.
       assert.equal(await page.isVisible('#sidebar .brand-name'), false);
       assert.ok(await page.isVisible('#sidebar .brand-logo'));
@@ -263,6 +267,33 @@ describe('shell', () => {
       assert.equal(await page.evaluate(() => document.body.classList.contains('nav-collapsed')), false);
       assert.equal(await page.evaluate(() => localStorage.getItem('shadowit.sidebar')), 'open');
       assert.equal(await page.$('#sidebar .nav-link .tooltip'), null);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('sidebar state comes back from the account when the browser refuses localStorage', async () => {
+    const blockStorage = (page) => page.addInitScript(() => {
+      Object.defineProperty(window, 'localStorage', { configurable: true,
+        get() { throw new DOMException('Access is denied for this document.', 'SecurityError'); } });
+    });
+    await withApp({ prefs: { sidebar: 'collapsed' }, beforeGoto: blockStorage }, async (app) => {
+      const { page } = app;
+      assert.equal(await page.evaluate(() => document.body.classList.contains('nav-collapsed')), true);
+      assert.equal(await page.getAttribute('#nav-collapse', 'aria-expanded'), 'false');
+      await page.click('#nav-collapse');
+      await app.waitIdle();
+      assert.equal(await page.evaluate(() => document.body.classList.contains('nav-collapsed')), false);
+      assert.deepEqual((await app.calls()).filter((c) => c.name === 'api_savePrefs').map((c) => c.args), [{ sidebar: 'open' }]);
+      assert.deepEqual(await page.evaluate(() => window.__mock.db.prefs['owner@decathlon.com']), { sidebar: 'open' });
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('a choice kept only in this browser is uploaded to the account once', async () => {
+    await withApp({ beforeGoto: (page) => page.addInitScript(() => localStorage.setItem('shadowit.sidebar', 'collapsed')) }, async (app) => {
+      const { page } = app;
+      assert.equal(await page.evaluate(() => document.body.classList.contains('nav-collapsed')), true);
+      assert.deepEqual((await app.calls()).filter((c) => c.name === 'api_savePrefs').map((c) => c.args), [{ sidebar: 'collapsed' }]);
       assert.deepEqual(app.errors, []);
     });
   });

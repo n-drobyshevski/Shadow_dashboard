@@ -151,7 +151,8 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 
 | Function | Args | Returns `data` | Errors |
 |---|---|---|---|
-| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:'', threshold:int, user:{email, role:'admin'|'lecteur', isOwner:bool}}` (`dataUrl` / `sourceUrl` / `sourceTitle` are `''` for lecteurs: the spreadsheets are private to the deployer) | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
+| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:'', threshold:int, user:{email, role:'admin'|'lecteur', isOwner:bool}, prefs:{sidebar?:'open'|'collapsed'}}` (`dataUrl` / `sourceUrl` / `sourceTitle` are `''` for lecteurs: the spreadsheets are private to the deployer) | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
+| `api_savePrefs` | `{sidebar:'open'\|'collapsed'}` (any subset of the known keys) | `{prefs}` = the caller's stored preferences. Every role (lecteurs included): interface state only, per account (`PREFS_<email>` Script Property). | `VALIDATION` (unknown key or value, nothing to save, no identity) |
 | `api_setConfig` | `{source:'url or id'}` | `{sourceId, sourceTitle, sourceUrl, tabsFound:{postes:bool, applications:bool, referentiel:bool}}` | `VALIDATION` (bad id), `SOURCE_ERROR` (cannot open / no postes+apps tab). Saved only on success. |
 | `api_getMonthData` | `{month}` | `{month, postes:[rec], applications:[rec], referentiel:{cat:[v]}, columns:{postes:[h], applications:[h]}, importInfo:{imported_at, warnings:[]}\|null}` | `VALIDATION`, `NOT_FOUND` (month not imported). `columns.applications` always ends with `Galink`, `IDP` if missing from the source headers. |
 | `api_importMonth` | `{month, overwrite:bool}` | `{month, counts:{postes, applications, referentiel}, overwritten:bool, carriedOver:n, warnings:[...]}` | `NOT_CONFIGURED`, `VALIDATION`, `MONTH_EXISTS` (month already imported and `overwrite` false), `SOURCE_ERROR` |
@@ -184,7 +185,7 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 (owner excluded), groups:[same shape] sorted by email, domainRole:'none'|'lecteur'}`. Emails are trimmed and lower-cased.
 
 The **complete list** of public API functions (used by the contract test) is exactly:
-`api_bootstrap, api_setConfig, api_getMonthData, api_importMonth, api_getImportLog, api_savePostes,
+`api_bootstrap, api_savePrefs, api_setConfig, api_getMonthData, api_importMonth, api_getImportLog, api_savePostes,
 api_addGenericPoste, api_saveApplications, api_addApplication, api_deleteApplication,
 api_renameApplication, api_getTimeline, api_getActions, api_addAction, api_updateAction,
 api_deleteAction, api_addReplacement, api_updateReplacement, api_deleteReplacement, api_getDiff,
@@ -218,6 +219,9 @@ Config.PROP_ACCESS    = 'ACCESS_JSON'  ({users:[{email, role, added_at, added_by
 Config.get()                 -> {dataId:''|id, sourceId:''|id, threshold:int (Core.THRESHOLD when unset),
                                  access:{users:[...], domainRole:'none'|'lecteur'}} (unreadable JSON -> empty list)
 Config.setDataId(id), Config.setSourceId(id), Config.setThreshold(n), Config.setAccess(access)
+Config.PROP_PREFS_PREFIX = 'PREFS_'  (+ lower-cased email: JSON of that account's interface preferences)
+Config.PREF_VALUES    = {sidebar:['open','collapsed']}
+Config.getPrefs(email) -> {} | {sidebar}   Config.setPrefs(email, patch) -> merged, stored, returned
 Config.PROP_FAVICON   = 'FAVICON_URL'  (optional https URL of the tab icon; '-' = none)
 Config.faviconUrl()          -> FAVICON_URL when it is an https URL, '' for '-', else DEFAULT_FAVICON_URL
                                 (assets/favicon.png embedded as a data:image/png;base64 URI).
@@ -477,8 +481,11 @@ Loading:               page bodies show UI.skeleton(...) (aria-busy) while their
 ```
 Sidebar: ghost logo (inline SVG, `svg.brand-logo`) + app title `Shadow IT`, nav links (one line icon + label each), footer links "Données (Google
 Sheet)" → `dataUrl`, "Source" → `sourceUrl` (target `_blank`, admins only), then the signed-in account
-(`#side-user`: email + role) and `#nav-collapse` (« Réduire le menu »: 56px icon rail, state in
-`localStorage['shadowit.sidebar']`, wide screens only). The source is changed in Paramètres
+(`#side-user`: email + role) and `#nav-collapse` (« Réduire le menu »: 56px icon rail, wide screens
+only). The state is kept in `localStorage['shadowit.sidebar']` (applied before the server answers) and
+per account through `api_savePrefs` / `bootstrap.prefs.sidebar`, which wins at boot: the Apps Script
+frame loses localStorage when the browser blocks third-party storage. A browser-only value is uploaded
+once. The source is changed in Paramètres
 (`App.applySource`). « Paramètres » is in the nav for admins only.
 App bar (`#appbar`, sticky): `Période` = `#month-prev` ‹ `#month-select` (asc list, default latest) ›
 `#month-next`; `Équipe` (`#filter-equipe`) and `Bâtiment / Labo` (`#filter-batiment`) multiselects
