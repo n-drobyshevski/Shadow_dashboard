@@ -23,6 +23,10 @@
  * filter (UI.select), and a detail drawer (5-criteria checklist, postes, linked actions + "Nouvelle
  * action", rename / delete). Shared drawer blocks and the action form: window.EntityDrawer /
  * window.ActionForm (js_page_postes.html).
+ *
+ * Read-only mode (lecteur, !State.canEdit()): no « Nouvelle application », no inline editing (Galink / IDP
+ * included: plain cells, a row click opens the drawer), no « Renommer » / « Supprimer » / « Nouvelle action »
+ * in the drawer; CSV export, the migration ledger and the drawer details stay.
  */
 (function () {
   'use strict';
@@ -121,10 +125,12 @@
       ['Données sensibles exposées', rec['Données sensibles exposées']], ['Statut', rec['Statut']],
       ['Action corrective', rec['Action corrective']]];
 
-    var renameBtn = el('button', { type: 'button', class: 'btn btn-secondary btn-sm', id: 'app-rename',
-      onClick: function () { rename(rec, month); } }, 'Renommer');
-    var deleteBtn = el('button', { type: 'button', class: 'btn btn-danger btn-sm', id: 'app-delete',
-      onClick: function () { remove(rec, month); } }, 'Supprimer');
+    // Rename / delete are admin writes: lecteurs get no buttons at all (hidden, not disabled).
+    var buttons = !State.canEdit() ? null : el('div', { class: 'drawer-buttons' },
+      el('button', { type: 'button', class: 'btn btn-secondary btn-sm', id: 'app-rename',
+        onClick: function () { rename(rec, month); } }, 'Renommer'),
+      el('button', { type: 'button', class: 'btn btn-danger btn-sm', id: 'app-delete',
+        onClick: function () { remove(rec, month); } }, 'Supprimer'));
 
     var body = el('div', { class: 'entity-drawer apps-drawer', id: 'app-drawer', dataset: { id: rec._id } },
       el('div', { class: 'drawer-head-row' },
@@ -133,7 +139,7 @@
           UI.statusMark(rec._conforme ? 'Conforme' : 'Non conforme', rec._conforme ? 'ok' : 'ko'),
           Core.str(rec['Niveau de risque']) ?
             el('span', { class: 'stat-line' }, el('span', { class: 'faint small' }, 'Risque'), UI.riskBadge(rec['Niveau de risque'])) : null),
-        el('div', { class: 'drawer-buttons' }, renameBtn, deleteBtn)),
+        buttons),
       el('dl', { class: 'kv' }, kvRows.filter(function (kv) { return Core.str(kv[1]); }).map(function (kv) {
         return [el('dt', null, kv[0]), el('dd', null, Core.str(kv[1]))];
       })),
@@ -360,22 +366,26 @@
     var conformitySelect = UI.select({ id: 'apps-conformity', label: 'Conformité', options: CONFORMITY_OPTIONS,
       value: conformity, onChange: function (v) { conformity = v; table.setRows(visible()); } });
 
-    actions.add.addEventListener('click', function () {
-      addApplication(current(), month, function () { refreshPage(); }).catch(errorToast);
-    });
+    if (actions.add) {
+      actions.add.addEventListener('click', function () {
+        addApplication(current(), month, function () { refreshPage(); }).catch(errorToast);
+      });
+    }
     actions.csv.addEventListener('click', function () {
       var rows = visible().map(function (r) { var o = Object.assign({}, r); o['Score calculé (%)'] = r._score; return o; });
       UI.downloadCsv('applications_' + month + '.csv', cols.concat(['Score calculé (%)']), rows);
     });
 
+    var canEdit = State.canEdit();
     var table = UI.editableTable({
       columns: columns,
       rows: visible(),
+      readOnly: !canEdit,
       toolbar: [conformitySelect],
       emptyText: !md.applications.length ? 'Aucune application dans cet export.' :
         (hasEquipeFilter(s) || conformity !== 'all' ? 'Aucune application ne correspond aux filtres.' : 'Aucune application.'),
       onRowClick: function (row) { openDrawer(row._id, month); },
-      onSave: function (changes) {
+      onSave: !canEdit ? null : function (changes) {
         return api.call('api_saveApplications', { month: month, changes: changes }).then(function (res) {
           State.patchRecords(month, 'applications', (res && res.updated) || []);
           if (myToken !== token) return;
@@ -403,7 +413,7 @@
     var tableSection = UI.section('Inventaire', table.node);
     tableSection.id = 'apps-inventory';
     body.appendChild(tableSection);
-    actions.add.disabled = false;
+    if (actions.add) actions.add.disabled = false;
     actions.csv.disabled = false;
   }
 
@@ -416,20 +426,21 @@
 
     if (!s.months.length || !s.month) {
       root.appendChild(header(s));
-      var empty = UI.empty('Aucune donnée importée.', el('button', { type: 'button', class: 'btn btn-link',
-        onClick: function () { App.go('dashboard'); } }, 'Importer un export depuis le tableau de bord'));
+      var empty = !State.canEdit() ? UI.empty('Aucun mois importé. Un administrateur doit importer les données.') :
+        UI.empty('Aucune donnée importée.', el('button', { type: 'button', class: 'btn btn-link',
+          onClick: function () { App.go('dashboard'); } }, 'Importer un export depuis le tableau de bord'));
       empty.id = 'apps-empty';
       root.appendChild(empty);
       return;
     }
 
-    // Page-level actions live in the header; they are wired once the month is loaded.
+    // Page-level actions live in the header; they are wired once the month is loaded. Lecteurs: CSV only.
     var actions = {
-      add: el('button', { type: 'button', class: 'btn btn-primary', id: 'apps-add', disabled: true }, 'Nouvelle application'),
+      add: !State.canEdit() ? null : el('button', { type: 'button', class: 'btn btn-primary', id: 'apps-add', disabled: true }, 'Nouvelle application'),
       csv: el('button', { type: 'button', class: 'btn btn-secondary', id: 'apps-export-csv', disabled: true,
         tooltip: 'Exporte les lignes affichées (filtres compris), avec le score calculé.' }, 'Exporter CSV')
     };
-    root.appendChild(header(s, [actions.csv, actions.add]));
+    root.appendChild(header(s, [actions.csv, actions.add].filter(Boolean)));
 
     var body = el('div', { class: 'block-stack apps-body', id: 'apps-body', 'aria-busy': 'true' },
       UI.loading('Chargement des applications…'));

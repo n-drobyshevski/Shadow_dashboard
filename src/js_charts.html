@@ -171,7 +171,7 @@
     var o = opts || {};
     var t = tokens();
     var v = value === null || value === undefined || !isFinite(Number(value)) ? 0 : Number(value);
-    var ok = v >= Core.THRESHOLD;
+    var ok = v >= Core.threshold();
     var band = 0.2;      // thickness of the arc, as a fraction of the gauge ring
     // Left-aligned with its label and caption (.chart-gauge caps the plot width; the arc is not centred
     // in a wide column).
@@ -186,7 +186,7 @@
       gauge: {
         shape: 'angular',
         axis: {
-          range: [0, 100], tickmode: 'array', tickvals: [0, Core.THRESHOLD, 100],
+          range: [0, 100], tickmode: 'array', tickvals: [0, Core.threshold(), 100],
           ticktext: ['', '', ''], ticks: '', ticklen: 0, tickwidth: 0,
           tickcolor: t.rule2, tickfont: { family: t.mono, size: 10, color: t.ink3 }, showticklabels: true
         },
@@ -194,7 +194,7 @@
         bgcolor: 'rgba(0,0,0,0)',
         borderwidth: 0,
         steps: [{ range: [0, 100], color: t.rule, thickness: band, line: { width: 0 } }],
-        threshold: { line: { color: t.ink, width: 2 }, thickness: band + 0.12, value: Core.THRESHOLD }
+        threshold: { line: { color: t.ink, width: 2 }, thickness: band + 0.12, value: Core.threshold() }
       },
       domain: { x: [0, 1], y: [0, 1] }
     }], baseLayout(t, { height: o.height || 176, margin: { l: 6, r: 22, t: 14, b: 18 }, hovermode: false }));
@@ -227,7 +227,7 @@
       wrap = UI.el('div', { class: 'gauge-ends', 'aria-hidden': 'true' },
         UI.el('span', { class: 'gauge-end gauge-end-min' }, '0'),
         UI.el('span', { class: 'gauge-end gauge-end-max' }, '100'),
-        UI.el('span', { class: 'gauge-end gauge-tick' }, String(Core.THRESHOLD)));
+        UI.el('span', { class: 'gauge-end gauge-tick' }, String(Core.threshold())));
       el.appendChild(wrap);
     }
     wrap.hidden = false;
@@ -241,7 +241,7 @@
     spans[0].style.top = spans[1].style.top = (cy + 1) + 'px';
     // Threshold label: just beyond the outer end of the tick (the arc band is centred on `mid`; the tick
     // overshoots it by ~5px), anchored at its lower-left corner.
-    var a = Math.PI * (1 - Core.THRESHOLD / 100);
+    var a = Math.PI * (1 - Core.threshold() / 100);
     var rr = mid + 7;
     spans[2].style.left = (cx + rr * Math.cos(a) + 1) + 'px';
     spans[2].style.top = (cy - rr * Math.sin(a) - 11) + 'px';
@@ -306,7 +306,12 @@
       textfont: { family: t.mono, size: 12, color: t.ink2 },
       cliponaxis: false,
       marker: {
-        color: bins.map(function (b) { return b.x0 >= Core.THRESHOLD ? t.ok : rgba(t.ko, 0.7); }),
+        // A bin that straddles a custom threshold (e.g. 70–80 with a 75 % threshold) holds both
+        // statuses: neutral ink, the dashed threshold line shows where it splits.
+        color: bins.map(function (b) {
+          var th = Core.threshold();
+          return b.x0 >= th ? t.ok : b.x1 <= th ? rgba(t.ko, 0.7) : rgba(t.ink3, 0.55);
+        }),
         line: { width: 0 }
       },
       hovertemplate: hoverTemplate('Score %{customdata[0]}', '', '%{customdata[1]}')
@@ -317,9 +322,9 @@
       xaxis: axis(t, { range: [0, 100], tickmode: 'array', tickvals: [0, 20, 40, 60, 80, 100],
         ticktext: ['0', '20', '40', '60', '80', '100' + NNBSP + '%'], showline: true, ticks: 'outside' }),
       yaxis: axis(t, { visible: false, rangemode: 'tozero', range: [0, max * 1.18] }),
-      shapes: [{ type: 'line', xref: 'x', yref: 'paper', x0: Core.THRESHOLD, x1: Core.THRESHOLD, y0: 0, y1: 1.08,
+      shapes: [{ type: 'line', xref: 'x', yref: 'paper', x0: Core.threshold(), x1: Core.threshold(), y0: 0, y1: 1.08,
         line: { color: t.ink, width: 1, dash: 'dash' } }],
-      annotations: [{ x: Core.THRESHOLD, xref: 'x', y: 1.08, yref: 'paper', text: thresholdLabel(Core.THRESHOLD),
+      annotations: [{ x: Core.threshold(), xref: 'x', y: 1.08, yref: 'paper', text: thresholdLabel(Core.threshold()),
         showarrow: false, xanchor: 'right', yanchor: 'bottom', xshift: -4, font: annotationFont(t) }]
     }));
   }
@@ -602,7 +607,7 @@
    */
   function thresholdCaption(o) {
     var opts = o || {};
-    var th = opts.threshold === undefined ? Core.THRESHOLD : opts.threshold;
+    var th = opts.threshold === undefined ? Core.threshold() : opts.threshold;
     var el = UI.el;
     var parts = [];
     (opts.items || []).forEach(function (it, i) {

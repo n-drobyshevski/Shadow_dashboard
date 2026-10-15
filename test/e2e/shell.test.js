@@ -14,6 +14,7 @@ const PAGES = [
   { id: 'apps', title: 'Applications' },
   { id: 'timeline', title: 'Suivi temporel' },
   { id: 'actions', title: 'Suivi des actions' },
+  { id: 'settings', title: 'Paramètres' }, // admin only (the default mock visitor is the owner)
 ];
 
 async function withApp(options, fn) {
@@ -56,8 +57,10 @@ describe('shell', () => {
       }
       assert.equal((await page.textContent('#link-data')).trim(), 'Données (Google Sheet)');
       assert.equal((await page.textContent('#link-source')).trim(), 'Source');
-      assert.ok(await page.isVisible('#btn-source'));
-      assert.equal((await page.textContent('#btn-source')).trim(), 'Changer de source');
+      // The source is changed in Paramètres; the footer ends with the signed-in account and its role.
+      assert.equal(await page.$('#btn-source'), null);
+      assert.equal((await page.textContent('#side-user .side-user-email')).trim(), 'owner@decathlon.com');
+      assert.equal((await page.textContent('#side-user .side-user-role')).trim(), 'Administrateur');
 
       const calls = await app.calls();
       assert.equal(calls[0].name, 'api_bootstrap');
@@ -65,7 +68,7 @@ describe('shell', () => {
     });
   });
 
-  test('navigates to all 5 pages without errors and pushes history', async () => {
+  test('navigates to all 6 pages without errors and pushes history', async () => {
     await withApp({}, async (app) => {
       const { page } = app;
       for (const p of [...PAGES.slice(1), PAGES[0]]) {
@@ -79,12 +82,12 @@ describe('shell', () => {
         assert.deepEqual(app.errors, [], `no errors on ${p.id}`);
       }
       const history = await page.evaluate(() => window.__history);
-      assert.deepEqual(history.map((h) => h.state.page), ['postes', 'apps', 'timeline', 'actions', 'dashboard']);
+      assert.deepEqual(history.map((h) => h.state.page), ['postes', 'apps', 'timeline', 'actions', 'settings', 'dashboard']);
 
       // Browser back/forward: the history change handler navigates without pushing again.
       await page.evaluate(() => window.__mock.popState({ page: 'apps' }));
       await page.waitForSelector('#main .page[data-page="apps"]');
-      assert.equal((await page.evaluate(() => window.__history)).length, 5);
+      assert.equal((await page.evaluate(() => window.__history)).length, 6);
       assert.equal(await page.evaluate(() => window.State.get().page), 'apps');
       assert.deepEqual(app.errors, []);
     });

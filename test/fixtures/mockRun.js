@@ -32,7 +32,10 @@ function mockMain(FIX, OPTS) {
   var KEY_POSTE = 'Nom du poste';
   var KEY_APP = 'Nom du logiciel / service';
   var ERROR_CODES = ['NOT_CONFIGURED', 'MONTH_EXISTS', 'NOT_FOUND', 'BUSY', 'VALIDATION', 'SOURCE_ERROR',
-    'INTERNAL'];
+    'FORBIDDEN', 'INTERNAL'];
+  var LECTEUR_APIS = ['api_bootstrap', 'api_getMonthData', 'api_getImportLog', 'api_getTimeline', 'api_getActions',
+    'api_getDiff'];
+  var OWNER = 'owner@decathlon.com';
   var seq = 0;
 
   function clone(v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); }
@@ -83,7 +86,26 @@ function mockMain(FIX, OPTS) {
     months: {},          // month -> {postes, applications, referentiel, columns}
     importLog: [],       // insertion order
     actions: OPTS.empty ? [] : clone(FIX.ACTIONS),
-    replacements: OPTS.empty ? [] : clone(FIX.REPLACEMENTS)
+    replacements: OPTS.empty ? [] : clone(FIX.REPLACEMENTS),
+    threshold: 80,
+    // Visitor: OPTS.email ('' = identity not passed); default = the owner (deployer).
+    email: OPTS.email === undefined ? OWNER : OPTS.email,
+    access: {
+      users: [
+        { email: 'lea.reader@decathlon.com', role: 'lecteur', added_at: '2026-04-02', added_by: OWNER },
+        { email: 'sam.admin@decathlon.com', role: 'admin', added_at: '2026-04-02', added_by: OWNER }
+      ],
+      groups: [
+        { email: 'labo-industry@decathlon.com', role: 'lecteur', added_at: '2026-04-02', added_by: OWNER }
+      ],
+      domainRole: 'none'
+    },
+    // Google Groups known to the mock (members visible to the owner); 'hidden@…' is not readable.
+    groupMembers: {
+      'labo-industry@decathlon.com': ['marc.labo@decathlon.com'],
+      'shadow-admins@decathlon.com': ['sam.admin@decathlon.com', 'chloe.admin@decathlon.com'],
+      'labo-textile@decathlon.com': ['ines.textile@decathlon.com']
+    }
   };
   if (!OPTS.empty) {
     var stamps = { '2026-04': '2026-04-02 09:15', '2026-05': '2026-05-04 10:30' };
@@ -190,14 +212,18 @@ function mockMain(FIX, OPTS) {
   var API = {
     api_bootstrap: function () {
       var months = monthList();
+      var user = checkAccess('api_bootstrap');
+      var admin = user.role === 'admin';
       return {
         configured: db.configured,
         months: months,
         latestMonth: months.length ? months[months.length - 1] : '',
         currentMonth: Core().currentMonth(new Date()),
-        dataUrl: sheetUrl('1MockDataSpreadsheetId_ShadowIT_AppData'),
-        sourceUrl: db.configured ? sheetUrl(db.sourceId) : '',
-        sourceTitle: db.configured ? db.sourceTitle : ''
+        dataUrl: admin ? sheetUrl('1MockDataSpreadsheetId_ShadowIT_AppData') : '',
+        sourceUrl: db.configured && admin ? sheetUrl(db.sourceId) : '',
+        sourceTitle: db.configured && admin ? db.sourceTitle : '',
+        threshold: db.threshold,
+        user: user
       };
     },
 
@@ -408,8 +434,159 @@ function mockMain(FIX, OPTS) {
         applications: Core().diffApplications(enrich('applications', o.applications),
           enrich('applications', n.applications))
       };
+    },
+
+    api_getSettings: function () {
+      return {
+        threshold: db.threshold,
+        defaultThreshold: 80,
+        source: db.configured ? { id: db.sourceId, url: sheetUrl(db.sourceId), title: db.sourceTitle,
+          tabsFound: { postes: true, applications: true, referentiel: true } } :
+          { id: '', url: '', title: '', tabsFound: null },
+        dataUrl: sheetUrl('1MockDataSpreadsheetId_ShadowIT_AppData'),
+        access: accessView(),
+        me: db.email
+      };
+    },
+
+    api_setThreshold: function (args) {
+      var n = Core().validateThreshold(obj(args).threshold);
+      if (n === null) fail('VALIDATION', 'Seuil invalide : un nombre entier entre 1 et 100 est attendu.');
+      db.threshold = n;
+      Core().setThreshold(n);
+      return { threshold: n };
+    },
+
+    api_saveUser: function (args) {
+      var a = obj(args);
+      var email = editableEmail(a.email);
+      if (['admin', 'lecteur'].indexOf(a.role) < 0) fail('VALIDATION', 'Rôle invalide : « ' + s(a.role) + ' ».');
+      var hit = db.access.users.filter(function (u) { return u.email === email; })[0];
+      if (hit) hit.role = a.role;
+      else db.access.users.push({ email: email, role: a.role, added_at: todayIso(), added_by: db.email });
+      return accessView();
+    },
+
+    api_addUsers: function (args) {
+      var a = obj(args);
+      if (['admin', 'lecteur'].indexOf(a.role) < 0) fail('VALIDATION', 'Rôle invalide : « ' + s(a.role) + ' ».');
+      if (!Array.isArray(a.emails) || !a.emails.length) fail('VALIDATION', 'Aucune adresse à ajouter.');
+      if (a.emails.length > 500) fail('VALIDATION', 'Au plus 500 adresses par ajout.');
+      var me = normEmail(db.email);
+      var res = { added: [], updated: [], skipped: [] };
+      var seen = {};
+      a.emails.forEach(function (v) {
+        var email = normEmail(v);
+        var reason = !Core().isEmail(email) ? 'adresse invalide' : email === OWNER ? 'propriétaire' :
+          email === me ? 'votre propre compte' : seen[email] ? 'doublon' : '';
+        if (reason) { res.skipped.push({ email: s(v), reason: reason }); return; }
+        seen[email] = true;
+        var hit = db.access.users.filter(function (u) { return u.email === email; })[0];
+        if (!hit) {
+          db.access.users.push({ email: email, role: a.role, added_at: todayIso(), added_by: me });
+          res.added.push(email);
+        } else if (hit.role !== a.role) {
+          hit.role = a.role;
+          res.updated.push(email);
+        } else {
+          res.skipped.push({ email: email, reason: 'déjà ' + (a.role === 'admin' ? 'administrateur' : 'lecteur') });
+        }
+      });
+      res.access = accessView();
+      return res;
+    },
+
+    api_saveGroup: function (args) {
+      var a = obj(args);
+      if (['admin', 'lecteur'].indexOf(a.role) < 0) fail('VALIDATION', 'Rôle invalide : « ' + s(a.role) + ' ».');
+      var email = normEmail(a.email);
+      if (!Core().isEmail(email)) fail('VALIDATION', 'Adresse e-mail invalide : « ' + s(a.email) + ' ».');
+      if (!db.groupMembers[email]) {
+        fail('VALIDATION', 'Groupe introuvable ou membres non visibles pour le propriétaire du déploiement : ' + email + '.');
+      }
+      var before = clone(db.access.groups);
+      var hit = db.access.groups.filter(function (g) { return g.email === email; })[0];
+      if (hit) hit.role = a.role;
+      else db.access.groups.push({ email: email, role: a.role, added_at: todayIso(), added_by: normEmail(db.email) });
+      if (roleOf(normEmail(db.email)) !== 'admin') {
+        db.access.groups = before;
+        fail('VALIDATION', 'Ce changement vous retirerait le rôle administrateur (vous l’avez par ce groupe).');
+      }
+      return accessView();
+    },
+
+    api_removeGroup: function (args) {
+      var email = normEmail(obj(args).email);
+      var before = db.access.groups;
+      var kept = before.filter(function (g) { return g.email !== email; });
+      if (kept.length === before.length) fail('NOT_FOUND', 'Aucun groupe enregistré : ' + email + '.');
+      db.access.groups = kept;
+      if (roleOf(normEmail(db.email)) !== 'admin') {
+        db.access.groups = before;
+        fail('VALIDATION', 'Ce changement vous retirerait le rôle administrateur (vous l’avez par ce groupe).');
+      }
+      return accessView();
+    },
+
+    api_removeUser: function (args) {
+      var email = editableEmail(obj(args).email);
+      var kept = db.access.users.filter(function (u) { return u.email !== email; });
+      if (kept.length === db.access.users.length) fail('NOT_FOUND', 'Aucun accès enregistré pour ' + email + '.');
+      db.access.users = kept;
+      return accessView();
+    },
+
+    api_setDomainRole: function (args) {
+      var role = obj(args).role;
+      if (['none', 'lecteur'].indexOf(role) < 0) fail('VALIDATION', 'Rôle invalide : « ' + s(role) + ' ».');
+      db.access.domainRole = role;
+      return accessView();
     }
   };
+
+  // ------------------------------------------------------------------------------ access
+  function normEmail(v) { return typeof v === 'string' ? v.trim().toLowerCase() : ''; }
+  function roleOf(email) {
+    if (!email) return '';
+    if (email === OWNER) return 'admin';
+    var hit = db.access.users.filter(function (u) { return u.email === email; })[0];
+    var role = hit ? hit.role : '';
+    if (role !== 'admin' && db.access.domainRole === 'lecteur') role = 'lecteur';
+    db.access.groups.forEach(function (g) {
+      var members = db.groupMembers[g.email] || [];
+      if (members.indexOf(email) >= 0 && (g.role === 'admin' || !role)) role = g.role === 'admin' ? 'admin' : role || 'lecteur';
+    });
+    return role;
+  }
+  function accessView() {
+    var users = clone(db.access.users);
+    users.sort(function (a, b) { return a.email < b.email ? -1 : a.email > b.email ? 1 : 0; });
+    var groups = clone(db.access.groups);
+    groups.sort(function (a, b) { return a.email < b.email ? -1 : a.email > b.email ? 1 : 0; });
+    return { owner: OWNER, users: users, groups: groups, domainRole: db.access.domainRole };
+  }
+  function editableEmail(v) {
+    var email = normEmail(v);
+    if (!/^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/.test(email)) {
+      fail('VALIDATION', 'Adresse e-mail invalide : « ' + s(v) + ' ».');
+    }
+    if (email === OWNER) fail('VALIDATION', 'Le propriétaire du déploiement est toujours administrateur.');
+    if (email === normEmail(db.email)) fail('VALIDATION', 'Vous ne pouvez pas modifier votre propre accès.');
+    return email;
+  }
+  /** Same checks as Access.requireRole on the server. */
+  function checkAccess(name) {
+    var email = normEmail(db.email);
+    if (!email) {
+      fail('FORBIDDEN', 'Identité Google non transmise. Ouvrez l’application avec un compte du même domaine ' +
+        'Google Workspace que son propriétaire.');
+    }
+    var role = roleOf(email);
+    if (!role) fail('FORBIDDEN', 'Accès refusé pour ' + email + '. Demandez l’accès à un administrateur.');
+    if (role !== 'admin' && LECTEUR_APIS.indexOf(name) < 0) fail('FORBIDDEN', 'Action réservée aux administrateurs.');
+    Core().setThreshold(db.threshold);
+    return { email: email, role: role, isOwner: email === OWNER };
+  }
 
   // ------------------------------------------------------------------------------ transport
   window.__calls = [];
@@ -434,6 +611,7 @@ function mockMain(FIX, OPTS) {
       var envelope;
       try {
         if (forced) fail(forced.code || 'INTERNAL', forced.message || 'Erreur simulée');
+        checkAccess(name);
         if (parseError || typeof argsJson !== 'string') fail('VALIDATION', 'Arguments JSON invalides.');
         envelope = { ok: true, data: API[name](args) };
       } catch (err) {
@@ -478,10 +656,12 @@ function mockMain(FIX, OPTS) {
 }
 
 /**
- * @param {{empty?:boolean, configured?:boolean, delayMs?:number}} [options]
+ * @param {{empty?:boolean, configured?:boolean, delayMs?:number, email?:string}} [options]
+ *   email: the visitor (default the owner, admin). 'lea.reader@decathlon.com' is a lecteur,
+ *   'sam.admin@decathlon.com' a second admin, any other address has no access, '' = identity not passed.
  * @returns {string} browser JavaScript (no surrounding <script> tag)
  */
-function buildMockScript({ empty = false, configured = true, delayMs = 0 } = {}) {
+function buildMockScript({ empty = false, configured = true, delayMs = 0, email } = {}) {
   const fixtures = {
     POSTES_HEADERS: data.POSTES_HEADERS,
     APPS_HEADERS: data.APPS_HEADERS,
@@ -496,7 +676,7 @@ function buildMockScript({ empty = false, configured = true, delayMs = 0 } = {})
   // Escape '<' so that fixture strings such as '</script>' cannot terminate the inline script.
   const json = (v) => JSON.stringify(v).replace(/</g, '\\u003c')
     .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
-  return '(' + mockMain.toString() + ')(' + json(fixtures) + ', ' + json({ empty, configured, delayMs }) + ');';
+  return '(' + mockMain.toString() + ')(' + json(fixtures) + ', ' + json({ empty, configured, delayMs, email }) + ');';
 }
 
 module.exports = { buildMockScript };

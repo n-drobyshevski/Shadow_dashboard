@@ -8,11 +8,15 @@
  * conformity filter (UI.select), and a detail drawer (criteria, installed applications, linked
  * remediation actions + "Nouvelle action").
  *
+ * Read-only mode (lecteur, !State.canEdit()): no « Ajouter un poste générique », no inline editing (plain
+ * cells, a click anywhere on a row opens the drawer), no « Nouvelle action »; CSV export and the drawer stay.
+ *
  * This file also defines window.EntityDrawer, shared with js_page_apps.html (loaded right after it):
  *     EntityDrawer.actionsBlock({target_type, target_name, equipe, month, values?, isOpen, emptyText})
  *         -> section « Actions liées » + « Nouvelle action ». The form is window.ActionForm.open (defined by
  *         js_page_actions.html: one form, copy and toast for the drawers and Suivi des actions) with the
- *         target prefilled and locked; the list re-renders from the refreshed actions cache.
+ *         target prefilled and locked; the list re-renders from the refreshed actions cache. Lecteurs
+ *         (!State.canEdit()) get the list alone, without « Nouvelle action ».
  *     EntityDrawer.actionItem(action) -> li (status mark, neutral priority, overdue mark, échéance…), with the
  *         marks of ActionForm (same as the Suivi des actions ledger).
  *     EntityDrawer.statLine(items:[Node|string]) -> p.stat-line ; EntityDrawer.count(n, one, many) -> [num, ' noun'].
@@ -72,7 +76,8 @@
    */
   function actionsBlock(o) {
     var list = el('div', { class: 'drawer-actions-list', id: 'drawer-actions', 'aria-live': 'polite' });
-    var addBtn = el('button', { type: 'button', class: 'btn btn-secondary btn-sm', id: 'drawer-add-action',
+    // Lecteurs read the linked actions; creating one is an admin write (api_addAction).
+    var addBtn = !State.canEdit() ? null : el('button', { type: 'button', class: 'btn btn-secondary btn-sm', id: 'drawer-add-action',
       onClick: function () {
         if (!AF().open) return;
         AF().open({ target: { type: o.target_type, name: o.target_name, equipe: o.equipe }, defaults: o.values || {},
@@ -309,19 +314,21 @@
     var conformitySelect = UI.select({ id: 'postes-conformity', label: 'Conformité', options: CONFORMITY_OPTIONS,
       value: conformity, onChange: function (v) { conformity = v; table.setRows(visible()); } });
 
-    actions.generic.addEventListener('click', addGeneric);
+    if (actions.generic) actions.generic.addEventListener('click', addGeneric);
     actions.csv.addEventListener('click', function () {
       UI.downloadCsv('postes_' + month + '.csv', cols, visible());
     });
 
+    var canEdit = State.canEdit();
     var table = UI.editableTable({
       columns: columns,
       rows: visible(),
+      readOnly: !canEdit,
       toolbar: [conformitySelect],
       emptyText: !md.postes.length ? 'Aucun poste dans cet export.' :
         (hasFilters(s) || conformity !== 'all' ? 'Aucun poste ne correspond aux filtres.' : 'Aucun poste.'),
       onRowClick: function (row) { openDrawer(row._id, month); },
-      onSave: function (changes) {
+      onSave: !canEdit ? null : function (changes) {
         return api.call('api_savePostes', { month: month, changes: changes }).then(function (res) {
           State.patchRecords(month, 'postes', (res && res.updated) || []);
           if (myToken !== token) return;
@@ -358,7 +365,7 @@
     var tableSection = UI.section('Inventaire', table.node);
     tableSection.id = 'postes-inventory';
     body.appendChild(tableSection);
-    actions.generic.disabled = false;
+    if (actions.generic) actions.generic.disabled = false;
     actions.csv.disabled = false;
   }
 
@@ -370,23 +377,24 @@
 
     if (!s.months.length || !s.month) {
       root.appendChild(header(s));
-      var empty = UI.empty('Aucune donnée importée.', el('button', { type: 'button', class: 'btn btn-link',
-        onClick: function () { App.go('dashboard'); } }, 'Importer un export depuis le tableau de bord'));
+      var empty = !State.canEdit() ? UI.empty('Aucun mois importé. Un administrateur doit importer les données.') :
+        UI.empty('Aucune donnée importée.', el('button', { type: 'button', class: 'btn btn-link',
+          onClick: function () { App.go('dashboard'); } }, 'Importer un export depuis le tableau de bord'));
       empty.id = 'postes-empty';
       root.appendChild(empty);
       return;
     }
 
-    // Page-level actions live in the header; they are wired once the month is loaded.
+    // Page-level actions live in the header; they are wired once the month is loaded. Lecteurs: CSV only.
     var actions = {
-      generic: el('button', { type: 'button', class: 'btn btn-primary', id: 'postes-add-generic', disabled: true,
+      generic: !State.canEdit() ? null : el('button', { type: 'button', class: 'btn btn-primary', id: 'postes-add-generic', disabled: true,
         tooltip: 'Ajoute ' + UI.quote(Core.GENERIC_POSTE_NAME) + ' pour rattacher les applications non liées à un poste suivi.' },
         'Ajouter un poste générique'),
       csv: el('button', { type: 'button', class: 'btn btn-secondary', id: 'postes-export-csv', disabled: true,
         tooltip: 'Exporte les lignes affichées (filtres compris).' }, 'Exporter CSV')
     };
     // One rule on every page: [Exporter CSV (secondary)] then [create action (primary)].
-    root.appendChild(header(s, [actions.csv, actions.generic]));
+    root.appendChild(header(s, [actions.csv, actions.generic].filter(Boolean)));
 
     var body = el('div', { class: 'block-stack postes-body', id: 'postes-body', 'aria-busy': 'true' },
       UI.loading('Chargement des postes…'));

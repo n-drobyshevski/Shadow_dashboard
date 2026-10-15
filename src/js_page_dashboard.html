@@ -4,6 +4,9 @@
  *
  * KPI strip, compliance gauges, risk bars, "Détail conformité" leader rows, score histograms (all on
  * the filtered data of the selected month), then the Google Sheets import section + import ledger.
+ *
+ * Read-only mode (lecteur, !State.canEdit()): no import form (api_importMonth is admin only); the import
+ * ledger stays, alone in a « Derniers imports » section (api_getImportLog is allowed).
  */
 (function () {
   'use strict';
@@ -44,7 +47,7 @@
 
   function toneFor(rate, total) {
     if (!total) return null;
-    return rate >= Core.THRESHOLD ? 'ok' : 'ko';
+    return rate >= Core.threshold() ? 'ok' : 'ko';
   }
 
   /** "■ Sous le seuil · 5 conformes sur 7 · seuil 80 %" under a gauge (status always in words). */
@@ -233,6 +236,15 @@
     return panel;
   }
 
+  /** Lecteurs: the import ledger alone (no form, no source line: the source sheet is private to admins). */
+  function importHistoryPanel(myToken) {
+    var logBox = el('div', { class: 'import-log', id: 'import-log' });
+    var panel = UI.section('Derniers imports', logBox);
+    panel.id = 'import-history-panel';
+    loadImportLog(logBox, myToken);
+    return panel;
+  }
+
   function lastImportBlock() {
     if (!lastImport) return null;
     var c = lastImport.counts || {};
@@ -304,21 +316,23 @@
     var myToken = ++token;
     chartEls = [];
     var s = State.get();
+    var canEdit = State.canEdit();
     root.appendChild(header(s));
 
     if (!s.months.length) {
-      // Empty state: one line of ink-2 text; the import section right below is the action.
-      var empty = UI.empty('Aucune donnée importée.');
+      // Empty state: one line of ink-2 text; the import section right below is the action (admins only).
+      var empty = UI.empty(canEdit ? 'Aucune donnée importée.' :
+        'Aucun mois importé. Un administrateur doit importer les données.');
       empty.id = 'dashboard-empty';
       root.appendChild(empty);
-      root.appendChild(importPanel(s, myToken));
+      if (canEdit) root.appendChild(importPanel(s, myToken));
       return;
     }
 
     var body = el('div', { class: 'dashboard-body', id: 'dashboard-body', 'aria-busy': 'true' },
       UI.loading('Chargement des données…'));
     root.appendChild(body);
-    root.appendChild(importPanel(s, myToken));
+    root.appendChild(canEdit ? importPanel(s, myToken) : importHistoryPanel(myToken));
 
     State.loadMonth(s.month).then(function (md) {
       if (myToken !== token) return;

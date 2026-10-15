@@ -74,6 +74,11 @@
  * The global sidebar Équipe filter applies to the three tabs (State.filterByEquipe); the Bâtiment / Labo filter
  * does not apply to actions (the filter note says so).
  *
+ * Read-only mode (lecteur, !State.canEdit()): no « Nouvelle action » / « Nouveau remplacement », no « Supprimer »
+ * column, no « Enregistrer comme terminée ». A remediation row click opens a details drawer (every field,
+ * comment included) instead of the edit form; replacement rows are not clickable (the table shows every field).
+ * Change detection is unchanged otherwise (api_getDiff is allowed).
+ *
  * Forms are UI.formModal with onSubmit: the modal stays open (busy button) while the server call runs and
  * keeps the typed values with the error inline when it fails.
  *
@@ -111,6 +116,7 @@
   var diffChoice = null;         // {base, oldMonth, newMonth}: user's months, valid while the global month is `base`
   var lastDiff = null;           // last api_getDiff result (re-rendered after "Enregistrer comme terminée")
   var headerSlot = null;         // page-header actions of the active tab (create button), see setHeaderAction
+  var drawerHandle = null;       // read-only action details drawer (lecteurs), closed on unmount
 
   // ------------------------------------------------------------------------------ small helpers
 
@@ -399,8 +405,31 @@
     return line;
   }
 
+  /** Lecteurs: every field of an action, read only (the admins' row click opens the edit form instead). */
+  function openActionDetails(a) {
+    var type = Core.str(a.target_type);
+    var prio = Core.str(a.priorite);
+    var rows = [['Type de cible', TYPE_LABELS[type] || type], ['Équipe', a.equipe], ['Responsable', a.responsable],
+      ['Échéance', a.deadline, true], ['Créée le', a.date_created, true], ['Réalisée le', a.date_completed, true],
+      ['Mois source', a.source_month ? Fmt.monthLong(a.source_month) : ''], ['Commentaire', a.comment]];
+    var body = el('div', { class: 'entity-drawer action-drawer', id: 'action-drawer', dataset: { id: a.id } },
+      el('div', { class: 'drawer-head' },
+        statusMark(a.status),
+        prio ? el('span', { class: ['mark', 'mark-priority', PRIORITY_CLASS[prio] || 'priority-basse'] },
+          'Priorité ' + prio.toLowerCase()) : null,
+        isOverdue(a) ? UI.statusMark('En retard', 'ko') : null),
+      el('p', { class: 'action-title' }, Core.str(a.action) || '(sans libellé)'),
+      el('dl', { class: 'kv' }, rows.filter(function (r) { return Core.str(r[1]); }).map(function (r) {
+        return [el('dt', null, r[0]), el('dd', { class: r[2] ? 'mono' : null }, Core.str(r[1]))];
+      })));
+    drawerHandle = UI.drawer({ title: Core.str(a.target_name) || '(sans cible)', body: body,
+      onClose: function () { drawerHandle = null; } });
+    if (drawerHandle.node && type === 'application') drawerHandle.node.classList.add('is-app');
+  }
+
   function renderRemediation(panel, ctx) {
-    var addBtn = el('button', { type: 'button', class: 'btn btn-primary', id: 'action-add',
+    var canEdit = State.canEdit();
+    var addBtn = !canEdit ? null : el('button', { type: 'button', class: 'btn btn-primary', id: 'action-add',
       onClick: function () { openActionForm({ trigger: addBtn, onSaved: ctx.rerender }); } },
     'Nouvelle action');
     setHeaderAction(addBtn);
@@ -441,6 +470,7 @@
       }
       table = UI.editableTable({
         rowKey: 'id',
+        readOnly: !canEdit,
         pageSize: 50,
         emptyText: 'Aucune action ne correspond aux filtres.',
         toolbar: [
@@ -449,7 +479,8 @@
             [{ value: '', label: 'Tous' }, { value: 'poste', label: 'Poste' }, { value: 'application', label: 'Application' }])
         ],
         onRowClick: function (a) {
-          openActionForm({ existing: a, onSaved: ctx.rerender });
+          if (canEdit) openActionForm({ existing: a, onSaved: ctx.rerender });
+          else openActionDetails(a);
         },
         columns: [
           { key: 'target_name', label: 'Cible', render: function (a) { return targetCell(a.target_type, a.target_name); } },
@@ -465,13 +496,14 @@
             sortValue: function (a) { return frSortValue(a.date_created); } },
           { key: 'date_completed', label: 'Réalisée', render: function (a) { return dateCell(a.date_completed); },
             sortValue: function (a) { return frSortValue(a.date_completed); } },
-          { key: '_actions', label: '', sortable: false, render: function (a) {
+          // « Supprimer » row action: admins only (no empty column for lecteurs).
+          canEdit ? { key: '_actions', label: '', sortable: false, render: function (a) {
             return deleteButton('l’action ' + Core.str(a.action), function () {
               confirmDelete(ctx, 'Supprimer l’action « ' + Core.str(a.action) + ' » (' + Core.str(a.target_name) + ') ?',
                 'Supprimer l’action', function () { return api.call('api_deleteAction', { id: a.id }); }, 'Action supprimée.');
             });
-          } }
-        ],
+          } } : null
+        ].filter(Boolean),
         rows: filterActions(actions)
       });
       table.node.id = 'actions-table';
@@ -531,7 +563,8 @@
   }
 
   function renderReplacements(panel, ctx) {
-    var addBtn = el('button', { type: 'button', class: 'btn btn-primary', id: 'replacement-add',
+    var canEdit = State.canEdit();
+    var addBtn = !canEdit ? null : el('button', { type: 'button', class: 'btn btn-primary', id: 'replacement-add',
       onClick: function () { openReplacementForm(ctx, null, addBtn); } }, 'Nouveau remplacement');
     setHeaderAction(addBtn);
     panel.appendChild(UI.loading('Chargement des remplacements…'));
@@ -557,8 +590,9 @@
       }
       var table = UI.editableTable({
         rowKey: 'id',
+        readOnly: !canEdit,
         emptyText: 'Aucun remplacement enregistré.',
-        onRowClick: function (r) { openReplacementForm(ctx, r); },
+        onRowClick: canEdit ? function (r) { openReplacementForm(ctx, r); } : null,
         columns: [
           { key: 'old_poste', label: 'Ancien poste', mono: true },
           { key: 'new_poste', label: 'Nouveau poste', mono: true },
@@ -566,14 +600,14 @@
           { key: 'responsable', label: 'Responsable' },
           { key: 'date_replacement', label: 'Date', mono: true, sortValue: function (r) { return frSortValue(r.date_replacement); } },
           { key: 'comment', label: 'Commentaire' },
-          { key: '_actions', label: '', sortable: false, render: function (r) {
+          canEdit ? { key: '_actions', label: '', sortable: false, render: function (r) {
             var label = Core.str(r.old_poste) + ' → ' + Core.str(r.new_poste);
             return deleteButton('le remplacement ' + label, function () {
               confirmDelete(ctx, 'Supprimer le remplacement « ' + label + ' » ?', 'Supprimer le remplacement',
                 function () { return api.call('api_deleteReplacement', { id: r.id }); }, 'Remplacement supprimé.');
             });
-          } }
-        ],
+          } } : null
+        ].filter(Boolean),
         rows: rows
       });
       table.node.id = 'replacements-table';
@@ -714,6 +748,10 @@
         // Already recorded: a status mark, not a disabled button.
         cell = UI.statusMark('Déjà enregistrée', 'ok');
         cell.classList.add('diff-done-mark');
+      } else if (!State.canEdit()) {
+        // Lecteurs: recording it is an admin write (api_addAction); only say whether it is already tracked.
+        cell = open ? el('div', { class: 'diff-open-note' }, 'Déjà suivie :', statusMark(open.status)) :
+          el('span', { class: 'faint' }, 'Non enregistrée');
       } else {
         var btn = el('button', {
           type: 'button', class: 'btn btn-sm btn-secondary btn-mark-done',
@@ -941,6 +979,8 @@
   function unmount() {
     token++;
     headerSlot = null;
+    if (drawerHandle) drawerHandle.close();
+    drawerHandle = null;
   }
 
   window.ActionForm = {

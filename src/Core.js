@@ -18,6 +18,9 @@ function CoreFactory_() {
   // ------------------------------------------------------------------------------------------
 
   var THRESHOLD = 80;
+  // Effective compliance threshold (Paramètres). THRESHOLD stays the default; the server sets this
+  // from the Script Properties on every api_* call, the client from api_bootstrap.
+  var threshold_ = THRESHOLD;
   var KEY_POSTE = 'Nom du poste';
   var KEY_APP = 'Nom du logiciel / service';
   var GENERIC_POSTE_NAME = 'Poste générique Decathlon';
@@ -45,7 +48,7 @@ function CoreFactory_() {
   var ACTION_PRIORITIES = ['Haute', 'Moyenne', 'Basse'];
   var SOURCE_TABS = { postes: 'Suivi des postes', applications: 'Suivi des applications',
     referentiel: 'Référentiel' };
-  var ERROR_CODES = ['NOT_CONFIGURED', 'MONTH_EXISTS', 'NOT_FOUND', 'BUSY', 'VALIDATION', 'SOURCE_ERROR',
+  var ERROR_CODES = ['NOT_CONFIGURED', 'MONTH_EXISTS', 'NOT_FOUND', 'BUSY', 'VALIDATION', 'SOURCE_ERROR', 'FORBIDDEN',
     'INTERNAL'];
 
   // Field names used by several functions below.
@@ -394,7 +397,7 @@ function CoreFactory_() {
       var out = copy_(rec);
       var score = parseScore(out[F_SCORE]);
       out._score = score;
-      out._conforme = score !== null && score >= THRESHOLD;
+      out._conforme = score !== null && score >= threshold_;
       return out;
     });
   }
@@ -405,7 +408,7 @@ function CoreFactory_() {
       var out = copy_(rec);
       var s = scoreApplication(out);
       out._score = s.score;
-      out._conforme = s.score >= THRESHOLD;
+      out._conforme = s.score >= threshold_;
       out._criteria = s.criteria;
       return out;
     });
@@ -678,6 +681,54 @@ function CoreFactory_() {
     return out.sort(cmp_);
   }
 
+  var EMAIL_RE_ = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
+
+  /** Plausible e-mail address (no spaces, one '@', a dot in the domain, max 254 chars). */
+  function isEmail(v) {
+    return typeof v === 'string' && v.length <= 254 && EMAIL_RE_.test(v);
+  }
+
+  /**
+   * Addresses pasted in any common shape -> {emails:[unique, trimmed, lower-cased, in order],
+   * invalid:[tokens containing '@' that are not addresses]}. Accepts one per line (a Sheets column),
+   * comma / semicolon / tab / space separated lists, mail headers (« Léa Martin <lea@x.com> »),
+   * quotes and « mailto: ». Words without '@' (names) are ignored.
+   */
+  function parseEmailList(text) {
+    var out = { emails: [], invalid: [] };
+    if (typeof text !== 'string') return out;
+    var seen = {};
+    text.split(/[\s,;]+/).forEach(function (raw) {
+      var t = raw.replace(/^mailto:/i, '').replace(/^[<("'\[]+|[>)"'\].]+$/g, '').replace(/^mailto:/i, '');
+      if (t.indexOf('@') < 0) return;
+      var e = t.toLowerCase();
+      if (!isEmail(e)) {
+        if (out.invalid.indexOf(raw) < 0) out.invalid.push(raw);
+        return;
+      }
+      if (seen[e]) return;
+      seen[e] = true;
+      out.emails.push(e);
+    });
+    return out;
+  }
+
+  /** Effective compliance threshold (integer 1–100; THRESHOLD unless changed in Paramètres). */
+  function threshold() { return threshold_; }
+
+  /** Valid threshold -> integer 1–100, else null. Accepts numbers and numeric strings ('75'). */
+  function validateThreshold(v) {
+    var n = typeof v === 'number' ? v : (typeof v === 'string' && /^\s*\d+\s*$/.test(v) ? Number(v) : NaN);
+    return isFinite(n) && Math.floor(n) === n && n >= 1 && n <= 100 ? n : null;
+  }
+
+  /** Sets the effective threshold (invalid values reset it to THRESHOLD). Returns the value set. */
+  function setThreshold(v) {
+    var n = validateThreshold(v);
+    threshold_ = n === null ? THRESHOLD : n;
+    return threshold_;
+  }
+
   /** Latest month in `months` strictly before `month`, or null. */
   function previousMonth(months, month) {
     if (!validateMonth(month)) return null;
@@ -737,7 +788,12 @@ function CoreFactory_() {
     mergeCarryOver: mergeCarryOver,
     optionsForColumn: optionsForColumn,
     sortMonths: sortMonths,
-    previousMonth: previousMonth
+    previousMonth: previousMonth,
+    threshold: threshold,
+    validateThreshold: validateThreshold,
+    isEmail: isEmail,
+    parseEmailList: parseEmailList,
+    setThreshold: setThreshold
   };
 }
 

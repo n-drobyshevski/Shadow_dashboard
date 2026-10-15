@@ -7,6 +7,15 @@
 var Config = (function () {
   var PROP_DATA_ID = 'DATA_SPREADSHEET_ID';
   var PROP_SOURCE_ID = 'SOURCE_SPREADSHEET_ID';
+  var PROP_THRESHOLD = 'COMPLIANCE_THRESHOLD';
+  var PROP_ACCESS = 'ACCESS_JSON';
+  // A Script Property value holds at most 9 KB: the access list is stored as JSON split into
+  // ACCESS_JSON_0, ACCESS_JSON_1… (3000 characters each, < 9 KB even in multi-byte UTF-8), with the
+  // number of parts in ACCESS_JSON_N, written in the same setProperties call: a reader never mixes
+  // parts of two versions, and parts left over from a longer list are ignored, then deleted.
+  var ACCESS_CHUNK = 3000;
+  var MAX_USERS = 2000;
+  var MAX_GROUPS = 50;
   var DATA_SPREADSHEET_NAME = 'ShadowIT_AppData';
 
   /**
@@ -44,10 +53,75 @@ var Config = (function () {
     return PropertiesService.getScriptProperties();
   }
 
-  /** @return {{dataId: string, sourceId: string}} ('' when unset) */
+  /**
+   * @return {{dataId: string, sourceId: string, threshold: number, access: {users: Object[], groups: Object[], domainRole: string}}}
+   *   ids are '' when unset; threshold is Core.THRESHOLD when unset or invalid.
+   */
   function get() {
     var p = props_().getProperties() || {};
-    return { dataId: p[PROP_DATA_ID] || '', sourceId: p[PROP_SOURCE_ID] || '' };
+    var threshold = Core.validateThreshold(p[PROP_THRESHOLD] || '');
+    return {
+      dataId: p[PROP_DATA_ID] || '',
+      sourceId: p[PROP_SOURCE_ID] || '',
+      threshold: threshold === null ? Core.THRESHOLD : threshold,
+      access: parseAccess_(readAccessJson_(p))
+    };
+  }
+
+  /** Concatenates ACCESS_JSON_0..N-1 ('' when unset or a part is missing). */
+  function readAccessJson_(p) {
+    var n = Number(p[PROP_ACCESS + '_N']);
+    if (!(n >= 1 && n <= 1000 && Math.floor(n) === n)) return '';
+    var json = '';
+    for (var i = 0; i < n; i++) {
+      var part = p[PROP_ACCESS + '_' + i];
+      if (typeof part !== 'string') return '';
+      json += part;
+    }
+    return json;
+  }
+
+  /**
+   * Access list as stored in ACCESS_JSON_*: {users:[{email, role, added_at, added_by}], groups:[same], domainRole}.
+   * Anything unreadable becomes the empty list (only the deployer gets in), never an error.
+   */
+  function parseAccess_(json) {
+    var raw = null;
+    try { raw = json ? JSON.parse(json) : null; } catch (e) { raw = null; }
+    function entries(list) {
+      return (Array.isArray(list) ? list : []).filter(function (u) { return u && typeof u.email === 'string' && u.email; })
+        .map(function (u) {
+          return { email: String(u.email), role: String(u.role || ''), added_at: String(u.added_at || ''),
+            added_by: String(u.added_by || '') };
+        });
+    }
+    return {
+      users: entries(raw && raw.users),
+      groups: entries(raw && raw.groups),
+      domainRole: raw && typeof raw.domainRole === 'string' ? raw.domainRole : 'none'
+    };
+  }
+
+  function setThreshold(n) {
+    props_().setProperty(PROP_THRESHOLD, String(n));
+  }
+
+  /**
+   * Writes the access list in one setProperties call, then drops the parts left over from a longer
+   * previous list. Call inside Store.withLock.
+   * @param {{users: Object[], domainRole: string}} access
+   */
+  function setAccess(access) {
+    var json = JSON.stringify({ users: access.users || [], groups: access.groups || [],
+      domainRole: access.domainRole || 'none' });
+    var store = props_();
+    var parts = {};
+    var n = 0;
+    for (var i = 0; i < json.length; i += ACCESS_CHUNK) parts[PROP_ACCESS + '_' + (n++)] = json.slice(i, i + ACCESS_CHUNK);
+    parts[PROP_ACCESS + '_N'] = String(n);
+    store.setProperties(parts);
+    var existing = store.getProperties() || {};
+    for (var k = n; Object.prototype.hasOwnProperty.call(existing, PROP_ACCESS + '_' + k); k++) store.deleteProperty(PROP_ACCESS + '_' + k);
   }
 
   function setDataId(id) {
@@ -76,6 +150,10 @@ var Config = (function () {
   return {
     PROP_DATA_ID: PROP_DATA_ID,
     PROP_SOURCE_ID: PROP_SOURCE_ID,
+    PROP_THRESHOLD: PROP_THRESHOLD,
+    PROP_ACCESS: PROP_ACCESS,
+    MAX_USERS: MAX_USERS,
+    MAX_GROUPS: MAX_GROUPS,
     DATA_SPREADSHEET_NAME: DATA_SPREADSHEET_NAME,
     TIME_ZONE: TIME_ZONE,
     TABS: TABS,
@@ -84,6 +162,8 @@ var Config = (function () {
     get: get,
     setDataId: setDataId,
     setSourceId: setSourceId,
+    setThreshold: setThreshold,
+    setAccess: setAccess,
     today: today,
     todayFr: todayFr,
     nowStamp: nowStamp,

@@ -221,6 +221,11 @@ a[target="_blank"]::after { content: '\2009\2197\FE0E'; color: var(--ink-3); fon
 }
 .side-link:hover, .sidebar-footer .btn-link:hover, .sidebar-footer .btn-quiet:hover { color: var(--accent); text-decoration: underline; }
 
+/* signed-in account at the foot of the sidebar: email in mono, role under it */
+.side-user { display: flex; flex-direction: column; gap: 2px; margin: var(--s2) 0 0; padding-top: var(--s2); border-top: 1px solid var(--rule); width: 100%; }
+.side-user-email { font-size: 12px; color: var(--ink-2); overflow-wrap: anywhere; }
+.side-user-role { font-size: 12px; color: var(--ink-3); }
+
 body.unconfigured .sidebar { display: none !important; }
 body.unconfigured .app { background: var(--paper); }
 body.unconfigured .topbar-toggle { visibility: hidden; }

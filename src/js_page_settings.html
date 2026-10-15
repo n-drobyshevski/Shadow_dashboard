@@ -1,0 +1,573 @@
+<style>
+/* Paramètres (admin only). Sections, dl.kv, ledger table, inline forms and buttons come from css.html;
+   only the column widths of the forms and the access table are specific to this page. */
+.page-settings .settings-body { display: flex; flex-direction: column; gap: var(--s6); max-width: 880px; }
+.page-settings .section > .page-lede, .page-settings .section > .field-help { margin: 0; }
+.page-settings .access-body { display: flex; flex-direction: column; gap: var(--s4); }
+.page-settings .settings-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2) var(--s3); }
+.page-settings .settings-form .form-field { min-width: 0; }
+.page-settings .settings-form .form-field-grow { flex: 1 1 320px; }
+.page-settings .settings-form .form-actions { margin-top: 0; }
+/* Threshold: a short figure with its unit, never a full-width field. */
+.page-settings .threshold-input { display: inline-flex; align-items: center; gap: var(--s1); }
+.page-settings .threshold-input .input { width: 72px; text-align: right; font-family: var(--font-mono); }
+.page-settings .threshold-input .unit { color: var(--ink-2); }
+/* Access table: account in mono, role as a small dropdown, the row action right-aligned. */
+.page-settings .access-table .access-role { width: 168px; }
+.page-settings .access-table .access-role .select-field { max-width: 160px; }
+.page-settings .access-table .access-actions { width: 96px; text-align: right; }
+.page-settings .access-note { color: var(--ink-3); font-size: 12px; margin-left: var(--s1); }
+.page-settings .settings-form .select-field { min-width: 160px; }
+/* Above the access table: search + count on the left, bulk add on the right. */
+.page-settings .access-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
+.page-settings .access-tools .search-field { flex: 0 1 280px; }
+.page-settings .access-count { color: var(--ink-3); font-size: 12px; }
+.page-settings .access-tools .access-bulk-open { margin-left: auto; }
+.page-settings .access-nomatch { margin: 0; color: var(--ink-2); }
+.page-settings .access-body > .subsection-title { margin: var(--s3) 0 0; }
+.page-settings .access-groups { display: flex; flex-direction: column; gap: var(--s3); }
+.page-settings .access-groups > .field-help { margin: 0; max-width: 72ch; }
+/* Bulk add dialog */
+.access-bulk .access-bulk-text { width: 100%; min-height: 168px; font-family: var(--font-mono); font-size: 13px; }
+.access-bulk .access-bulk-role { max-width: 200px; }
+.access-bulk .access-bulk-preview { margin: 0; font-size: 13px; color: var(--ink-2); min-height: 20px; }
+.access-bulk .access-bulk-preview .num { font-family: var(--font-mono); color: var(--ink); }
+.access-bulk .access-bulk-invalid { color: var(--ko); overflow-wrap: anywhere; }
+.access-bulk { display: flex; flex-direction: column; gap: var(--s3); }
+@media (max-width: 700px) {
+  .page-settings .access-table .access-role { width: auto; }
+  .page-settings .access-table .access-added { display: none; }
+  .page-settings .access-table .access-role .access-note { display: block; margin-left: 0; }
+}
+</style>
+<script>
+/**
+ * Pages.settings — « Paramètres » (admin only; docs/API.md §3 settings endpoints).
+ *
+ * Three sections, each saved on its own:
+ *   - Source de données: current source spreadsheet, tabs found, data spreadsheet; change the source
+ *     (App.applySource -> api_setConfig, the same path as the configuration screen).
+ *   - Seuil de conformité: integer 1–100 (api_setThreshold). Every cache is dropped and the bootstrap is
+ *     reloaded so that every page re-scores with the new value.
+ *   - Accès: role of the other accounts of the domain (api_setDomainRole), the access list with an inline
+ *     role dropdown and « Retirer » (api_saveUser / api_removeUser), a search over the list, an add form,
+ *     and « Ajouter plusieurs comptes… »: paste any list of addresses (Core.parseEmailList), live
+ *     preview of new / changed / already present / invalid, one api_addUsers call. Below, « Groupes Google »:
+ *     every member of a listed group gets its role (api_saveGroup / api_removeGroup; the server checks the
+ *     group exists and its members are visible to the owner). The deployer is
+ *     always admin and the caller cannot edit their own access (server guards, shown here as plain text).
+ * The page is also reachable before a source is configured, so that access can be set up first.
+ */
+(function () {
+  'use strict';
+
+  window.Pages = window.Pages || {};
+  var el = UI.el;
+  var token = 0;          // bumped on unmount: late responses do not touch a detached page
+  var settings = null;    // last api_getSettings result
+
+  function roleLabel(role) { return (App.ROLE_LABELS || {})[role] || role; }
+  function pct(n) { return n + UI.NNBSP + '%'; }
+
+  var ROLE_OPTIONS = [{ value: 'lecteur', label: 'Lecteur' }, { value: 'admin', label: 'Administrateur' }];
+  var DOMAIN_OPTIONS = [{ value: 'none', label: 'Aucun accès' }, { value: 'lecteur', label: 'Lecteur' }];
+
+  // ------------------------------------------------------------------------------ source
+
+  function tabsLine(found) {
+    if (!found) return el('span', { class: 'field-help' }, 'Classeur inaccessible.');
+    var names = [['postes', Core.SOURCE_TABS.postes], ['applications', Core.SOURCE_TABS.applications],
+      ['referentiel', Core.SOURCE_TABS.referentiel]];
+    return el('span', { class: 'tabs-found' }, names.map(function (n, i) {
+      return [i ? ' · ' : null, UI.statusMark(n[1] + (found[n[0]] ? '' : ' — introuvable'), found[n[0]] ? 'ok' : 'ko')];
+    }));
+  }
+
+  function sourceSection(s, reload) {
+    var src = s.source || {};
+    var info = el('dl', { class: 'kv', id: 'settings-source-info' },
+      el('dt', null, 'Classeur source'),
+      el('dd', null, src.id ? [src.title ? UI.extLink(src.url, src.title, { id: 'settings-source-link' }) : null,
+        el('div', { class: 'mono field-help' }, src.id)] : el('span', { class: 'field-help' }, 'Non configuré.')),
+      src.id ? el('dt', null, 'Onglets') : null,
+      src.id ? el('dd', null, tabsLine(src.tabsFound)) : null,
+      el('dt', null, 'Classeur de données'),
+      el('dd', null, s.dataUrl ? UI.extLink(s.dataUrl, 'ShadowIT_AppData', { id: 'settings-data-link' }) :
+        el('span', { class: 'field-help' }, 'Créé au premier chargement.')));
+
+    var input = el('input', { type: 'text', class: 'input', id: 'settings-source', autocomplete: 'off',
+      placeholder: 'https://docs.google.com/spreadsheets/d/…', 'aria-describedby': 'settings-source-help' });
+    var button = el('button', { type: 'submit', class: 'btn btn-secondary', id: 'settings-source-submit' },
+      src.id ? 'Changer de source' : 'Enregistrer la source');
+    var form = el('form', { class: 'settings-form', novalidate: true, onSubmit: function (e) {
+      e.preventDefault();
+      var value = input.value.trim();
+      UI.fieldError(input, '');
+      if (!value) { UI.fieldError(input, 'Collez l’URL ou l’identifiant du Google Sheet source.'); input.focus(); return; }
+      var t = token;
+      UI.busy(button, App.applySource(value)).then(function () {
+        // A first source re-renders the whole shell (and re-mounts this page): nothing left to do then.
+        if (t !== token) return;
+        input.value = '';
+        reload();
+      }, function (err) {
+        if (t !== token) return;
+        UI.fieldError(input, App.sourceErrorText(err));
+        input.focus();
+      });
+    } },
+      el('div', { class: 'form-field form-field-grow' },
+        el('label', { for: 'settings-source', class: 'field-label' }, 'Nouvelle source (URL ou ID)'),
+        input),
+      el('div', { class: 'form-actions' }, button));
+
+    return UI.section('Source de données',
+      el('p', { class: 'page-lede', id: 'settings-source-help' }, 'Le classeur « ShadowIT_Industry » dont chaque ' +
+        'import fait un instantané mensuel. Changer de source ne modifie pas les mois déjà importés.'),
+      info, form);
+  }
+
+  // ------------------------------------------------------------------------------ threshold
+
+  function thresholdSection(s) {
+    var input = el('input', { type: 'text', inputmode: 'numeric', class: 'input', id: 'settings-threshold',
+      value: String(s.threshold), maxlength: 3, autocomplete: 'off', 'aria-describedby': 'settings-threshold-help' });
+    var button = el('button', { type: 'submit', class: 'btn btn-primary', id: 'settings-threshold-submit' }, 'Enregistrer');
+    var reset = el('button', { type: 'button', class: 'btn btn-quiet', id: 'settings-threshold-reset',
+      hidden: s.threshold === s.defaultThreshold,
+      onClick: function () { input.value = String(s.defaultThreshold); save(); } },
+      'Rétablir ' + pct(s.defaultThreshold));
+
+    function save() {
+      var n = Core.validateThreshold(input.value.trim());
+      UI.fieldError(input, '');
+      if (n === null) { UI.fieldError(input, 'Entrez un nombre entier entre 1 et 100.'); input.focus(); return; }
+      if (n === s.threshold) { UI.toast('Seuil inchangé — ' + pct(n) + '.'); return; }
+      var t = token;
+      UI.busy(button, api.call('api_setThreshold', { threshold: n }).then(function (res) {
+        // Every cached score depends on the threshold: drop them and reload the bootstrap.
+        State.invalidate();
+        return State.refreshBootstrap().then(function () { return res; });
+      })).then(function (res) {
+        if (t !== token) return;
+        s.threshold = res.threshold;
+        input.value = String(res.threshold);
+        reset.hidden = res.threshold === s.defaultThreshold;
+        UI.toast('Seuil enregistré — ' + pct(res.threshold) + '.', 'success');
+      }, function (err) {
+        if (t !== token) return;
+        UI.fieldError(input, UI.errorText(err));
+      });
+    }
+
+    var form = el('form', { class: 'settings-form', novalidate: true,
+      onSubmit: function (e) { e.preventDefault(); save(); } },
+      el('div', { class: 'form-field' },
+        el('label', { for: 'settings-threshold', class: 'field-label' }, 'Seuil'),
+        el('span', { class: 'threshold-input' }, input, el('span', { class: 'unit', 'aria-hidden': 'true' }, '%'))),
+      el('div', { class: 'form-actions' }, button, reset));
+
+    return UI.section('Seuil de conformité',
+      el('p', { class: 'page-lede', id: 'settings-threshold-help' }, 'Un poste ou une application est conforme ' +
+        'quand son score atteint le seuil. Il s’applique à tous les mois : indicateurs, jauges, histogrammes et ' +
+        'suivi temporel. Valeur par défaut : ' + pct(s.defaultThreshold) + '.'),
+      form);
+  }
+
+  // ------------------------------------------------------------------------------ access
+
+  function plural(n, one, many) { return UI.fmtNum(n) + ' ' + (n > 1 ? many : one); }
+
+  /**
+   * What a bulk add would do, computed client-side from the current list (the server decides; this is
+   * only the preview): {add:[], change:[], same:[], skip:[{email, reason}], invalid:[]}.
+   */
+  function bulkPlan(text, role, view, me) {
+    var parsed = Core.parseEmailList(text);
+    var byEmail = {};
+    view.users.forEach(function (u) { byEmail[u.email] = u; });
+    var plan = { add: [], change: [], same: [], skip: [], invalid: parsed.invalid };
+    parsed.emails.forEach(function (e) {
+      if (e === view.owner) plan.skip.push({ email: e, reason: 'propriétaire' });
+      else if (e === me) plan.skip.push({ email: e, reason: 'vous' });
+      else if (!byEmail[e]) plan.add.push(e);
+      else if (byEmail[e].role !== role) plan.change.push(e);
+      else plan.same.push(e);
+    });
+    return plan;
+  }
+
+  function openBulkAdd(view, me, onDone) {
+    var text = el('textarea', { class: 'input access-bulk-text', id: 'bulk-emails', rows: 8, spellcheck: 'false',
+      autocomplete: 'off', 'aria-describedby': 'bulk-help bulk-preview',
+      placeholder: 'lea.martin@decathlon.com\nsam.durand@decathlon.com\nNina Petit <nina.petit@decathlon.com>' });
+    var role = UI.select({ label: 'Rôle pour tous', id: 'bulk-role', options: ROLE_OPTIONS, value: 'lecteur',
+      onChange: update });
+    role.classList.add('access-bulk-role');
+    var preview = el('p', { class: 'access-bulk-preview', id: 'bulk-preview', role: 'status', 'aria-live': 'polite' });
+    var plan = null;
+    var dlg = null;
+
+    function update() {
+      plan = bulkPlan(text.value, role.getValue(), view, me);
+      UI.clear(preview);
+      var parts = [];
+      if (plan.add.length) parts.push([el('span', { class: 'num' }, UI.fmtNum(plan.add.length)), plan.add.length > 1 ? ' nouveaux comptes' : ' nouveau compte']);
+      if (plan.change.length) parts.push([el('span', { class: 'num' }, UI.fmtNum(plan.change.length)), plan.change.length > 1 ? ' rôles modifiés' : ' rôle modifié']);
+      if (plan.same.length) parts.push([el('span', { class: 'num' }, UI.fmtNum(plan.same.length)), ' déjà ' + (role.getValue() === 'admin' ? 'administrateur' : 'lecteur') + (plan.same.length > 1 ? 's' : '')]);
+      if (plan.skip.length) parts.push([el('span', { class: 'num' }, UI.fmtNum(plan.skip.length)), ' ignoré' + (plan.skip.length > 1 ? 's' : '') + ' (' + plan.skip.map(function (x) { return x.reason; }).join(', ') + ')']);
+      if (!parts.length && !plan.invalid.length) preview.appendChild(document.createTextNode(text.value.trim() ? 'Aucune adresse reconnue.' : ''));
+      parts.forEach(function (p, i) { if (i) preview.appendChild(document.createTextNode(' · ')); preview.appendChild(el('span', null, p)); });
+      if (plan.invalid.length) {
+        if (parts.length) preview.appendChild(document.createTextNode(' · '));
+        var shown = plan.invalid.slice(0, 5).join(', ') + (plan.invalid.length > 5 ? '…' : '');
+        preview.appendChild(el('span', { class: 'access-bulk-invalid', id: 'bulk-invalid' },
+          plural(plan.invalid.length, 'adresse invalide', 'adresses invalides') + ' : ' + shown));
+      }
+      var n = plan.add.length + plan.change.length;
+      if (dlg) {
+        var btn = dlg.buttons[1];
+        btn.textContent = n ? (plan.add.length && !plan.change.length ? 'Ajouter ' + plural(n, 'compte', 'comptes') :
+          'Enregistrer ' + plural(n, 'compte', 'comptes')) : 'Ajouter';
+        btn.disabled = !n;
+      }
+      UI.fieldError(text, '');
+    }
+    text.addEventListener('input', update);
+
+    dlg = UI.modal({
+      title: 'Ajouter plusieurs comptes',
+      wide: true,
+      body: el('div', { class: 'access-bulk' },
+        el('p', { class: 'field-help', id: 'bulk-help' }, 'Collez les adresses : une par ligne (colonne d’un ' +
+          'Google Sheet), séparées par des virgules ou des points-virgules, ou copiées depuis le champ « À » d’un ' +
+          'e-mail (« Nom <adresse> »). Les doublons et les mots sans « @ » sont ignorés. ' +
+          '500 adresses au plus par ajout.'),
+        el('div', { class: 'form-field' }, el('label', { for: 'bulk-emails', class: 'field-label' }, 'Adresses'), text),
+        role, preview),
+      actions: [
+        { label: 'Annuler' },
+        { label: 'Ajouter', primary: true, onClick: function (close) {
+          update();
+          var emails = plan.add.concat(plan.change);
+          if (!emails.length) { UI.fieldError(text, 'Aucune adresse à ajouter.'); return null; }
+          if (emails.length > 500) { UI.fieldError(text, 'Au plus 500 adresses par ajout (' + UI.fmtNum(emails.length) + ' collées).'); return null; }
+          var r = role.getValue();
+          return api.call('api_addUsers', { emails: emails, role: r }).then(function (res) {
+            close();
+            var bits = [];
+            if (res.added.length) bits.push(plural(res.added.length, 'compte ajouté', 'comptes ajoutés'));
+            if (res.updated.length) bits.push(plural(res.updated.length, 'rôle modifié', 'rôles modifiés'));
+            if (res.skipped.length) bits.push(plural(res.skipped.length, 'ignoré', 'ignorés'));
+            UI.toast((bits.join(' · ') || 'Aucun changement') + ' — ' + roleLabel(r) + '.', 'success');
+            onDone(res.access);
+          }, function (err) {
+            UI.fieldError(text, UI.errorText(err));
+          });
+        } }
+      ]
+    });
+    update();
+  }
+
+  function accessSection(s) {
+    var wrap = el('div', { class: 'access-body' });
+    var view = s.access;
+    var query = '';
+
+    function apply(next) {
+      view = next;
+      s.access = next;
+      render();
+    }
+
+    function roleCell(u) {
+      var dd = UI.select({ ariaLabel: 'Rôle de ' + u.email, options: ROLE_OPTIONS, value: u.role, size: 'sm',
+        onChange: function (role) {
+          if (role === u.role) return;
+          var t = token;
+          dd.setDisabled(true);
+          api.call('api_saveUser', { email: u.email, role: role }).then(function (next) {
+            if (t !== token) return;
+            UI.toast('Rôle modifié — ' + u.email + ' : ' + roleLabel(role) + '.', 'success');
+            apply(next);
+          }, function (err) {
+            if (t !== token) return;
+            dd.setDisabled(false);
+            dd.setValue(u.role);
+            UI.toast('Erreur : ' + UI.errorText(err), 'error');
+          });
+        } });
+      return dd;
+    }
+
+    function removeButton(u) {
+      return el('button', { type: 'button', class: 'btn btn-quiet is-danger btn-sm', dataset: { email: u.email },
+        'aria-label': 'Retirer l’accès de ' + u.email,
+        onClick: function () {
+          var t = token;
+          UI.confirm(u.email + ' ne pourra plus ouvrir l’application' +
+            (view.domainRole === 'lecteur' ? ', sauf en lecture comme tout compte du domaine' : '') + '.', {
+            title: 'Retirer l’accès', okLabel: 'Retirer', danger: true,
+            onConfirm: function () {
+              return api.call('api_removeUser', { email: u.email }).then(function (next) {
+                if (t !== token) return;
+                UI.toast('Accès retiré — ' + u.email + '.', 'success');
+                apply(next);
+              });
+            }
+          });
+        } }, 'Retirer');
+    }
+
+    function render() {
+      UI.clear(wrap);
+      var me = s.me;
+      var rows = [{ email: view.owner, role: 'admin', owner: true }].concat(view.users);
+      var tbl = UI.table({
+        id: 'access-table',
+        className: 'access-table',
+        caption: 'Comptes autorisés',
+        rows: rows,
+        columns: [
+          { label: 'Compte', mono: true, rowHeader: true },
+          { label: 'Rôle', className: 'access-role' },
+          { label: 'Ajouté le', mono: true, className: 'access-added' },
+          { label: '', className: 'access-actions' }
+        ],
+        rowAttrs: function (u) { return { dataset: { email: u.email } }; },
+        cells: function (u) {
+          var fixed = u.owner || u.email === me;
+          var note = u.owner ? 'propriétaire' : (u.email === me ? 'vous' : '');
+          return [
+            u.email,
+            fixed ? [roleLabel(u.role), note ? el('span', { class: 'access-note' }, note) : null] : roleCell(u),
+            u.owner ? '—' : [Fmt.date(u.added_at), u.added_by ? el('span', { class: 'access-note' }, 'par ' + u.added_by) : null],
+            fixed ? null : removeButton(u)
+          ];
+        }
+      });
+
+      var domain = UI.select({ label: 'Autres comptes du domaine', id: 'settings-domain-role', options: DOMAIN_OPTIONS,
+        value: view.domainRole, onChange: function (role) {
+          if (role === view.domainRole) return;
+          var t = token;
+          domain.setDisabled(true);
+          api.call('api_setDomainRole', { role: role }).then(function (next) {
+            if (t !== token) return;
+            UI.toast(role === 'lecteur' ? 'Tout compte du domaine peut désormais consulter l’application.' :
+              'Seuls les comptes listés peuvent ouvrir l’application.', 'success');
+            apply(next);
+          }, function (err) {
+            if (t !== token) return;
+            domain.setDisabled(false);
+            domain.setValue(view.domainRole);
+            UI.toast('Erreur : ' + UI.errorText(err), 'error');
+          });
+        } });
+
+      var email = el('input', { type: 'email', class: 'input', id: 'access-email', autocomplete: 'off',
+        placeholder: 'prenom.nom@decathlon.com', spellcheck: 'false' });
+      var role = UI.select({ label: 'Rôle', id: 'access-role', options: ROLE_OPTIONS, value: 'lecteur' });
+      var add = el('button', { type: 'submit', class: 'btn btn-secondary', id: 'access-add' }, 'Ajouter');
+      var form = el('form', { class: 'settings-form', id: 'access-form', novalidate: true, onSubmit: function (e) {
+        e.preventDefault();
+        var value = email.value.trim();
+        UI.fieldError(email, '');
+        if (!value) { UI.fieldError(email, 'Saisissez une adresse e-mail.'); email.focus(); return; }
+        var r = role.getValue();
+        var t = token;
+        UI.busy(add, api.call('api_saveUser', { email: value, role: r })).then(function (next) {
+          if (t !== token) return;
+          UI.toast('Accès ajouté — ' + value.toLowerCase() + ' (' + roleLabel(r) + ').', 'success');
+          apply(next);
+          var again = document.getElementById('access-email');
+          if (again) again.focus();
+        }, function (err) {
+          if (t !== token) return;
+          UI.fieldError(email, UI.errorText(err));
+          email.focus();
+        });
+      } },
+        el('div', { class: 'form-field form-field-grow' },
+          el('label', { for: 'access-email', class: 'field-label' }, 'Ajouter un compte'), email),
+        role,
+        el('div', { class: 'form-actions' }, add));
+
+      var count = el('span', { class: 'access-count', id: 'access-count', role: 'status' });
+      var nomatch = el('p', { class: 'access-nomatch', id: 'access-nomatch', hidden: true }, 'Aucun compte ne correspond.');
+      var search = UI.searchField({ id: 'access-search', value: query, placeholder: 'Rechercher un compte…',
+        ariaLabel: 'Rechercher un compte', onInput: function (v) { query = v; filter(); } });
+      var bulk = el('button', { type: 'button', class: 'btn btn-secondary access-bulk-open', id: 'access-bulk-open',
+        onClick: function () { openBulkAdd(view, me, apply); } }, 'Ajouter plusieurs comptes…');
+
+      // Hides the rows that do not match (no re-render: the search keeps focus while typing).
+      function filter() {
+        var q = query.trim().toLowerCase();
+        var shown = 0;
+        Array.prototype.forEach.call(tbl.querySelectorAll('tbody tr'), function (tr) {
+          var u = rows.filter(function (r) { return r.email === tr.dataset.email; })[0];
+          var hay = u ? (u.email + ' ' + roleLabel(u.role) + ' ' + (u.added_by || '')).toLowerCase() : '';
+          var ok = !q || hay.indexOf(q) >= 0;
+          tr.hidden = !ok;
+          if (ok) shown++;
+        });
+        var total = rows.length;
+        count.textContent = q ? UI.fmtNum(shown) + ' sur ' + plural(total, 'compte', 'comptes') : plural(total, 'compte', 'comptes');
+        nomatch.hidden = shown > 0;
+      }
+
+      wrap.appendChild(el('div', { class: 'settings-form' }, domain));
+      wrap.appendChild(el('h3', { class: 'subsection-title' }, 'Comptes'));
+      wrap.appendChild(el('div', { class: 'access-tools' }, search, count, bulk));
+      wrap.appendChild(tbl);
+      wrap.appendChild(nomatch);
+      wrap.appendChild(form);
+      wrap.appendChild(el('h3', { class: 'subsection-title', id: 'groups-title' }, 'Groupes Google'));
+      wrap.appendChild(groupsBlock());
+      filter();
+    }
+
+    /** Google Groups: table (role dropdown, « Retirer ») + add form. */
+    function groupsBlock() {
+      var groups = view.groups || [];
+      var block = el('div', { class: 'access-groups' });
+      block.appendChild(el('p', { class: 'field-help', id: 'groups-help' }, 'Chaque membre d’un groupe reçoit son ' +
+        'rôle, sous-groupes compris ; si un compte a plusieurs rôles, le plus élevé l’emporte. Le propriétaire du ' +
+        'déploiement doit pouvoir voir les membres du groupe. Un changement de membres dans Google est pris en ' +
+        'compte sous 10 minutes.'));
+      if (groups.length) {
+        block.appendChild(UI.table({
+          id: 'groups-table',
+          className: 'access-table',
+          caption: 'Groupes Google autorisés',
+          rows: groups,
+          columns: [
+            { label: 'Groupe', mono: true, rowHeader: true },
+            { label: 'Rôle', className: 'access-role' },
+            { label: 'Ajouté le', mono: true, className: 'access-added' },
+            { label: '', className: 'access-actions' }
+          ],
+          rowAttrs: function (g) { return { dataset: { group: g.email } }; },
+          cells: function (g) {
+            return [
+              g.email,
+              entryRole(g, 'api_saveGroup', 'Rôle du groupe ' + g.email),
+              [Fmt.date(g.added_at), g.added_by ? el('span', { class: 'access-note' }, 'par ' + g.added_by) : null],
+              el('button', { type: 'button', class: 'btn btn-quiet is-danger btn-sm',
+                'aria-label': 'Retirer le groupe ' + g.email,
+                onClick: function () {
+                  var t = token;
+                  UI.confirm('Les membres de ' + g.email + ' perdront le rôle donné par ce groupe.', {
+                    title: 'Retirer le groupe', okLabel: 'Retirer', danger: true,
+                    onConfirm: function () {
+                      return api.call('api_removeGroup', { email: g.email }).then(function (next) {
+                        if (t !== token) return;
+                        UI.toast('Groupe retiré — ' + g.email + '.', 'success');
+                        apply(next);
+                      });
+                    }
+                  });
+                } }, 'Retirer')
+            ];
+          }
+        }));
+      } else {
+        block.appendChild(UI.empty('Aucun groupe.', { small: true }));
+      }
+
+      var gEmail = el('input', { type: 'email', class: 'input', id: 'group-email', autocomplete: 'off',
+        placeholder: 'equipe-labo@decathlon.com', spellcheck: 'false' });
+      var gRole = UI.select({ label: 'Rôle', id: 'group-role', options: ROLE_OPTIONS, value: 'lecteur' });
+      var gAdd = el('button', { type: 'submit', class: 'btn btn-secondary', id: 'group-add' }, 'Ajouter le groupe');
+      block.appendChild(el('form', { class: 'settings-form', id: 'group-form', novalidate: true, onSubmit: function (e) {
+        e.preventDefault();
+        var value = gEmail.value.trim();
+        UI.fieldError(gEmail, '');
+        if (!value) { UI.fieldError(gEmail, 'Saisissez l’adresse du groupe.'); gEmail.focus(); return; }
+        var r = gRole.getValue();
+        var t = token;
+        UI.busy(gAdd, api.call('api_saveGroup', { email: value, role: r }), 'Vérification…').then(function (next) {
+          if (t !== token) return;
+          UI.toast('Groupe ajouté — ' + value.toLowerCase() + ' (' + roleLabel(r) + ').', 'success');
+          apply(next);
+        }, function (err) {
+          if (t !== token) return;
+          UI.fieldError(gEmail, UI.errorText(err));
+          gEmail.focus();
+        });
+      } },
+        el('div', { class: 'form-field form-field-grow' },
+          el('label', { for: 'group-email', class: 'field-label' }, 'Ajouter un groupe'), gEmail),
+        gRole,
+        el('div', { class: 'form-actions' }, gAdd)));
+      return block;
+    }
+
+    /** Inline role dropdown of a group row, saved on change (reverted on error). */
+    function entryRole(entry, apiName, aria) {
+      var dd = UI.select({ ariaLabel: aria, options: ROLE_OPTIONS, value: entry.role, size: 'sm',
+        onChange: function (role) {
+          if (role === entry.role) return;
+          var t = token;
+          dd.setDisabled(true);
+          api.call(apiName, { email: entry.email, role: role }).then(function (next) {
+            if (t !== token) return;
+            UI.toast('Rôle modifié — ' + entry.email + ' : ' + roleLabel(role) + '.', 'success');
+            apply(next);
+          }, function (err) {
+            if (t !== token) return;
+            dd.setDisabled(false);
+            dd.setValue(entry.role);
+            UI.toast('Erreur : ' + UI.errorText(err), 'error');
+          });
+        } });
+      return dd;
+    }
+
+    render();
+    return UI.section('Accès',
+      el('p', { class: 'page-lede' }, 'L’application s’ouvre avec un compte Google du domaine. Les administrateurs ' +
+        'modifient les données et ces paramètres ; les lecteurs consultent uniquement.'),
+      wrap,
+      el('p', { class: 'field-help', id: 'access-help' }, 'Le propriétaire du déploiement (' + view.owner + ') est ' +
+        'toujours administrateur, et personne ne peut modifier son propre accès. Google ne transmet l’adresse que ' +
+        'pour les comptes du même domaine Workspace : les autres comptes ne peuvent pas ouvrir l’application.'));
+  }
+
+  // ------------------------------------------------------------------------------ page
+
+  function load(body) {
+    var t = ++token;
+    UI.clear(body).appendChild(UI.loading('Chargement des paramètres…'));
+    body.setAttribute('aria-busy', 'true');
+    api.call('api_getSettings', null).then(function (s) {
+      if (t !== token) return;
+      settings = s;
+      body.removeAttribute('aria-busy');
+      UI.clear(body);
+      body.appendChild(sourceSection(s, function () { load(body); }));
+      body.appendChild(thresholdSection(s));
+      body.appendChild(accessSection(s));
+    }, function (err) {
+      if (t !== token) return;
+      body.removeAttribute('aria-busy');
+      UI.clear(body).appendChild(UI.errorState(err, { retry: function () { load(body); } }));
+    });
+  }
+
+  function mount(root) {
+    var body = el('div', { class: 'settings-body', id: 'settings-body' });
+    root.appendChild(UI.pageHeader({ title: 'Paramètres', kicker: 'Shadow IT · administration' }));
+    root.appendChild(body);
+    load(body);
+  }
+
+  function unmount() {
+    token++;
+    settings = null;
+  }
+
+  window.Pages.settings = { id: 'settings', title: 'Paramètres', icon: '', mount: mount, unmount: unmount };
+})();
+</script>

@@ -563,6 +563,53 @@ function createGasEnv(options) {
     getDocumentLock() { return null; },
   };
 
+  // ------------------------------------------------------------------------------ Session
+  // Deployer = effective user; visitor = active user ('' = identity not passed, e.g. another domain).
+  state.session = { owner: opts.ownerEmail || 'owner@decathlon.com', active: undefined };
+  const Session = {
+    getEffectiveUser() { return { getEmail() { return state.session.owner; } }; },
+    getActiveUser() {
+      return { getEmail() { return state.session.active === undefined ? state.session.owner : state.session.active; } };
+    },
+  };
+
+  // ------------------------------------------------------------------------------ GroupsApp
+  // state.groups: { 'grp@x': { members: ['a@x'], children: ['sub@x'], hidden?: true } }
+  // hidden = members not visible to the deployer (hasUser / getGroups throw).
+  state.groups = {};
+  state.groupCalls = 0;
+  function makeGroup(email) {
+    const def = state.groups[email];
+    return {
+      getEmail() { return email; },
+      hasUser(user) {
+        state.groupCalls++;
+        if (def.hidden) throw new Error('Exception: You do not have permission to view the member list for the group: ' + email);
+        return def.members.map((m) => m.toLowerCase()).includes(String(user).toLowerCase());
+      },
+      getGroups() {
+        if (def.hidden) throw new Error('Exception: You do not have permission to view the member list.');
+        return (def.children || []).filter((c) => state.groups[c]).map(makeGroup);
+      },
+    };
+  }
+  const GroupsApp = {
+    getGroupByEmail(email) {
+      const key = String(email).toLowerCase();
+      if (!state.groups[key]) throw new Error('Exception: Invalid argument: ' + email);
+      return makeGroup(key);
+    },
+  };
+
+  // ------------------------------------------------------------------------------ CacheService
+  state.cache = new Map();
+  const scriptCache = {
+    get(k) { return state.cache.has(k) ? state.cache.get(k) : null; },
+    put(k, v) { state.cache.set(k, String(v)); },
+    remove(k) { state.cache.delete(k); },
+  };
+  const CacheService = { getScriptCache() { return scriptCache; } };
+
   const Utilities = {
     formatDate,
     getUuid() { return crypto.randomUUID(); },
@@ -664,8 +711,14 @@ function createGasEnv(options) {
   }
 
   return {
-    SpreadsheetApp, PropertiesService, LockService, Utilities, HtmlService, Logger,
+    SpreadsheetApp, PropertiesService, LockService, Utilities, HtmlService, Logger, Session, GroupsApp, CacheService,
+    /** Defines Google Groups: {email: {members:[...], children?:[...], hidden?:bool}} (merged). */
+    __setGroups(groups) {
+      for (const [k, v] of Object.entries(groups)) state.groups[k.toLowerCase()] = v;
+    },
     console: fakeConsole,
+    /** Sets the visitor's email (undefined = the deployer, '' = identity not passed). */
+    __setActiveUser(email) { state.session.active = email; },
     __state: state,
     __addSpreadsheet: addSpreadsheet,
     __fault: addFault,

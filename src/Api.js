@@ -17,25 +17,32 @@
 // ------------------------------------------------------------------------------------ envelope
 
 /**
- * Wraps an implementation `fn(args) -> data` into the JSON envelope. Errors whose `.code` is one of
- * Core.ERROR_CODES are reported as-is (their messages are ours, in French); anything else becomes
- * INTERNAL. The stack is logged with console.error and never sent to the client.
- * @param {function(Object): *} fn
+ * Wraps an implementation `fn(args, user) -> data` into the JSON envelope. The caller's role is
+ * checked first (Access.requireRole, FORBIDDEN otherwise) and the effective compliance threshold is
+ * applied to Core for the duration of the call. Errors whose `.code` is one of Core.ERROR_CODES are
+ * reported as-is (their messages are ours, in French); anything else becomes INTERNAL. The stack is
+ * logged with console.error and never sent to the client.
+ * @param {function(Object, Object): *} fn
  * @param {string=} name used in logs
+ * @param {string=} minRole 'lecteur' (default) | 'admin'
  * @return {function(string): string}
  */
-function apiWrap_(fn, name) {
+function apiWrap_(fn, name, minRole) {
   return function (argsJson) {
     try {
+      var cfg = Config.get();
+      var user = Access.requireRole(minRole || 'lecteur', cfg.access);
+      Core.setThreshold(cfg.threshold);
       var args = parseArgs_(argsJson);
-      var data = fn(args);
+      var data = fn(args, user);
       return JSON.stringify({ ok: true, data: data === undefined ? null : data });
     } catch (err) {
       var e = err || {};
       var known = Core.ERROR_CODES.indexOf(e.code) >= 0 && e.code !== 'INTERNAL';
       var code = known ? e.code : 'INTERNAL';
       var message = known ? String(e.message || code) : internalMessage_(e);
-      console.error('[' + (name || 'api') + '] ' + code + ': ' + (e.stack || e.message || String(err)));
+      if (code === 'FORBIDDEN') console.warn('[' + (name || 'api') + '] ' + code + ': ' + message);
+      else console.error('[' + (name || 'api') + '] ' + code + ': ' + (e.stack || e.message || String(err)));
       return JSON.stringify({ ok: false, error: { code: code, message: message } });
     }
   };
@@ -251,8 +258,9 @@ var ApiImpl_ = (function () {
 
   // -------------------------------------------------------------------------------- bootstrap
 
-  function bootstrap() {
+  function bootstrap(args, user) {
     var cfg = Config.get();
+    var admin = user.role === 'admin';
     // Store.ensure takes the lock itself when it has to write (first-run creation, tab repair) and
     // never replaces a configured data spreadsheet that fails to open (INTERNAL instead).
     Store.ensure();
@@ -260,7 +268,8 @@ var ApiImpl_ = (function () {
     var months = Store.listMonths();
     var sourceUrl = '';
     var sourceTitle = '';
-    if (cfg.sourceId) {
+    // The spreadsheets are private to the deployer: links are only useful to admins.
+    if (cfg.sourceId && admin) {
       sourceUrl = sourceUrl_(cfg.sourceId);
       try {
         var src = SpreadsheetApp.openById(cfg.sourceId);
@@ -275,9 +284,11 @@ var ApiImpl_ = (function () {
       months: months,
       latestMonth: months.length ? months[months.length - 1] : '',
       currentMonth: Config.today().slice(0, 7),
-      dataUrl: Store.dataUrl(),
+      dataUrl: admin ? Store.dataUrl() : '',
       sourceUrl: sourceUrl,
-      sourceTitle: sourceTitle
+      sourceTitle: sourceTitle,
+      threshold: cfg.threshold,
+      user: { email: user.email, role: user.role, isOwner: user.isOwner }
     };
   }
 
@@ -588,6 +599,197 @@ var ApiImpl_ = (function () {
     return deleteRowById_(Config.TABS.replacements, args, 'Remplacement');
   }
 
+  // ------------------------------------------------------------------------------- settings
+
+  function accessView_(access, owner) {
+    var users = (access.users || []).filter(function (u) { return Access.normEmail(u.email) !== owner; })
+      .map(function (u) {
+        return { email: Access.normEmail(u.email), role: u.role, added_at: u.added_at, added_by: u.added_by };
+      });
+    function byEmail(a, b) { return a.email < b.email ? -1 : a.email > b.email ? 1 : 0; }
+    users.sort(byEmail);
+    var groups = (access.groups || []).map(function (g) {
+      return { email: Access.normEmail(g.email), role: g.role, added_at: g.added_at, added_by: g.added_by };
+    }).sort(byEmail);
+    return { owner: owner, users: users, groups: groups,
+      domainRole: access.domainRole === 'lecteur' ? 'lecteur' : 'none' };
+  }
+
+  function getSettings(args, user) {
+    var cfg = Config.get();
+    var source = { id: cfg.sourceId, url: cfg.sourceId ? sourceUrl_(cfg.sourceId) : '', title: '', tabsFound: null };
+    if (cfg.sourceId) {
+      try {
+        var ss = SpreadsheetApp.openById(cfg.sourceId);
+        source.url = ss.getUrl();
+        source.title = ss.getName();
+        source.tabsFound = Importer.tabsFound_(ss);
+      } catch (e) {
+        console.warn('api_getSettings: source ' + cfg.sourceId + ' not accessible (' + (e && e.message) + ')');
+      }
+    }
+    return {
+      threshold: cfg.threshold,
+      defaultThreshold: Core.THRESHOLD,
+      source: source,
+      dataUrl: cfg.dataId ? Store.dataUrl() : '',
+      access: accessView_(cfg.access, user.owner),
+      me: user.email
+    };
+  }
+
+  function setThreshold(args) {
+    var n = Core.validateThreshold(args.threshold);
+    if (n === null) throw invalid_('Seuil invalide : un nombre entier entre 1 et 100 est attendu.');
+    Store.withLock(function () { Config.setThreshold(n); });
+    Core.setThreshold(n);
+    return { threshold: n };
+  }
+
+  /** Common guards of saveUser / removeUser: owner and own account are not editable. */
+  function editableEmail_(value, user) {
+    var email = Access.checkEmail(value);
+    if (email === user.owner) throw invalid_('Le propriétaire du déploiement est toujours administrateur.');
+    if (email === user.email) throw invalid_('Vous ne pouvez pas modifier votre propre accès.');
+    return email;
+  }
+
+  function saveUser(args, user) {
+    var email = editableEmail_(args.email, user);
+    var role = Access.checkRole(args.role);
+    return Store.withLock(function () {
+      var access = Config.get().access;
+      var existing = access.users.filter(function (u) { return Access.normEmail(u.email) === email; })[0];
+      if (existing) {
+        existing.email = email;
+        existing.role = role;
+      } else {
+        requireRoom_(access, 1);
+        access.users.push({ email: email, role: role, added_at: Config.today(), added_by: user.email });
+      }
+      Config.setAccess(access);
+      return accessView_(access, user.owner);
+    });
+  }
+
+  var MAX_BATCH = 500;
+
+  function requireRoom_(access, extra) {
+    if (access.users.length + extra > Config.MAX_USERS) {
+      throw invalid_('La liste d’accès est limitée à ' + Config.MAX_USERS + ' comptes. Pour tout le domaine, ' +
+        'réglez plutôt « Autres comptes du domaine » sur Lecteur.');
+    }
+  }
+
+  /**
+   * Adds many accounts with one role in one write. Entries that cannot be added are skipped with a
+   * reason (the client previews them first); the owner and the caller are never touched.
+   * @return {{access: Object, added: string[], updated: string[], skipped: {email: string, reason: string}[]}}
+   */
+  function addUsers(args, user) {
+    var role = Access.checkRole(args.role);
+    if (!Array.isArray(args.emails) || !args.emails.length) throw invalid_('Aucune adresse à ajouter.');
+    if (args.emails.length > MAX_BATCH) throw invalid_('Au plus ' + MAX_BATCH + ' adresses par ajout.');
+    var skipped = [];
+    var wanted = [];
+    args.emails.forEach(function (v) {
+      var email = Access.normEmail(v);
+      var reason = !Core.isEmail(email) ? 'adresse invalide' : email === user.owner ? 'propriétaire' :
+        email === user.email ? 'votre propre compte' : wanted.indexOf(email) >= 0 ? 'doublon' : '';
+      if (reason) skipped.push({ email: typeof v === 'string' ? v : Core.str(v), reason: reason });
+      else wanted.push(email);
+    });
+    return Store.withLock(function () {
+      var access = Config.get().access;
+      var byEmail = {};
+      access.users.forEach(function (u) { byEmail[Access.normEmail(u.email)] = u; });
+      var added = [];
+      var updated = [];
+      wanted.forEach(function (email) {
+        var hit = byEmail[email];
+        if (!hit) added.push(email);
+        else if (hit.role !== role) updated.push(email);
+        else skipped.push({ email: email, reason: 'déjà ' + (role === 'admin' ? 'administrateur' : 'lecteur') });
+      });
+      requireRoom_(access, added.length);
+      var today = Config.today();
+      updated.forEach(function (email) { byEmail[email].role = role; });
+      added.forEach(function (email) {
+        access.users.push({ email: email, role: role, added_at: today, added_by: user.email });
+      });
+      if (added.length || updated.length) Config.setAccess(access);
+      return { access: accessView_(access, user.owner), added: added, updated: updated, skipped: skipped };
+    });
+  }
+
+  /** No self lock-out through groups: the caller must still be admin with the new list. */
+  function requireStillAdmin_(user, access) {
+    if (Access.roleOf(user.email, user.owner, access) !== 'admin') {
+      throw invalid_('Ce changement vous retirerait le rôle administrateur (vous l’avez par ce groupe).');
+    }
+  }
+
+  /** Adds a Google Group with a role, or changes its role. The group must be readable by the owner. */
+  function saveGroup(args, user) {
+    var role = Access.checkRole(args.role);
+    var email = Access.checkGroup(args.email); // GroupsApp call: outside the lock
+    return Store.withLock(function () {
+      var access = Config.get().access;
+      var existing = access.groups.filter(function (g) { return Access.normEmail(g.email) === email; })[0];
+      if (existing) {
+        existing.email = email;
+        existing.role = role;
+      } else {
+        if (access.groups.length >= Config.MAX_GROUPS) {
+          throw invalid_('La liste est limitée à ' + Config.MAX_GROUPS + ' groupes.');
+        }
+        access.groups.push({ email: email, role: role, added_at: Config.today(), added_by: user.email });
+      }
+      requireStillAdmin_(user, access);
+      Config.setAccess(access);
+      return accessView_(access, user.owner);
+    });
+  }
+
+  function removeGroup(args, user) {
+    var email = Access.checkEmail(args.email);
+    return Store.withLock(function () {
+      var access = Config.get().access;
+      var kept = access.groups.filter(function (g) { return Access.normEmail(g.email) !== email; });
+      if (kept.length === access.groups.length) {
+        throw Core.makeError('NOT_FOUND', 'Aucun groupe enregistré : ' + email + '.');
+      }
+      access.groups = kept;
+      requireStillAdmin_(user, access);
+      Config.setAccess(access);
+      return accessView_(access, user.owner);
+    });
+  }
+
+  function removeUser(args, user) {
+    var email = editableEmail_(args.email, user);
+    return Store.withLock(function () {
+      var access = Config.get().access;
+      var kept = access.users.filter(function (u) { return Access.normEmail(u.email) !== email; });
+      if (kept.length === access.users.length) {
+        throw Core.makeError('NOT_FOUND', 'Aucun accès enregistré pour ' + email + '.');
+      }
+      access.users = kept;
+      Config.setAccess(access);
+      return accessView_(access, user.owner);
+    });
+  }
+
+  function setDomainRole(args, user) {
+    var role = Access.checkRole(args.role, Access.DOMAIN_ROLES);
+    return Store.withLock(function () {
+      var access = Config.get().access;
+      access.domainRole = role;
+      Config.setAccess(access);
+      return accessView_(access, user.owner);
+    });
+  }
+
   // ----------------------------------------------------------------------------------- diff
 
   function getDiff(args) {
@@ -623,30 +825,46 @@ var ApiImpl_ = (function () {
     addReplacement: addReplacement,
     updateReplacement: updateReplacement,
     deleteReplacement: deleteReplacement,
-    getDiff: getDiff
+    getDiff: getDiff,
+    getSettings: getSettings,
+    setThreshold: setThreshold,
+    saveUser: saveUser,
+    addUsers: addUsers,
+    saveGroup: saveGroup,
+    removeGroup: removeGroup,
+    removeUser: removeUser,
+    setDomainRole: setDomainRole
   };
 })();
 
 // ------------------------------------------------------------------------- public entry points
 // Function declarations (not vars) so that google.script.run and the editor can see them.
 
-function api_bootstrap(argsJson) { return apiWrap_(ApiImpl_.bootstrap, 'api_bootstrap')(argsJson); }
-function api_setConfig(argsJson) { return apiWrap_(ApiImpl_.setConfig, 'api_setConfig')(argsJson); }
-function api_getMonthData(argsJson) { return apiWrap_(ApiImpl_.getMonthData, 'api_getMonthData')(argsJson); }
-function api_importMonth(argsJson) { return apiWrap_(ApiImpl_.importMonth, 'api_importMonth')(argsJson); }
-function api_getImportLog(argsJson) { return apiWrap_(ApiImpl_.getImportLog, 'api_getImportLog')(argsJson); }
-function api_savePostes(argsJson) { return apiWrap_(ApiImpl_.savePostes, 'api_savePostes')(argsJson); }
-function api_addGenericPoste(argsJson) { return apiWrap_(ApiImpl_.addGenericPoste, 'api_addGenericPoste')(argsJson); }
-function api_saveApplications(argsJson) { return apiWrap_(ApiImpl_.saveApplications, 'api_saveApplications')(argsJson); }
-function api_addApplication(argsJson) { return apiWrap_(ApiImpl_.addApplication, 'api_addApplication')(argsJson); }
-function api_deleteApplication(argsJson) { return apiWrap_(ApiImpl_.deleteApplication, 'api_deleteApplication')(argsJson); }
-function api_renameApplication(argsJson) { return apiWrap_(ApiImpl_.renameApplication, 'api_renameApplication')(argsJson); }
-function api_getTimeline(argsJson) { return apiWrap_(ApiImpl_.getTimeline, 'api_getTimeline')(argsJson); }
-function api_getActions(argsJson) { return apiWrap_(ApiImpl_.getActions, 'api_getActions')(argsJson); }
-function api_addAction(argsJson) { return apiWrap_(ApiImpl_.addAction, 'api_addAction')(argsJson); }
-function api_updateAction(argsJson) { return apiWrap_(ApiImpl_.updateAction, 'api_updateAction')(argsJson); }
-function api_deleteAction(argsJson) { return apiWrap_(ApiImpl_.deleteAction, 'api_deleteAction')(argsJson); }
-function api_addReplacement(argsJson) { return apiWrap_(ApiImpl_.addReplacement, 'api_addReplacement')(argsJson); }
-function api_updateReplacement(argsJson) { return apiWrap_(ApiImpl_.updateReplacement, 'api_updateReplacement')(argsJson); }
-function api_deleteReplacement(argsJson) { return apiWrap_(ApiImpl_.deleteReplacement, 'api_deleteReplacement')(argsJson); }
-function api_getDiff(argsJson) { return apiWrap_(ApiImpl_.getDiff, 'api_getDiff')(argsJson); }
+function api_bootstrap(argsJson) { return apiWrap_(ApiImpl_.bootstrap, 'api_bootstrap', 'lecteur')(argsJson); }
+function api_setConfig(argsJson) { return apiWrap_(ApiImpl_.setConfig, 'api_setConfig', 'admin')(argsJson); }
+function api_getMonthData(argsJson) { return apiWrap_(ApiImpl_.getMonthData, 'api_getMonthData', 'lecteur')(argsJson); }
+function api_importMonth(argsJson) { return apiWrap_(ApiImpl_.importMonth, 'api_importMonth', 'admin')(argsJson); }
+function api_getImportLog(argsJson) { return apiWrap_(ApiImpl_.getImportLog, 'api_getImportLog', 'lecteur')(argsJson); }
+function api_savePostes(argsJson) { return apiWrap_(ApiImpl_.savePostes, 'api_savePostes', 'admin')(argsJson); }
+function api_addGenericPoste(argsJson) { return apiWrap_(ApiImpl_.addGenericPoste, 'api_addGenericPoste', 'admin')(argsJson); }
+function api_saveApplications(argsJson) { return apiWrap_(ApiImpl_.saveApplications, 'api_saveApplications', 'admin')(argsJson); }
+function api_addApplication(argsJson) { return apiWrap_(ApiImpl_.addApplication, 'api_addApplication', 'admin')(argsJson); }
+function api_deleteApplication(argsJson) { return apiWrap_(ApiImpl_.deleteApplication, 'api_deleteApplication', 'admin')(argsJson); }
+function api_renameApplication(argsJson) { return apiWrap_(ApiImpl_.renameApplication, 'api_renameApplication', 'admin')(argsJson); }
+function api_getTimeline(argsJson) { return apiWrap_(ApiImpl_.getTimeline, 'api_getTimeline', 'lecteur')(argsJson); }
+function api_getActions(argsJson) { return apiWrap_(ApiImpl_.getActions, 'api_getActions', 'lecteur')(argsJson); }
+function api_addAction(argsJson) { return apiWrap_(ApiImpl_.addAction, 'api_addAction', 'admin')(argsJson); }
+function api_updateAction(argsJson) { return apiWrap_(ApiImpl_.updateAction, 'api_updateAction', 'admin')(argsJson); }
+function api_deleteAction(argsJson) { return apiWrap_(ApiImpl_.deleteAction, 'api_deleteAction', 'admin')(argsJson); }
+function api_addReplacement(argsJson) { return apiWrap_(ApiImpl_.addReplacement, 'api_addReplacement', 'admin')(argsJson); }
+function api_updateReplacement(argsJson) { return apiWrap_(ApiImpl_.updateReplacement, 'api_updateReplacement', 'admin')(argsJson); }
+function api_deleteReplacement(argsJson) { return apiWrap_(ApiImpl_.deleteReplacement, 'api_deleteReplacement', 'admin')(argsJson); }
+function api_getDiff(argsJson) { return apiWrap_(ApiImpl_.getDiff, 'api_getDiff', 'lecteur')(argsJson); }
+function api_getSettings(argsJson) { return apiWrap_(ApiImpl_.getSettings, 'api_getSettings', 'admin')(argsJson); }
+function api_setThreshold(argsJson) { return apiWrap_(ApiImpl_.setThreshold, 'api_setThreshold', 'admin')(argsJson); }
+function api_saveUser(argsJson) { return apiWrap_(ApiImpl_.saveUser, 'api_saveUser', 'admin')(argsJson); }
+function api_addUsers(argsJson) { return apiWrap_(ApiImpl_.addUsers, 'api_addUsers', 'admin')(argsJson); }
+function api_saveGroup(argsJson) { return apiWrap_(ApiImpl_.saveGroup, 'api_saveGroup', 'admin')(argsJson); }
+function api_removeGroup(argsJson) { return apiWrap_(ApiImpl_.removeGroup, 'api_removeGroup', 'admin')(argsJson); }
+function api_removeUser(argsJson) { return apiWrap_(ApiImpl_.removeUser, 'api_removeUser', 'admin')(argsJson); }
+function api_setDomainRole(argsJson) { return apiWrap_(ApiImpl_.setDomainRole, 'api_setDomainRole', 'admin')(argsJson); }

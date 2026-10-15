@@ -17,11 +17,11 @@ const API_MD = path.join(ROOT, 'docs', 'API.md');
 const MOCK_RUN = path.join(ROOT, 'test', 'fixtures', 'mockRun.js');
 
 /** Globals injected by the sandbox (not defined by src/*.js). */
-const INJECTED = ['SpreadsheetApp', 'PropertiesService', 'LockService', 'Utilities', 'HtmlService', 'Logger', 'console', 'Date'];
+const INJECTED = ['SpreadsheetApp', 'PropertiesService', 'LockService', 'Utilities', 'HtmlService', 'Logger', 'Session', 'GroupsApp', 'CacheService', 'console', 'Date'];
 /** Public non-api functions allowed by docs/API.md §0, plus the Core factory (shared with the client). */
 const ALLOWED_PUBLIC = ['doGet', 'include', 'coreScript', 'setup', 'CoreFactory_'];
 /** Module objects of docs/API.md §0 "Files and ownership". */
-const MODULES = ['Core', 'Config', 'Store', 'Importer'];
+const MODULES = ['Core', 'Config', 'Access', 'Store', 'Importer'];
 
 /** The api_* names of the "complete list" paragraph of docs/API.md §3. */
 function contractApiNames() {
@@ -55,9 +55,9 @@ function stripComments(src) {
 
 // ----------------------------------------------------------------------------------------------
 
-test('docs/API.md lists 20 distinct api_* functions', () => {
+test('docs/API.md lists 28 distinct api_* functions', () => {
   const names = contractApiNames();
-  assert.equal(names.length, 20, names.join(', '));
+  assert.equal(names.length, 28, names.join(', '));
 });
 
 test('sandbox api_* globals == docs/API.md complete list', () => {
@@ -119,16 +119,26 @@ test('src/*.js: no top-level const/let/class, and each file loads on its own (no
     const env = createGasEnv();
     const ctx = vm.createContext({
       SpreadsheetApp: env.SpreadsheetApp, PropertiesService: env.PropertiesService, LockService: env.LockService,
-      Utilities: env.Utilities, HtmlService: env.HtmlService, Logger: env.Logger, console: env.console, Date,
+      Utilities: env.Utilities, HtmlService: env.HtmlService, Logger: env.Logger, Session: env.Session,
+      GroupsApp: env.GroupsApp, CacheService: env.CacheService,
+      console: env.console, Date,
     });
     assert.doesNotThrow(() => vm.runInContext(src, ctx, { filename: f }), f + ' must load alone');
   }
 });
 
-test('src/*.js only use the allowed Apps Script services', () => {
-  const forbidden = /\b(Session|DriveApp|UrlFetchApp|MailApp|GmailApp|ScriptApp|CacheService|DocumentApp)\s*\./;
+test('src/*.js only use the allowed Apps Script services (Session / GroupsApp / CacheService only in Access.js)', () => {
+  const forbidden = /\b(DriveApp|UrlFetchApp|MailApp|GmailApp|ScriptApp|DocumentApp|AdminDirectory)\s*\./;
   for (const f of srcFiles()) {
     const code = stripComments(fs.readFileSync(path.join(SRC_DIR, f), 'utf8'));
     assert.doesNotMatch(code, forbidden, f);
+    if (f !== 'Access.js') assert.doesNotMatch(code, /\b(Session|GroupsApp|CacheService)\s*\./, f + ' must go through Access');
   }
+});
+
+test('appsscript.json: domain web app run as the deployer, with exactly the three scopes', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(SRC_DIR, 'appsscript.json'), 'utf8'));
+  assert.deepEqual(manifest.webapp, { executeAs: 'USER_DEPLOYING', access: 'DOMAIN' });
+  assert.deepEqual(manifest.oauthScopes.slice().sort(), ['https://www.googleapis.com/auth/groups',
+    'https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/userinfo.email']);
 });
