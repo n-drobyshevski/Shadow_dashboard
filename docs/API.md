@@ -435,6 +435,7 @@ Charts.purge(el)
 | `apps` | 📦 | Applications |
 | `timeline` | 📈 | Suivi temporel |
 | `actions` | 📋 | Suivi actions |
+| `settings` | – | Paramètres (admin only; also reachable before a source is configured) |
 
 `mount(root)` receives the cleared `#main` element. Pages read `State.get()` (month, filters), call
 `State.loadMonth(...)`/`api.call(...)`, and render with `UI`/`Charts`. `App` re-mounts the current page
@@ -450,7 +451,11 @@ App.boot()            -> called on DOMContentLoaded: State.refreshBootstrap(); i
 Sidebar: app title `👻 Shadow IT`, nav links (5 pages), `Période` month select (asc list, default latest),
 `Filtres` with `Équipe` and `Bâtiment / Labo` multiselects (options from current month postes via
 `Core.uniqueSorted`), footer links "Données (Google Sheet)" → `dataUrl`, "Source" → `sourceUrl`
-(target `_blank`), and a "⚙️ Source" button to change the source (configuration modal).
+(target `_blank`, admins only), then the signed-in account (`#side-user`: email + role). The source is
+changed in Paramètres (`App.applySource`). « Paramètres » is in the nav for admins only.
+Boot: `FORBIDDEN` from `api_bootstrap` → « Accès refusé » screen (`.page-denied`, server message,
+« Réessayer »); a lecteur on an unconfigured app gets a waiting screen (`data-page="unconfigured"`)
+instead of the configuration form.
 
 ---------------------------------------------------------------------------------------------------
 ## 6. Page specifications

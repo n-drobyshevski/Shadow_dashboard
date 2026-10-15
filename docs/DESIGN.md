@@ -111,6 +111,18 @@ with the system fallbacks above.
   left bar.
 - **Config screen**: left-aligned within the main column like any page: title "Source de données",
   one paragraph, the input (full width up to 640px) and one primary button. No centered card.
+- **Paramètres** (admin only, last nav item): three sections on paper like any page, each saved on
+  its own: « Source de données » (`dl.kv` of the source, tabs found as status marks, data spreadsheet
+  link; a one-line form « Nouvelle source » + secondary button), « Seuil de conformité » (a 72px mono
+  figure field with its `%` unit, primary « Enregistrer », quiet « Rétablir 80 % » only when changed),
+  « Accès » (« Autres comptes du domaine » dropdown, ledger table Compte (mono) / Rôle (small dropdown,
+  saved on change) / Ajouté le / « Retirer » quiet destructive button with a confirm; the owner and the
+  signed-in rows are plain text with a « propriétaire » / « vous » note; add form under the table).
+- **Signed-in account**: last block of the sidebar footer, email in 12px mono `--ink-2`, role under it
+  in `--ink-3` (« Lecteur · lecture seule »). Lecteurs get no spreadsheet links and no write controls
+  (hidden, not disabled), and no per-page banner.
+- **Accès refusé**: same left-aligned layout as the configuration screen: kicker, title, the server
+  message (it names the account), one help line, « Réessayer » as a secondary button.
 - **Empty states**: one line of `--ink-2` text (plus an action link if relevant), left-aligned.
 - **Detail lists** (Détail conformité): definition-list rows `label …… count (xx,x %)` with a dotted
   leader, mono figures right-aligned; expandable rows reveal the affected names inline.

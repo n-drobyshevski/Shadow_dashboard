@@ -20,8 +20,10 @@
     { id: 'postes', title: 'Postes' },
     { id: 'apps', title: 'Applications' },
     { id: 'timeline', title: 'Suivi temporel' },
-    { id: 'actions', title: 'Suivi des actions' }
+    { id: 'actions', title: 'Suivi des actions' },
+    { id: 'settings', title: 'Paramètres', admin: true }
   ];
+  var ROLE_LABELS = { admin: 'Administrateur', lecteur: 'Lecteur' };
   var BRAND = 'Shadow IT';
   var BRAND_SUB = 'Industry · conformité';
 
@@ -35,7 +37,9 @@
   var filtersPage = null;           // page the filters box was rendered for (Bâtiment disabled on actions)
 
   function pages() { return window.Pages || {}; }
-  function navInfo(id) { return NAV.filter(function (n) { return n.id === id; })[0]; }
+  /** Pages the current user may open (Paramètres is admin only). */
+  function visibleNav() { return NAV.filter(function (n) { return !n.admin || State.canEdit(); }); }
+  function navInfo(id) { return visibleNav().filter(function (n) { return n.id === id; })[0]; }
   function has(list, key) { return list.indexOf(key) >= 0; }
   function historyApi() { return window.google && google.script && google.script.history; }
 
@@ -55,9 +59,12 @@
 
   function refresh() {
     if (!booted) return;
-    if (!State.get().configured) { renderConfigScreen(); return; }
+    if (!State.get().configured && !onSettings()) { renderConfigScreen(); return; }
     mountPage();
   }
+
+  /** Paramètres is reachable before a source is configured (admins only). */
+  function onSettings() { return State.get().page === 'settings' && State.canEdit(); }
 
   function unmountCurrent() {
     if (currentPage && typeof currentPage.unmount === 'function') {
@@ -71,7 +78,7 @@
 
   function mountPage() {
     var s = State.get();
-    var info = navInfo(s.page) || NAV[0];
+    var info = navInfo(s.page) || visibleNav()[0];
     var page = pages()[info.id];
     unmountCurrent();
     UI.clear(main);
@@ -115,6 +122,15 @@
     });
   }
 
+  /** "lea.reader@decathlon.com" over "Lecteur · lecture seule" at the foot of the sidebar. */
+  function userLine(user) {
+    if (!user || !user.email) return null;
+    var role = ROLE_LABELS[user.role] || user.role;
+    return el('p', { class: 'side-user', id: 'side-user' },
+      el('span', { class: 'side-user-email mono' }, user.email),
+      el('span', { class: 'side-user-role' }, user.role === 'admin' ? role : role + ' · lecture seule'));
+  }
+
   function brand() {
     return el('div', { class: 'brand' },
       el('span', { class: 'brand-name' }, BRAND),
@@ -138,7 +154,7 @@
     var s = State.get();
     UI.clear(sidebar);
     var nav = el('nav', { class: 'nav', 'aria-label': 'Pages' },
-      el('ul', { class: 'nav-list' }, NAV.map(function (n) {
+      el('ul', { class: 'nav-list' }, visibleNav().map(function (n) {
         var counted = n.id === 'postes' || n.id === 'apps';
         return el('li', null, el('button', { type: 'button', class: 'nav-link', dataset: { page: n.id },
           onClick: function () { go(n.id); } },
@@ -162,12 +178,12 @@
     filtersBox = el('div', { class: 'filters' });
     filterOptionsMonth = null;
 
+    // Spreadsheet links are only sent to admins (the sheets are private to the deployer).
     var footer = el('div', { class: 'sidebar-footer' },
       s.dataUrl ? UI.extLink(s.dataUrl, 'Données (Google Sheet)', { class: 'side-link', id: 'link-data' }) : null,
       s.sourceUrl ? UI.extLink(s.sourceUrl, 'Source', { class: 'side-link', id: 'link-source',
         'aria-label': s.sourceTitle ? 'Source : ' + s.sourceTitle : null }) : null,
-      el('button', { type: 'button', class: 'btn btn-quiet', id: 'btn-source',
-        onClick: function () { openSourceModal(); } }, 'Changer de source'));
+      userLine(s.user));
 
     sidebar.appendChild(el('div', { class: 'sidebar-inner' },
       brand(),
@@ -291,12 +307,49 @@
     });
   }
 
-  function renderConfigScreen() {
+  /** Bare shell for the screens without navigation (configuration, access refused). */
+  function bareShell() {
     unmountCurrent();
     document.body.classList.add('unconfigured');
     UI.clear(sidebar);
     sidebar.appendChild(el('div', { class: 'sidebar-inner' }, brand()));
     UI.clear(main);
+  }
+
+  /** Lecteur on an app without source: nothing to do but wait for an admin. */
+  function renderWaitingScreen() {
+    bareShell();
+    var u = State.get().user || {};
+    main.appendChild(el('div', { class: 'page page-config', dataset: { page: 'unconfigured' } },
+      UI.pageHeader({ kicker: BRAND + ' · configuration', title: 'Source de données' }),
+      el('p', { class: 'page-lede' }, 'L’application n’est pas encore configurée. Un administrateur doit d’abord ' +
+        'définir le classeur source et importer un premier mois.'),
+      u.email ? el('p', { class: 'field-help' }, 'Connecté en tant que ', el('span', { class: 'mono' }, u.email),
+        ' · ' + (ROLE_LABELS[u.role] || u.role) + '.') : null,
+      el('div', { class: 'form-actions' },
+        el('button', { type: 'button', class: 'btn btn-secondary', onClick: reboot }, 'Actualiser'))));
+  }
+
+  /** FORBIDDEN on boot: no identity, unknown account. The server message names the account. */
+  function renderDeniedScreen(err) {
+    bareShell();
+    main.appendChild(el('div', { class: 'page page-config page-denied', dataset: { page: 'denied' } },
+      UI.pageHeader({ kicker: BRAND + ' · accès', title: 'Accès refusé' }),
+      el('p', { class: 'page-lede', id: 'denied-message' }, UI.errorText(err)),
+      el('p', { class: 'field-help' }, 'Les accès sont gérés dans Paramètres par un administrateur de ' +
+        'l’application. Une fois l’accès accordé, actualisez la page.'),
+      el('div', { class: 'form-actions' },
+        el('button', { type: 'button', class: 'btn btn-secondary', onClick: reboot }, 'Réessayer'))));
+  }
+
+  function reboot() {
+    booted = false;
+    boot();
+  }
+
+  function renderConfigScreen() {
+    if (!State.canEdit()) { renderWaitingScreen(); return; }
+    bareShell();
     var input = el('input', { type: 'text', id: 'config-source', class: 'input', required: true,
       placeholder: 'https://docs.google.com/spreadsheets/d/…', autocomplete: 'off',
       'aria-describedby': 'config-help config-error' });
@@ -333,6 +386,9 @@
     main.appendChild(el('div', { class: 'page page-config', dataset: { page: 'config' } },
       UI.pageHeader({ kicker: BRAND + ' · configuration', title: 'Source de données' }),
       el('div', { class: 'config-card' },
+        el('p', { class: 'field-help config-settings-link' }, 'Les accès et le seuil de conformité se règlent dans ',
+          el('button', { type: 'button', class: 'btn btn-link', id: 'config-open-settings',
+            onClick: function () { go('settings'); } }, 'Paramètres'), '.'),
         el('p', { id: 'config-help', class: 'page-lede' },
           'Collez l’URL (ou l’identifiant) du Google Sheet source « ShadowIT_Industry ». Il doit contenir les onglets « ' +
           Core.SOURCE_TABS.postes + ' », « ' + Core.SOURCE_TABS.applications + ' » et « ' +
@@ -362,7 +418,7 @@
 
   function renderAll() {
     var s = State.get();
-    if (!s.configured) { renderConfigScreen(); return; }
+    if (!s.configured && !onSettings()) { renderConfigScreen(); return; }
     document.body.classList.remove('unconfigured');
     renderSidebar();
     mountPage();
@@ -370,8 +426,12 @@
 
   function onStateChange(s, changed) {
     if (!booted) return;
-    if (has(changed, 'configured')) { renderAll(); return; }
-    if (!s.configured) return;
+    if (has(changed, 'configured') || has(changed, 'user')) { renderAll(); return; }
+    if (!s.configured) {
+      // Before the first source: only Paramètres <-> configuration screen.
+      if (has(changed, 'page')) renderAll();
+      return;
+    }
     if (has(changed, 'months') || has(changed, 'dataUrl') || has(changed, 'sourceUrl') || has(changed, 'sourceTitle')) {
       renderSidebar();
     } else if (has(changed, 'month')) {
@@ -395,7 +455,8 @@
       try {
         url.getLocation(function (loc) {
           var p = loc && loc.parameter && loc.parameter.page;
-          finish(p && navInfo(p) ? p : null);
+          // The user (and so the admin-only pages) is not known yet: mountPage falls back later.
+          finish(p && NAV.some(function (n) { return n.id === p; }) ? p : null);
         });
       } catch (e) { finish(null); }
     });
@@ -432,6 +493,7 @@
       booted = true;
       renderAll();
     }, function (err) {
+      if (err && err.code === 'FORBIDDEN') { booted = true; renderDeniedScreen(err); return; }
       console.error(err);
       renderBootError(err);
     });
@@ -443,7 +505,11 @@
     go: go,
     refresh: refresh,
     boot: boot,
-    openSourceConfig: openSourceModal
+    openSourceConfig: openSourceModal,
+    applySource: applySource,
+    sourceErrorText: sourceErrorText,
+    tabsWarning: tabsWarning,
+    ROLE_LABELS: ROLE_LABELS
   };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

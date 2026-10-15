@@ -50,7 +50,11 @@ Les identifiants des deux classeurs sont stockés dans les propriétés du scrip
 
 ## Premier déploiement
 
-Prérequis : Node.js 20 ou plus, un compte Google.
+Prérequis : Node.js 20 ou plus, un **compte Google Workspace du domaine des utilisateurs**
+(par exemple `@decathlon.com`). L'application est déployée pour le domaine et identifie chaque
+visiteur par son adresse : Google ne transmet cette adresse que pour les comptes du même domaine
+Workspace que le déployeur. Avec un compte Gmail personnel, seul le déployeur peut l'utiliser (voir
+« Accès » ci-dessous).
 
 1. **Installer les outils**
    ```sh
@@ -82,12 +86,13 @@ Prérequis : Node.js 20 ou plus, un compte Google.
    ```
    `clasp push -f` remplace tout le contenu du projet distant, manifeste `appsscript.json` compris.
 6. **Autoriser le script** : `npx clasp open-script` → dans l'éditeur, choisir la fonction `setup`
-   → Exécuter → accepter l'autorisation (accès à Google Sheets uniquement ; écran « Google n'a pas
-   validé cette application » → Paramètres avancés → Accéder au projet). Le journal d'exécution
+   → Exécuter → accepter l'autorisation (Google Sheets, et l'adresse e-mail du compte pour le
+   contrôle d'accès ; écran « Google n'a pas validé cette application » → Paramètres avancés →
+   Accéder au projet). Le journal d'exécution
    affiche l'URL du classeur `ShadowIT_AppData` qui vient d'être créé.
 7. **Déployer l'application web** : dans l'éditeur, Déployer → Nouveau déploiement → type
-   « Application Web » → Exécuter en tant que : **Moi**, Qui a accès : **Moi uniquement** (déjà
-   imposé par `appsscript.json`) → Déployer. Noter l'**URL** et l'**ID de déploiement**
+   « Application Web » → Exécuter en tant que : **Moi**, Qui a accès : **Tous les utilisateurs de
+   <votre domaine>** (déjà imposé par `appsscript.json`) → Déployer. Noter l'**URL** et l'**ID de déploiement**
    (`AKfy…`).
    Variante en ligne de commande : `npm run deploy` (sans `DEPLOYMENT_ID`) crée le déploiement et
    affiche `Deployed <ID> @<version>`.
@@ -95,6 +100,29 @@ Prérequis : Node.js 20 ou plus, un compte Google.
    (onglets attendus : `Suivi des postes`, `Suivi des applications`, et `Référentiel` si
    disponible), puis sur le Tableau de bord, section « Importer depuis Google Sheets », choisir le
    mois et cliquer sur « Importer ».
+9. **Donner les accès** : Paramètres → Accès → « Ajouter un compte » (rôle Lecteur ou
+   Administrateur), puis partager l'URL de l'application. Tant que personne n'est ajouté, seul le
+   déployeur peut l'ouvrir.
+
+## Accès
+
+- L'application s'exécute **avec le compte du déployeur** : les classeurs source et de données
+  restent privés, inutile de les partager. Les visiteurs n'y accèdent qu'à travers l'application.
+- Deux rôles, gérés dans **Paramètres → Accès** :
+  - **Administrateur** : tout, y compris les imports, les modifications, la source, le seuil de
+    conformité et la liste des accès ;
+  - **Lecteur** : consultation seulement (tableaux, graphiques, historique, comparaison, export CSV).
+    Le serveur refuse toute écriture d'un lecteur, même appelée hors de l'interface.
+- Le **propriétaire du déploiement est toujours administrateur** et n'apparaît pas comme modifiable ;
+  personne ne peut modifier son propre accès, ce qui évite de se bloquer.
+- « Autres comptes du domaine » : *Aucun accès* (par défaut, seuls les comptes listés entrent) ou
+  *Lecteur* (tout le domaine peut consulter).
+- Un compte non autorisé voit « Accès refusé » avec son adresse, à transmettre à un administrateur.
+- La liste est stockée dans les propriétés du script (`ACCESS_JSON`) et le seuil dans
+  `COMPLIANCE_THRESHOLD` : Éditeur Apps Script → Paramètres du projet → Propriétés du script. Supprimer
+  `ACCESS_JSON` remet l'accès au seul propriétaire.
+- **Tester avec un compte Gmail personnel** : le type d'accès « domaine » n'existe pas pour ces
+  comptes. Dans `src/appsscript.json`, mettre provisoirement `"access": "MYSELF"` avant de déployer.
 
 ## Mettre à jour
 
@@ -163,8 +191,8 @@ polices ; sans eux, le harnais utilise des substituts.
 
 - **6 minutes par exécution** Apps Script : un import lit et écrit un mois entier en un seul appel ;
   un classeur source très volumineux peut dépasser cette limite.
-- **Utilisateur unique** : l'application s'exécute avec le compte du déployeur et n'est accessible
-  qu'à lui. Les écritures passent par un verrou (attente 20 s, sinon « Une autre opération est en cours. Réessayez dans quelques instants. »).
+- **Comptes du domaine uniquement** : l'adresse des visiteurs d'un autre domaine n'est pas transmise
+  par Google, ils ne peuvent donc pas être autorisés. Les écritures passent par un verrou (attente 20 s, sinon « Une autre opération est en cours. Réessayez dans quelques instants. »).
 - Les modifications de code ne sont visibles sur l'URL publiée qu'après `npm run deploy`.
 - Le navigateur doit pouvoir charger Plotly (cdnjs.cloudflare.com) et Google Fonts.
 - Chaque import ajoute une ligne par poste et par application au classeur de données ; Google Sheets
@@ -185,10 +213,19 @@ First deployment: `npm install`; enable the Apps Script API at
 with `clasp create-script --type webapp` run in an empty directory, since it refuses an existing
 `.clasp.json` and pulls default files into `rootDir`) and put its `scriptId` in `.clasp.json`;
 `npm run push`; run `setup()` once in the editor to authorise; Deploy → New deployment → Web app
-(execute as me, only myself); open the URL, paste the source sheet URL, import a month.
+(execute as me, anyone in the domain); open the URL, paste the source sheet URL, import a month; then
+grant access in Paramètres → Accès.
+
+Access control: the app runs as the deployer with `access: DOMAIN` (deploy from a Google Workspace
+account of the users' domain). Each caller is identified by `Session.getActiveUser()` and checked on
+every server call: **admin** (everything, incl. Paramètres) or **lecteur** (read only); the deployer is
+always admin and nobody can edit their own access. Unlisted domain accounts get no access by default,
+or lecteur if « Autres comptes du domaine » is set so. The list lives in the `ACCESS_JSON` script
+property, the compliance threshold (default 80 %) in `COMPLIANCE_THRESHOLD`. For a personal Gmail
+deployer, set `"access": "MYSELF"` in `src/appsscript.json`.
 
 Updates: `DEPLOYMENT_ID=AKfy... npm run deploy` pushes and redeploys the same deployment, so the URL
 stays stable (without `DEPLOYMENT_ID` a new deployment and URL are created). If the data
 spreadsheet is really gone, delete the `DATA_SPREADSHEET_ID` script property. Verify once on real
 Sheets that values starting with `= + - @ '` round-trip unchanged. Tests: `npm test`,
-`npm run test:e2e`. Limits: 6-minute execution time, single user.
+`npm run test:e2e`. Limits: 6-minute execution time, users of the deployer's Workspace domain only.
