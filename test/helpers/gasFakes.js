@@ -734,7 +734,11 @@ function createGasEnv(options) {
   function makeTrigger(t) {
     return { getHandlerFunction() { return t.handler; }, getUniqueId() { return t.id; }, __def: t };
   }
+  state.scopeChecks = 0;
   const ScriptApp = {
+    AuthMode: { FULL: 'FULL' },
+    // The real one ends the execution and shows the consent screen when a scope is missing.
+    requireAllScopes(mode) { state.scopeChecks++; if (mode !== 'FULL') throw new Error('Bad AuthMode'); },
     getProjectTriggers() { scriptAppGuard(); return state.triggers.map(makeTrigger); },
     deleteTrigger(trigger) {
       scriptAppGuard();

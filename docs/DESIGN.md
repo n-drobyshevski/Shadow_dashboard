@@ -151,9 +151,19 @@ with the system fallbacks above.
   « Erreur : <message> ».
 - Numbers fr-FR: `71,4 %` (narrow no-break space before %), thousands with narrow no-break space.
 
+## App bar
+- **One row** above every page: the période control, a hairline, the Équipe / Bâtiment filters with
+  « Réinitialiser », then « 3 postes sur 7 » (ink-3, right) while a filter is active. The sync status is not
+  in the bar (see Synchronisation).
+- **Narrow bar** (bar content under 860px wide — below about 1190px of screen with the sidebar open, 1010px with the rail): the filters fold into a
+  panel under a « Filtres » button (count badge; ink while open), the active values beside it in ink-2,
+  cut with an ellipsis. Panel: 320px, overlay shadow, labels above full-width triggers, « Réinitialiser »
+  at the bottom; it closes on a click outside or Esc, never while a filter list is open.
+
 ## Période
-- **Button** in the app bar between ‹ › (one control, like a dropdown trigger): « Mai 2026 » or
-  « Avr. – oct. 2026 » (compact month names, year once when shared). ‹ › move the whole period.
+- **Button** in the app bar between two 24px ‹ › steps (one compact control, like a dropdown trigger),
+  sized to its text in mono 12.5px: « Mai 2026 » or « Avr. – oct. 2026 » (compact month names, year once
+  when shared). ‹ › move the whole period. Its « Période » label is for screen readers only.
 - **Panel** (popover, 400px; one column on phones): shortcuts on the left, ink rule on the active one; a
   4 × 3 month grid on the right — range ends in ink, months inside on the row-hover tint, months without data
   in `--rule-2` and not clickable; a hint line; footer « Avril → octobre 2026 · 7 mois » + « Annuler » (quiet)
@@ -165,12 +175,14 @@ with the system fallbacks above.
   table, and « Seulement ce qui a changé ».
 
 ## Synchronisation
-- **Status button**, last item of the app bar (`#sync-chip`): a 7px square + the time of the last
-  successful run in mono (« ■ 14:02 », « 04/05 10:30 » on another day). The square carries the state:
+- **Status button** (`#sync-chip`) at the top of the sidebar footer, full width: a 7px square,
+  « Synchronisé » and the time of the last successful run in mono, right-aligned (« ■ Synchronisé 14:02 »,
+  « 04/05 10:30 » on another day). In the collapsed rail only the square shows, the sentence in its
+  tooltip; below 900px it moves to the top bar, before « Menu », as « ■ 14:02 ». The square carries the state:
   green ok, amber when the source had warnings, hollow before the first run; the whole button turns
   `--ko` on failure (« ■ Échec 11:02 ») and ink, in sans, for « Nouvelles données ». While a run is in
-  progress: spinner + « Synchronisation… ». Below 900px it wraps under the period.
-- **Panel** (a popover under the button, 340px): status sentence as a status mark, the error in an
+  progress: spinner + « Synchronisation… ».
+- **Panel** (a popover beside the button, 340px; above it from the sidebar footer): status sentence as a status mark, the error in an
   `alert-error` line saying how old the shown data is, one ink-2 line explaining the hourly run, « Dernière
   modification <time> · <what changed> », source warnings, then the actions (admins: « Synchroniser
   maintenant » secondary + « Journal » link; everybody: « Actualiser » primary when newer data exists).

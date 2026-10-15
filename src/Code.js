@@ -36,9 +36,10 @@ function coreScript() {
 
 /**
  * Run once from the Apps Script editor: authorizes the script, creates the data spreadsheet and the
- * hourly synchronisation trigger.
+ * hourly synchronisation trigger. Asks first for any scope still missing (Sync.requireScopes).
  */
 function setup() {
+  Sync.requireScopes();
   var ss = Store.ensure();
   Logger.log('Classeur de données : %s', ss.getUrl());
   Sync.enable();

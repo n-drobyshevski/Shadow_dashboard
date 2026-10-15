@@ -295,7 +295,9 @@ body.unconfigured { --sticky-top: 0px; }
   body.nav-collapsed .nav-label {
     position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   body.nav-collapsed .nav-count, body.nav-collapsed .sidebar-footer > * { display: none; }
-  body.nav-collapsed .sidebar-footer { padding: 0; }
+  body.nav-collapsed .sidebar-footer { padding: 0; align-items: center; }
+  body.nav-collapsed .sidebar-footer > .sync-chip { display: inline-flex; width: auto; margin: var(--s2) 0; }
+  body.nav-collapsed .sidebar .sync-chip::before, body.nav-collapsed .sidebar .sync-chip-text { display: none; }
   body.nav-collapsed .nav-collapse { width: calc(100% + 2 * var(--s2)); margin-inline: calc(-1 * var(--s2)); padding: 0; justify-content: center; }
   body.nav-collapsed .nav-collapse-label { display: none; }
 }
@@ -307,8 +309,8 @@ body.unconfigured { --sticky-top: 0px; }
 /* Month change on the same page: the previous month stays readable, dimmed, until the new one is in. */
 .page.is-stale, .appbar-filters.is-stale { opacity: .45; pointer-events: none; transition: opacity .15s ease; }
 .appbar {
-  position: sticky; top: 0; z-index: 20;
-  display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2) var(--s4);
+  position: sticky; top: 0; z-index: 20; container: appbar / inline-size;
+  display: flex; align-items: center; flex-wrap: nowrap; gap: var(--s2) var(--s4);
   min-height: var(--appbar-h); padding: var(--s2) var(--s7);
   background: var(--paper); border-bottom: 1px solid var(--rule);
 }
@@ -320,11 +322,35 @@ body.unconfigured { --sticky-top: 0px; }
 .appbar-sep { width: 1px; height: 20px; background: var(--rule); }
 .appbar .dd { flex-direction: row; align-items: center; gap: var(--s2); }
 .appbar .dd-trigger { width: auto; min-width: 120px; max-width: 240px; }
+.appbar-filters .dd { flex: 0 1 auto; min-width: 0; }
+.appbar-filters .dd-trigger { min-width: 100px; }
+.appbar-period { flex: 0 0 auto; }
 /* an active filter reads at a glance: ink outline */
 .appbar .dd-multiple:not(.is-placeholder):not(.is-disabled) .dd-trigger { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
 .appbar .is-disabled .dd-trigger { border-style: dashed; cursor: not-allowed; }
-.appbar-filters { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2) var(--s4); min-width: 0; }
-.appbar-count { margin: 0 0 0 auto; font-size: 13px; color: var(--ink-3); white-space: nowrap; }
+.appbar-filters { display: flex; align-items: center; flex-wrap: nowrap; gap: var(--s2) var(--s4); min-width: 0; }
+.appbar-filters #filters-reset { flex: 0 0 auto; }
+/* Wide bar: the anchor is transparent and the filters sit in the row; narrow bar: see the container query below. */
+.filters-anchor { display: contents; }
+.filters-summary { display: none; flex: 0 1 auto; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: 13px; color: var(--ink-2); }
+.appbar-count { flex: 0 0 auto; margin: 0 0 0 auto; font-size: 13px; color: var(--ink-3); white-space: nowrap; }
+/* Too narrow for the filters in the row: they fold into a panel under « Filtres », the summary beside it. */
+@container appbar (max-width: 860px) {
+  .appbar .filters-toggle { display: inline-flex !important; }
+  .filters-anchor { display: block; position: relative; flex: 0 0 auto; }
+  .appbar-filters {
+    display: none; position: absolute; top: calc(100% + 4px); left: 0; z-index: 30;
+    width: min(320px, calc(100vw - 2 * var(--s4))); flex-direction: column; align-items: stretch; gap: var(--s3);
+    padding: var(--s4); background: var(--paper); border: 1px solid var(--rule-2); border-radius: var(--radius-overlay);
+    box-shadow: var(--shadow-overlay);
+  }
+  body.filters-open .appbar-filters { display: flex; }
+  .appbar-filters .dd { flex-direction: column; align-items: stretch; gap: var(--s1); }
+  .appbar-filters .dd-trigger { width: 100%; max-width: none; }
+  .appbar-filters #filters-reset { align-self: flex-start; }
+  .filters-summary:not(:empty) { display: block; }
+}
 /* ‹ Mai 2026 › : the month dropdown between two step buttons, one outlined control */
 .period-stepper { display: flex; align-items: stretch; }
 /* KPI cell over a period: the change since the first month, then a month-by-month sparkline. */
@@ -341,9 +367,9 @@ body.unconfigured { --sticky-top: 0px; }
 .evo-new { font-family: var(--font-sans); font-weight: 500; color: var(--ink); }
 .evo-removed { margin: var(--s2) 0 0; }
 .period-button {
-  display: inline-flex; align-items: center; justify-content: space-between; gap: var(--s3); min-width: 148px; height: var(--control-h);
-  padding: 0 10px 0 var(--s3); border: 1px solid var(--rule-2); background: var(--paper); color: var(--ink);
-  font: inherit; font-size: 13px; font-weight: 500; white-space: nowrap; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: space-between; gap: 6px; height: var(--control-h);
+  padding: 0 var(--s2); border: 1px solid var(--rule-2); background: var(--paper); color: var(--ink);
+  font-family: var(--font-mono); font-size: 12.5px; font-weight: 500; white-space: nowrap; cursor: pointer;
 }
 .period-button:hover:not(:disabled) { border-color: var(--ink-3); }
 .period-button[aria-expanded="true"] { border-color: var(--ink-2); }
@@ -382,20 +408,29 @@ body.unconfigured { --sticky-top: 0px; }
   .period-preset { padding: 4px var(--s2); }
 }
 .period-step {
-  width: 28px; height: var(--control-h); padding: 0; border: 1px solid var(--rule-2); background: var(--paper);
+  width: 24px; height: var(--control-h); padding: 0; border: 1px solid var(--rule-2); background: var(--paper);
   color: var(--ink-2); font-family: var(--font-mono); font-size: 14px; cursor: pointer;
 }
 .period-step:first-child { border-radius: var(--radius) 0 0 var(--radius); border-right: 0; }
 .period-step:last-child { border-radius: 0 var(--radius) var(--radius) 0; border-left: 0; }
 .period-step:hover:not(:disabled) { color: var(--ink); background: var(--row-hover); }
 .period-step:disabled { color: var(--rule-2); cursor: not-allowed; }
-/* Synchronisation status, last item of the bar: « ■ 14:02 » (mark tone = state), panel below it. */
+/*
+ * Synchronisation status: « ■ 14:02 » (mark tone = state), panel next to it. Top of the sidebar footer, full
+ * width with « Synchronisé » before the time; the mark alone in the collapsed rail; in the top bar < 900px.
+ */
 .sync-chip {
-  margin-left: auto; display: inline-flex; align-items: center; gap: var(--s2); height: 28px; padding: 0 var(--s2);
+  display: inline-flex; align-items: center; gap: var(--s2); height: 28px; padding: 0 var(--s2);
   border: 1px solid var(--rule-2); border-radius: var(--radius); background: var(--paper); color: var(--ink-2);
   font-family: var(--font-mono); font-size: 12px; white-space: nowrap; cursor: pointer;
 }
-.appbar-count:not([hidden]) + .sync-chip { margin-left: 0; }
+.sidebar .sync-chip { width: 100%; margin-bottom: var(--s2); }
+.sidebar .sync-chip-mark { order: -1; }
+.sidebar .sync-chip[data-tone="ok"]::before, .sidebar .sync-chip[data-tone="warn"]::before {
+  content: 'Synchronisé'; font-family: var(--font-sans); }
+.sidebar .sync-chip[data-tone="ok"] .sync-chip-text, .sidebar .sync-chip[data-tone="warn"] .sync-chip-text { margin-left: auto; }
+.topbar .sync-chip { margin-left: auto; }
+body.unconfigured .sync-chip { display: none; }
 .sync-chip:hover, .sync-chip[aria-expanded="true"] { color: var(--ink); border-color: var(--ink-3); background: var(--row-hover); }
 .sync-chip-mark { width: 7px; height: 7px; flex: 0 0 auto; background: var(--ok); display: inline-flex; align-items: center; justify-content: center; }
 .sync-chip[data-tone="ko"] { color: var(--ko); border-color: var(--ko); }
@@ -982,18 +1017,13 @@ body.unconfigured .toast-root { left: var(--s4); }
   body { --sticky-top: calc(48px + var(--appbar-h)); }
   .appbar { top: 48px; padding: var(--s2) var(--s4); }
   .appbar-sep { display: none; }
+  .appbar { flex-wrap: wrap; }
   .appbar-period { flex: 1 1 auto; }
   .period-stepper { flex: 1 1 auto; }
   .period-stepper .period-button { flex: 1 1 auto; min-width: 0; }
-  .filters-toggle { display: inline-flex !important; }
-  .appbar-filters { display: none; flex: 1 0 100%; flex-direction: column; align-items: stretch; gap: var(--s3); padding: var(--s2) 0; }
-  body.filters-open .appbar-filters { display: flex; }
-  .appbar-filters .dd { flex-direction: column; align-items: stretch; gap: var(--s1); }
-  .appbar-filters .dd-trigger { width: 100%; max-width: none; }
-  .appbar-filters #filters-reset { align-self: flex-start; }
+  .appbar-filters { left: auto; right: 0; }
+  .filters-summary:not(:empty) { display: none; }
   .appbar-count { flex: 1 0 100%; margin: 0; order: 3; }
-  .appbar-filters { order: 2; }
-  .sync-chip { margin-left: 0; }
   .main { padding: var(--s5) var(--s4) var(--s6); }
   .page { gap: var(--s5); }
   .etable-right { width: 100%; flex-wrap: wrap; }

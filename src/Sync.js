@@ -87,6 +87,15 @@ var Sync = (function () {
       'accepter l’autorisation demandée (déclencheurs).';
   }
 
+  /**
+   * The editor's consent screen is granular (each scope can be left unchecked) and does not ask again
+   * for a scope already declined: requireAllScopes ends the run and shows the consent screen for every
+   * scope of the manifest still missing. Only meaningful from the editor (setup).
+   */
+  function requireScopes() {
+    if (typeof ScriptApp.requireAllScopes === 'function') ScriptApp.requireAllScopes(ScriptApp.AuthMode.FULL);
+  }
+
   /** Creates the hourly trigger (once; duplicates are removed). */
   function enable() {
     var existing;
@@ -156,6 +165,7 @@ var Sync = (function () {
     currentMonth: currentMonth,
     status: status,
     verifiedStatus: verifiedStatus,
+    requireScopes: requireScopes,
     enable: enable,
     run: run,
     runFromTrigger: runFromTrigger

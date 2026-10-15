@@ -653,6 +653,7 @@ test('setup creates the data spreadsheet and logs its URL', () => {
   const url = ctx.setup();
   assert.match(url, /^https:\/\/docs\.google\.com\/spreadsheets\/d\/[\w-]+\/edit$/);
   assert.ok(env.__state.logs.some((l) => l.includes(url)));
+  assert.equal(env.__state.scopeChecks, 1); // asks again for any scope left unchecked on the consent screen
 });
 
 test('fakes: fixture source spreadsheet keeps raw values, display values and trims the data range', () => {

@@ -235,6 +235,7 @@
     });
     var c = document.getElementById('nav-collapse');
     if (c) UI.tooltip(c, on ? 'Ouvrir le menu' : null, { placement: 'right' });
+    updateSyncChip();
   }
 
   function updateNavActive() {
@@ -303,6 +304,7 @@
 
     // Spreadsheet links are only sent to admins (the sheets are private to the deployer).
     var footer = el('div', { class: 'sidebar-footer' },
+      syncChip(),
       s.dataUrl ? UI.extLink(s.dataUrl, 'Données (Google Sheet)', { class: 'side-link', id: 'link-data' }) : null,
       s.sourceUrl ? UI.extLink(s.sourceUrl, 'Source', { class: 'side-link', id: 'link-source',
         'aria-label': s.sourceTitle ? 'Source : ' + s.sourceTitle : null }) : null,
@@ -314,6 +316,8 @@
       el('span', { class: 'nav-collapse-label' }));
 
     sidebar.appendChild(el('div', { class: 'sidebar-inner' }, brand(), nav, footer, collapse));
+    placeSyncChip();
+    updateSyncChip();
     syncCollapseButton();
     updateNavActive();
     syncRailTooltips();
@@ -323,8 +327,10 @@
   // ------------------------------------------------------------------------------ app bar (période + filtres)
 
   /**
-   * Sticky bar above every page: « Période ‹ Avr. – oct. 2026 › » (a month or a range of months, panel
-   * below the button) then the Équipe / Bâtiment filters.
+   * Sticky bar above every page, on one row: « ‹ Avr. – oct. 2026 › » (a month or a range of months, panel
+   * below the button; the « Période » label is for screen readers), the Équipe / Bâtiment filters, then
+   * « 3 postes sur 7 » while a filter is active. When the bar is too narrow for the filters (container
+   * query in css.html), they fold into a panel under a « Filtres » button, its summary beside it.
    */
   function renderAppbar() {
     var s = State.get();
@@ -347,16 +353,14 @@
       'Filtres', el('span', { class: 'filters-toggle-count', id: 'filters-toggle-count' }));
 
     appbar.appendChild(el('div', { class: 'appbar-group appbar-period' },
-      el('span', { class: 'appbar-label', id: 'appbar-period-label' }, 'Période'),
+      el('span', { class: 'appbar-label sr-only', id: 'appbar-period-label' }, 'Période'),
       el('div', { class: 'period-stepper' }, prev, periodButton, next)));
     appbar.appendChild(el('span', { class: 'appbar-sep', 'aria-hidden': 'true' }));
-    appbar.appendChild(toggle);
-    appbar.appendChild(filtersBox);
+    appbar.appendChild(el('div', { class: 'filters-anchor', id: 'filters-anchor' }, toggle, filtersBox));
+    appbar.appendChild(el('p', { class: 'filters-summary', id: 'filters-summary', 'aria-hidden': 'true' }));
     appbar.appendChild(el('p', { class: 'appbar-count', id: 'appbar-count', role: 'status', hidden: true }));
-    appbar.appendChild(syncChip());
     appbar.appendChild(el('span', { class: 'appbar-progress', id: 'appbar-progress', 'aria-hidden': 'true' }));
     syncPeriodButton();
-    updateSyncChip();
     setFiltersOpen(false);
     renderFilters();
   }
@@ -364,8 +368,9 @@
   // ------------------------------------------------------------------------------ synchronisation (app bar)
 
   /**
-   * The current month follows the source spreadsheet: the server re-reads it every hour (Sync.js). The
-   * app bar ends with a status button (« ■ 14:02 ») whose panel tells when the last synchronisation ran,
+   * The current month follows the source spreadsheet: the server re-reads it every hour (Sync.js). A
+   * status button (« ■ 14:02 ») at the top of the sidebar footer (in the top bar below 900px) opens a panel
+   * that tells when the last synchronisation ran,
    * what it changed, and — for admins — « Synchroniser maintenant ». The status is polled every
    * SYNC_POLL_MS (and when the tab comes back): when the server synchronised changes since the data on
    * screen was loaded, the button says « Nouvelles données » and the panel offers « Actualiser ».
@@ -412,9 +417,32 @@
   }
 
   function syncChip() {
+    closeSyncPanel();
+    var old = document.getElementById('sync-chip');
+    if (old && old.parentNode) old.parentNode.removeChild(old);
     return el('button', { type: 'button', class: 'sync-chip', id: 'sync-chip', 'aria-haspopup': 'dialog',
       'aria-expanded': 'false', onClick: function (e) { toggleSyncPanel(e.currentTarget); } },
       el('span', { class: 'sync-chip-mark', 'aria-hidden': 'true' }), el('span', { class: 'sync-chip-text' }));
+  }
+
+  /** Wide screens: top of the sidebar footer; below 900px (sidebar folded behind « Menu »): the top bar. */
+  var narrowQuery = window.matchMedia ? window.matchMedia('(max-width: 900px)') : null;
+  function placeSyncChip() {
+    var chip = document.getElementById('sync-chip');
+    var footer = sidebar && sidebar.querySelector('.sidebar-footer');
+    var toggle = document.getElementById('nav-toggle');
+    if (!chip || !footer || !toggle) return;
+    var inTopbar = !!(narrowQuery && narrowQuery.matches);
+    var parent = inTopbar ? toggle.parentNode : footer;
+    var before = inTopbar ? toggle : footer.firstChild;
+    if (chip.parentNode === parent && (inTopbar ? chip.nextSibling === toggle : chip === footer.firstChild)) return;
+    closeSyncPanel();
+    parent.insertBefore(chip, before);
+    updateSyncChip();
+  }
+  if (narrowQuery) {
+    if (narrowQuery.addEventListener) narrowQuery.addEventListener('change', placeSyncChip);
+    else if (narrowQuery.addListener) narrowQuery.addListener(placeSyncChip);
   }
 
   function updateSyncChip() {
@@ -424,6 +452,8 @@
       var tone = syncTone(st);
       chip.dataset.tone = tone;
       chip.setAttribute('aria-label', 'Synchronisation : ' + syncSentence(st, tone) + '. Afficher le détail.');
+      // Collapsed rail: only the mark shows, the sentence is its tooltip.
+      UI.tooltip(chip, isCollapsed() && !chip.closest('.topbar') ? syncSentence(st, tone) : null, { placement: 'right' });
       chip.querySelector('.sync-chip-text').textContent = syncChipText(st, tone);
       var mark = chip.querySelector('.sync-chip-mark');
       UI.clear(mark);
@@ -488,7 +518,7 @@
     refreshSyncStatus();
     chip.setAttribute('aria-expanded', 'true');
     syncPop = UI.popover({ anchor: chip, content: syncPanel(), className: 'sync-popover', id: 'sync-popover',
-      role: 'dialog', ariaLabel: 'Synchronisation', align: 'end', matchWidth: false, maxHeight: 420, keepOnTab: true,
+      role: 'dialog', ariaLabel: 'Synchronisation', align: chip.closest('.topbar') ? 'end' : 'start', matchWidth: false, maxHeight: 420, keepOnTab: true,
       onClose: function () { chip.setAttribute('aria-expanded', 'false'); syncPop = null; } });
   }
 
@@ -699,17 +729,46 @@
     if (first) first.focus();
   }
 
-  /** Below 900px the filters fold behind a « Filtres » button. */
+  /**
+   * Narrow bar: the filters fold into a panel under the « Filtres » button. It closes on a click outside
+   * (the multiselect lists, portalled to <body>, count as inside) and on Escape once no list is open.
+   */
   function setFiltersOpen(open) {
     document.body.classList.toggle('filters-open', !!open);
     var t = document.getElementById('filters-toggle');
     if (t) t.setAttribute('aria-expanded', open ? 'true' : 'false');
+    document.removeEventListener('pointerdown', onFiltersPointerDown, true);
+    document.removeEventListener('keydown', onFiltersKey);
+    if (open) {
+      document.addEventListener('pointerdown', onFiltersPointerDown, true);
+      document.addEventListener('keydown', onFiltersKey);
+    }
+  }
+
+  function onFiltersPointerDown(e) {
+    var anchor = document.getElementById('filters-anchor');
+    var t = e.target;
+    if (!(t instanceof Node) || (anchor && anchor.contains(t))) return;
+    if (t instanceof Element && t.closest('.popover')) return;
+    setFiltersOpen(false);
+  }
+
+  function onFiltersKey(e) {
+    if (e.key !== 'Escape' || e.defaultPrevented || UI.popover.current()) return;
+    setFiltersOpen(false);
+    var t = document.getElementById('filters-toggle');
+    if (t && t.offsetParent !== null) t.focus();
   }
 
   function syncFilterBadges(f) {
     var n = f ? (f.equipes || []).length + (f.batiments || []).length : 0;
     var c = document.getElementById('filters-toggle-count');
     if (c) c.textContent = n ? String(n) : '';
+    var summary = document.getElementById('filters-summary');
+    if (summary) {
+      var text = n ? (f.equipes || []).concat(f.batiments || []).join(' · ') : '';
+      summary.textContent = text;
+    }
     var reset = document.getElementById('filters-reset');
     if (reset) reset.hidden = !n;
   }
