@@ -220,7 +220,7 @@ function findOptionIndex(page, listId, text) {
  * Picks one option of a dropdown: opens it (click on the trigger) when closed, then clicks the option
  * whose label — or value — is exactly `optionLabel`. On a combobox input the text is typed instead and
  * the matching suggestion (or the « Utiliser « … » » row) is clicked.
- *   await chooseOption(page, '#month-select', '2026-04');
+ *   await chooseOption(page, '#filter-equipe', 'Labo Textile');
  */
 async function chooseOption(page, triggerSelector, optionLabel) {
   const trigger = page.locator(triggerSelector).first();
@@ -309,8 +309,33 @@ async function screenshot(pageId, outPath, options = {}) {
 const ACCOUNTS = { OWNER: 'owner@decathlon.com', LECTEUR: 'lea.reader@decathlon.com', ADMIN2: 'sam.admin@decathlon.com',
   GROUP_MEMBER: 'marc.labo@decathlon.com' /* lecteur through labo-industry@decathlon.com */ };
 
+/**
+ * Selects a period with the app bar panel: opens it, clicks `from` then `to` on the month grid (moving the
+ * year with ‹ › when needed) and applies. choosePeriod(page, '2026-04') = that month alone.
+ */
+async function choosePeriod(page, from, to) {
+  if (!(await page.$('#period-panel'))) await page.click('#period-button');
+  await page.waitForSelector('#period-panel');
+  for (const m of to && to !== from ? [from, to] : [from, from]) {
+    for (let i = 0; i < 20; i++) {
+      const year = Number((await page.textContent('#period-year')).trim());
+      const want = Number(m.slice(0, 4));
+      if (year === want) break;
+      await page.click(year < want ? '#period-year-next' : '#period-year-prev');
+    }
+    await page.click(`#period-month-${m}`);
+  }
+  await page.click('#period-apply');
+  await page.waitForSelector('#period-popover', { state: 'detached' });
+}
+
+/** {from, to} shown by the period button. */
+async function periodValue(page) {
+  return page.$eval('#period-button', (b) => ({ from: b.dataset.from, to: b.dataset.to }));
+}
+
 module.exports = { ACCOUNTS, openApp, screenshot, waitIdle, chooseOption, chooseOptions, optionLabels, dropdownValue, typeDate,
-  openListbox };
+  openListbox, choosePeriod, periodValue };
 
 if (require.main === module) {
   // node test/e2e/harness.js <pageId> <out.png>

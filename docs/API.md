@@ -113,6 +113,11 @@ All functions are **total**: they never throw on null/undefined/blank input unle
 | `optionsForColumn(col, referentiel)` | Référentiel category whose `normKey` equals `normKey(COLUMN_REF_ALIASES[col] || col)` → its values; else `['Oui','Non']` if `col` in `YES_NO_COLS`; else `null` (free text). |
 | `sortMonths(months)` | ascending, unique, only valid months. |
 | `previousMonth(months, month)` | the latest month in `months` strictly before `month`, or `null`. |
+| `PERIOD_PRESETS` | `['month','last3','last6','year','all']` — period shortcuts of the app bar. |
+| `addMonths(month, n)` | `'YYYY-MM'` moved by `n` months (negative = earlier); `''` for an invalid month. |
+| `monthsInRange(months, from, to)` | months of `months` within `[from, to]` (inclusive, sorted; reversed range swapped; one end = one month). |
+| `presetPeriod(months, preset)` | `{from, to}` ending at the latest month: `month` (alone), `last3` / `last6` (calendar months, first available inside), `year` (its calendar year), `all`. `null` without months / unknown preset. |
+| `scoreEvolution(oldList, newList, keyField)` | per record (key `normKey`) between two snapshots: `{byKey:{key:{status:'new'\|'up'\|'down'\|'same', from, to}}, added, changed, removed:[old records]}` on `_score` (a change < 0.05 point is none). |
 | `threshold()` | effective compliance threshold used by `enrichPostes` / `enrichApplications` (default `THRESHOLD`). |
 | `isEmail(v)` | plausible address (string, ≤ 254 chars, one `@`, a dot in the domain, no spaces / `<>(),;:"`). |
 | `parseEmailList(text)` | pasted text → `{emails:[unique, lower-cased, in order], invalid:[tokens with '@' that are not addresses]}`; accepts lines, `,` `;` tab / space separators, `Name <a@b.c>`, quotes, `mailto:`; words without `@` are ignored. |
@@ -168,8 +173,8 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 
 | Function | Args | Returns `data` | Errors |
 |---|---|---|---|
-| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:'', threshold:int, user:{email, role:'admin'|'lecteur', isOwner:bool}, prefs:{sidebar?:'open'|'collapsed'}, sync:SyncStatus}` (`dataUrl` / `sourceUrl` / `sourceTitle` are `''` for lecteurs: the spreadsheets are private to the deployer) | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
-| `api_savePrefs` | `{sidebar:'open'\|'collapsed'}` (any subset of the known keys) | `{prefs}` = the caller's stored preferences. Every role (lecteurs included): interface state only, per account (`PREFS_<email>` Script Property). | `VALIDATION` (unknown key or value, nothing to save, no identity) |
+| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:'', threshold:int, user:{email, role:'admin'|'lecteur', isOwner:bool}, prefs:{sidebar?, period?}, sync:SyncStatus}` (`dataUrl` / `sourceUrl` / `sourceTitle` are `''` for lecteurs: the spreadsheets are private to the deployer) | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
+| `api_savePrefs` | `{sidebar:'open'\|'collapsed', period:'month'\|'last3'\|'last6'\|'year'\|'all'}` (any subset of the known keys) | `{prefs}` = the caller's stored preferences. Every role (lecteurs included): interface state only, per account (`PREFS_<email>` Script Property). | `VALIDATION` (unknown key or value, nothing to save, no identity) |
 | `api_setConfig` | `{source:'url or id'}` | `{sourceId, sourceTitle, sourceUrl, tabsFound:{postes:bool, applications:bool, referentiel:bool}, sync:SyncStatus}` — also creates the hourly trigger (`sync.authError` when ScriptApp is not authorised; the source is saved anyway). The client then calls `api_syncNow`. | `VALIDATION` (bad id), `SOURCE_ERROR` (cannot open / no postes+apps tab). Saved only on success. |
 | `api_getMonthData` | `{month}` | `{month, postes:[rec], applications:[rec], referentiel:{cat:[v]}, columns:{postes:[h], applications:[h]}, importInfo:{imported_at, warnings:[]}\|null}` | `VALIDATION`, `NOT_FOUND` (month not imported). `columns.applications` always ends with `Galink`, `IDP` if missing from the source headers. |
 | `api_getSyncStatus` | – | `SyncStatus` | – |
@@ -427,7 +432,14 @@ State.set(patch)                 -> shallow merge + notify subscribers (fn(state
 State.subscribe(fn)              -> unsubscribe()
 state = { page:'dashboard', configured:false, months:[], month:'', currentMonth:'', dataUrl:'', sourceUrl:'',
           sourceTitle:'', filters:{equipes:[], batiments:[]}, loading:false, threshold:80,
-          user:{email:'', role:'', isOwner:false}, prefs:{}, sync:SyncStatus|null }
+          user:{email:'', role:'', isOwner:false}, prefs:{}, sync:SyncStatus|null,
+          from:'' (start of the period, '' = one month; `month` is its END), preset:'' (shortcut in use) }
+State.period()                   -> {from, to, months:[synchronised months inside], single:bool} (to = state.month)
+State.setPeriod(from, to, preset?) -> selects a period (reversed swapped; from === to = one month)
+Fmt.monthShort('2026-04')        -> 'avr.'
+Fmt.periodTitle(a, b)            -> 'Avril → octobre 2026' / 'Décembre 2025 → octobre 2026' ('Mai 2026' when a === b)
+Fmt.periodShort(a, b)            -> 'Avr. – oct. 2026' / 'Déc. 2025 – oct. 2026' ('Mai 2026' when a === b)
+UI.sparkline(values)             -> inline SVG line of a month series (aria-hidden), null under two points
 Fmt.stamp('2026-05-04 10:30')    -> '10:30' today, '04/05 10:30' this year, else '04/05/2026 10:30'
 Fmt.syncChange(changes)          -> '+2 postes · 1 application modifiée' / 'mois créé' / '' (Changes, §3)
 State.canEdit()                  -> true for admins (pages hide every write control otherwise)
@@ -556,8 +568,14 @@ per account through `api_savePrefs` / `bootstrap.prefs.sidebar`, which wins at b
 frame loses localStorage when the browser blocks third-party storage. A browser-only value is uploaded
 once. The source is changed in Paramètres
 (`App.applySource`). « Paramètres » is in the nav for admins only.
-App bar (`#appbar`, sticky): `Période` = `#month-prev` ‹ `#month-select` (asc list, default latest) ›
-`#month-next`; `Équipe` (`#filter-equipe`) and `Bâtiment / Labo` (`#filter-batiment`) multiselects
+App bar (`#appbar`, sticky): `Période` = `#month-prev` ‹ `#period-button` › `#month-next`. The button
+(« Mai 2026 », « Avr. – oct. 2026 »; `data-from` / `data-to`) opens `#period-popover` > `#period-panel`:
+shortcuts `#period-preset-<key>` (`Core.PERIOD_PRESETS`: Mois en cours, 3 / 6 derniers mois, Année <a>, Tout
+l’historique — apply at once and are remembered per account: `api_savePrefs {period}`, re-applied at boot
+from `bootstrap.prefs.period`), a 12-month grid `#period-month-YYYY-MM` (only synchronised months enabled;
+first click = start, second = end; `#period-year-prev` / `#period-year-next`), `#period-summary` and
+`#period-apply` « Appliquer » / `#period-cancel`. ‹ › move the whole period by one synchronised month.
+A period shows the state of its LAST month (`state.month`) compared with its first one (§6); `Équipe` (`#filter-equipe`) and `Bâtiment / Labo` (`#filter-batiment`) multiselects
 (options from current month postes via `Core.uniqueSorted`), `#filters-reset`, `#appbar-count`
 (« 2 postes sur 7 » while a filter is active), then `#sync-chip` (last item): the synchronisation status
 (`data-tone` ok | warn | ko | new | off | busy; text « 14:02 », « Échec 11:02 », « Nouvelles données »,
@@ -575,6 +593,10 @@ instead of the configuration form.
 ## 6. Page specifications
 
 ### Tableau de bord (`dashboard`) — 1:1 port of `Tableau_de_bord.py`
+- Period (`State.period()`, not single): kicker « Avril → octobre 2026 · état fin octobre » (`data-from`);
+  every figure / chart is the last month's; each headline KPI adds `.metric-delta` (« +12 depuis avril »,
+  « ▲ +6,0 pts depuis avril », ok / ko) and a `UI.sparkline` over the period's months (slim history of
+  `State.loadTimeline`, same filters).
 - No months → `#dashboard-empty` « Aucune donnée pour le moment. … » (+ `#dashboard-sync` « Synchroniser
   maintenant » for admins). There is no import section: the data comes from the hourly sync.
 - Title `👻 Tableau de bord — Shadow IT`, caption `Export : <month>`.
@@ -591,6 +613,11 @@ instead of the configuration form.
   `➕ Poste générique` (api_addGenericPoste), `⬇️ CSV` export.
 - `UI.editableTable` over filtered postes; columns = `columns.postes` order (key column first, not
   editable) + computed `Score` (`UI.scoreBadge`) + `Applis` count; options via `Core.optionsForColumn`.
+  Period: the last month's inventory, kicker « … · inventaire fin octobre », computed column `_evo`
+  « Évolution depuis avril » (`Core.scoreEvolution` of the first month → this one, same filters: « Nouveau »,
+  « 40,0 % → 80,0 % » ok / ko, « — »), `#postes-evo-stats` « +14 nouveaux · 2 retirés · 9 scores modifiés
+  depuis avril », `#postes-removed` (removed names under the table), `#postes-changed-only` « Seulement ce
+  qui a changé » (same for `apps`).
   onSave → `api_savePostes` → `State.patchRecords`; toast « N modifications enregistrées dans le Google Sheet
   source. » (current month) or « … (historique de mai 2026). ». Admins see `#postes-edit-note` (`data-live`
   1|0) saying where an edit goes.
@@ -614,8 +641,13 @@ instead of the configuration form.
 - Heatmap `Conformité des postes par équipe` (équipes × months, % conformes).
 - KPI table per month (all KPIs) with delta vs previous month.
 - Fewer than 2 months → info `Au moins deux exports mensuels sont nécessaires pour visualiser une évolution.` (still show the single month).
+- Period (not single): only its months (kicker « Mai 2026 – juin 2026 · 2 exports sur 3 », `data-from`); a
+  single month shows the whole history.
 
 ### Suivi actions (`actions`) — `UI.tabs`
+Period (not single): `#actions-period-note` / `#replacements-period-note`; the ledgers keep the actions
+created or completed inside the period and the replacements dated inside it; « Détection des changements »
+compares the first and last months by default.
 1. `Actions de remédiation`: filters (statut, type, équipe, search), counts per status, table (target, type,
    équipe, action, responsable, priorité, deadline (overdue → ko badge), statut badge, dates).
    `➕ Nouvelle action` / row click → formModal edit → api_updateAction; delete with confirm.

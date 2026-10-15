@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const data = require('../fixtures/data');
-const { openApp, chooseOption, chooseOptions, optionLabels, dropdownValue } = require('./harness');
+const { openApp, chooseOption, chooseOptions, optionLabels, dropdownValue, choosePeriod, periodValue } = require('./harness');
 
 // ---------------------------------------------------------------- expected values (Node side)
 const ctx = vm.createContext({});
@@ -179,7 +179,7 @@ describe('dashboard', () => {
 
   test('month select switches the snapshot', async () => {
     await withApp({}, async (app) => {
-      await chooseOption(app.page, '#month-select', '2026-04');
+      await choosePeriod(app.page, '2026-04');
       await app.page.waitForFunction(() => document.getElementById('dashboard-caption').dataset.month === '2026-04');
       assert.equal(await app.page.textContent('#dashboard-caption'), 'Avril 2026 · Export 2026-04');
       await app.waitIdle();
@@ -219,8 +219,8 @@ describe('dashboard', () => {
       await page.waitForSelector('.toast-success');
       await app.waitIdle();
       assert.equal(await page.textContent('.toast-success .toast-msg'), 'Synchronisé — mois créé.');
-      assert.deepEqual(await optionLabels(page, '#month-select', { values: true }), ['2026-04', '2026-05', current]);
-      assert.equal(await dropdownValue(page, '#month-select'), '2026-05', 'the month being read stays selected');
+      assert.deepEqual(await page.evaluate(() => window.State.get().months), ['2026-04', '2026-05', current]);
+      assert.deepEqual(await periodValue(page), { from: '2026-05', to: '2026-05' }, 'the month being read stays selected');
       const calls = (await app.calls()).map((c) => c.name);
       assert.ok(calls.lastIndexOf('api_bootstrap') > calls.lastIndexOf('api_syncNow'), 'bootstrap reloaded after a change');
       assert.ok(calls.lastIndexOf('api_getMonthData') > calls.lastIndexOf('api_syncNow'), 'page re-mounted with fresh data');
@@ -307,7 +307,7 @@ describe('dashboard', () => {
         'Aucune donnée pour le moment. La synchronisation crée le mois en cours à partir du Google Sheet source.');
       assert.equal(await page.$('#dashboard-body'), null);
       assert.equal(await page.$$eval('[data-kpi]', (n) => n.length), 0);
-      assert.equal(await page.isDisabled('#month-select'), true);
+      assert.equal(await page.isDisabled('#period-button'), true);
       assert.equal((await page.textContent('#sync-chip')).trim(), 'En attente');
 
       await page.click('#dashboard-sync');
@@ -317,7 +317,7 @@ describe('dashboard', () => {
       const k = kpisFor('2026-05', null, { custom: false });
       assert.equal(k.apps_sans_galink, 0);
       assertCards(await readCards(page), k);
-      assert.equal(await dropdownValue(page, '#month-select'), await page.evaluate(() => window.State.get().currentMonth));
+      assert.equal((await periodValue(page)).to, await page.evaluate(() => window.State.get().currentMonth));
       assert.equal(await page.getAttribute('#sync-chip', 'data-tone'), 'warn'); // ghost-row warning of the source
       assert.deepEqual(app.errors, []);
     });
@@ -330,7 +330,7 @@ describe('dashboard', () => {
         window.__mock.failNext.api_getMonthData = { code: 'INTERNAL', message: 'Feuille illisible' };
         window.State.invalidate();
       });
-      await chooseOption(page, '#month-select', '2026-04');
+      await choosePeriod(page, '2026-04');
       await page.waitForSelector('#dashboard-body .alert-error');
       assert.equal((await page.textContent('#dashboard-body .alert-error p')).replace('Réessayer', '').trim(),
         'Impossible de charger avril 2026 : Feuille illisible');

@@ -16,7 +16,7 @@ var Config = (function () {
    * browser blocks third-party storage. PREF_VALUES = the only keys and values accepted.
    */
   var PROP_PREFS_PREFIX = 'PREFS_';
-  var PREF_VALUES = { sidebar: ['open', 'collapsed'] };
+  var PREF_VALUES = { sidebar: ['open', 'collapsed'], period: ['month', 'last3', 'last6', 'year', 'all'] };
   /**
    * Browser-tab icon (the ghost): assets/favicon.png (64×64) embedded as a data: URI, so nothing has to be
    * hosted (the repository may be private). The FAVICON_URL Script Property overrides it with a hosted

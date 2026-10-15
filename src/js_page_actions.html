@@ -71,6 +71,8 @@
  *   3. Détection des changements — two month dropdowns -> api_getDiff -> removed / added / changed postes,
  *                                  resolved actions (« Enregistrer comme terminée » -> api_addAction status
  *                                  'Terminé'), same for applications.
+ * Period (app bar « avril → octobre »): the two ledgers keep the records dated inside it (actions created or
+ * completed, replacements), and change detection compares its first and last months by default.
  * The global sidebar Équipe filter applies to the three tabs (State.filterByEquipe); the Bâtiment / Labo filter
  * does not apply to actions (the filter note says so).
  *
@@ -239,7 +241,8 @@
   /**
    * One ledger tab (actions, remplacements): header create button, skeleton, then — once the actions cache
    * is loaded — the filter note, the « nothing yet » / « nothing for this équipe » states or o.build(rows)
-   * (rows = the o.pick list within the global Équipe filter, sorted with o.sort).
+   * (rows = the o.pick list within the global Équipe filter, sorted with o.sort). Over a period (app bar),
+   * only the records with a date inside it (o.dates) are kept, under a note (o.periodText / o.emptyPeriod).
    */
   function ledgerTab(panel, ctx, o) {
     setHeaderAction(o.addBtn);
@@ -253,9 +256,22 @@
         if (note) panel.appendChild(note);
         var all = data[o.pick] || [];
         if (!all.length) { panel.appendChild(UI.empty(o.emptyAll)); return; }
-        var rows = State.filterByEquipe(all).sort(o.sort);
+        var rows = State.filterByEquipe(all);
         if (!rows.length) { panel.appendChild(UI.empty(o.emptyTeam)); return; }
-        o.build(rows);
+        // A period (app bar) keeps the records dated inside it (o.dates: DD/MM/YYYY strings of a record).
+        var per = State.period();
+        if (!per.single) {
+          panel.appendChild(el('p', { class: 'filter-note period-note', id: o.pick + '-period-note', role: 'status' },
+            'Période ' + Fmt.periodTitle(per.from, per.to) + ' — ' + o.periodText + '.'));
+          rows = rows.filter(function (r) {
+            return o.dates(r).some(function (d) {
+              var m = Core.frToIso(d).slice(0, 7);
+              return m && m >= per.from && m <= per.to;
+            });
+          });
+          if (!rows.length) { panel.appendChild(UI.empty(o.emptyPeriod)); return; }
+        }
+        o.build(rows.sort(o.sort));
       }
     });
   }
@@ -478,6 +494,9 @@
       columns: ['Cible', 'Type', 'Équipe', 'Action', 'Responsable', 'Priorité', 'Échéance', 'Statut'],
       errorPrefix: 'Impossible de charger les actions',
       emptyAll: 'Aucune action enregistrée.', emptyTeam: 'Aucune action pour l’équipe sélectionnée.',
+      emptyPeriod: 'Aucune action créée ou terminée dans la période.',
+      periodText: 'actions créées ou terminées dans la période',
+      dates: function (a) { return [a.date_created, a.date_completed]; },
       sort: function (a, b) {
         // Open first, then by deadline (blank last), then by target name.
         var ca = CLOSED_STATUSES.indexOf(a.status) >= 0 ? 1 : 0;
@@ -589,6 +608,9 @@
       columns: ['Ancien poste', 'Nouveau poste', 'Équipe', 'Responsable', 'Date', 'Commentaire'],
       errorPrefix: 'Impossible de charger les remplacements',
       emptyAll: 'Aucun remplacement enregistré.', emptyTeam: 'Aucun remplacement pour l’équipe sélectionnée.',
+      emptyPeriod: 'Aucun remplacement dans la période.',
+      periodText: 'remplacements datés de la période',
+      dates: function (r) { return [r.date_replacement]; },
       sort: function (a, b) {
         // Most recent first.
         var da = frSortValue(a.date_replacement);
@@ -872,10 +894,13 @@
       return;
     }
 
-    if (!diffChoice || diffChoice.base !== s.month ||
+    // Default: the period's first and last months; a single month is compared with the previous one.
+    var per = State.period();
+    var base = s.month + '|' + (per.single ? '' : per.from);
+    if (!diffChoice || diffChoice.base !== base ||
         months.indexOf(diffChoice.oldMonth) < 0 || months.indexOf(diffChoice.newMonth) < 0) {
-      var d = defaultDiffMonths(months, s.month);
-      diffChoice = { base: s.month, oldMonth: d.oldMonth, newMonth: d.newMonth };
+      var d = per.single ? defaultDiffMonths(months, s.month) : { oldMonth: per.from, newMonth: per.to };
+      diffChoice = { base: base, oldMonth: d.oldMonth, newMonth: d.newMonth };
     }
     var result = el('div', { class: 'diff-result', id: 'diff-result', 'aria-live': 'polite' });
 

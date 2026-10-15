@@ -327,7 +327,60 @@ body.unconfigured { --sticky-top: 0px; }
 .appbar-count { margin: 0 0 0 auto; font-size: 13px; color: var(--ink-3); white-space: nowrap; }
 /* ‹ Mai 2026 › : the month dropdown between two step buttons, one outlined control */
 .period-stepper { display: flex; align-items: stretch; }
-.period-stepper .dd-trigger { border-radius: 0; min-width: 132px; font-weight: 500; }
+/* KPI cell over a period: the change since the first month, then a month-by-month sparkline. */
+.metric-delta { font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); }
+.metric-delta.is-ok { color: var(--ok); }
+.metric-delta.is-ko { color: var(--ko); }
+.sparkline { display: block; width: 100%; max-width: 160px; height: 20px; margin-top: var(--s1); overflow: visible; }
+.sparkline polyline { fill: none; stroke: var(--ink-2); stroke-width: 1.25; }
+.sparkline circle { fill: var(--ink); }
+/* Postes / Applications over a period: the score change since the first month. */
+.evo { font-family: var(--font-mono); font-size: 12.5px; white-space: nowrap; }
+.evo-up { color: var(--ok); }
+.evo-down { color: var(--ko); }
+.evo-new { font-family: var(--font-sans); font-weight: 500; color: var(--ink); }
+.evo-removed { margin: var(--s2) 0 0; }
+.period-button {
+  display: inline-flex; align-items: center; justify-content: space-between; gap: var(--s3); min-width: 148px; height: var(--control-h);
+  padding: 0 10px 0 var(--s3); border: 1px solid var(--rule-2); background: var(--paper); color: var(--ink);
+  font: inherit; font-size: 13px; font-weight: 500; white-space: nowrap; cursor: pointer;
+}
+.period-button:hover:not(:disabled) { border-color: var(--ink-3); }
+.period-button[aria-expanded="true"] { border-color: var(--ink-2); }
+.period-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.period-button:disabled { background: var(--paper-2); color: var(--ink-3); cursor: not-allowed; }
+/* Period panel: shortcuts | 12-month grid, footer with the summary and « Appliquer ». */
+.period-popover { width: 400px; }
+.period-panel { display: grid; grid-template-columns: 148px minmax(0, 1fr); font-size: 13px; }
+.period-presets { display: flex; flex-direction: column; padding: var(--s2) 0; border-right: 1px solid var(--rule); }
+.period-preset {
+  text-align: left; padding: 6px var(--s3); border: 0; background: none; color: var(--ink-2); font: inherit; cursor: pointer;
+}
+.period-preset:hover { background: var(--row-hover); color: var(--ink); }
+.period-preset[aria-pressed="true"] { color: var(--ink); font-weight: 500; box-shadow: inset 2px 0 0 var(--ink); background: var(--row-hover); }
+.period-cal { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s3); min-width: 0; }
+.period-year { display: flex; align-items: center; justify-content: space-between; }
+.period-year-label { font-family: var(--font-mono); color: var(--ink-2); }
+.period-year-step { width: 28px; height: 28px; border: 0; background: none; color: var(--ink-2); font-family: var(--font-mono); font-size: 14px; cursor: pointer; }
+.period-year-step:disabled { color: var(--rule-2); cursor: default; }
+.period-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px 0; }
+.period-month { height: 30px; border: 0; background: none; color: var(--ink); font: inherit; cursor: pointer; }
+.period-month:hover:not(:disabled) { background: var(--row-hover); }
+.period-month:disabled { color: var(--rule-2); cursor: default; }
+.period-month.is-in { background: var(--row-hover); }
+.period-month.is-edge, .period-month.is-edge:hover:not(:disabled) { background: var(--ink); color: var(--on-ink); font-weight: 500; }
+.period-hint { margin: 0; font-size: 12px; color: var(--ink-3); }
+.period-foot {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s3);
+  border-top: 1px solid var(--rule);
+}
+.period-summary { flex: 1 1 auto; min-width: 0; color: var(--ink-2); font-size: 12px; }
+@media (max-width: 480px) {
+  .period-popover { width: calc(100vw - 16px); }
+  .period-panel { grid-template-columns: minmax(0, 1fr); }
+  .period-presets { flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--rule); padding: var(--s2); gap: var(--s1); }
+  .period-preset { padding: 4px var(--s2); }
+}
 .period-step {
   width: 28px; height: var(--control-h); padding: 0; border: 1px solid var(--rule-2); background: var(--paper);
   color: var(--ink-2); font-family: var(--font-mono); font-size: 14px; cursor: pointer;
@@ -931,8 +984,7 @@ body.unconfigured .toast-root { left: var(--s4); }
   .appbar-sep { display: none; }
   .appbar-period { flex: 1 1 auto; }
   .period-stepper { flex: 1 1 auto; }
-  .period-stepper .dd { flex: 1 1 auto; }
-  .period-stepper .dd-trigger { width: 100%; max-width: none; }
+  .period-stepper .period-button { flex: 1 1 auto; min-width: 0; }
   .filters-toggle { display: inline-flex !important; }
   .appbar-filters { display: none; flex: 1 0 100%; flex-direction: column; align-items: stretch; gap: var(--s3); padding: var(--s2) 0; }
   body.filters-open .appbar-filters { display: flex; }

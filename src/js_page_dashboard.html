@@ -5,6 +5,10 @@
  * KPI strip, compliance gauges, risk bars, "Détail conformité" leader rows, score histograms (all on
  * the filtered data of the selected month). The data comes from the hourly synchronisation (status in
  * the app bar, journal in Paramètres): there is no import section any more.
+ *
+ * Period (« avril → octobre », State.period()): every figure and chart is the state of the LAST month; each
+ * headline KPI also says how it moved since the first month (delta) and draws a month-by-month sparkline
+ * (from the slim history of State.loadTimeline, same filters).
  */
 (function () {
   'use strict';
@@ -52,11 +56,57 @@
 
   // ------------------------------------------------------------------------------ dashboard body
 
-  function renderDashboard(body, s, md) {
+  /** '+12' / '−3' / '0' (true minus sign). */
+  function signed(n, digits) {
+    var abs = UI.fmtNum ? (digits ? Math.abs(n).toFixed(digits).replace('.', ',') : UI.fmtNum(Math.abs(n))) : String(Math.abs(n));
+    return (n > 0 ? '+' : n < 0 ? '−' : '') + abs;
+  }
+
+  /**
+   * Period extras of the KPI strip: {key: {delta, deltaTone, spark}} — counts « +12 depuis avril », rates
+   * « ▲ +6,0 pts depuis avril » (ok / ko), sparklines over the months of the period. {} for a single month.
+   */
+  function periodExtras(s, k, extra) {
+    if (!extra || !extra.fromMd) return {};
+    var since = ' depuis ' + Fmt.MONTHS[Number(extra.from.slice(5, 7)) - 1];
+    var f0 = State.filtered(extra.fromMd);
+    var k0 = Core.computeKpis(f0.postes, f0.applications);
+    var series = null;
+    if (extra.timeline) {
+      var byMonth = {};
+      extra.timeline.forEach(function (m) { byMonth[m.month] = m; });
+      series = extra.months.map(function (m) {
+        var t = byMonth[m];
+        if (!t) return null;
+        var f = Core.filterData({ postes: t.postes || [], applications: t.applications || [] }, s.filters);
+        return Core.computeKpis(f.postes, f.applications);
+      });
+    }
+    function spark(key, totalKey) {
+      return series ? UI.sparkline(series.map(function (x) { return x && (!totalKey || x[totalKey]) ? x[key] : null; })) : null;
+    }
+    function count(key) {
+      var d = k[key] - k0[key];
+      return { delta: (d ? signed(d) : 'inchangé') + since, spark: spark(key) };
+    }
+    function rate(key, totalKey) {
+      if (!k[totalKey] || !k0[totalKey]) return { spark: spark(key, totalKey) };
+      var d = k[key] - k0[key];
+      var flat = Math.abs(d) < 0.05;
+      return { delta: (flat ? '= ' : d > 0 ? '▲ ' : '▼ ') + signed(flat ? 0 : d, 1) + ' pts' + since,
+        deltaTone: flat ? null : d > 0 ? 'ok' : 'ko', spark: spark(key, totalKey) };
+    }
+    return { total_postes: count('total_postes'), postes_conformes: rate('taux_postes', 'total_postes'),
+      total_apps: count('total_apps'), apps_conformes: rate('taux_apps', 'total_apps') };
+  }
+
+  function renderDashboard(body, s, md, extra) {
     var f = State.filtered(md);
     var postes = f.postes;
     var apps = f.applications;
     var k = Core.computeKpis(postes, apps);
+    var px = periodExtras(s, k, extra);
+    function kpi(o) { return Object.assign(o, px[o.key] || {}); }
     board = Charts.board();
 
     var note = UI.filterNote('all');
@@ -67,12 +117,12 @@
 
     // KPI strip
     body.appendChild(UI.kpiStrip([
-      { key: 'total_postes', title: 'Postes inventoriés', value: UI.fmtNum(k.total_postes) },
-      { key: 'postes_conformes', title: 'Postes conformes', value: UI.fmtNum(k.postes_conformes),
-        sub: UI.fmtPctNode(k.taux_postes), tone: toneFor(k.taux_postes, k.total_postes) },
-      { key: 'total_apps', title: 'Applications inventoriées', value: UI.fmtNum(k.total_apps) },
-      { key: 'apps_conformes', title: 'Applications conformes', value: UI.fmtNum(k.apps_conformes),
-        sub: UI.fmtPctNode(k.taux_apps), tone: toneFor(k.taux_apps, k.total_apps) }
+      kpi({ key: 'total_postes', title: 'Postes inventoriés', value: UI.fmtNum(k.total_postes) }),
+      kpi({ key: 'postes_conformes', title: 'Postes conformes', value: UI.fmtNum(k.postes_conformes),
+        sub: UI.fmtPctNode(k.taux_postes), tone: toneFor(k.taux_postes, k.total_postes) }),
+      kpi({ key: 'total_apps', title: 'Applications inventoriées', value: UI.fmtNum(k.total_apps) }),
+      kpi({ key: 'apps_conformes', title: 'Applications conformes', value: UI.fmtNum(k.apps_conformes),
+        sub: UI.fmtPctNode(k.taux_apps), tone: toneFor(k.taux_apps, k.total_apps) })
     ]));
 
     // Gauges
@@ -123,7 +173,8 @@
     view = null;
     var s = State.get();
     var canEdit = State.canEdit();
-    root.appendChild(UI.monthHeader({ title: 'Tableau de bord', month: s.month, kickerId: 'dashboard-caption' }));
+    var per = State.period();
+    root.appendChild(UI.monthHeader({ title: 'Tableau de bord', month: s.month, from: per.from, kickerId: 'dashboard-caption' }));
 
     if (!s.months.length) {
       // Empty state: one line of ink-2 text; admins can run the first synchronisation from here.
@@ -142,13 +193,21 @@
 
     var body = el('div', { class: 'dashboard-body', id: 'dashboard-body' });
     root.appendChild(body);
-    view = { body: body, month: s.month, ready: false };
+    view = { body: body, month: s.month, ready: false, extra: null };
     var v = view;
     UI.asyncBlock(body, {
-      load: function () { return State.loadMonth(v.month); },
+      // A period also needs its first month and the history (sparklines; the page works without it).
+      load: function () {
+        if (per.single) return State.loadMonth(v.month);
+        return Promise.all([State.loadMonth(v.month), State.loadMonth(per.from),
+          State.loadTimeline().catch(function () { return null; })]).then(function (r) {
+          v.extra = { from: per.from, months: per.months, fromMd: r[1], timeline: r[2] };
+          return r[0];
+        });
+      },
       placeholder: function () { return UI.skeleton('dashboard', { label: 'Chargement des données…' }); },
       error: UI.monthError(v.month),
-      render: function (md) { v.ready = true; renderDashboard(body, State.get(), md); }
+      render: function (md) { v.ready = true; renderDashboard(body, State.get(), md, v.extra); }
     });
   }
 
@@ -158,7 +217,7 @@
     if (!md || changed.length !== 1 || changed[0] !== 'filters') return false;
     purgeCharts();
     UI.clear(view.body);
-    renderDashboard(view.body, State.get(), md);
+    renderDashboard(view.body, State.get(), md, view.extra);
     return true;
   }
 

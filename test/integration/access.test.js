@@ -406,6 +406,11 @@ test('interface preferences: stored per account, allowed to every role, validate
   fail(sb.ctx, 'api_savePrefs', { theme: 'dark' }, 'VALIDATION');
   fail(sb.ctx, 'api_savePrefs', {}, 'VALIDATION');
   assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), { sidebar: 'collapsed' }, 'refused saves changed nothing');
+  // The period shortcut (app bar) is a preference too; prefs are merged, not replaced.
+  fail(sb.ctx, 'api_savePrefs', { period: 'last12' }, 'VALIDATION');
+  ok(sb.ctx, 'api_savePrefs', { period: 'last6' });
+  assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), { sidebar: 'collapsed', period: 'last6' });
+  ok(sb.ctx, 'api_savePrefs', { period: 'month' });
 
   // A lecteur saves their own, separate preferences.
   ok(sb.ctx, 'api_saveUser', { email: READER, role: 'lecteur' });
@@ -414,7 +419,7 @@ test('interface preferences: stored per account, allowed to every role, validate
   ok(sb.ctx, 'api_savePrefs', { sidebar: 'open' });
   assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), { sidebar: 'open' });
   as(sb, undefined);
-  assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), { sidebar: 'collapsed' });
+  assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), { sidebar: 'collapsed', period: 'month' });
 
   // Unreadable or unknown stored values are ignored.
   props.setProperty('PREFS_' + OWNER, '{oops');

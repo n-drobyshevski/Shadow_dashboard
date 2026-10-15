@@ -39,6 +39,12 @@ barre latérale, démarrage).
 automatiquement dans votre Drive. Le 1er du mois, la première synchronisation crée le nouveau mois ; le
 précédent reste figé tel qu'à sa dernière synchronisation. Il n'y a plus d'import manuel.
 
+**Période.** La barre du haut permet de choisir un mois ou une période (raccourcis « 3 derniers mois »,
+« 6 derniers mois », « Année », « Tout l'historique », ou plage libre). Sur une période, chaque page montre
+l'état du dernier mois et ce qui a changé depuis le premier : écarts et mini-courbes au Tableau de bord,
+colonne « Évolution » dans Postes et Applications, Suivi temporel limité à la période, actions datées de la
+période. Le raccourci choisi est mémorisé par compte.
+
 Les modifications du mois en cours faites dans l'application (cellules des Postes et Applications,
 poste générique, ajout / renommage / suppression d'une application) sont **écrites dans le classeur
 source**, puis dans l'instantané : la synchronisation suivante les relit. Galink et IDP, absents de la

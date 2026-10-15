@@ -13,7 +13,9 @@
     page: 'dashboard',
     configured: false,
     months: [],
-    month: '',
+    month: '',                 // the selected month = the END of the period (pages show its state)
+    from: '',                  // start of the period ('' = a single month)
+    preset: '',                // period shortcut in use (Core.PERIOD_PRESETS) or '' (custom / stepped)
     currentMonth: '',
     dataUrl: '',
     sourceUrl: '',
@@ -241,7 +243,9 @@
       var prev = state.user || {};
       var months = Core.sortMonths(b.months || []);
       var month = months.indexOf(state.month) >= 0 ? state.month : (b.latestMonth || months[months.length - 1] || '');
+      var from = state.from && months.indexOf(state.from) >= 0 && state.from < month ? state.from : '';
       set({
+        from: from,
         configured: !!b.configured,
         months: months,
         month: month,
@@ -262,6 +266,25 @@
     });
   }
 
+  /**
+   * The selected period: {from, to, months (synchronised months inside, ascending), single}. `to` is
+   * state.month; a single month has from === to.
+   */
+  function period() {
+    var to = state.month;
+    var from = state.from && state.from < to ? state.from : to;
+    var months = to ? Core.monthsInRange(state.months, from, to) : [];
+    return { from: from, to: to, months: months, single: from === to };
+  }
+
+  /** Selects a period (a reversed range is swapped; from === to = one month). preset: the shortcut used, if any. */
+  function setPeriod(from, to, preset) {
+    var a = from || to;
+    var b = to || from;
+    if (a > b) { var t = a; a = b; b = t; }
+    set({ month: b, from: a === b ? '' : a, preset: preset || '' });
+  }
+
   /** Admins edit; lecteurs only read (the server refuses their writes anyway, FORBIDDEN). */
   function canEdit() {
     return !!(state.user && state.user.role === 'admin');
@@ -269,6 +292,8 @@
 
   window.State = {
     get: get,
+    period: period,
+    setPeriod: setPeriod,
     canEdit: canEdit,
     set: set,
     subscribe: subscribe,
@@ -297,6 +322,9 @@
  *   Fmt.monthRange(a, b)       -> 'Avril 2026 – mai 2026' (one month -> 'Mai 2026')
  *   Fmt.date('2026-05-04')     -> '04/05/2026'        (DD/MM/YYYY input is returned unchanged)
  *   Fmt.dateTime('2026-05-04 10:30') / ('2026-05-04T10:30:00') -> '04/05/2026 10:30'
+ *   Fmt.monthShort('2026-04')  -> 'avr.'             compact labels (period button)
+ *   Fmt.periodTitle(a, b)      -> 'Avril → octobre 2026' / 'Décembre 2025 → octobre 2026' (a === b: 'Mai 2026')
+ *   Fmt.periodShort(a, b)      -> 'Avr. – oct. 2026' / 'Déc. 2025 – oct. 2026' (a === b: 'Mai 2026')
  *   Fmt.stamp('2026-05-04 10:30')  -> '10:30' today, '04/05 10:30' this year, else '04/05/2026 10:30'
  *   Fmt.syncChange(changes)    -> '+2 postes · 1 application modifiée (3 valeurs)' (ImportLog / sync changes)
  * Invalid input is returned as a string unchanged ('' for null).
@@ -327,6 +355,24 @@
   function dateTime(v) {
     var r = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(s(v).trim());
     return r ? r[3] + '/' + r[2] + '/' + r[1] + ' ' + r[4] + ':' + r[5] : date(v);
+  }
+
+  var MONTHS_SHORT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+  function monthShort(m) {
+    var r = /^(\d{4})-(\d{2})$/.exec(s(m));
+    return r ? MONTHS_SHORT[Number(r[2]) - 1] : s(m);
+  }
+  function periodTitle(a, b) {
+    if (!a || !b || a === b) return monthTitle(b || a);
+    var ya = a.slice(0, 4);
+    var yb = b.slice(0, 4);
+    return cap(ya === yb ? MONTHS[Number(a.slice(5, 7)) - 1] : monthLong(a)) + ' → ' + monthLong(b);
+  }
+  function periodShort(a, b) {
+    if (!a || !b || a === b) return monthTitle(b || a);
+    var ya = a.slice(0, 4);
+    var yb = b.slice(0, 4);
+    return cap(monthShort(a)) + (ya === yb ? '' : ' ' + ya) + ' – ' + monthShort(b) + ' ' + yb;
   }
 
   /** Short time stamp for status lines (the server stamps in Europe/Paris, the viewers are there too). */
@@ -365,6 +411,9 @@
   }
 
   window.Fmt = {
+    monthShort: monthShort,
+    periodTitle: periodTitle,
+    periodShort: periodShort,
     stamp: stamp,
     syncChange: syncChange,
     monthLong: monthLong,
