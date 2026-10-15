@@ -15,7 +15,9 @@ identifiers and comments are **English**.
     (IIFE bodies may only *define* functions; cross-file calls happen inside functions).
 - Names ending in `_` are private (hidden from `google.script.run`). Only `api_*`, `doGet`,
   `include`, `coreScript`, `setup` and `syncHourly` (the time-driven trigger handler: a trigger cannot
-  call a private function) are public functions.
+  call a private function) are public functions. `google.script.run` reaches them too, so `setup`
+  throws unless the active user is the deployer, and `syncHourly(e)` does nothing unless `e.triggerUid`
+  is the id of one of the project's hourly triggers (docs/SECURITY.md).
 - No `Date` object ever crosses `google.script.run`: every `api_*` takes **one JSON string** and
   returns **one JSON string** (see §3).
 - OAuth scopes: only `https://www.googleapis.com/auth/spreadsheets`,
@@ -563,7 +565,8 @@ Sync.enable()         -> creates the 'syncHourly' trigger (timeBased().everyHour
 Sync.run()            -> {status, result}: Importer.importMonth(currentMonth, true, {skipUnchanged:true});
                          records lastRunAt / lastOkAt / lastChangeAt + lastChange / lastError (not for BUSY)
 Sync.runFromTrigger() -> run() when a source is configured; rethrows failures (Google e-mails the owner)
-syncHourly()          -> (Code.js) the trigger handler: Sync.runFromTrigger()
+Sync.isTriggerEvent(e) -> true when e.triggerUid (string) is the id of an existing hourly trigger
+syncHourly(e)         -> (Code.js) the trigger handler: Sync.runFromTrigger() when Sync.isTriggerEvent(e)
 ```
 
 ### Perf (`src/Perf.js`)
@@ -610,7 +613,9 @@ inlinePage_(p)  -> (template, #boot-page) JSON.stringify(p) for a NAV page id (d
 inlineJson_(s)  -> JSON text safe inside <script>: < > & ' ` U+2028 U+2029 -> \uXXXX, / -> \/ (same value
                    for JSON.parse; neither '</script' nor '<!--' can appear)
 setup()         -> Store.ensure(); Sync.enable(); logs data spreadsheet URL. Run once from the editor to authorize.
-syncHourly()    -> Store.clearMemo_(); Config.clearMemo_(); Sync.runFromTrigger() (time-driven trigger, every hour)
+                   Throws unless Access.activeEmail() is the deployer (Access.ownerEmail()).
+syncHourly(e)   -> Store.clearMemo_(); Config.clearMemo_(); Sync.runFromTrigger() (time-driven trigger, every hour);
+                   ignored unless Sync.isTriggerEvent(e)
 ```
 
 ---------------------------------------------------------------------------------------------------
@@ -624,7 +629,7 @@ is `media="print" onload="this.media='all'"` (+ a `<noscript>` copy) and Plotly 
 ```html
 <!DOCTYPE html><html lang="fr"><head><base target="_top"><meta charset="utf-8">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?…" media="print" onload="this.media='all'"> + <noscript>
-<link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.3/plotly.min.js" as="script">
+<link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.3/plotly.min.js" as="script" integrity="sha512-7H/XbvOmUsf6mawBvmmx9BsPt9ew2NTwQ3QDSzNe6iyacDbCJU+7pBbZY1NdmTpuj7snxSsXasMYMiR2tv906g==" crossorigin="anonymous">
 <?!= include('css') ?>
 </head><body>
 <div id="splash"> … </div>

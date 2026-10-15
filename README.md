@@ -404,6 +404,15 @@ nombres d'appels mesurés (ouvertures, lectures, cellules lues, propriétés et 
 et `.artifacts/fonts/` (non versionnés) permettent des captures avec le vrai Plotly et les vraies
 polices ; sans eux, le harnais utilise des substituts.
 
+### Sécurité (SAST / SCA)
+
+`npm run security` lance localement les mêmes analyses que la CI (`.github/workflows/security.yml`) :
+Semgrep (règles du registre + `security/semgrep.yml`), gitleaks (historique complet) et osv-scanner
+(`package-lock.json`). Il faut `semgrep` (`pip install semgrep`), `gitleaks` et `osv-scanner` dans le
+`PATH` ; un outil absent est signalé et ignoré. Les règles propres au projet tournent aussi dans
+`npm test` (`test/integration/security.test.js`). Modèle de menace, résultats et exceptions :
+[docs/SECURITY.md](docs/SECURITY.md).
+
 ## Correspondance avec l'application Streamlit
 
 | Page Streamlit | Page web (`id`) | Fichier client |

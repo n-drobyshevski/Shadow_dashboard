@@ -1,0 +1,66 @@
+# Project rules for Semgrep (run by .github/workflows/security.yml, next to the registry rulesets).
+# Client code is scanned from the .html.js copies made by security/extract-client-js.js.
+rules:
+  - id: shadow.dom-html-sink
+    languages: [javascript]
+    severity: ERROR
+    message: >-
+      HTML sink. The client builds every node with UI.el / textContent (js_ui.html); cell values come from
+      a sheet many people can edit, so markup parsing here is an XSS path.
+    pattern-either:
+      - pattern: $X.innerHTML = $V
+      - pattern: $X.outerHTML = $V
+      - pattern: $X.insertAdjacentHTML(...)
+      - pattern: document.write(...)
+      - pattern: document.writeln(...)
+      - pattern: $R.createContextualFragment(...)
+      - pattern: new DOMParser().parseFromString(...)
+
+  - id: shadow.dynamic-code
+    languages: [javascript]
+    severity: ERROR
+    message: Code built from a string (eval, Function, string timers).
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)
+      - pattern: Function(...)
+      - pattern: setTimeout("...", ...)
+      - pattern: setInterval("...", ...)
+
+  - id: shadow.window-open-without-noopener
+    languages: [javascript]
+    severity: WARNING
+    message: window.open without 'noopener' lets the opened page reach window.opener.
+    patterns:
+      - pattern-either:
+          - pattern: window.open($U)
+          - pattern: window.open($U, $T)
+          - pattern: window.open($U, $T, $F)
+      - pattern-not: window.open($U, $T, "=~/noopener/")
+
+  - id: shadow.htmlservice-allowall
+    languages: [javascript]
+    severity: ERROR
+    message: XFrameOptionsMode.ALLOWALL lets any site frame the app (clickjacking).
+    pattern: $O.setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+
+  - id: shadow.htmlservice-unescaped-template
+    languages: [javascript]
+    severity: WARNING
+    message: >-
+      createHtmlOutput / append with a built string: HtmlService does not escape it. Use a template with
+      <?= ?> (escaped) or keep the value out of the markup.
+    pattern-either:
+      - pattern: HtmlService.createHtmlOutput($A + $B)
+      - pattern: $O.append($A + $B)
+
+  - id: shadow.urlfetch
+    languages: [javascript]
+    severity: WARNING
+    message: >-
+      Outbound request from the server (runs as the deployer). Check the URL can't be chosen by a visitor
+      (SSRF / token leak) and that no OAuth token is attached to a non-Google host.
+    pattern-either:
+      - pattern: UrlFetchApp.fetch(...)
+      - pattern: UrlFetchApp.fetchAll(...)
+      - pattern: ScriptApp.getOAuthToken()

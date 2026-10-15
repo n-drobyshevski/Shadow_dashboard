@@ -523,4 +523,26 @@ describe('controls', () => {
     assert.deepEqual(out, ['empty-state is-small', 'Aucune action.', 'status', 'Chargement…', 'alert',
       'Erreur : Erreur inconnue.Réessayer', 1, 'Erreur inconnue.', 'a lien']);
   });
+
+  test('UI.el drops script URLs (scheme allowlist, control characters too), inline handlers as text, srcdoc', async () => {
+    const out = await page.evaluate(() => {
+      const href = (v) => UI.el('a', { href: v }).getAttribute('href');
+      return {
+        dropped: ['javascript:alert(1)', 'JAVASCRIPT:alert(1)', ' javascript:alert(1)', 'java\tscript:alert(1)',
+          'java\nscript:alert(1)', '\u0001javascript:alert(1)', 'data:text/html,<b>x</b>', 'vbscript:x',
+          'file:///etc/passwd'].map(href),
+        kept: ['https://docs.google.com/spreadsheets/d/x', 'http://intra', 'mailto:a@b.c', '#', '?page=postes',
+          'blob:https://x/1'].map(href),
+        img: UI.el('img', { src: 'javascript:alert(1)' }).getAttribute('src'),
+        xlink: UI.el('a', { 'xlink:href': 'javascript:alert(1)' }).getAttribute('xlink:href'),
+        onclick: UI.el('button', { onclick: 'alert(1)' }).getAttribute('onclick'),
+        onClickUpper: UI.el('button', { ONCLICK: 'alert(1)' }).getAttribute('onclick'),
+        srcdoc: UI.el('iframe', { srcdoc: '<script>alert(1)<\/script>' }).getAttribute('srcdoc'),
+      };
+    });
+    assert.deepEqual(out.dropped, out.dropped.map(() => null));
+    assert.deepEqual(out.kept, ['https://docs.google.com/spreadsheets/d/x', 'http://intra', 'mailto:a@b.c', '#',
+      '?page=postes', 'blob:https://x/1']);
+    assert.deepEqual([out.img, out.xlink, out.onclick, out.onClickUpper, out.srcdoc], [null, null, null, null, null]);
+  });
 });

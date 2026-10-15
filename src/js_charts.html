@@ -144,6 +144,9 @@
 
   // Same build as the <link rel="preload"> of index.html; never a blocking <script> in <head>.
   var PLOTLY_URL = 'https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.3/plotly.min.js';
+  // Subresource Integrity (cdnjs' published hash, same in index.html): a modified file on the CDN is
+  // refused by the browser and the charts show « Graphique indisponible » instead of running it.
+  var PLOTLY_SRI = 'sha512-7H/XbvOmUsf6mawBvmmx9BsPt9ew2NTwQ3QDSzNe6iyacDbCJU+7pBbZY1NdmTpuj7snxSsXasMYMiR2tv906g==';
   var PLOTLY_TIMEOUT_MS = 30000;
   var plotlyReady = null;
   var lateDraws = []; // draws that fell back on the timeout (whenLate); null once Plotly can no longer come
@@ -195,6 +198,8 @@
       };
       script.onerror = function () { lateDraws = null; fail('the script could not be loaded'); };
       script.async = true;
+      script.integrity = PLOTLY_SRI;
+      script.crossOrigin = 'anonymous';
       script.src = PLOTLY_URL;
       (document.head || document.documentElement).appendChild(script);
     });
@@ -453,7 +458,7 @@
       return {
         type: 'scatter',
         mode: x.length > 1 ? 'lines+markers' : 'markers',
-        name: s.name,
+        name: clean(s.name),
         x: x,
         y: ys,
         connectgaps: false,
@@ -592,7 +597,7 @@
     return draw(el, [{
       type: 'heatmap',
       x: o.x || [],
-      y: yLabels,
+      y: yLabels.map(clean), // équipes come from the sheet: Plotly renders <a>, <span style>... in labels
       z: z,
       zmin: zmin,
       zmax: zmax,

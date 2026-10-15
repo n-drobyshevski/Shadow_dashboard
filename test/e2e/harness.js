@@ -130,7 +130,9 @@ async function waitIdle(page, timeout = 10000) {
  *   returns for these same options (bootstrapEnvelope), a string = that envelope; left out = nothing
  *   inline (the client calls api_bootstrap). inlinePage: doGet's ?page= (#boot-page); defaults to ''
  *   (no parameter) with `boot`, else nothing inline (the client asks google.script.url.getLocation).
- *   plotly: {delayMs} answers the Plotly CDN request late, {fail:true} makes it fail.
+ *   plotly: {delayMs} answers the Plotly CDN request late, {fail:true} makes it fail. The page's Subresource
+ *   Integrity hash is removed (the answer is the recorder-wrapped build or a stub), except with {sri:true}:
+ *   then the answer is the cached build byte for byte, or with {sri:true, tampered:true} a modified file.
  *   formSchema / delays: see buildMockScript (extra source columns or a fallback answer of api_getFormSchema,
  *   extra answer delay per api name); both can also be changed at run time through window.__mock.
  *   editing: the editing switches of Paramètres ({edit:false, create:false}; default all on), changeable at
@@ -155,7 +157,12 @@ async function openApp({ empty = false, configured = true, page: pageId = 'dashb
     plotlyRequests.push(route.request().url());
     if (plotly.delayMs) await new Promise((r) => setTimeout(r, plotly.delayMs));
     if (plotly.fail) return route.abort('failed');
-    return route.fulfill({ status: 200, contentType: 'application/javascript; charset=utf-8', body: plotlyScript() });
+    const body = !plotly.sri ? plotlyScript() :
+      plotly.tampered ? 'window.Plotly = { react: function () {}, newPlot: function () {} };' :
+        fs.readFileSync(PLOTLY_CACHE);
+    // CORS header: the app requests the script with crossorigin="anonymous" (needed for SRI).
+    return route.fulfill({ status: 200, contentType: 'application/javascript; charset=utf-8', body,
+      headers: { 'Access-Control-Allow-Origin': '*' } });
   });
   // Fonts come from the local cache; any other network request would hang or fail in the sandbox:
   // block it explicitly.
@@ -168,11 +175,12 @@ async function openApp({ empty = false, configured = true, page: pageId = 'dashb
   });
 
   const mockOptions = { empty, configured, delayMs, email, failNext, prefs, currentMonth, sync, formSchema, delays, editing };
-  const html = renderIndex({
+  let html = renderIndex({
     inject: '<script>' + buildMockScript(mockOptions) + '</script>',
     boot: boot === true ? bootstrapEnvelope(mockOptions) : boot,
     page: inlinePage !== undefined ? inlinePage : boot !== undefined ? '' : undefined,
   });
+  if (!plotly.sri) html = html.replace(/sha512-[A-Za-z0-9+/=]{80,}/g, '');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shadow-e2e-'));
   const file = path.join(dir, 'index.html');
   fs.writeFileSync(file, html);
@@ -365,7 +373,8 @@ async function periodValue(page) {
   return page.$eval('#period-button', (b) => ({ from: b.dataset.from, to: b.dataset.to }));
 }
 
-module.exports = { ACCOUNTS, openApp, screenshot, waitIdle, chooseOption, chooseOptions, optionLabels, dropdownValue, typeDate,
+module.exports = {
+  PLOTLY_CACHE, ACCOUNTS, openApp, screenshot, waitIdle, chooseOption, chooseOptions, optionLabels, dropdownValue, typeDate,
   openListbox, choosePeriod, periodValue };
 
 if (require.main === module) {

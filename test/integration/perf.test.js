@@ -16,7 +16,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
-const { loadGas, timingLines } = require('../helpers/gasSandbox');
+const { loadGas, timingLines, hourlyEvent } = require('../helpers/gasSandbox');
 const data = require('../fixtures/data');
 
 const TODAY = '2026-05-15';
@@ -369,7 +369,7 @@ test('call counts of the main flows on a large data spreadsheet stay within the 
 
   // The hourly trigger run when the source has not changed since the last sync.
   ctx = execution(env);
-  m = measure(env, () => ctx.syncHourly());
+  m = measure(env, () => ctx.syncHourly(hourlyEvent(env)));
   assert.deepEqual(m.lines.filter((l) => l.stage === 'sync').map((l) => [l.ok, l.changed]), [[true, false]]);
   results.syncNoChange = m;
   // Neither the month view nor the no-change sync reads a whole data tab (only the month's rows).

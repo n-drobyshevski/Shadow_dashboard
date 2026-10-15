@@ -245,6 +245,8 @@ test('escapeFormula', () => {
   assert.equal(Core.escapeFormula('@user'), "'@user");
   assert.equal(Core.escapeFormula('2026-05'), '2026-05');
   assert.equal(Core.escapeFormula(' =x'), ' =x');
+  assert.equal(Core.escapeFormula('\t=HYPERLINK("x")'), "'\t=HYPERLINK(\"x\")");
+  assert.equal(Core.escapeFormula('\r=1+1'), "'\r=1+1");
   assert.equal(Core.escapeFormula(''), '');
   assert.equal(Core.escapeFormula(-1), -1);
   assert.equal(Core.escapeFormula(null), null);

@@ -91,6 +91,12 @@ function inlineJson_(json) {
  * hourly synchronisation trigger. Asks first for any scope still missing (Sync.requireScopes).
  */
 function setup() {
+  // Public (the editor only runs public functions), so google.script.run can reach it too: the web
+  // app runs as the deployer, and only the deployer may run this. A visitor's active user differs.
+  var active = Access.activeEmail();
+  if (!active || active !== Access.ownerEmail()) {
+    throw new Error('setup : réservé au compte qui a déployé l’application (éditeur Apps Script).');
+  }
   Sync.requireScopes();
   var ss = Store.ensure();
   Logger.log('Classeur de données : %s', ss.getUrl());
@@ -101,12 +107,16 @@ function setup() {
 
 /**
  * Time-driven trigger handler (every hour, created by Sync.enable): synchronises the current month
- * with the source spreadsheet. Public because a trigger cannot call a private (`_`) function; a call
- * from google.script.run would only run the same idempotent sync and returns nothing. Starts with
+ * with the source spreadsheet. Public because a trigger cannot call a private (`_`) function, so
+ * google.script.run can call it too: without the event of one of this project's hourly triggers
+ * (Sync.isTriggerEvent) it does nothing. Starts with
  * empty read memos, like apiWrap_ (a new execution in Apps Script; matters in the test sandbox).
  */
-function syncHourly() {
+function syncHourly(e) {
   Store.clearMemo_();
   Config.clearMemo_();
+  // Public for the trigger, hence reachable from google.script.run: anything but this project's
+  // hourly trigger is ignored (admins have api_syncNow).
+  if (!Sync.isTriggerEvent(e)) return;
   Sync.runFromTrigger();
 }

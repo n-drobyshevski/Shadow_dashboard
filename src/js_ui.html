@@ -68,8 +68,15 @@
 (function () {
   'use strict';
 
-  var UNSAFE_URL = /^\s*(javascript|data|vbscript)\s*:/i;
-  var URL_ATTRS = { href: 1, src: 1, action: 1, formaction: 1, xlinkHref: 1 };
+  // URL attributes keep relative URLs and these schemes only. Browsers ignore control characters and
+  // spaces inside a scheme ('java\tscript:'), so they are removed before the scheme is read.
+  var SAFE_SCHEMES = { http: 1, https: 1, mailto: 1, blob: 1 };
+  var URL_ATTRS = { href: 1, src: 1, action: 1, formaction: 1, xlinkhref: 1, 'xlink:href': 1, poster: 1,
+    data: 1, cite: 1, background: 1 };
+  function safeUrl(v) {
+    var m = /^([a-z][a-z0-9+.\-]*):/i.exec(String(v).replace(/[\u0000-\u0020\u007f-\u00a0]+/g, ''));
+    return !m || SAFE_SCHEMES[m[1].toLowerCase()] === 1;
+  }
   var uid = 0;
   function nextId(prefix) { uid++; return (prefix || 'ui') + '-' + uid; }
 
@@ -142,8 +149,8 @@
           node.addEventListener(k.slice(2).toLowerCase(), v);
         } else if (k === 'innerHTML' || k === 'outerHTML') {
           throw new Error('UI.el: ' + k + ' is not allowed');
-        } else if (URL_ATTRS[k] && UNSAFE_URL.test(String(v))) {
-          // dropped on purpose
+        } else if (/^on/i.test(k) || /^srcdoc$/i.test(k) || (URL_ATTRS[k.toLowerCase()] && !safeUrl(v))) {
+          // dropped on purpose: inline handlers as text, srcdoc markup, javascript:/data:/... URLs
         } else {
           node.setAttribute(k, v === true ? '' : String(v));
         }

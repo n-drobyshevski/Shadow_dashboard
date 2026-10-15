@@ -247,9 +247,12 @@ function CoreFactory_() {
     return /^[A-Za-z0-9_-]{20,}$/.test(s) ? s : null;
   }
 
-  /** Prevents formula injection when writing user strings to a sheet. */
+  /**
+   * Prevents formula injection when writing user strings to a sheet or a CSV export: text starting with
+   * = + - @, tab or carriage return (OWASP CSV injection list) gets a leading apostrophe.
+   */
   function escapeFormula(v) {
-    if (typeof v === 'string' && /^[=+\-@]/.test(v)) return "'" + v;
+    if (typeof v === 'string' && /^[=+\-@\t\r]/.test(v)) return "'" + v;
     return v;
   }
 

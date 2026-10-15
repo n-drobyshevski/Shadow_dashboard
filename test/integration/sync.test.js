@@ -9,7 +9,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { loadGas, plain, timingLines } = require('../helpers/gasSandbox');
+const { loadGas, plain, timingLines, hourlyEvent } = require('../helpers/gasSandbox');
 const { buildSourceSpreadsheet, SOURCE_ID } = require('../fixtures/source');
 
 const KEY_POSTE = 'Nom du poste';
@@ -206,15 +206,34 @@ test('errors are recorded in the status until the next successful run; BUSY is n
 test('syncHourly (the trigger handler): nothing without a source, a sync with one', () => {
   const sb = loadGas({ sources: [source('2026-05')] });
   sb.ctx.Config.today = () => '2026-05-15';
-  assert.doesNotThrow(() => sb.ctx.syncHourly({ triggerUid: 't1' }));
+  assert.doesNotThrow(() => sb.ctx.syncHourly(hourlyEvent(sb.env)));
   assert.equal(sb.ctx.Store.listMonths().length, 0);
   ok(sb.ctx, 'api_setConfig', { source: SOURCE_ID });
-  sb.ctx.syncHourly({ triggerUid: 't1' });
+  sb.ctx.syncHourly(hourlyEvent(sb.env));
   assert.deepEqual(plain(sb.ctx.Store.listMonths()), ['2026-05']);
   // A failing hourly run throws (Google e-mails the owner) after recording the error.
   sb.env.__fault({ method: 'openById', id: SOURCE_ID });
-  assert.throws(() => sb.ctx.syncHourly({ triggerUid: 't1' }));
+  assert.throws(() => sb.ctx.syncHourly(hourlyEvent(sb.env)));
   assert.equal(ok(sb.ctx, 'api_getSyncStatus').lastError.code, 'SOURCE_ERROR');
+});
+
+test('syncHourly and setup ignore or refuse a call from google.script.run (any visitor)', () => {
+  const sb = loadGas({ sources: [source('2026-05')] });
+  sb.ctx.Config.today = () => '2026-05-15';
+  ok(sb.ctx, 'api_setConfig', { source: SOURCE_ID });
+  const event = hourlyEvent(sb.env);
+  // No event, a made-up uid, a uid of no trigger, a non-object: nothing is synchronised.
+  for (const e of [undefined, null, {}, { triggerUid: 'trig-x' }, { triggerUid: 1 }, 'trig-hourly']) {
+    sb.ctx.syncHourly(e);
+    assert.equal(sb.ctx.Store.listMonths().length, 0, JSON.stringify(e));
+  }
+  sb.ctx.syncHourly(event);
+  assert.deepEqual(plain(sb.ctx.Store.listMonths()), ['2026-05']);
+  // setup: only the deployer (active user = effective user), never a visitor of the web app.
+  for (const active of ['lecteur@decathlon.com', '']) {
+    sb.env.__state.session.active = active;
+    assert.throws(() => sb.ctx.setup(), /réservé au compte qui a déployé/);
+  }
 });
 
 test('the sync adds « Poste générique Decathlon » when an application names it', () => {
