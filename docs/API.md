@@ -220,7 +220,7 @@ Config.get()                 -> {dataId:''|id, sourceId:''|id, threshold:int (Co
 Config.setDataId(id), Config.setSourceId(id), Config.setThreshold(n), Config.setAccess(access)
 Config.PROP_FAVICON   = 'FAVICON_URL'  (optional https URL of the tab icon; '-' = none)
 Config.faviconUrl()          -> FAVICON_URL when it is an https URL, '' for '-', else DEFAULT_FAVICON_URL
-                                (assets/favicon.png on raw.githubusercontent.com, main branch).
+                                (assets/favicon.png embedded as a data:image/png;base64 URI).
                                 doGet calls HtmlOutput.setFaviconUrl with it (errors logged, never thrown).
 Config.today()               -> 'YYYY-MM-DD'        (Utilities.formatDate, script time zone)
 Config.todayFr()             -> 'DD/MM/YYYY'
