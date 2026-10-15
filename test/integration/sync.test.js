@@ -110,8 +110,10 @@ test('without the ScriptApp authorisation: the source is still saved, the status
   assert.equal(d.sync.enabled, false);
   assert.match(d.sync.authError, /autorisation/i);
   assert.match(ok(sb.ctx, 'api_getSettings').sync.authError, /autorisation/i);
-  const e = fail(sb.ctx, 'api_enableSync', null, 'INTERNAL');
+  const e = fail(sb.ctx, 'api_enableSync', null, 'NOT_CONFIGURED');
   assert.match(e.message, /autorisation/i);
+  assert.match(e.message, /setup/);
+  assert.doesNotMatch(e.message, /Erreur interne/);
 });
 
 // ------------------------------------------------------------------------------------- runs
