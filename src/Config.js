@@ -17,6 +17,13 @@ var Config = (function () {
    */
   var PROP_SCHEMA = 'DATA_SCHEMA_VERSION';
   /**
+   * Source write stamp: moved forward (Store.withLock, after its flush, still holding the lock) by every
+   * execution that wrote into the source spreadsheet (write-back of a live-month edit). The sync reads the
+   * source outside the lock: it notes the stamp before that read and reads the source again under the
+   * lock when the stamp moved, so a write-back that landed in between is never reverted.
+   */
+  var PROP_SOURCE_STAMP = 'SOURCE_WRITE_STAMP';
+  /**
    * Per-account interface preferences, one Script Property per account: PREFS_<email> = JSON. The page
    * also keeps them in localStorage, but that storage is refused in the Apps Script frame when the
    * browser blocks third-party storage. PREF_VALUES = the only keys and values accepted.
@@ -125,6 +132,27 @@ var Config = (function () {
   function setSchemaVersion(dataId, version) {
     clearMemo_();
     props_().setProperty(PROP_SCHEMA, JSON.stringify({ dataId: String(dataId || ''), version: String(version) }));
+  }
+
+  /**
+   * The source write stamp ('' when never moved), from this execution's memo. Under Store.withLock the
+   * memo was dropped when the lock was taken, so this is the stored value; outside the lock it may be
+   * older than the stored value, which only ever causes an extra source read, never a missed one.
+   */
+  function sourceStamp() {
+    return String(all_(false)[PROP_SOURCE_STAMP] || '');
+  }
+
+  /**
+   * Moves the source write stamp forward to max(now, previous + 1) (never a value seen before, even
+   * after the property was deleted). Called by Store.withLock only, still holding the lock: the memo
+   * it starts from was then read under the lock, and only lock holders write the stamp.
+   */
+  function bumpSourceStamp() {
+    var next = Math.max(Date.now(), (Number(all_(false)[PROP_SOURCE_STAMP]) || 0) + 1);
+    clearMemo_();
+    props_().setProperty(PROP_SOURCE_STAMP, String(next));
+    return String(next);
   }
 
   /** Concatenates ACCESS_JSON_0..N-1 ('' when unset or a part is missing). */
@@ -254,6 +282,7 @@ var Config = (function () {
     PROP_ACCESS: PROP_ACCESS,
     PROP_FAVICON: PROP_FAVICON,
     PROP_SCHEMA: PROP_SCHEMA,
+    PROP_SOURCE_STAMP: PROP_SOURCE_STAMP,
     PROP_PREFS_PREFIX: PROP_PREFS_PREFIX,
     PREF_VALUES: PREF_VALUES,
     DEFAULT_FAVICON_URL: DEFAULT_FAVICON_URL,
@@ -270,6 +299,8 @@ var Config = (function () {
     setThreshold: setThreshold,
     setAccess: setAccess,
     setSchemaVersion: setSchemaVersion,
+    sourceStamp: sourceStamp,
+    bumpSourceStamp: bumpSourceStamp,
     clearMemo_: clearMemo_,
     faviconUrl: faviconUrl,
     getPrefs: getPrefs,

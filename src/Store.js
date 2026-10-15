@@ -41,6 +41,7 @@ var Store = (function () {
   var ss_ = null;      // data Spreadsheet
   var sheets_ = {};    // tab name -> Sheet
   var lockDepth_ = 0;  // > 0 while this execution holds the script lock (re-entrant withLock)
+  var sourceWritten_ = false; // the current withLock wrote into the source spreadsheet (noteSourceWrite)
   /**
    * Read memo, tab -> {table: readTable_ result | null, col: column A | null, spans: {month: span}}.
    * A tab's entry is dropped by every write primitive on that tab (writeBlock_, the clearContent of
@@ -453,6 +454,9 @@ var Store = (function () {
    * the lock in `finally`. Re-entrant: a nested call runs inside the outer lock. Acquiring the lock
    * drops the read memos (Store and Config): another execution may have written while this one
    * waited, and every read-modify-write under the lock must start from the stored values.
+   * When fn wrote into the source spreadsheet (noteSourceWrite), the source write stamp moves forward
+   * after the flush and before the lock is released (Config.bumpSourceStamp): whoever sees the new stamp
+   * also sees the flushed source, which is what Importer.importMonth relies on.
    */
   function withLock(fn) {
     if (lockDepth_ > 0) return fn();
@@ -464,6 +468,7 @@ var Store = (function () {
     }
     memo_ = {};
     Config.clearMemo_();
+    sourceWritten_ = false;
     lockDepth_++;
     try {
       return fn();
@@ -472,9 +477,24 @@ var Store = (function () {
       try {
         SpreadsheetApp.flush();
       } finally {
-        lock.releaseLock();
+        try {
+          // Even when fn or the flush failed: a write may have reached the source before the error.
+          if (sourceWritten_) Config.bumpSourceStamp();
+        } finally {
+          sourceWritten_ = false;
+          lock.releaseLock();
+        }
       }
     }
+  }
+
+  /**
+   * Records that this execution is about to write into the SOURCE spreadsheet (Importer write-back):
+   * the outermost withLock then moves the source write stamp. Only under withLock (INTERNAL otherwise).
+   */
+  function noteSourceWrite() {
+    if (lockDepth_ <= 0) throw Core.makeError('INTERNAL', 'Écriture dans le classeur source hors du verrou.');
+    sourceWritten_ = true;
   }
 
   // --------------------------------------------------------------------------- generic tabs
@@ -963,6 +983,7 @@ var Store = (function () {
     ensure: ensure,
     dataUrl: dataUrl,
     withLock: withLock,
+    noteSourceWrite: noteSourceWrite,
     readTab: readTab,
     writeTab: writeTab,
     listMonths: listMonths,

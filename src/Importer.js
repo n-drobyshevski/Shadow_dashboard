@@ -6,7 +6,8 @@
  * Reading discipline: per source tab ONE getDataRange(), then getValues() (raw, to detect real Date
  * cells) + getDisplayValues() (what the user sees: '30,4%', 'Oui'...). Date cells are formatted
  * 'dd/MM/yyyy' in the SOURCE spreadsheet's time zone (not the script's), so a date typed as
- * 15/03/2026 in Paris never becomes 14/03/2026.
+ * 15/03/2026 in Paris never becomes 14/03/2026. importMonth reads the source before taking the script
+ * lock; the write-back reads only the rows it touches (see the write-back section).
  *
  * Load-order safe: the IIFE only defines functions; Config / Core / Store / GAS services are used
  * lazily, inside the functions.
@@ -217,8 +218,16 @@ var Importer = (function () {
   }
 
   /**
-   * Snapshots the live source as `month` (Sync.run every hour; docs/API.md §4). Runs under the script
-   * lock; every read happens before the first write.
+   * Snapshots the live source as `month` (Sync.run every hour; docs/API.md §4). The source is read
+   * OUTSIDE the script lock (its slowest step, done on every run, even when nothing changed): saves are
+   * not kept waiting behind it. The lock is then taken to read the stored month, compare and write;
+   * every read happens before the first write.
+   *
+   * Lost-edit guard: a live-month save writes into the source under the lock, so a source read taken
+   * before the lock may predate it, and the comparison would revert that edit. The source write stamp
+   * (Config.sourceStamp, moved by Store.withLock after every write-back has been flushed) is noted
+   * BEFORE the outside read; when it moved by the time the lock is held (or the configured source
+   * changed), the source is read again, under the lock.
    *
    * Safety rules (user-entered data must never be lost silently):
    *   - an entity / référentiel tab missing from the source does NOT replace the stored snapshot of
@@ -231,9 +240,10 @@ var Importer = (function () {
    *     import as complete.
    * With opts.skipUnchanged, an overwrite that would change nothing (records, headers, référentiel)
    * writes nothing at all, not even the ImportLog entry: `changed` is then false.
-   * Logs {stage:'importMonth', ms, lockWait, dataReads, readSource, compare, writes, flush, month,
-   * changed} (Perf) when it completes; `writes` is absent when nothing was written. A failure is
-   * reported by the caller's line (sync / api, ok:false).
+   * Logs {stage:'importMonth', ms, readSource, lockWait, rereadSource, dataReads, compare, writes, flush,
+   * month, changed, reread} (Perf) when it completes; `rereadSource` is absent when the outside read was
+   * used, `writes` when nothing was written. A failure is reported by the caller's line (sync / api,
+   * ok:false).
    * @return {{month, counts:{postes, applications, referentiel}, overwritten:boolean, carriedOver:number,
    *           warnings:string[], changed:boolean, changes:{created:boolean, postes, applications, referentiel:boolean}}}
    */
@@ -245,17 +255,23 @@ var Importer = (function () {
     if (!Config.get().sourceId) throw notConfigured_(); // fail fast, before waiting for the lock
 
     var t = Perf.start('importMonth', { month: month });
+    var stamp = Config.sourceStamp(); // before the source read (see the lost-edit guard above)
+    var outside = readSource();
+    t.lap('readSource');
+    var reread = false;
     var res = Store.withLock(function () {
       t.lap('lockWait');
+      var src = outside;
+      if (Config.sourceStamp() !== stamp || Config.get().sourceId !== outside.sourceId) {
+        src = readSource();
+        reread = true;
+        t.lap('rereadSource');
+      }
       var months = Store.listMonths();
       var exists = months.indexOf(month) >= 0;
       if (exists && !overwrite) {
         throw Core.makeError('MONTH_EXISTS', 'Le mois ' + month + ' a déjà été importé.');
       }
-      t.lap('dataReads');
-
-      var src = readSource();
-      t.lap('readSource');
       var prevInfo = exists ? Store.latestImportInfo(month) : null;
       var warnings = [];
       if (!src.postes) {
@@ -353,16 +369,35 @@ var Importer = (function () {
       return result;
     });
     t.lap('flush');
-    t.end({ changed: res.changed });
+    t.end({ changed: res.changed, reread: reread });
     return res;
   }
 
   // ------------------------------------------------------------------------------- write-back
+  //
+  // Reading discipline: the header row is located in the first HEADER_SCAN_ROWS rows, the records by
+  // ONE read of the key column, then only the rows a write touches are read (formulas of the edited rows,
+  // the row below the last record for an append): never the whole tab.
+  //
+  // Writing discipline: one setValue per edited cell. A block setValues would also rewrite the cells
+  // between the edited ones (a formula, a data-validated cell, a value someone just typed in the
+  // source), and a refused block could not name the refused value. Apps Script batches consecutive
+  // writes until the next read or flush anyway.
+  //
+  // Every write-back runs under Store.withLock (re-entrant: the api_* callers already hold it) and
+  // calls Store.noteSourceWrite before its first write, so that the source write stamp moves
+  // (importMonth's lost-edit guard).
+
+  var HEADER_SCAN_ROWS = 15; // = Core.findHeaderRow's default scan depth
+  var ROW_GAP = 5;           // touched rows at most this far apart are read in one block
+  var MAX_ROW_BLOCKS = 3;    // more blocks than this: one block from the first to the last touched row
 
   /**
-   * The source tab of an entity, located for writing: {sheet, parsed (Core.rowsToRecords result),
-   * formulas (grid of the data range), find(name) -> record index or -1}. SOURCE_ERROR when the tab or
-   * its header row is missing. `timer` (Perf.start) gets the sourceOpen and sourceRead laps.
+   * The source tab of an entity, located for writing: {sheet, tabName, keyField, headers, columns
+   * (grid column of each header), headerRow, width, height (data range), rows (grid row of each record,
+   * in sheet order), find(name) -> index in rows or -1}. Records are the rows below the header whose
+   * key is not blank (as Core.rowsToRecords sees them). SOURCE_ERROR when the tab or its header row is
+   * missing. `timer` (Perf.start) gets the sourceOpen and sourceRead laps.
    */
   function sourceTable_(entity, timer) {
     var keyField = entity === 'postes' ? Core.KEY_POSTE : Core.KEY_APP;
@@ -375,25 +410,58 @@ var Importer = (function () {
         'modification non enregistrée.');
     }
     var range = sheet.getDataRange();
-    var display = range.getDisplayValues();
-    var parsed = Core.rowsToRecords({ display: display, anchors: [keyField], keyField: keyField });
-    var formulas = range.getFormulas();
+    var height = range.getNumRows();
+    var width = range.getNumColumns();
+    var head = sheet.getRange(1, 1, Math.min(HEADER_SCAN_ROWS, height), width).getDisplayValues();
+    var parsed = Core.rowsToRecords({ display: head, anchors: [keyField], keyField: keyField });
+    var keyCol = parsed.columns[parsed.headers.indexOf(keyField)];
+    var first = parsed.headerRow + 1; // grid row (0-based) just below the header
+    var keys = height > first ? sheet.getRange(first + 1, keyCol + 1, height - first, 1).getDisplayValues() : [];
+    var rows = [];
+    var norms = [];
+    keys.forEach(function (cell, i) {
+      var k = Core.str(cell[0]);
+      if (k === '') return;
+      rows.push(first + i);
+      norms.push(Core.normKey(k));
+    });
     timer.lap('sourceRead');
     return {
       sheet: sheet,
-      display: display,
       tabName: tabName,
       keyField: keyField,
-      parsed: parsed,
-      formulas: formulas,
+      headers: parsed.headers,
+      columns: parsed.columns,
+      headerRow: parsed.headerRow,
+      width: width,
+      height: height,
+      rows: rows,
       find: function (name) {
-        var target = Core.normKey(name);
-        for (var i = 0; i < parsed.records.length; i++) {
-          if (Core.normKey(parsed.records[i][keyField]) === target) return i;
-        }
-        return -1;
+        return norms.indexOf(Core.normKey(name));
       }
     };
+  }
+
+  /**
+   * Formulas of the given grid rows (0-based) across the data range: {gridRow: [formula or '' per
+   * column]}. One getFormulas per block of nearby rows (ROW_GAP); when that makes more than
+   * MAX_ROW_BLOCKS calls, one block from the first to the last row instead.
+   */
+  function rowFormulas_(t, gridRows) {
+    var sorted = gridRows.slice().sort(function (a, b) { return a - b; });
+    var blocks = [];
+    sorted.forEach(function (r) {
+      var b = blocks[blocks.length - 1];
+      if (b && r - b.to <= ROW_GAP) b.to = r;
+      else blocks.push({ from: r, to: r });
+    });
+    if (blocks.length > MAX_ROW_BLOCKS) blocks = [{ from: blocks[0].from, to: blocks[blocks.length - 1].to }];
+    var out = {};
+    blocks.forEach(function (b) {
+      var grid = t.sheet.getRange(b.from + 1, 1, b.to - b.from + 1, t.width).getFormulas();
+      for (var r = b.from; r <= b.to; r++) out[r] = grid[r - b.from];
+    });
+    return out;
   }
 
   /** Cell value as written into the source: '' for blank, formula-looking text kept as text. */
@@ -410,35 +478,43 @@ var Importer = (function () {
    * Writes edits of the current month into the source, before the snapshot is updated:
    * edits = [{name, fields:{header: value}}] (name = the record's key in the snapshot). Fields that
    * have no column in the source (Galink / IDP when the source has none) are skipped: they live in
-   * the snapshot only. Every edit is checked first (row found, no formula in the cell), then written.
+   * the snapshot only. Every edit is checked first (row found, no formula in the cell: the formulas
+   * of the edited rows only are read), then written cell by cell.
    * Like appendRecord / deleteRecord, logs {stage:'writeBack', ms, sourceOpen, sourceRead, cellWrites,
    * op, entity} (Perf) when it completes; a refused write is reported by the caller's api line.
    * @return {number} cells written
    */
   function writeEdits(entity, edits) {
     if (!edits || !edits.length) return 0;
-    var timer = Perf.start('writeBack', { op: 'edit', entity: entity });
-    var t = sourceTable_(entity, timer);
-    var cells = [];
-    edits.forEach(function (e) {
-      var i = t.find(e.name);
-      if (i < 0) throw missingRow_(t, e.name);
-      var r = t.parsed.rows[i];
-      Object.keys(e.fields).forEach(function (f) {
-        var h = t.parsed.headers.indexOf(f);
-        if (h < 0) return;
-        var c = t.parsed.columns[h];
-        if (t.formulas[r] && t.formulas[r][c]) {
-          throw Core.makeError('VALIDATION', 'La colonne « ' + f + ' » est calculée par une formule dans le Google ' +
-            'Sheet source : modifiez-la là-bas.');
-        }
-        cells.push({ row: r + 1, col: c + 1, value: sourceValue_(e.fields[f]) });
+    return Store.withLock(function () {
+      var timer = Perf.start('writeBack', { op: 'edit', entity: entity });
+      var t = sourceTable_(entity, timer);
+      var cells = [];
+      edits.forEach(function (e) {
+        var i = t.find(e.name);
+        if (i < 0) throw missingRow_(t, e.name);
+        Object.keys(e.fields).forEach(function (f) {
+          var h = t.headers.indexOf(f);
+          if (h < 0) return;
+          cells.push({ row: t.rows[i] + 1, col: t.columns[h] + 1, field: f, value: sourceValue_(e.fields[f]) });
+        });
       });
+      if (cells.length) {
+        var formulas = rowFormulas_(t, cells.map(function (cell) { return cell.row - 1; }));
+        timer.lap('sourceRead');
+        cells.forEach(function (cell) {
+          if (formulas[cell.row - 1][cell.col - 1]) {
+            throw Core.makeError('VALIDATION', 'La colonne « ' + cell.field + ' » est calculée par une formule dans ' +
+              'le Google Sheet source : modifiez-la là-bas.');
+          }
+        });
+        Store.noteSourceWrite();
+        cells.forEach(function (cell) { setCell_(t, cell); });
+      }
+      timer.lap('cellWrites');
+      timer.end();
+      return cells.length;
     });
-    cells.forEach(function (cell) { setCell_(t, cell); });
-    timer.lap('cellWrites');
-    timer.end();
-    return cells.length;
   }
 
   /** One cell write; a value refused by the cell's data validation becomes VALIDATION. */
@@ -456,46 +532,55 @@ var Importer = (function () {
    * Appends a record as a new source row, just below the last record (a row is inserted when that row
    * is not empty). Headers the record lacks stay blank, except the columns computed by a formula in
    * the last record's row: the formula is copied down (relative references follow, as with a fill).
+   * Reads the row below the last record and the last record's formulas only.
    */
   function appendRecord(entity, rec) {
-    var timer = Perf.start('writeBack', { op: 'append', entity: entity });
-    var t = sourceTable_(entity, timer);
-    if (t.find(rec[t.keyField]) >= 0) {
-      throw Core.makeError('VALIDATION', '« ' + rec[t.keyField] + ' » existe déjà dans l’onglet « ' + t.tabName +
-        ' » du Google Sheet source.');
-    }
-    var cols = t.parsed.columns;
-    var width = cols.length ? cols[cols.length - 1] + 1 : 1;
-    var row = [];
-    for (var c = 0; c < width; c++) row.push('');
-    t.parsed.headers.forEach(function (h, j) {
-      if (Object.prototype.hasOwnProperty.call(rec, h) && !Core.isBlank(rec[h])) row[cols[j]] = sourceValue_(rec[h]);
-    });
-    var lastIdx = t.parsed.rows.length ? t.parsed.rows[t.parsed.rows.length - 1] : -1;
-    var last = lastIdx >= 0 ? lastIdx : t.parsed.headerRow;
-    var at = last + 2; // 1-based row just below the last record (or the header row)
-    var below = t.display[at - 1];
-    if (below && below.some(function (v) { return String(v) !== ''; })) t.sheet.insertRowsAfter(at - 1, 1);
-    else if (at > t.sheet.getMaxRows()) t.sheet.insertRowsAfter(t.sheet.getMaxRows(), at - t.sheet.getMaxRows());
-    t.sheet.getRange(at, 1, 1, width).setValues([row]);
-    if (lastIdx >= 0) {
-      (t.formulas[lastIdx] || []).forEach(function (f, c) {
-        if (f && c < width && row[c] === '') t.sheet.getRange(lastIdx + 1, c + 1).copyTo(t.sheet.getRange(at, c + 1));
+    Store.withLock(function () {
+      var timer = Perf.start('writeBack', { op: 'append', entity: entity });
+      var t = sourceTable_(entity, timer);
+      if (t.find(rec[t.keyField]) >= 0) {
+        throw Core.makeError('VALIDATION', '« ' + rec[t.keyField] + ' » existe déjà dans l’onglet « ' + t.tabName +
+          ' » du Google Sheet source.');
+      }
+      var cols = t.columns;
+      var width = cols.length ? cols[cols.length - 1] + 1 : 1;
+      var row = [];
+      for (var c = 0; c < width; c++) row.push('');
+      t.headers.forEach(function (h, j) {
+        if (Object.prototype.hasOwnProperty.call(rec, h) && !Core.isBlank(rec[h])) row[cols[j]] = sourceValue_(rec[h]);
       });
-    }
-    timer.lap('cellWrites');
-    timer.end();
+      var lastIdx = t.rows.length ? t.rows[t.rows.length - 1] : -1;
+      var last = lastIdx >= 0 ? lastIdx : t.headerRow;
+      var at = last + 2; // 1-based row just below the last record (or the header row)
+      var below = at <= t.height ? t.sheet.getRange(at, 1, 1, t.width).getDisplayValues()[0] : null;
+      var lastFormulas = lastIdx >= 0 ? rowFormulas_(t, [lastIdx])[lastIdx] : [];
+      timer.lap('sourceRead');
+      Store.noteSourceWrite();
+      if (below && below.some(function (v) { return String(v) !== ''; })) t.sheet.insertRowsAfter(at - 1, 1);
+      else if (at > t.sheet.getMaxRows()) t.sheet.insertRowsAfter(t.sheet.getMaxRows(), at - t.sheet.getMaxRows());
+      t.sheet.getRange(at, 1, 1, width).setValues([row]);
+      lastFormulas.forEach(function (f, fc) {
+        if (f && fc < width && row[fc] === '') t.sheet.getRange(lastIdx + 1, fc + 1).copyTo(t.sheet.getRange(at, fc + 1));
+      });
+      timer.lap('cellWrites');
+      timer.end();
+    });
   }
 
   /** Deletes the source row of `name`; false when the source has no such row (nothing to delete). */
   function deleteRecord(entity, name) {
-    var timer = Perf.start('writeBack', { op: 'delete', entity: entity });
-    var t = sourceTable_(entity, timer);
-    var i = t.find(name);
-    if (i >= 0) t.sheet.deleteRow(t.parsed.rows[i] + 1);
-    timer.lap('cellWrites');
-    timer.end();
-    return i >= 0;
+    return Store.withLock(function () {
+      var timer = Perf.start('writeBack', { op: 'delete', entity: entity });
+      var t = sourceTable_(entity, timer);
+      var i = t.find(name);
+      if (i >= 0) {
+        Store.noteSourceWrite();
+        t.sheet.deleteRow(t.rows[i] + 1);
+      }
+      timer.lap('cellWrites');
+      timer.end();
+      return i >= 0;
+    });
   }
 
   return {

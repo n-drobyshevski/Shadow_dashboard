@@ -61,7 +61,9 @@ modifiable depuis l'application. Les modifications d'un mois passé ne changent 
 | `Meta` | Version du schéma |
 
 Les identifiants des deux classeurs sont stockés dans les propriétés du script
-(`DATA_SPREADSHEET_ID`, `SOURCE_SPREADSHEET_ID`), l'état de la synchronisation dans `SYNC_STATE`.
+(`DATA_SPREADSHEET_ID`, `SOURCE_SPREADSHEET_ID`), l'état de la synchronisation dans `SYNC_STATE`, et
+`SOURCE_WRITE_STAMP` avance à chaque écriture de l'application dans la source (la synchronisation s'en
+sert pour ne jamais annuler une modification enregistrée pendant qu'elle lisait la source).
 
 ## Premier déploiement
 
@@ -235,7 +237,22 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
       une valeur `-` du référentiel après une synchronisation.
 - [ ] Écriture dans la source : modifier une cellule d'un poste du mois en cours, vérifier qu'elle
       change dans le classeur source ; une colonne calculée par formule est refusée avec un message ;
-      une liste déroulante (validation des données) refuse une valeur hors liste.
+      une liste déroulante (validation des données) refuse une valeur hors liste, avec le message
+      « Le Google Sheet source a refusé la valeur … » (le refus doit arriver à l'écriture de la cellule).
+- [ ] Écriture dans la source, lectures ciblées : dans le tableau, modifier ensemble des postes éloignés
+      les uns des autres (début, milieu et fin de l'onglet) : toutes les valeurs arrivent dans la source,
+      aucune autre cellule ne change (formules, listes déroulantes, cellules voisines). La ligne
+      `writeBack` d'Exécutions a un `sourceRead` nettement plus court qu'avant sur un gros onglet.
+      Ajouter une application alors que la ligne sous la dernière application n'est pas vide (ligne de
+      total) : une ligne est insérée au-dessus, les formules de la dernière ligne sont recopiées.
+- [ ] Synchronisation hors verrou : sur un gros classeur source, lancer « Synchroniser maintenant » et,
+      depuis une autre session, enregistrer aussitôt une modification du mois en cours : elle n'attend
+      plus la lecture de la source. Une fois la synchronisation terminée, recharger : la modification
+      est toujours là, dans l'application et dans la source (jamais annulée). Dans Exécutions, la ligne
+      `importMonth` montre `readSource` avant `lockWait`, et `reread: true` (avec `rereadSource`) quand
+      une écriture dans la source est arrivée pendant la lecture. Propriétés du script contient
+      `SOURCE_WRITE_STAMP` après une modification du mois en cours (ce garde-fou suppose qu'après
+      `SpreadsheetApp.flush()` une autre exécution qui ouvre la source voit l'écriture).
 - [ ] Le déclencheur `syncHourly` apparaît dans l'éditeur (Déclencheurs) et s'exécute toutes les
       heures (Exécutions) ; une synchronisation sans changement n'ajoute rien au journal.
 - [ ] Mesures : dans Exécutions, un appel (par exemple l'ouverture de l'application) montre ses lignes
@@ -295,7 +312,8 @@ polices ; sans eux, le harnais utilise des substituts.
 - **6 minutes par exécution** Apps Script : une synchronisation lit et écrit un mois entier en un seul
   appel ; un classeur source très volumineux peut dépasser cette limite.
 - **Durée des déclencheurs** : 90 min/jour (compte Gmail) ou 6 h/jour (Workspace) pour toutes les
-  exécutions déclenchées ; une synchronisation horaire sans changement ne fait que lire la source.
+  exécutions déclenchées ; une synchronisation horaire sans changement ne fait que lire la source, et
+  elle la lit avant de prendre le verrou : les enregistrements ne l'attendent pas.
 - **Comptes du domaine uniquement** : l'adresse des visiteurs d'un autre domaine n'est pas transmise
   par Google, ils ne peuvent donc pas être autorisés. Les écritures passent par un verrou (attente 20 s, sinon « Une autre opération est en cours. Réessayez dans quelques instants. »).
 - Les modifications de code ne sont visibles sur l'URL publiée qu'après `npm run deploy`.
@@ -347,4 +365,7 @@ Executions log, and the browser console logs `[rpc] <name> <ms>ms` at the Verbos
 spreadsheet. Server reads are scoped: one month's rows are located through column A and read as one
 block (never every month), ImportLog is read from the bottom, reads are memoized per execution (dropped
 on every write and when the script lock is taken), and the schema version is kept in the
-`DATA_SCHEMA_VERSION` script property so that each call skips the `Meta` read. Tests: `npm test`, `npm run test:e2e`. Limits: 6-minute execution time, users of the deployer's Workspace domain only.
+`DATA_SCHEMA_VERSION` script property so that each call skips the `Meta` read. The sync reads the
+source before taking the script lock (a `SOURCE_WRITE_STAMP` script property, moved by every
+write-back, makes it read again under the lock when a save landed meanwhile), and a write-back reads
+the header block, the key column and the edited rows only. Tests: `npm test`, `npm run test:e2e`. Limits: 6-minute execution time, users of the deployer's Workspace domain only.

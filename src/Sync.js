@@ -4,7 +4,8 @@
  * A time-driven trigger calls syncHourly() (Code.js) every hour: the current month (Europe/Paris) is
  * re-imported with Importer.importMonth(month, true, {skipUnchanged:true}). On the 1st, the first run
  * creates the new month; the previous one keeps its last synchronised state (frozen). A run that
- * changes nothing writes nothing. The outcome of the last runs is kept in the SYNC_STATE Script
+ * changes nothing writes nothing, and the source is read before the script lock is taken, so such a
+ * run never keeps a save waiting. The outcome of the last runs is kept in the SYNC_STATE Script
  * Property (status shown in the app bar) and every run that changed something has an ImportLog entry
  * (the « Journal des synchronisations » in Paramètres).
  *

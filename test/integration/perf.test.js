@@ -35,22 +35,27 @@ const ADMIN_GROUP = 'secu-admins@decathlon.com';
  * the first baseline read every month's rows to return one (getMonthData: 8 getValues, 96229 cells),
  * ImportLog in full (getImportLog: 16020 cells) and Meta on every call; month spans, the ImportLog
  * tail, the per-execution read memo and the schema-version property brought them to the numbers below.
+ * The live-month save then read the whole source tab twice (display values + formulas: 15100 source
+ * cells); it now reads the header block, the key column and the edited row's formulas (700 cells),
+ * which costs one more, narrow, getDisplayValues (the only bound ever raised, 1 -> 2). The hourly sync
+ * read the source while holding the script lock; it now reads it before (sourceReadsLocked: 0).
  */
 const BASELINE = {
   bootstrapAdmin: { openById: 2, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 12801, getDataRange: 0,
-    propertiesReads: 2, cacheReads: 0 },
+    propertiesReads: 2, cacheReads: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   bootstrapLecteur: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 12801, getDataRange: 0,
-    propertiesReads: 2, cacheReads: 1 },
+    propertiesReads: 2, cacheReads: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
   getMonthData: { openById: 1, getValues: 8, getDisplayValues: 0, getFormulas: 0, cellsRead: 16265, getDataRange: 0,
-    propertiesReads: 1, cacheReads: 0 },
+    propertiesReads: 1, cacheReads: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   getTimeline: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 66813, getDataRange: 2,
-    propertiesReads: 1, cacheReads: 0 },
+    propertiesReads: 1, cacheReads: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   getImportLog: { openById: 1, getValues: 1, getDisplayValues: 0, getFormulas: 0, cellsRead: 96, getDataRange: 0,
-    propertiesReads: 1, cacheReads: 0 },
-  savePostesLive: { openById: 2, getValues: 4, getDisplayValues: 1, getFormulas: 1, cellsRead: 29701, getDataRange: 1,
-    propertiesReads: 2, cacheReads: 0 },
+    propertiesReads: 1, cacheReads: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  // The write-back reads the source under the lock by design (it writes there next).
+  savePostesLive: { openById: 2, getValues: 4, getDisplayValues: 2, getFormulas: 1, cellsRead: 15301, getDataRange: 1,
+    propertiesReads: 2, cacheReads: 0, sourceCellsRead: 700, sourceReadsLocked: 3 },
   syncNoChange: { openById: 2, getValues: 10, getDisplayValues: 3, getFormulas: 0, cellsRead: 35965, getDataRange: 3,
-    propertiesReads: 4, cacheReads: 0 },
+    propertiesReads: 4, cacheReads: 0, sourceCellsRead: 19700, sourceReadsLocked: 0 },
 };
 
 // ------------------------------------------------------------------------------------- fixture
@@ -192,14 +197,17 @@ const n = (o, k) => o[k] || 0;
 /**
  * Runs fn and returns the counts it caused: Sheets round trips (getValues includes getValue), cells
  * read by every read method together, Properties reads (script + user: getProperty, getProperties,
- * getKeys) and CacheService gets.
+ * getKeys), CacheService gets, cells read from the SOURCE spreadsheet and source reads made while the
+ * script lock was held (gasFakes state.reads).
  */
 function measure(env, fn) {
   const st = env.__state;
   const c0 = Object.assign({}, st.calls);
   const k0 = Object.assign({}, st.cells);
+  const r0 = st.reads.length;
   const lines0 = timingLines(env).length;
   const value = fn();
+  const sourceReads = st.reads.slice(r0).filter((r) => r.spreadsheetId === SOURCE_ID);
   const d = (k) => n(st.calls, k) - n(c0, k);
   const cells = (k) => n(st.cells, k) - n(k0, k);
   return {
@@ -214,6 +222,8 @@ function measure(env, fn) {
       getDataRange: d('getDataRange'),
       propertiesReads: d('getProperty') + d('getProperties') + d('getKeys'),
       cacheReads: d('cacheGet'),
+      sourceCellsRead: sourceReads.reduce((sum, r) => sum + r.cells, 0),
+      sourceReadsLocked: sourceReads.filter((r) => r.lockHeld).length,
     },
   };
 }

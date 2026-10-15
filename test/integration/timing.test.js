@@ -124,9 +124,10 @@ test('Importer + Sync: import laps, a no-change run writes nothing, a failed run
   let imp = lines.filter((l) => l.stage === 'importMonth');
   assert.equal(imp.length, 1);
   assert.deepEqual(Object.keys(imp[0]),
-    ['stage', 'ms', 'lockWait', 'dataReads', 'readSource', 'compare', 'writes', 'flush', 'month', 'changed']);
+    ['stage', 'ms', 'readSource', 'lockWait', 'dataReads', 'compare', 'writes', 'flush', 'month', 'changed', 'reread']);
   assert.equal(imp[0].month, '2026-05');
   assert.equal(imp[0].changed, true);
+  assert.equal(imp[0].reread, false, 'nothing wrote into the source meanwhile: the outside read is used');
   assert.deepEqual(lines.filter((l) => l.stage === 'sourceSheet').map((l) => [l.tab, l.rows > 0]),
     [['Suivi des postes', true], ['Suivi des applications', true]]);
   let sync = lines.filter((l) => l.stage === 'sync');
@@ -145,10 +146,12 @@ test('Importer + Sync: import laps, a no-change run writes nothing, a failed run
   assert.deepEqual([sync[0].changed, sync[0].ok], [false, true]);
   assert.equal(lines.filter((l) => 'api' in l).length, 0, 'a trigger run is not an api call');
 
-  // BUSY: the import does not complete, the sync and the api call are logged as failed.
+  // BUSY: the source was read (outside the lock), the import does not complete, the sync and the api
+  // call are logged as failed.
   sb.env.__state.lockTimeout = true;
   lines = linesDuring(sb.env, () => assert.equal(call(sb.ctx, 'api_syncNow').error.code, 'BUSY'));
-  assert.deepEqual(lines.map((l) => [l.stage || l.api, l.ok, l.code]), [['sync', false, 'BUSY'], ['api_syncNow', false, 'BUSY']]);
+  assert.deepEqual(lines.map((l) => [l.stage || l.api, l.ok, l.code]), [['sourceSheet', undefined, undefined],
+    ['sourceSheet', undefined, undefined], ['sync', false, 'BUSY'], ['api_syncNow', false, 'BUSY']]);
 });
 
 test('write-back: sourceOpen / sourceRead / cellWrites laps for edit, append and delete', () => {

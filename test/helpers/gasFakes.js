@@ -18,7 +18,8 @@
  * Fault injection (real Apps Script calls fail transiently: "Service Spreadsheets failed while
  * accessing document…", timeouts): env.__fault({method, id?, sheet?, times?, message?}) makes the
  * next `times` (default 1, Infinity allowed) matching calls throw. Supported methods: 'openById'
- * (matched on `id`), 'setValues' (matched on the target `sheet` name), 'create'.
+ * (matched on `id`), 'setValues' / 'setValue' (matched on the spreadsheet `id` and the target `sheet`
+ * name), 'create'.
  * env.__clearFaults() removes them. Utilities.sleep(ms) is a no-op recorded in __state.sleeps.
  *
  * Usage:
@@ -30,7 +31,12 @@
  *   spreadsheets (Map id -> Spreadsheet), formulas [{spreadsheetId, sheet, a1, formula}],
  *   writes [{sheet, a1, rows, cols, plainText}], calls {methodName: count}, flushes,
  *   cells {getValues|getValue|getDisplayValues|getFormulas: cells read},
+ *   reads [{spreadsheetId, sheet, method, a1, cells, lockHeld}] (one entry per range read, in order:
+ *   which rows / columns a flow reads, and whether the script lock was held at that moment),
  *   lock {acquired, released, timeouts, held}, logs [], console [], lockTimeout (mutable).
+ * state.onWaitLock = fn runs fn ONCE, at the start of the next waitLock / tryLock, before the lock is
+ * taken: a test simulates another execution that takes the lock first (e.g. a save landing while an
+ * hourly sync reads the source outside the lock).
  * calls also counts the Properties reads / writes (getProperty, getProperties, getKeys, setProperty,
  * setProperties, deleteProperty) and the CacheService ones (cacheGet, cachePut, cacheRemove).
  */
@@ -141,6 +147,8 @@ function createGasEnv(options) {
     faults: [],
     sleeps: [],
     lockTimeout: !!opts.lockTimeout,
+    onWaitLock: null,
+    reads: [],
     properties: {},
     logs: [],
     console: [],
@@ -148,6 +156,13 @@ function createGasEnv(options) {
   };
   const count = (name) => { state.calls[name] = (state.calls[name] || 0) + 1; };
   const countCells = (name, n) => { state.cells[name] = (state.cells[name] || 0) + n; };
+  /** Counts one range read (cells + per-range log entry). */
+  const recordRead = (range, method) => {
+    const cells = range._nr * range._nc;
+    countCells(method, cells);
+    state.reads.push({ spreadsheetId: range._sheet._ss._id, sheet: range._sheet._name, method,
+      a1: range.getA1Notation(), cells, lockHeld: state.lock.held });
+  };
 
   /** Throws when an injected fault matches this call (see "Fault injection" above). */
   function maybeFail(method, info) {
@@ -354,14 +369,14 @@ function createGasEnv(options) {
 
     getValues() {
       count('getValues');
-      countCells('getValues', this._nr * this._nc);
+      recordRead(this, 'getValues');
       return this._each((r, c) => copyCell(this._sheet._value(r, c)));
     }
-    getValue() { count('getValue'); countCells('getValue', 1); return copyCell(this._sheet._value(this._row - 1, this._col - 1)); }
+    getValue() { count('getValue'); recordRead(this, 'getValue'); return copyCell(this._sheet._value(this._row - 1, this._col - 1)); }
 
     getDisplayValues() {
       count('getDisplayValues');
-      countCells('getDisplayValues', this._nr * this._nc);
+      recordRead(this, 'getDisplayValues');
       const tz = this._sheet._ss.getSpreadsheetTimeZone() || 'Europe/Paris';
       return this._each((r, c) => {
         const d = this._sheet._get(this._sheet._disp, r, c);
@@ -397,7 +412,7 @@ function createGasEnv(options) {
     /** Formulas: a value that is a string starting with '=' (fixtures store formulas that way). */
     getFormulas() {
       count('getFormulas');
-      countCells('getFormulas', this._nr * this._nc);
+      recordRead(this, 'getFormulas');
       return this._each((r, c) => { const v = this._sheet._value(r, c); return typeof v === 'string' && v.charAt(0) === '=' ? v : ''; });
     }
     getFormula() { return this.getFormulas()[0][0]; }
@@ -560,9 +575,17 @@ function createGasEnv(options) {
     getUserProperties() { return userProps; },
   };
 
+  /** Runs the one-shot state.onWaitLock hook (another execution taking the lock first). */
+  function runWaitLockHook() {
+    const hook = state.onWaitLock;
+    if (typeof hook !== 'function') return;
+    state.onWaitLock = null;
+    hook();
+  }
   const lock = {
     waitLock(timeoutMs) {
       count('waitLock');
+      runWaitLockHook();
       if (state.lockTimeout) {
         state.lock.timeouts++;
         throw new Error('Lock timeout: another process was holding the lock for too long.');
@@ -573,6 +596,7 @@ function createGasEnv(options) {
     },
     tryLock(timeoutMs) {
       count('tryLock');
+      runWaitLockHook();
       if (state.lockTimeout) { state.lock.timeouts++; return false; }
       state.lock.acquired++;
       state.lock.held = true;

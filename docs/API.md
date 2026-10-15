@@ -148,7 +148,9 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
   (`Importer.writeEdits` / `appendRecord` / `deleteRecord`), then into the snapshot, under the same lock. Past
   months are frozen history: their edits change the snapshot only. Fields without a source column (Galink /
   IDP) stay app-only.
-- Writes are performed inside `Store.withLock(fn)`; lock timeout (20 s) → `BUSY`.
+- Writes are performed inside `Store.withLock(fn)`; lock timeout (20 s) → `BUSY`. The sync is the one
+  writer that does its slowest read outside the lock: it reads the source first, then takes the lock to
+  compare and write (`Importer.importMonth`, §4), so saves do not wait behind a sync that changes nothing.
 
 ### Record shapes
 - **Poste / Application record** (as returned by the API): every source column (string or `null`) plus
@@ -259,6 +261,13 @@ Config.get({fresh?})         -> {dataId:''|id, sourceId:''|id, threshold:int (Co
                                 read-modify-write under the lock (access list, first-run creation) starts
                                 from the stored values.
 Config.setDataId(id), Config.setSourceId(id), Config.setThreshold(n), Config.setAccess(access)
+Config.PROP_SOURCE_STAMP = 'SOURCE_WRITE_STAMP'  (source write stamp: a number moved forward by every
+                        execution that wrote into the source spreadsheet; see Store.withLock and
+                        Importer.importMonth. Deleting it is harmless: at worst one extra source read.)
+Config.sourceStamp()         -> '' | stamp, from the memo (under the lock: the stored value, since withLock
+                                drops the memo; outside it: possibly older, which only causes an extra read)
+Config.bumpSourceStamp()     -> new stamp = max(Date.now(), previous + 1), never a value seen before. Called
+                                by Store.withLock only, still holding the lock.
 Config.setSchemaVersion(dataId, version)   (Store.ensure, once Meta is known to carry `version`)
 Config.PROP_PREFS_PREFIX = 'PREFS_'  (+ lower-cased email: JSON of that account's interface preferences)
 Config.PREF_VALUES    = {sidebar:['open','collapsed']}
@@ -335,8 +344,13 @@ Store.ensure()                          -> Spreadsheet. Idempotent. Cached per e
 Store.dataUrl()                         -> string
 Store.withLock(fn)                      -> fn() result; LockService.getScriptLock().waitLock(20000)
                                            (timeout -> makeError('BUSY')); drops the Store and Config read
-                                           memos once acquired; SpreadsheetApp.flush() and releaseLock() in
-                                           finally. Re-entrant.
+                                           memos once acquired; SpreadsheetApp.flush(), then, when fn wrote
+                                           into the source (noteSourceWrite) — even if fn or the flush
+                                           failed — Config.bumpSourceStamp(), then releaseLock(), in
+                                           finally. Re-entrant (only the outermost call flushes / bumps).
+Store.noteSourceWrite()                 -> marks the current withLock as having written into the source
+                                           (Importer write-back, before its first write); INTERNAL outside
+                                           withLock
 Store.clearMemo_()                      -> forgets the read memo (apiWrap_ / syncHourly start with it)
 Store.resetCache_()                     -> clearMemo_ + drops the opened spreadsheet and Config's memo (a new
                                            execution, for tests)
@@ -386,8 +400,14 @@ Importer.readSource()       -> {sourceId, title, postes:{headers,records,warning
                                Per tab: one getDataRange() then getValues() + getDisplayValues();
                                Date cells formatted 'dd/MM/yyyy' in ss.getSpreadsheetTimeZone().
                                Missing postes AND applications tab -> SOURCE_ERROR.
-Importer.importMonth(month, overwrite, {skipUnchanged?}) -> SyncResult (see §3). Inside Store.withLock;
-                               every read happens before the first write. MONTH_EXISTS when the month
+Importer.importMonth(month, overwrite, {skipUnchanged?}) -> SyncResult (see §3). Notes
+                               Config.sourceStamp(), reads the source (readSource) OUTSIDE the lock,
+                               then takes Store.withLock (BUSY after 20 s, as before) to read the stored
+                               month, compare and write; every read happens before the first write.
+                               Lost-edit guard: under the lock, when the stamp moved (a write-back was
+                               flushed since the outside read began) or the configured source changed,
+                               the source is read again under the lock, so a live-month save that landed
+                               in between is never reverted. MONTH_EXISTS when the month
                                exists and !overwrite. With skipUnchanged, an overwrite that changes nothing
                                (records, headers, référentiel) writes nothing, not even the ImportLog.
                                « Poste générique Decathlon » is added to the postes when an application
@@ -414,10 +434,21 @@ Importer.writeEdits(entity, [{name, fields}]) -> cells written. entity 'postes'|
                                found -> else SOURCE_ERROR; no formula -> else VALIDATION), then setValue per
                                cell (Core.escapeFormula: text stays text). Fields without a source column
                                are skipped (snapshot only). A value refused by data validation -> VALIDATION.
+                               Writes stay one setValue per edited cell: a block setValues would rewrite
+                               the cells between edited ones (formulas, validated cells, concurrent hand
+                               edits) and lose the refused value in the message.
 Importer.appendRecord(entity, rec) -> void. New source row just below the last record (inserted when that
                                row is not empty); formulas of the last record's row are copied down into
                                the columns the record leaves blank. Duplicate key -> VALIDATION.
 Importer.deleteRecord(entity, name) -> bool (false when the source has no such row).
+                               Reads of the three write-backs: getDataRange() for the size, the first 15
+                               rows (header row, Core.findHeaderRow's scan depth) and the key column below
+                               the header (getDisplayValues), then only what the write touches:
+                               writeEdits the formulas of the edited rows (rows at most 5 apart in one
+                               block; more than 3 blocks -> one block from the first to the last edited
+                               row), appendRecord the row below the last record and that record's
+                               formulas. Never the whole tab. All three run under Store.withLock
+                               (re-entrant) and call Store.noteSourceWrite() before their first write.
 ```
 
 ### Sync (`src/Sync.js`)
@@ -451,7 +482,7 @@ Perf.start(stage, fields?)       -> timer {lap(name), end(extra?)}: lap adds the
 | `{stage:'span', tab, rows, ms}` | every partial read of a data tab: one month's block (`Postes`, `Applications`, `Referentiel`), `ImportLog` rows read from the bottom or the one row of `latestImportInfo` |
 | `{stage:'listMonths', ms, ImportLog, Postes, Applications, rows, months}` | `Store.listMonths` (one lap per tab) |
 | `{stage:'sourceSheet', tab, rows, ms}` | `Importer.readSource`, per entity tab |
-| `{stage:'importMonth', ms, lockWait, dataReads, readSource, compare, writes?, flush, month, changed}` | `Importer.importMonth` when it completes (`writes` absent when nothing was written) |
+| `{stage:'importMonth', ms, readSource, lockWait, rereadSource?, dataReads, compare, writes?, flush, month, changed, reread}` | `Importer.importMonth` when it completes (`readSource` = the read outside the lock; `rereadSource` and `reread: true` when the source was read again under the lock; `writes` absent when nothing was written) |
 | `{stage:'writeBack', ms, sourceOpen, sourceRead, cellWrites, op, entity}` | `Importer.writeEdits` (`op:'edit'`), `appendRecord` (`'append'`), `deleteRecord` (`'delete'`), when they complete |
 | `{stage:'sync', ms, import, state, month, changed, ok:true}` / `{stage:'sync', ms, month, ok:false, code}` | `Sync.run` (hourly trigger and `api_syncNow` / `api_enableSync`) |
 
@@ -747,11 +778,14 @@ compares the first and last months by default.
   header row, Date cells, `0.304` raw vs `'30,4%'` display, empty/ghost rows) built from `data.js`.
 - `test/helpers/gasFakes.js` — in-memory `SpreadsheetApp`, `PropertiesService`, `LockService`,
   `Utilities`, `HtmlService`, `Logger`; counters in `env.__state.calls` (Sheets, Properties and Cache calls)
-  and `env.__state.cells` (cells read per read method).
+  and `env.__state.cells` (cells read per read method); `env.__state.reads` logs every range read
+  (spreadsheet, sheet, method, A1, cells, whether the script lock was held); `env.__state.onWaitLock = fn`
+  runs fn once before the next lock acquisition (another execution taking the lock first).
 - `test/helpers/gasSandbox.js` — `loadGas({sources})` → `vm` context with fakes + every `src/*.js`
   loaded in alphabetical order (proves load-order independence); `loadGas({env})` = a new execution over
   the same spreadsheets; `timingLines(env)` = the Perf lines captured by the fake console.
-- `test/integration/perf.test.js` — call counts (openById, reads, cells read, Properties / Cache reads)
+- `test/integration/perf.test.js` — call counts (openById, reads, cells read, Properties / Cache reads,
+  source cells read, source reads made under the lock)
   of the main flows on a large generated data spreadsheet, bounded by today's numbers (`BASELINE`);
   `PERF_OUT=<file>` writes the measurement as JSON.
 - `test/helpers/render.js` — renders `src/index.html` (scriptlets `include`/`coreScript`) to static
