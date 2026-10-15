@@ -184,7 +184,12 @@ describe('shell', () => {
         assert.equal(await page.$(`#sidebar ${id}`), null, `${id} not in the sidebar`);
       }
       assert.equal((await page.textContent('#appbar-period-label')).trim(), 'Période');
+      assert.ok(await page.$eval('#appbar-period-label', (n) => n.getBoundingClientRect().width) <= 1, 'label for screen readers only');
       assert.equal(await page.isVisible('#filters-toggle'), false, 'no « Filtres » button on wide screens');
+      // One row; the sync status sits at the top of the sidebar footer, not in the bar.
+      assert.equal(Math.round(await page.$eval('#appbar', (n) => n.getBoundingClientRect().height)), 49);
+      assert.equal(await page.$('#appbar #sync-chip'), null);
+      assert.ok(await page.isVisible('#sidebar .sidebar-footer > #sync-chip'));
 
       // ‹ / › step through the imported months (2026-04, 2026-05; latest selected).
       assert.equal(await page.isDisabled('#month-next'), true);
@@ -221,6 +226,35 @@ describe('shell', () => {
     });
   });
 
+  test('narrow app bar: the filters fold into a panel under « Filtres », still on one row', async () => {
+    await withApp({ viewport: { width: 1024, height: 800 } }, async (app) => {
+      const { page } = app;
+      assert.ok(await page.isVisible('#filters-toggle'));
+      assert.equal(await page.isVisible('#filter-equipe'), false);
+      await page.click('#filters-toggle');
+      assert.equal(await page.getAttribute('#filters-toggle', 'aria-expanded'), 'true');
+      assert.ok(await page.isVisible('#filter-equipe'));
+      // Ticking a value in the multiselect list (portalled to <body>) keeps the panel open.
+      await chooseOptions(page, '#filter-equipe .dd-trigger', ['Labo Textile']);
+      await app.waitIdle();
+      assert.ok(await page.isVisible('#filter-equipe'), 'panel still open');
+      assert.equal((await page.textContent('#filters-toggle-count')).trim(), '1');
+      assert.equal((await page.textContent('#filters-summary')).trim(), 'Labo Textile');
+      assert.match((await page.textContent('#appbar-count')).trim(), /^\d+ postes? sur 7$/);
+      assert.equal(Math.round(await page.$eval('#appbar', (n) => n.getBoundingClientRect().height)), 49);
+      // Escape (no list open) closes it and gives focus back to the button; so does a click outside.
+      await page.focus('#filter-equipe .dd-trigger');
+      await page.keyboard.press('Escape');
+      assert.equal(await page.getAttribute('#filters-toggle', 'aria-expanded'), 'false');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'filters-toggle');
+      await page.click('#filters-toggle');
+      assert.ok(await page.isVisible('#filter-equipe'));
+      await page.mouse.click(900, 600);
+      assert.equal(await page.isVisible('#filter-equipe'), false);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
   test('sidebar collapses to an icon rail and remembers it', async () => {
     await withApp({}, async (app) => {
       const { page } = app;
@@ -249,6 +283,14 @@ describe('shell', () => {
       const labelW = await page.$eval('#sidebar .nav-label', (n) => n.getBoundingClientRect().width);
       assert.ok(labelW <= 1, 'labels visually hidden in the rail (' + labelW + 'px)');
       assert.equal(await page.isVisible('#side-user'), false);
+      // The sync status keeps its mark; its sentence is the tooltip.
+      assert.ok(await page.isVisible('#sync-chip .sync-chip-mark'));
+      assert.equal(await page.isVisible('#sync-chip .sync-chip-text'), false);
+      await page.hover('#sync-chip');
+      await page.waitForSelector('.tooltip');
+      assert.match((await page.textContent('.tooltip')).trim(), /^Synchronisé/);
+      await page.mouse.move(600, 400);
+      await page.waitForSelector('.tooltip', { state: 'hidden' });
       // Labels stay in the accessibility tree; the name shows as a tooltip beside the icon.
       assert.match(await page.textContent('#sidebar .nav-link[data-page="postes"]'), /Postes/);
       await page.hover('#sidebar .nav-link[data-page="postes"]');
@@ -303,6 +345,7 @@ describe('shell', () => {
       const { page } = app;
       assert.ok(await page.isVisible('#nav-toggle'));
       assert.ok(await page.isVisible('.topbar-brand .brand-logo'), 'ghost in the top bar');
+      assert.ok(await page.isVisible('.topbar #sync-chip'), 'sync status in the top bar');
       assert.ok(!(await page.isVisible('#sidebar')));
       await page.click('#nav-toggle');
       assert.equal(await page.getAttribute('#nav-toggle', 'aria-expanded'), 'true');

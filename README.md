@@ -117,7 +117,7 @@ Workspace que le déployeur. Avec un compte Gmail personnel, seul le déployeur 
 8. **Ouvrir l'URL**, coller l'URL du Google Sheet source sur l'écran « Source de données »
    (onglets attendus : `Suivi des postes`, `Suivi des applications`, et `Référentiel` si
    disponible). L'application synchronise aussitôt le mois en cours, puis toutes les heures. L'état
-   est visible à droite de la barre du haut ; le journal et « Synchroniser maintenant » sont dans
+   est visible en bas du menu de gauche ; le journal et « Synchroniser maintenant » sont dans
    Paramètres → Synchronisation.
 
 **Mise à jour d'une installation existante** (version avec import manuel) : après `npm run deploy`,
@@ -199,8 +199,8 @@ WSL.
   (seul le mois en cours revient, à la synchronisation suivante ; l'historique, les actions et les
   remplacements sont perdus).
 - Pour changer de classeur source : Paramètres → Source de données → « Changer de source ».
-- Si la synchronisation échoue (source supprimée, droits retirés, onglet renommé), le bouton d'état de
-  la barre du haut passe en rouge avec le message, et Google envoie un e-mail d'échec au propriétaire
+- Si la synchronisation échoue (source supprimée, droits retirés, onglet renommé), le bouton d'état
+  en bas du menu de gauche passe en rouge avec le message, et Google envoie un e-mail d'échec au propriétaire
   du script. Les données affichées restent celles de la dernière synchronisation réussie.
 
 ## À vérifier une fois sur de vrais Sheets
