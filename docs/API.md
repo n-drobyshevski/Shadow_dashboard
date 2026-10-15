@@ -22,8 +22,8 @@ identifiers and comments are **English**.
   `https://www.googleapis.com/auth/userinfo.email` (for `Session.getActiveUser()` /
   `getEffectiveUser()`), `https://www.googleapis.com/auth/groups` (`GroupsApp` membership checks) and
   `https://www.googleapis.com/auth/script.scriptapp` (the hourly sync trigger).
-  `Session`, `GroupsApp` and `CacheService` are used **only** in `src/Access.js`, `ScriptApp` **only** in
-  `src/Sync.js`. Do not use `DriveApp`, `UrlFetchApp`, `MailApp`, etc.
+  `Session`, `GroupsApp` and `CacheService` are used **only** in `src/Access.js` (other modules cache through
+  `Access.cacheGet` / `cachePut`), `ScriptApp` **only** in `src/Sync.js`. Do not use `DriveApp`, `UrlFetchApp`, `MailApp`, etc.
 - Web app: `executeAs: USER_DEPLOYING`, `access: DOMAIN`. Identity and roles are checked in-app (§4 Access).
 
 ### Files and ownership
@@ -75,6 +75,8 @@ Core.ACTION_STATUSES     = ['À faire','En cours','Terminé','Abandonné']
 Core.ACTION_PRIORITIES   = ['Haute','Moyenne','Basse']
 Core.SOURCE_TABS         = { postes:'Suivi des postes', applications:'Suivi des applications', referentiel:'Référentiel' }
 Core.ERROR_CODES         = ['NOT_CONFIGURED','MONTH_EXISTS','NOT_FOUND','BUSY','VALIDATION','SOURCE_ERROR','FORBIDDEN','INTERNAL']
+Core.FORM_REQUIRED       = { postes:['Nom du poste','Équipe'], applications:['Nom du logiciel / service'] }  // creation forms
+Core.FORM_DATE_HINTS     = ['Date visite','Prochaine revue',"Date d'achat",'Deadline','Date']  // date columns by name
 ```
 
 ## 2. Core functions (pure; identical on server and client)
@@ -87,7 +89,7 @@ All functions are **total**: they never throw on null/undefined/blank input unle
 | `isBlank(v)` | `true` for `null`, `undefined`, `NaN`, or a string that is empty after trim. |
 | `str(v)` | `isBlank(v) ? '' : String(v).trim()` |
 | `parseScore(v)` | `"30,4%"`→30.4, `"25%"`→25, `"25"`→25, `"0,5"`→50, number `0.304`→30.4, number `85`→85, number in `[0,1]` → ×100 (so `1`→100), blank/unparseable → `null`. Strings: strip `%`, spaces/NBSP, comma→dot; if the original string contained `%` use as-is, else apply the same `[0,1]→×100` rule. |
-| `makeError(code, message)` | returns an `Error` with `.code = code`. |
+| `makeError(code, message, field?)` | returns an `Error` with `.code = code`, and `.field = field` when `field` is a non-empty string (the form field a `VALIDATION` error is about; `apiWrap_` sends it as `error.field`). |
 | `validateMonth(m)` | `/^\d{4}-(0[1-9]|1[0-2])$/` test → boolean. |
 | `currentMonth(date)` | `'YYYY-MM'` from a Date (local getters). |
 | `fmtDDMMYYYY(date)` | `'DD/MM/YYYY'` from a Date (local getters); `''` for invalid. |
@@ -112,6 +114,8 @@ All functions are **total**: they never throw on null/undefined/blank input unle
 | `makeGenericPoste(templateKeys, existingNames)` | Record with every key in `templateKeys` (or `POSTE_TEMPLATE_KEYS` if empty) = `null`, `Nom du poste` = `GENERIC_POSTE_NAME`, `Commentaires` = `'Poste générique regroupant les applications non liées à un poste suivi individuellement.'`. Returns `null` if `GENERIC_POSTE_NAME` already in `existingNames`. |
 | `mergeCarryOver(newRecs, prevRecs, keyField, fields)` | For each new record whose `fields[i]` is blank/absent, copy the value from the `prevRecs` record with the same `normKey(keyField)` if non-blank. Ensures every new record **has** each field (null if nothing). Returns `{records:[new objects], carried:n}` (`n` = number of field values copied). |
 | `optionsForColumn(col, referentiel)` | Référentiel category whose `normKey` equals `normKey(COLUMN_REF_ALIASES[col] || col)` → its values; else `['Oui','Non']` if `col` in `YES_NO_COLS`; else `null` (free text). |
+| `snapshotFormColumns(entity, headers, referentiel)` | Form columns (`FormColumn`, §3 `api_getFormSchema`) from a snapshot's headers, when no source sheet is at hand (past months, unreadable source): headers cleaned and de-duplicated, the `FORM_REQUIRED` fields added first when missing; `options` = `optionsForColumn`, `kind` `'date'` for the `FORM_DATE_HINTS` names (normKey), else `'select'` when there are options, else `'text'`; `strict` only for `YES_NO_COLS`; `computed:false`; `required` from `FORM_REQUIRED[entity]`. Applications end with `Galink` / `IDP` (`appOnly:true`, Oui/Non, strict) when the headers lack them. `entity` other than `'applications'` = postes. |
+| `checkFormRecord(columns, record)` | Checks a new record against form columns → `{ok:true, record}` (values under the column names — a key matching by `normKey` takes the column's spelling —, trimmed, blank → `null`, booleans → `'TRUE'`/`'FALSE'`, dates → `'DD/MM/YYYY'`; only the keys given) or the first problem `{ok:false, field, message}`: a key that is no column (« La colonne « X » n’existe pas dans le Google Sheet source : rouvrez le formulaire. »), then column by column: a value for a `computed` column (« « X » est calculée par une formule dans le Google Sheet source. »), a blank `required` one (« Ce champ est obligatoire. »), a `date` that is no real day (ISO `YYYY-MM-DD` or `D/M/YYYY` accepted; « Date invalide : « v » (format attendu JJ/MM/AAAA). »), a `strict` select / checkbox value outside `options` (comma-separated values pass when every part is an option; « Valeur hors liste : « v » (attendu : a, b). », the list spelled out up to 8 options), an object / array (« Valeur invalide. »). |
 | `sortMonths(months)` | ascending, unique, only valid months. |
 | `previousMonth(months, month)` | the latest month in `months` strictly before `month`, or `null`. |
 | `PERIOD_PRESETS` | `['month','last3','last6','year','all']` — period shortcuts of the app bar. |
@@ -131,7 +135,9 @@ All functions are **total**: they never throw on null/undefined/blank input unle
 ### Envelope
 Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 - `argsJson` is a JSON string (`'null'` or `'{}'` when no args). Parse failure → `VALIDATION`.
-- Return value is `JSON.stringify({ok:true, data})` or `JSON.stringify({ok:false, error:{code, message}})`.
+- Return value is `JSON.stringify({ok:true, data})` or `JSON.stringify({ok:false, error:{code, message, field?}})`.
+  `error.field` (a non-empty string) only on `VALIDATION` errors that are about one form field
+  (`Core.makeError(code, message, field)`): the creation forms show the message under that field.
 - All wrapped by `apiWrap_(fn, name, minRole)` which first checks the caller's role
   (`Access.requireRole(minRole)`: `FORBIDDEN` when the identity is not passed, the account has no access,
   or a lecteur calls an admin endpoint) and applies the effective threshold (`Core.setThreshold`), then
@@ -144,7 +150,7 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
   `api_getImportLog`, `api_getTimeline`, `api_getActions`, `api_getDiff`. Every other endpoint is **admin** only.
 - **Current month = live.** The month of today (Europe/Paris) follows the source spreadsheet: the hourly sync
   re-imports it, and every edit of that month (`api_savePostes`, `api_saveApplications`, `api_addGenericPoste`,
-  `api_addApplication`, `api_deleteApplication`, `api_renameApplication`) is written into the source FIRST
+  `api_addPoste`, `api_addApplication`, `api_deleteApplication`, `api_renameApplication`) is written into the source FIRST
   (`Importer.writeEdits` / `appendRecord` / `deleteRecord`), then into the snapshot, under the same lock. Past
   months are frozen history: their edits change the snapshot only. Fields without a source column (Galink /
   IDP) stay app-only.
@@ -188,9 +194,11 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 | `api_enableSync` | – | as `api_syncNow`, after creating the hourly trigger if it is missing | `NOT_CONFIGURED` (ScriptApp not authorised: the deployer must run `setup` in the editor), then as `api_syncNow` |
 | `api_getImportLog` | `{limit?}` (integer 1–500, default 12) | `[{month, imported_at, counts, warnings, changes}]`: the `limit` latest ImportLog entries, newest first, with the fields the « Journal des synchronisations » shows only (no `source_id`, no headers). Read from the bottom of the tab (`Store.recentImportLog`). | `VALIDATION` (bad `limit`) |
 | `api_savePostes` | `{month, changes:[{id, updates:{col:value}}]}` | `{updated:[rec], sourceUpdated:bool}` (`true` = current month, written into the source) | `VALIDATION` (keys starting with `_` or the key column are rejected; a source cell computed by a formula; a value refused by the source cell's data validation), `NOT_FOUND`, `SOURCE_ERROR` (row not found in the source: renamed or deleted since the last sync) |
-| `api_addGenericPoste` | `{month}` | `{created:bool, record:rec}` (existing record if already present; current month: also appended to the source) | `NOT_FOUND` |
+| `api_addGenericPoste` | `{month}` | `{created:bool, record:rec}` (existing record if already present; current month: also appended to the source with `Importer.appendRecord(…, {strict:false})`: no rule enforced, computed columns left to their formulas and their values read back into the record) | `NOT_FOUND` |
+| `api_getFormSchema` | `{entity:'postes'\|'applications', month, fresh?:bool}` | `FormSchema = {entity, month, live:bool, origin:'source'\|'fallback'\|'snapshot', keyField, readAt:'YYYY-MM-DD HH:mm'\|'', warning?:string, columns:[FormColumn]}` — the fields of a creation form. Current month (`live`): read from the source OUTSIDE the lock (`Importer.readFormSchema`, cached 5 min per entity and source; `fresh:true` reads again), `origin:'source'`, applications completed with `Galink` / `IDP` (`appOnly`) when the source has no such column; when the source is not configured or cannot be read: the snapshot's columns (`Core.snapshotFormColumns` over the month's ImportLog headers and Référentiel, nothing cached), `origin:'fallback'` with a French `warning` (never fails). Past month: `Core.snapshotFormColumns` (`origin:'snapshot'`), the source is never opened. `readAt` = when the source was read (`'source'`) or the month synchronised. | `VALIDATION` (`entity`, month), `NOT_FOUND` (past month not imported) |
+| `api_addPoste` | `{month, record:{col:value}}` | `rec` (enriched poste; current month: appended to the source first, with the computed columns as the sheet shows them right after the write) | `VALIDATION` with `error.field` (blank name / missing `Équipe`, name already in the month — snapshot — or in the source tab — normKey —, a column that does not exist, a value for a computed column, a value outside a rejecting list, a date that is no real day, a value the source sheet refuses itself), `NOT_FOUND`, `SOURCE_ERROR` |
 | `api_saveApplications` | `{month, changes:[{id, updates}]}` | `{updated:[rec], sourceUpdated:bool}` | as `api_savePostes` |
-| `api_addApplication` | `{month, record:{...}}` | `rec` (current month: also appended to the source tab, below its last application) | `VALIDATION` (blank name, or name already exists in month or in the source — compared with `normKey`) |
+| `api_addApplication` | `{month, record:{...}}` | `rec` (current month: also appended to the source tab, below its last application) — same path and checks as `api_addPoste` (only the name is required; `Galink` / `IDP` must be Oui/Non/blank and stay in the snapshot when the source has no such column) | `VALIDATION` with `error.field` (as `api_addPoste`), `NOT_FOUND`, `SOURCE_ERROR` |
 | `api_deleteApplication` | `{month, id}` | `{deleted:true, id}` (current month: its source row is deleted too, when there is one) | `NOT_FOUND` |
 | `api_renameApplication` | `{month, id, newName}` | `{record:rec, actionsUpdated:n}` — also renames `target_name` of every Action with `target_type==='application'` and `target_name===oldName`; current month: the source key cell too | `VALIDATION` (blank / duplicate), `NOT_FOUND`, `SOURCE_ERROR` |
 | `api_getTimeline` | – | `[{month, postes:[slim], applications:[slim]}]` asc by month. Slim poste = `{'Équipe','Bâtiment / Labo','EDR Decathlon','IT Decathlon','Réseau Decathlon','Niveau de risque',_score,_conforme}`; slim app = `{'Équipe','SIP','Contrat','Galink','IDP','Niveau de risque',_score,_conforme}` (so `Core.filterData` / `computeKpis` / `riskCounts` work on them). | – |
@@ -211,13 +219,23 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 | `api_removeGroup` | `{email}` | `AccessView` | `NOT_FOUND`, `VALIDATION` (the caller would lose admin) |
 | `api_setDomainRole` | `{role:'none'\|'lecteur'}` | `AccessView` | `VALIDATION` |
 
+`FormColumn` = `{name, kind:'text'|'select'|'date'|'checkbox', options:[string]|null, strict:bool, computed:bool,
+required:bool, appOnly?:true, rule?:string}`: `options` = the values of the column's dropdown (data validation list or
+range, at most 500 values of at most 200 characters; Référentiel / Oui-Non in snapshot columns); `strict` = a value
+outside `options` is refused (the rule does not allow invalid data); `computed` = a formula fills the column (a formula
+in the last record row, or an array formula — `ARRAYFORMULA`, `={…}`, `BYROW`, `MAP` — in the header row or the first
+data row): not a form input; `required` = `Core.FORM_REQUIRED`; `appOnly` = Galink / IDP kept in the snapshot only;
+`rule` = the data validation criteria (`'VALUE_IN_LIST'`, `'VALUE_IN_RANGE'`, `'CHECKBOX'`, `'DATE_IS_VALID_DATE'`…)
+of a source column that has one. Past months (`origin:'snapshot'`): nothing is computed (computed columns are ordinary
+optional fields, no sheet computes them) and only Oui/Non lists are strict.
+
 `AccessView` = `{owner:email, users:[{email, role, added_at:'YYYY-MM-DD', added_by:email}] sorted by email
 (owner excluded), groups:[same shape] sorted by email, domainRole:'none'|'lecteur'}`. Emails are trimmed and lower-cased.
 
 The **complete list** of public API functions (used by the contract test) is exactly:
 `api_bootstrap, api_savePrefs, api_setConfig, api_getMonthData, api_getSyncStatus, api_syncNow, api_enableSync,
 api_getImportLog, api_savePostes,
-api_addGenericPoste, api_saveApplications, api_addApplication, api_deleteApplication,
+api_addGenericPoste, api_addPoste, api_getFormSchema, api_saveApplications, api_addApplication, api_deleteApplication,
 api_renameApplication, api_getTimeline, api_getActions, api_addAction, api_updateAction,
 api_deleteAction, api_addReplacement, api_updateReplacement, api_deleteReplacement, api_getDiff,
 api_getSettings, api_setThreshold, api_saveUser, api_addUsers, api_removeUser, api_setDomainRole,
@@ -316,6 +334,8 @@ Access.checkGroup(v)         -> normalised group email, or VALIDATION if unknown
 Access.currentUser(access?)  -> {email, role, isOwner, owner}
 Access.requireRole(minRole, access?) -> currentUser or FORBIDDEN
 Access.checkEmail(v) / Access.checkRole(v, allowed?) -> normalised value or VALIDATION
+Access.cacheGet(key) -> string|null / Access.cachePut(key, value, ttlS) -> the script CacheService for other modules
+                               (Importer.readFormSchema); best effort: a failing cache reads as a miss, a failed put is ignored
 ```
 The owner is always admin and never stored; nobody can edit their own access (no self lock-out).
 
@@ -471,18 +491,49 @@ Importer.writeEdits(entity, [{name, fields}]) -> cells written. entity 'postes'|
                                Writes stay one setValue per edited cell: a block setValues would rewrite
                                the cells between edited ones (formulas, validated cells, concurrent hand
                                edits) and lose the refused value in the message.
-Importer.appendRecord(entity, rec) -> void. New source row just below the last record (inserted when that
-                               row is not empty); formulas of the last record's row are copied down into
-                               the columns the record leaves blank. Duplicate key -> VALIDATION.
+Importer.readFormSchema(entity, {fresh?}) -> {keyField, readAt, columns:[FormColumn]} (§3). Outside the lock,
+                               nothing written. Reads: the header block and key column (as below), the formulas
+                               of the header row, the first data row and the last record row (rowFormulas_
+                               blocks), the last record row's getDataValidations and getValues (raw: a Date
+                               cell makes a date column), then the VALUE_IN_RANGE lists: ONE getDisplayValues
+                               per sheet over the bounding box of its ranges (capped at 2000 rows x 30 columns),
+                               values trimmed, de-duplicated, at most 500 of at most 200 characters. Columns:
+                               a rule gives kind/options/strict (VALUE_IN_LIST, VALUE_IN_RANGE -> 'select',
+                               CHECKBOX -> 'checkbox' with its custom values or TRUE/FALSE, DATE_* -> 'date';
+                               strict = !allowInvalid); no rule: Oui/Non suggested (not strict) for YES_NO_COLS,
+                               'date' for FORM_DATE_HINTS. Cached (Access.cachePut) under
+                               'fs1:<entity>:<sourceId>' for 300 s unless the JSON exceeds 90 000 characters;
+                               fresh skips the cached value (and replaces it). NOT_CONFIGURED without a source,
+                               SOURCE_ERROR when the source / tab / header cannot be read.
+Importer.appendRecord(entity, rec, {strict?}) -> {values, computed}. New source row just below the last record
+                               (inserted when that row is not empty), under the lock. rec's keys go under the
+                               source headers (exact, else normKey); a key without a source column is skipped
+                               when blank, when it is Galink / IDP or when not strict, else VALIDATION (field).
+                               strict: Core.checkFormRecord against the sheet's columns (the reads of
+                               readFormSchema, without the range lists: the sheet itself refuses a value outside
+                               a rejecting range) -> VALIDATION with the field BEFORE anything is written (and
+                               before Store.noteSourceWrite); not strict: values of computed columns are dropped.
+                               Computed columns are never written: the last record's formulas are copied down
+                               (copyTo, relative references follow) and array-formula columns are left to
+                               spill; the other columns are written with one setValues per run of adjacent
+                               writable columns. A write the sheet refuses becomes VALIDATION with the field
+                               of the cell its message names (fieldFromSheetError_; INTERNAL when it names no
+                               cell and is not a validation refusal), after removing the inserted row / clearing
+                               the cells already written. Then SpreadsheetApp.flush() and ONE getDisplayValues of
+                               the new row: computed = the computed columns as shown (blank or « Loading… » /
+                               « Chargement… » -> null); values = what was written (dates 'DD/MM/YYYY' when
+                               strict). Duplicate key -> VALIDATION (field = the key column).
 Importer.deleteRecord(entity, name) -> bool (false when the source has no such row).
                                Reads of the three write-backs: getDataRange() for the size, the first 15
                                rows (header row, Core.findHeaderRow's scan depth) and the key column below
                                the header (getDisplayValues), then only what the write touches:
                                writeEdits the formulas of the edited rows (rows at most 5 apart in one
                                block; more than 3 blocks -> one block from the first to the last edited
-                               row), appendRecord the row below the last record and that record's
-                               formulas. Never the whole tab. All three run under Store.withLock
-                               (re-entrant) and call Store.noteSourceWrite() before their first write.
+                               row), appendRecord the reads of readFormSchema (without lists), the row below
+                               the last record and the new row once written. Never the whole tab. All three run
+                               under Store.withLock (re-entrant) and call Store.noteSourceWrite() before their
+                               first write. A cell refused by data validation (writeEdits) or a formula cell is
+                               VALIDATION with the field.
 ```
 
 ### Sync (`src/Sync.js`)
@@ -517,7 +568,8 @@ Perf.start(stage, fields?)       -> timer {lap(name), end(extra?)}: lap adds the
 | `{stage:'listMonths', ms, ImportLog, Postes, Applications, rows, months}` | `Store.listMonths` (one lap per tab) |
 | `{stage:'sourceSheet', tab, rows, ms}` | `Importer.readSource`, per entity tab |
 | `{stage:'importMonth', ms, readSource, lockWait, rereadSource?, dataReads, compare, writes?, flush, month, changed, reread}` | `Importer.importMonth` when it completes (`readSource` = the read outside the lock; `rereadSource` and `reread: true` when the source was read again under the lock; `writes` absent when nothing was written) |
-| `{stage:'writeBack', ms, sourceOpen, sourceRead, cellWrites, op, entity}` | `Importer.writeEdits` (`op:'edit'`), `appendRecord` (`'append'`), `deleteRecord` (`'delete'`), when they complete |
+| `{stage:'writeBack', ms, sourceOpen, sourceRead, cellWrites, op, entity}` | `Importer.writeEdits` (`op:'edit'`), `appendRecord` (`'append'`: `cellWrites` includes the formula copy, the flush and the read-back of the new row), `deleteRecord` (`'delete'`), when they complete |
+| `{stage:'formSchema', ms, sourceOpen, sourceRead, validations, lists, entity, columns, computed, selects, cache:'miss'\|'bypass'}` / `{stage:'formSchema', ms, entity, columns, computed, selects, cache:'hit'}` | `Importer.readFormSchema` (`validations` = readSample_, `lists` = the range lists; counts of columns only, never their names; `bypass` = `fresh`) |
 | `{stage:'sync', ms, import, state, month, changed, ok:true}` / `{stage:'sync', ms, month, ok:false, code}` | `Sync.run` (hourly trigger and `api_syncNow` / `api_enableSync`) |
 | `{stage:'inlineBoot', ms, ok, bytes}` | `inlineBoot_` (doGet: the bootstrap rendered into the page, after its own `{api:'api_bootstrap', …}` line; `ok:false, bytes:0` when nothing was inlined) |
 
@@ -577,7 +629,7 @@ Each `js_*.html` file is a single `<script>…</script>` block wrapping an IIFE 
 ```
 api.call(name, args?) -> Promise<data>
    google.script.run.withSuccessHandler(s => parse envelope).withFailureHandler(e => reject)[name](JSON.stringify(args ?? null))
-   ok:false  -> reject(err) where err = new Error(message), err.code = code
+   ok:false  -> reject(err) where err = new Error(message), err.code = code, err.field = error.field (when sent)
    transport failure -> err.code = 'TRANSPORT'
    every call   -> console.debug('[rpc] <name> <ms>ms[ <code>]') when it settles
 ```
@@ -845,8 +897,9 @@ compares the first and last months by default.
 ## 7. Tests
 
 - `test/fixtures/data.js` — canonical sample data (two months, référentiel, actions, replacements).
-- `test/fixtures/source.js` — `buildSourceSpreadsheet(month)` → fake live spreadsheet definition (banner row,
-  header row, Date cells, `0.304` raw vs `'30,4%'` display, empty/ghost rows) built from `data.js`.
+- `test/fixtures/source.js` — `buildSourceSpreadsheet(month, {form?})` → fake live spreadsheet definition (banner row,
+  header row, Date cells, `0.304` raw vs `'30,4%'` display, empty/ghost rows) built from `data.js`; `form:true` adds
+  formulas (score, risk, status), array-formula columns and data validation rules (lists, Référentiel ranges, a date).
 - `test/helpers/gasFakes.js` — in-memory `SpreadsheetApp`, `PropertiesService`, `LockService`,
   `Utilities`, `HtmlService`, `Logger`, `GroupsApp`, `CacheService` (get / getAll / put / putAll with TTLs on the
   `Date.now()` clock; `env.__state.cacheFaults.read / .write` make them throw); counters in `env.__state.calls`
@@ -854,7 +907,10 @@ compares the first and last months by default.
   `env.__state.propertyWrites` (keys written)
   and `env.__state.cells` (cells read per read method); `env.__state.reads` logs every range read
   (spreadsheet, sheet, method, A1, cells, whether the script lock was held); `env.__state.onWaitLock = fn`
-  runs fn once before the next lock acquisition (another execution taking the lock first).
+  runs fn once before the next lock acquisition (another execution taking the lock first). Data validation:
+  `getDataValidations` / `setDataValidation(s)` / `clearDataValidations`, `SpreadsheetApp.newDataValidation()` and
+  `DataValidationCriteria`, fixture `validations` per tab; a write refused by a rejecting rule throws the Sheets
+  message naming the cell. `env.__setFormulaDisplay(fn)` sets what formula cells display.
 - `test/helpers/gasSandbox.js` — `loadGas({sources})` → `vm` context with fakes + every `src/*.js`
   loaded in alphabetical order (proves load-order independence); `loadGas({env})` = a new execution over
   the same spreadsheets; `timingLines(env)` = the Perf lines captured by the fake console.
@@ -869,5 +925,10 @@ compares the first and last months by default.
   the e2e harness takes `boot` / `inlinePage` (inline data) and `plotly: {delayMs}|{fail:true}`.
 - `test/fixtures/mockRun.js` — browser `google.script.run` mock implementing every `api_*` from §3
   over in-memory data from `data.js` (records enriched with `Core`), recording calls in
-  `window.__calls`.
+  `window.__calls`. Creation forms: `api_getFormSchema` / `api_addPoste` / `api_addApplication` follow the server
+  (`Core.snapshotFormColumns`, `Core.checkFormRecord`, duplicates with `error.field`); in the current month the
+  postes' Score conformité / Niveau de risque / Statut are computed and Oui/Non / Criticité lists strict; option
+  `formSchema: {columns:{postes:[…]}, fallback, delayMs}` and `delays: {api_name: ms}` (also `window.__mock`).
+- `test/integration/form.test.js` — the forms' server half over the `form` source fixture: schema, cache and
+  fallback, `api_addPoste` / `api_addApplication` / `api_addGenericPoste` writes and refusals with their field.
 - `npm test` → `test/unit/**` + `test/integration/**`; `npm run test:e2e` → Playwright smoke tests.

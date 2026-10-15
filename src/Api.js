@@ -2,7 +2,7 @@
  * Api — google.script.run entry points (docs/API.md §3).
  *
  * Every public api_* function takes ONE JSON string and returns ONE JSON string:
- *   {ok:true, data} | {ok:false, error:{code, message}}
+ *   {ok:true, data} | {ok:false, error:{code, message, field?}}
  * so that no Date (or other non-JSON value) ever crosses google.script.run.
  *
  * Conventions:
@@ -20,7 +20,8 @@
  * Wraps an implementation `fn(args, user) -> data` into the JSON envelope. The caller's role is
  * checked first (Access.requireRole, FORBIDDEN otherwise) and the effective compliance threshold is
  * applied to Core for the duration of the call. Errors whose `.code` is one of Core.ERROR_CODES are
- * reported as-is (their messages are ours, in French); anything else becomes INTERNAL. The stack is
+ * reported as-is (their messages are ours, in French), VALIDATION ones with their `.field` when they
+ * name a form field; anything else becomes INTERNAL. The stack is
  * logged with console.error and never sent to the client. Every call ends with one timing line
  * (Perf.log): {api, ms, authMs (Config + role check), ok, code (failures only)}. Every call starts
  * with empty read memos (Store, Config): in Apps Script each call is a new execution anyway, the
@@ -55,7 +56,10 @@ function apiWrap_(fn, name, minRole) {
       var message = known ? String(e.message || code) : internalMessage_(e);
       if (code === 'FORBIDDEN') console.warn('[' + (name || 'api') + '] ' + code + ': ' + message);
       else console.error('[' + (name || 'api') + '] ' + code + ': ' + (e.stack || e.message || String(err)));
-      return JSON.stringify({ ok: false, error: { code: code, message: message } });
+      var error = { code: code, message: message };
+      // The form field a VALIDATION error is about (Core.makeError's third argument).
+      if (code === 'VALIDATION' && typeof e.field === 'string' && e.field !== '') error.field = e.field;
+      return JSON.stringify({ ok: false, error: error });
     } finally {
       var line = { api: name || 'api', ms: Date.now() - t0, authMs: authMs, ok: ok };
       if (code) line.code = code;
@@ -103,8 +107,9 @@ var ApiImpl_ = (function () {
 
   // ------------------------------------------------------------------------------- validation
 
-  function invalid_(message) {
-    return Core.makeError('VALIDATION', message);
+  /** VALIDATION error; `field` names the form field it is about (sent to the client as error.field). */
+  function invalid_(message, field) {
+    return Core.makeError('VALIDATION', message, field);
   }
 
   function requireMonth_(month, label) {
@@ -141,13 +146,13 @@ var ApiImpl_ = (function () {
     if (typeof v === 'string') return Core.isBlank(v) ? null : v;
     if (typeof v === 'number') return isFinite(v) ? String(v) : null;
     if (typeof v === 'boolean') return String(v);
-    throw invalid_('Valeur invalide pour « ' + field + ' ».');
+    throw invalid_('Valeur invalide pour « ' + field + ' ».', field);
   }
 
   /** Galink / IDP only accept 'Oui', 'Non' or blank. */
   function checkCustomField_(field, value) {
     if (Core.APP_CUSTOM_FIELDS.indexOf(field) >= 0 && value !== null && value !== 'Oui' && value !== 'Non') {
-      throw invalid_('« ' + field + ' » doit valoir « Oui », « Non » ou être vide.');
+      throw invalid_('« ' + field + ' » doit valoir « Oui », « Non » ou être vide.', field);
     }
   }
 
@@ -468,41 +473,160 @@ var ApiImpl_ = (function () {
         var found = existing.filter(function (r) { return Core.normKey(r[Core.KEY_POSTE]) === target; })[0];
         return { created: false, record: Core.enrichPostes([found])[0] };
       }
-      if (isLive_(month)) Importer.appendRecord('postes', rec);
+      if (isLive_(month)) {
+        // Not a form: the sheet's rules are not enforced, computed columns are left to their formulas.
+        var res = Importer.appendRecord('postes', rec, { strict: false });
+        assign_(rec, res.computed);
+      }
       var stored = Store.appendEntityRow(Config.TABS.postes, month, rec, Core.KEY_POSTE);
       return { created: true, record: Core.enrichPostes([stored])[0] };
     });
   }
 
-  /** VALIDATION when another application of the month already has `name` (compared with normKey). */
-  function requireFreeAppName_(apps, name, exceptId, month) {
+  /** Copies the own keys of `from` onto `to`. */
+  function assign_(to, from) {
+    Object.keys(from || {}).forEach(function (k) { to[k] = from[k]; });
+    return to;
+  }
+
+  /** What differs between postes and applications for the creation forms (built at call time: Core may load later). */
+  function entity_(entity) {
+    return entity === 'postes' ?
+      { tab: Config.TABS.postes, keyField: Core.KEY_POSTE, trailing: [], enrich: Core.enrichPostes, label: 'Le poste',
+        missingName: 'Le nom du poste est obligatoire.' } :
+      { tab: Config.TABS.applications, keyField: Core.KEY_APP, trailing: Core.APP_CUSTOM_FIELDS, enrich: enrichApps_,
+        label: 'L’application', missingName: 'Le nom de l’application est obligatoire.' };
+  }
+
+  /**
+   * VALIDATION (field = the key column) when another record of the month already has `name` (compared
+   * with normKey).
+   */
+  function requireFreeName_(entity, list, name, exceptId, month) {
+    var e = entity_(entity);
     var target = Core.normKey(name);
-    if (apps.some(function (a) { return a._id !== exceptId && Core.normKey(a[Core.KEY_APP]) === target; })) {
-      throw invalid_('L’application « ' + name + ' » existe déjà pour ' + month + '.');
+    if (list.some(function (r) { return r._id !== exceptId && Core.normKey(r[e.keyField]) === target; })) {
+      throw invalid_(e.label + ' « ' + name + ' » existe déjà pour ' + month + '.', e.keyField);
     }
   }
 
-  function addApplication(args) {
+  /** Snapshot headers of an entity for `month` (ImportLog), [] when unknown. */
+  function snapshotHeaders_(entity, month) {
+    var info = Store.latestImportInfo(month);
+    var headers = info && (entity === 'postes' ? info.postes_headers : info.apps_headers);
+    return { info: info, headers: Array.isArray(headers) ? headers : [] };
+  }
+
+  /**
+   * Adds a record from a creation form (api_addPoste / api_addApplication). Checked before the lock:
+   * `record` is an object, the key is not blank, `_` keys / non-scalar values / Galink-IDP values are
+   * refused. Under the lock: the month is imported and the name is free (VALIDATION, field = the key);
+   * current month: Importer.appendRecord(strict) checks the values against the source sheet and writes
+   * the row first (its computed columns come back with the values written); past month: the values are
+   * checked against the snapshot's columns (Core.snapshotFormColumns: computed columns are ordinary
+   * fields, only Oui/Non lists are strict). The new record has every snapshot column (null when not
+   * given) and is appended to the snapshot. Returns the enriched record.
+   */
+  function addEntity_(entity, args) {
+    var e = entity_(entity);
     var month = requireMonth_(args.month);
     if (!isPlainObject_(args.record)) throw invalid_('« record » doit être un objet.');
-    var name = stringField_(args.record[Core.KEY_APP], Core.KEY_APP);
-    if (!name) throw invalid_('Le nom de l’application est obligatoire.');
+    var name = stringField_(args.record[e.keyField], e.keyField);
+    if (!name) throw invalid_(e.missingName, e.keyField);
     var fields = normalizeFields_(args.record);
+    Object.keys(fields).forEach(function (k) {
+      if (k !== e.keyField && Core.normKey(k) === Core.normKey(e.keyField)) delete fields[k];
+    });
+    fields[e.keyField] = name;
 
     return Store.withLock(function () {
       requireImported_(month);
-      var apps = Store.readEntityMonth(Config.TABS.applications, month);
-      requireFreeAppName_(apps, name, null, month);
-      // Same columns as the imported rows (null when not provided), then the provided values.
-      var info = Store.latestImportInfo(month);
+      var tab = e.tab;
+      requireFreeName_(entity, Store.readEntityMonth(tab, month), name, null, month);
+      var snap = snapshotHeaders_(entity, month);
+      var headers = snap.headers.length || entity !== 'postes' ? snap.headers : Core.POSTE_TEMPLATE_KEYS;
       var rec = {};
-      columns_(info && info.apps_headers, [], Core.APP_CUSTOM_FIELDS).forEach(function (h) { rec[h] = null; });
-      Object.keys(fields).forEach(function (k) { rec[k] = fields[k]; });
-      rec[Core.KEY_APP] = name;
-      if (isLive_(month)) Importer.appendRecord('applications', rec);
-      var stored = Store.appendEntityRow(Config.TABS.applications, month, rec, Core.KEY_APP);
-      return enrichApps_([stored])[0];
+      columns_(headers, [], e.trailing).forEach(function (h) { rec[h] = null; });
+      if (isLive_(month)) {
+        var res = Importer.appendRecord(entity, fields, { strict: true });
+        assign_(rec, res.values);
+        assign_(rec, res.computed);
+        // App-only fields (Galink / IDP) the source has no column for: snapshot only.
+        e.trailing.forEach(function (f) {
+          if (!hasOwn.call(res.values, f) && hasOwn.call(fields, f)) rec[f] = fields[f];
+        });
+      } else {
+        var checked = Core.checkFormRecord(Core.snapshotFormColumns(entity, snap.headers, Store.readReferentiel(month)), fields);
+        if (!checked.ok) throw invalid_(checked.message, checked.field);
+        assign_(rec, checked.record);
+      }
+      rec[e.keyField] = name;
+      var stored = Store.appendEntityRow(tab, month, rec, e.keyField);
+      return e.enrich([stored])[0];
     });
+  }
+
+  function addPoste(args) {
+    return addEntity_('postes', args);
+  }
+
+  function addApplication(args) {
+    return addEntity_('applications', args);
+  }
+
+  // ---------------------------------------------------------------------------- form schema
+
+  /** Galink / IDP form columns an applications schema read from the source lacks (app-only fields). */
+  function withAppOnlyColumns_(columns) {
+    var names = columns.map(function (c) { return c.name; });
+    Core.APP_CUSTOM_FIELDS.forEach(function (f) {
+      if (names.indexOf(f) < 0) {
+        columns.push({ name: f, kind: 'select', options: ['Oui', 'Non'], strict: true, computed: false, required: false,
+          appOnly: true });
+      }
+    });
+    return columns;
+  }
+
+  /**
+   * Fields of a creation form: {entity, month, live, origin, keyField, readAt, warning?, columns}
+   * (docs/API.md §3). Current month: read from the source outside the lock (Importer.readFormSchema,
+   * cached 5 min; `fresh` reads again), origin 'source'; when the source is not configured or cannot be
+   * read, the columns of the last synchronisation (origin 'fallback', with a warning: never fails, nothing
+   * cached). Past month: the snapshot's columns (origin 'snapshot'); the source is never opened.
+   */
+  function getFormSchema(args) {
+    var entity = args.entity;
+    if (entity !== 'postes' && entity !== 'applications') {
+      throw invalid_('« entity » doit valoir « postes » ou « applications ».');
+    }
+    var month = requireMonth_(args.month);
+    var live = isLive_(month);
+    var out = { entity: entity, month: month, live: live, origin: 'snapshot', keyField: entity_(entity).keyField,
+      readAt: '', columns: [] };
+    if (live) {
+      try {
+        var schema = Importer.readFormSchema(entity, { fresh: args.fresh === true });
+        out.origin = 'source';
+        out.readAt = schema.readAt;
+        out.columns = entity === 'applications' ? withAppOnlyColumns_(schema.columns) : schema.columns;
+        return out;
+      } catch (e) {
+        if (!e || (e.code !== 'NOT_CONFIGURED' && e.code !== 'SOURCE_ERROR')) throw e;
+        console.warn('api_getFormSchema: source not readable (' + e.code + '), using the last synchronisation');
+        out.origin = 'fallback';
+        out.warning = e.code === 'NOT_CONFIGURED' ?
+          'Aucun Google Sheet source n’est configuré : les champs viennent de la dernière synchronisation.' :
+          'Le Google Sheet source n’a pas pu être lu : les champs et les listes viennent de la dernière ' +
+          'synchronisation. Les colonnes calculées et les règles de la source seront vérifiées à l’enregistrement.';
+      }
+    } else {
+      requireImported_(month);
+    }
+    var snap = snapshotHeaders_(entity, month);
+    out.readAt = snap.info ? snap.info.imported_at : '';
+    out.columns = Core.snapshotFormColumns(entity, snap.headers, snap.info ? Store.readReferentiel(month) : {});
+    return out;
   }
 
   function deleteApplication(args) {
@@ -530,7 +654,7 @@ var ApiImpl_ = (function () {
       var apps = Store.readEntityMonth(Config.TABS.applications, month);
       var current = findById_(apps, id);
       if (!current) throw notFound_('Application');
-      requireFreeAppName_(apps, newName, id, month);
+      requireFreeName_('applications', apps, newName, id, month);
       var oldName = Core.str(current[Core.KEY_APP]);
       if (oldName === newName) return { record: enrichApps_([current])[0], actionsUpdated: 0 };
 
@@ -884,6 +1008,8 @@ var ApiImpl_ = (function () {
     getImportLog: getImportLog,
     savePostes: savePostes,
     addGenericPoste: addGenericPoste,
+    addPoste: addPoste,
+    getFormSchema: getFormSchema,
     saveApplications: saveApplications,
     addApplication: addApplication,
     deleteApplication: deleteApplication,
@@ -921,6 +1047,8 @@ function api_enableSync(argsJson) { return apiWrap_(ApiImpl_.enableSync, 'api_en
 function api_getImportLog(argsJson) { return apiWrap_(ApiImpl_.getImportLog, 'api_getImportLog', 'lecteur')(argsJson); }
 function api_savePostes(argsJson) { return apiWrap_(ApiImpl_.savePostes, 'api_savePostes', 'admin')(argsJson); }
 function api_addGenericPoste(argsJson) { return apiWrap_(ApiImpl_.addGenericPoste, 'api_addGenericPoste', 'admin')(argsJson); }
+function api_addPoste(argsJson) { return apiWrap_(ApiImpl_.addPoste, 'api_addPoste', 'admin')(argsJson); }
+function api_getFormSchema(argsJson) { return apiWrap_(ApiImpl_.getFormSchema, 'api_getFormSchema', 'admin')(argsJson); }
 function api_saveApplications(argsJson) { return apiWrap_(ApiImpl_.saveApplications, 'api_saveApplications', 'admin')(argsJson); }
 function api_addApplication(argsJson) { return apiWrap_(ApiImpl_.addApplication, 'api_addApplication', 'admin')(argsJson); }
 function api_deleteApplication(argsJson) { return apiWrap_(ApiImpl_.deleteApplication, 'api_deleteApplication', 'admin')(argsJson); }

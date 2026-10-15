@@ -367,3 +367,106 @@ test('optionsForColumn: référentiel, alias, Oui/Non, free text', () => {
   opts.push('mutated');
   assert.deepEqual(ref.OS, ['Windows', 'macOS', 'Linux'], 'returns a copy');
 });
+
+// ------------------------------------------------------------------------------- creation forms
+
+test('makeError carries a field only when it is a non-empty string', () => {
+  const e = Core.makeError('VALIDATION', 'Ce champ est obligatoire.', 'Équipe');
+  assert.deepEqual([e.code, e.message, e.field], ['VALIDATION', 'Ce champ est obligatoire.', 'Équipe']);
+  for (const f of [undefined, null, '', 42, {}]) assert.equal('field' in Core.makeError('VALIDATION', 'x', f), false);
+});
+
+test('FORM_REQUIRED / FORM_DATE_HINTS', () => {
+  assert.deepEqual(Core.FORM_REQUIRED, { postes: ['Nom du poste', 'Équipe'], applications: ['Nom du logiciel / service'] });
+  assert.deepEqual(Core.FORM_DATE_HINTS, ['Date visite', 'Prochaine revue', "Date d'achat", 'Deadline', 'Date']);
+  assert.ok(Object.isFrozen(Core.FORM_REQUIRED) && Object.isFrozen(Core.FORM_REQUIRED.postes));
+});
+
+test('snapshotFormColumns: snapshot headers -> form columns (lists, dates, required, app-only)', () => {
+  const cols = Core.snapshotFormColumns('postes', data.POSTES_HEADERS, data.REFERENTIEL);
+  assert.deepEqual(cols.map((c) => c.name), data.POSTES_HEADERS);
+  const by = Object.fromEntries(cols.map((c) => [c.name, c]));
+  assert.deepEqual(by['IT Decathlon'], { name: 'IT Decathlon', kind: 'select', options: ['Oui', 'Non'], strict: true,
+    computed: false, required: false });
+  assert.deepEqual(by['OS'], { name: 'OS', kind: 'select', options: ['Windows', 'macOS', 'Linux'], strict: false,
+    computed: false, required: false });
+  assert.deepEqual(by['Bâtiment / Labo'].options, ['Bâtiment A', 'Bâtiment B', 'Bâtiment C'], 'Référentiel alias');
+  assert.deepEqual([by['Équipe'].kind, by['Équipe'].strict, by['Équipe'].required], ['select', false, true]);
+  assert.deepEqual([by['Nom du poste'].kind, by['Nom du poste'].required], ['text', true]);
+  for (const d of ['Date visite', 'Prochaine revue', "Date d'achat", 'Deadline']) {
+    assert.deepEqual([by[d].kind, by[d].options, by[d].strict], ['date', null, false], d);
+  }
+  assert.deepEqual([by['Commentaires'].kind, by['Commentaires'].options], ['text', null]);
+  assert.ok(cols.every((c) => c.computed === false && !('appOnly' in c)));
+  // The returned options are copies.
+  by['OS'].options.push('x');
+  assert.deepEqual(data.REFERENTIEL.OS, ['Windows', 'macOS', 'Linux']);
+
+  const apps = Core.snapshotFormColumns('applications', data.APPS_HEADERS, data.REFERENTIEL);
+  assert.deepEqual(apps.map((c) => c.name), data.APPS_HEADERS.concat(['Galink', 'IDP']));
+  assert.deepEqual(apps.slice(-1)[0], { name: 'IDP', kind: 'select', options: ['Oui', 'Non'], strict: true, computed: false,
+    required: false, appOnly: true });
+  assert.equal(apps.find((c) => c.name === 'Date').kind, 'date');
+  assert.deepEqual(apps.filter((c) => c.required).map((c) => c.name), ['Nom du logiciel / service']);
+  // Galink present in the headers: an ordinary (not app-only) column.
+  const withGalink = Core.snapshotFormColumns('applications', ['Nom du logiciel / service', 'Galink'], {});
+  assert.deepEqual(withGalink.map((c) => [c.name, !!c.appOnly]), [['Nom du logiciel / service', false], ['Galink', false], ['IDP', true]]);
+
+  // Headers cleaned (NBSP, spaces), de-duplicated; required fields added first when missing.
+  assert.deepEqual(Core.snapshotFormColumns('postes', ['  Commentaires ', 'Commentaires', ''], null).map((c) => c.name),
+    ['Nom du poste', 'Équipe', 'Commentaires']);
+  assert.deepEqual(Core.snapshotFormColumns('postes', ['équipe', 'nom du poste'], null).map((c) => [c.name, c.required]),
+    [['équipe', true], ['nom du poste', true]], 'matched with normKey');
+  assert.deepEqual(Core.snapshotFormColumns(null, null, null).map((c) => c.name), ['Nom du poste', 'Équipe']);
+});
+
+test('checkFormRecord: normalised record, or the first problem with its field', () => {
+  const cols = [
+    { name: 'Nom', kind: 'text', options: null, strict: false, computed: false, required: true },
+    { name: 'Score', kind: 'text', options: null, strict: false, computed: true, required: false },
+    { name: 'Équipe', kind: 'select', options: ['A', 'B'], strict: false, computed: false, required: true },
+    { name: 'Réseau', kind: 'select', options: ['Oui', 'Non'], strict: true, computed: false, required: false },
+    { name: 'Apps', kind: 'select', options: ['X', 'Y', 'Z'], strict: true, computed: false, required: false },
+    { name: 'Date', kind: 'date', options: null, strict: false, computed: false, required: false },
+    { name: 'Coché', kind: 'checkbox', options: ['TRUE', 'FALSE'], strict: true, computed: false, required: false },
+    { name: 'Commentaire', kind: 'text', options: null, strict: false, computed: false, required: false },
+  ];
+  const good = Core.checkFormRecord(cols, { ' nom ': '  PC-1 ', 'Équipe': 'Hors liste', 'Réseau': 'Oui', Apps: 'X, Z',
+    Date: '2026-05-04', 'Coché': true, Commentaire: '   ', Score: '' });
+  assert.equal(good.ok, true);
+  assert.deepEqual(good.record, { Nom: 'PC-1', Score: null, 'Équipe': 'Hors liste', 'Réseau': 'Oui', Apps: 'X, Z',
+    Date: '04/05/2026', 'Coché': 'TRUE', Commentaire: null });
+  assert.equal(Core.checkFormRecord(cols, { Nom: 'a', 'Équipe': 'A', Date: '4/5/2026' }).record.Date, '04/05/2026');
+  assert.equal(Core.checkFormRecord(cols, { Nom: 'a', 'Équipe': 'A', Score: 12 }).field, 'Score', 'numbers are values too');
+
+  const bad = (rec) => {
+    const r = Core.checkFormRecord(cols, rec);
+    assert.equal(r.ok, false, JSON.stringify(rec));
+    assert.deepEqual(Object.keys(r).sort(), ['field', 'message', 'ok']);
+    return [r.field, r.message];
+  };
+  const base = { Nom: 'PC-1', 'Équipe': 'A' };
+  assert.deepEqual(bad({ ...base, Inconnue: 'x' }),
+    ['Inconnue', 'La colonne « Inconnue » n’existe pas dans le Google Sheet source : rouvrez le formulaire.']);
+  assert.deepEqual(bad({ ...base, Score: '80%' }), ['Score', '« Score » est calculée par une formule dans le Google Sheet source.']);
+  assert.deepEqual(bad({ Nom: 'PC-1' }), ['Équipe', 'Ce champ est obligatoire.']);
+  assert.deepEqual(bad({ Nom: ' ', 'Équipe': 'A' }), ['Nom', 'Ce champ est obligatoire.']);
+  assert.deepEqual(bad({}), ['Nom', 'Ce champ est obligatoire.'], 'columns in order');
+  assert.deepEqual(bad({ ...base, 'Réseau': 'oui' }), ['Réseau', 'Valeur hors liste : « oui » (attendu : Oui, Non).']);
+  assert.deepEqual(bad({ ...base, Apps: 'X, W' }), ['Apps', 'Valeur hors liste : « X, W » (attendu : X, Y, Z).']);
+  assert.deepEqual(bad({ ...base, Apps: 'X,,Y' }), ['Apps', 'Valeur hors liste : « X,,Y » (attendu : X, Y, Z).']);
+  assert.deepEqual(bad({ ...base, 'Coché': 'peut-être' })[0], 'Coché');
+  for (const d of ['31/02/2026', '2026-13-01', '15/03/26', 'demain', '2026-02-30']) {
+    assert.deepEqual(bad({ ...base, Date: d }), ['Date', 'Date invalide : « ' + d + ' » (format attendu JJ/MM/AAAA).']);
+  }
+  assert.deepEqual(bad({ ...base, Commentaire: ['x'] }), ['Commentaire', 'Valeur invalide.']);
+  // A long strict list is not spelled out.
+  const many = [{ name: 'Liste', kind: 'select', options: 'abcdefghij'.split(''), strict: true, computed: false, required: false }];
+  assert.deepEqual(Core.checkFormRecord(many, { Liste: 'z' }),
+    { ok: false, field: 'Liste', message: 'Valeur hors liste : « z » : choisissez une valeur de la liste.' });
+  // Total.
+  assert.deepEqual(Core.checkFormRecord(null, null), { ok: true, record: {} });
+  assert.deepEqual(Core.checkFormRecord(Core.snapshotFormColumns('applications', data.APPS_HEADERS, data.REFERENTIEL),
+    { 'Nom du logiciel / service': 'Slack', Galink: 'Oui', Contrat: 'Non' }),
+  { ok: true, record: { 'Nom du logiciel / service': 'Slack', Contrat: 'Non', Galink: 'Oui' } });
+});

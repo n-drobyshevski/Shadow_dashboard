@@ -50,6 +50,9 @@ function CoreFactory_() {
     referentiel: 'Référentiel' };
   var ERROR_CODES = ['NOT_CONFIGURED', 'MONTH_EXISTS', 'NOT_FOUND', 'BUSY', 'VALIDATION', 'SOURCE_ERROR', 'FORBIDDEN',
     'INTERNAL'];
+  // Creation forms: fields a new record cannot do without, and column names that hold dates.
+  var FORM_REQUIRED = { postes: [KEY_POSTE, 'Équipe'], applications: [KEY_APP] };
+  var FORM_DATE_HINTS = ['Date visite', 'Prochaine revue', "Date d'achat", 'Deadline', 'Date'];
 
   // Field names used by several functions below.
   var F_EQUIPE = 'Équipe';
@@ -185,10 +188,14 @@ function CoreFactory_() {
     return round10_(n);
   }
 
-  /** Error with a machine-readable `.code` (one of ERROR_CODES). */
-  function makeError(code, message) {
+  /**
+   * Error with a machine-readable `.code` (one of ERROR_CODES). `field` (a non-empty string) names the
+   * form field the error is about: the API reply carries it for VALIDATION errors.
+   */
+  function makeError(code, message, field) {
     var err = new Error(message === null || message === undefined ? String(code) : String(message));
     err.code = code;
+    if (typeof field === 'string' && field !== '') err.field = field;
     return err;
   }
 
@@ -675,6 +682,145 @@ function CoreFactory_() {
     return null;
   }
 
+  // ------------------------------------------------------------------------------------------
+  // §2 Creation forms (fields of a new poste / application)
+  // ------------------------------------------------------------------------------------------
+
+  var MAX_LISTED_OPTIONS_ = 8; // a refused list value names the expected values up to this many
+
+  /** One form column with every key of the column shape (docs/API.md §3, api_getFormSchema). */
+  function formColumn_(name, kind, options, strict, required) {
+    return { name: name, kind: kind, options: options, strict: strict, computed: false, required: required };
+  }
+
+  /** Galink / IDP: app-only Oui/Non columns (they live in the snapshot only). */
+  function appOnlyColumn_(name) {
+    var col = formColumn_(name, 'select', ['Oui', 'Non'], true, false);
+    col.appOnly = true;
+    return col;
+  }
+
+  function isDateHint_(name) {
+    var k = normKey(name);
+    return FORM_DATE_HINTS.some(function (h) { return normKey(h) === k; });
+  }
+
+  /**
+   * Form columns from a snapshot's headers (no source sheet at hand: past months, or a source that
+   * cannot be read): options from the Référentiel / Oui-Non (optionsForColumn), strict only for the
+   * Oui/Non columns (YES_NO_COLS), 'date' for the FORM_DATE_HINTS names, nothing computed. The required
+   * fields of FORM_REQUIRED are always there (added first when the headers lack them); applications end
+   * with Galink / IDP (appOnly) when the headers lack them.
+   * @return {Array<{name, kind, options, strict, computed, required, appOnly?}>}
+   */
+  function snapshotFormColumns(entity, headers, referentiel) {
+    var ent = entity === 'applications' ? 'applications' : 'postes';
+    var required = FORM_REQUIRED[ent];
+    var names = [];
+    toArray_(headers).forEach(function (h) {
+      var n = cleanLabel_(h);
+      if (n !== '' && names.indexOf(n) < 0) names.push(n);
+    });
+    required.slice().reverse().forEach(function (r) {
+      if (!names.some(function (n) { return normKey(n) === normKey(r); })) names.unshift(r);
+    });
+    var cols = names.map(function (n) {
+      var options = optionsForColumn(n, referentiel);
+      var kind = isDateHint_(n) ? 'date' : (options ? 'select' : 'text');
+      var strict = kind === 'select' && YES_NO_COLS.indexOf(n) >= 0;
+      var req = required.some(function (r) { return normKey(r) === normKey(n); });
+      return formColumn_(n, kind, kind === 'select' ? options : null, strict, req);
+    });
+    if (ent === 'applications') {
+      APP_CUSTOM_FIELDS.forEach(function (f) {
+        if (names.indexOf(f) < 0) cols.push(appOnlyColumn_(f));
+      });
+    }
+    return cols;
+  }
+
+  /** 'DD/MM/YYYY' of a real calendar day given as 'DD/MM/YYYY' (1-digit day / month too) or ISO; '' otherwise. */
+  function formDate_(s) {
+    var iso = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
+    var fr = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
+    var y, m, d;
+    if (iso) { y = Number(iso[1]); m = Number(iso[2]); d = Number(iso[3]); }
+    else if (fr) { y = Number(fr[3]); m = Number(fr[2]); d = Number(fr[1]); }
+    else return '';
+    var dt = new Date(y, m - 1, d);
+    if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return '';
+    return pad2_(d) + '/' + pad2_(m) + '/' + y;
+  }
+
+  function quoteFr_(v) {
+    return '« ' + v + ' »';
+  }
+
+  function refused_(field, message) {
+    return { ok: false, field: field, message: message };
+  }
+
+  /**
+   * Checks a new record against form columns (snapshotFormColumns, or the live source's ones):
+   * {ok:true, record} with the record's values under the column names (a key matching a column by
+   * normKey takes its spelling), trimmed, blanks as null and dates as 'DD/MM/YYYY'; or the first problem
+   * as {ok:false, field, message} (French), checked in this order: a key that is no column, then per
+   * column in order: a value for a computed column, a missing required value, a date that is no real day
+   * (ISO or DD/MM/YYYY accepted), a value outside the options of a strict select / checkbox
+   * (comma-separated values are accepted when every part is an option).
+   */
+  function checkFormRecord(columns, record) {
+    var cols = toArray_(columns).filter(function (c) { return c && typeof c === 'object' && str(c.name) !== ''; });
+    var rec = record && typeof record === 'object' ? record : {};
+    var values = {};
+    var keys = Object.keys(rec);
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      var col = null;
+      for (var j = 0; j < cols.length && !col; j++) if (cols[j].name === k) col = cols[j];
+      for (j = 0; j < cols.length && !col; j++) if (normKey(cols[j].name) === normKey(k)) col = cols[j];
+      if (!col) {
+        return refused_(k, 'La colonne ' + quoteFr_(k) + ' n’existe pas dans le Google Sheet source : rouvrez le formulaire.');
+      }
+      var v = rec[k];
+      if (v !== null && v !== undefined && typeof v === 'object') return refused_(col.name, 'Valeur invalide.');
+      if (typeof v === 'boolean') v = v ? 'TRUE' : 'FALSE';
+      var s = str(v);
+      if (s !== '' || !hasOwn.call(values, col.name)) setOwn_(values, col.name, s === '' ? null : s);
+    }
+    var out = {};
+    for (var c = 0; c < cols.length; c++) {
+      var column = cols[c];
+      var name = column.name;
+      var given = hasOwn.call(values, name);
+      var val = given ? values[name] : null;
+      if (column.computed && val !== null) {
+        return refused_(name, quoteFr_(name) + ' est calculée par une formule dans le Google Sheet source.');
+      }
+      if (val === null) {
+        if (column.required && !column.computed) return refused_(name, 'Ce champ est obligatoire.');
+        if (given) setOwn_(out, name, null);
+        continue;
+      }
+      if (column.kind === 'date') {
+        var d = formDate_(val);
+        if (!d) return refused_(name, 'Date invalide : ' + quoteFr_(val) + ' (format attendu JJ/MM/AAAA).');
+        val = d;
+      }
+      var options = Array.isArray(column.options) ? column.options.map(str) : null;
+      if (column.strict && options && (column.kind === 'select' || column.kind === 'checkbox')) {
+        var parts = options.indexOf(val) >= 0 ? [val] : val.split(',').map(str);
+        var ok = parts.every(function (p) { return p !== '' && options.indexOf(p) >= 0; });
+        if (!ok) {
+          return refused_(name, 'Valeur hors liste : ' + quoteFr_(val) + (options.length && options.length <= MAX_LISTED_OPTIONS_ ?
+            ' (attendu : ' + options.join(', ') + ').' : ' : choisissez une valeur de la liste.'));
+        }
+      }
+      setOwn_(out, name, val);
+    }
+    return { ok: true, record: out };
+  }
+
   /** Ascending, unique, valid 'YYYY-MM' months. */
   function sortMonths(months) {
     var out = [];
@@ -842,6 +988,8 @@ function CoreFactory_() {
     ACTION_PRIORITIES: freeze_(ACTION_PRIORITIES),
     SOURCE_TABS: freeze_(SOURCE_TABS),
     ERROR_CODES: freeze_(ERROR_CODES),
+    FORM_REQUIRED: freeze_(FORM_REQUIRED),
+    FORM_DATE_HINTS: freeze_(FORM_DATE_HINTS),
     // §2 functions
     normKey: normKey,
     isBlank: isBlank,
@@ -872,6 +1020,8 @@ function CoreFactory_() {
     makeGenericPoste: makeGenericPoste,
     mergeCarryOver: mergeCarryOver,
     optionsForColumn: optionsForColumn,
+    snapshotFormColumns: snapshotFormColumns,
+    checkFormRecord: checkFormRecord,
     sortMonths: sortMonths,
     previousMonth: previousMonth,
     PERIOD_PRESETS: freeze_(PERIOD_PRESETS),

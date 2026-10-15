@@ -731,7 +731,15 @@ test('append below a non-empty row: a row is inserted, the formulas of the last 
   assert.equal(after[lastRow][key], 'Poste générique Decathlon', 'inserted just below the last record');
   assert.equal(after[lastRow + 1][0], 'Total', 'the non-empty row moved down, untouched');
   assert.equal(after[lastRow][score], '=AVERAGE(J' + lastRow + ':N' + lastRow + ')', 'formula copied down');
-  // Header block, key column, the row below the last record, the last record's formulas.
-  assert.deepEqual(reads.map((r) => r.method), ['getDisplayValues', 'getDisplayValues', 'getDisplayValues', 'getFormulas']);
-  assert.ok(reads.slice(2).every((r) => r.cells === grid[1].length), 'one row each');
+  // Header block, key column, the formulas of the header row + first data row (array formulas) and of
+  // the last record, its data validation and raw values, the row below it, then the new row read back.
+  assert.deepEqual(reads.map((r) => r.method), ['getDisplayValues', 'getDisplayValues', 'getFormulas', 'getFormulas',
+    'getDataValidations', 'getValues', 'getDisplayValues', 'getDisplayValues']);
+  const width = grid[1].length;
+  const lastCol = String.fromCharCode(64 + width);
+  assert.deepEqual(reads.slice(2).map((r) => r.a1), ['A2:' + lastCol + '3', 'A' + lastRow + ':' + lastCol + lastRow,
+    'A' + lastRow + ':' + lastCol + lastRow, 'A' + lastRow + ':' + lastCol + lastRow,
+    'A' + (lastRow + 1) + ':' + lastCol + (lastRow + 1), 'A' + (lastRow + 1) + ':' + lastCol + (lastRow + 1)]);
+  assert.deepEqual(reads.slice(2).map((r) => r.cells), [2 * width, width, width, width, width, width], 'never the whole tab');
+  assert.ok(reads.every((r) => r.lockHeld));
 });

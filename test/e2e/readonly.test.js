@@ -18,7 +18,8 @@ const posteId = (name) => 'p-' + MONTH + '-' + (data.MONTHS[MONTH].postes.findIn
 const appId = (name) => 'a-' + MONTH + '-' + (data.MONTHS[MONTH].applications.findIndex((a) => a[KEY_APP] === name) + 1);
 
 /** Every endpoint a lecteur must never call (the server answers FORBIDDEN). */
-const ADMIN_APIS = ['api_setConfig', 'api_syncNow', 'api_enableSync', 'api_savePostes', 'api_addGenericPoste', 'api_saveApplications',
+const ADMIN_APIS = ['api_setConfig', 'api_syncNow', 'api_enableSync', 'api_savePostes', 'api_addGenericPoste', 'api_addPoste',
+  'api_getFormSchema', 'api_saveApplications',
   'api_addApplication', 'api_deleteApplication', 'api_renameApplication', 'api_addAction', 'api_updateAction',
   'api_deleteAction', 'api_addReplacement', 'api_updateReplacement', 'api_deleteReplacement',
   'api_getSettings', 'api_setThreshold', 'api_saveUser', 'api_removeUser', 'api_setDomainRole', 'api_saveGroup',

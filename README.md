@@ -283,6 +283,31 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
       et une synchronisation qui lui ajoute une application pendant qu'une autre session change de
       mois en boucle : jamais une application en moins à l'écran ; la ligne `sheet` d'Applications
       (Exécutions) apparaît seulement quand la lecture a croisé l'écriture.
+- [ ] Formulaires de création, lecture des règles : dans Exécutions, l'appel `api_getFormSchema` du mois
+      en cours montre une ligne `formSchema` (`cache: "miss"`, puis `"hit"` au second appel dans les
+      5 minutes, sans ouverture de classeur) avec des nombres seulement, aucun nom de colonne. Les listes
+      déroulantes de la source sont proposées : `String(dv.getCriteriaType())` vaut bien `VALUE_IN_LIST` /
+      `VALUE_IN_RANGE` (une liste « plage » du Référentiel donne ses valeurs, une plage ouverte comme
+      `B2:B` aussi), une règle « Afficher un avertissement » n'est pas bloquante et « Refuser la saisie »
+      l'est ; les colonnes à formule (Score conformité, Niveau de risque, Statut) et une colonne
+      `ARRAYFORMULA` ne sont pas des champs. Ajouter une colonne dans la source puis « Relire les
+      colonnes » : elle apparaît dans le formulaire.
+- [ ] Formulaires de création, écriture de la ligne : créer un poste du mois en cours. La ligne arrive
+      sous le dernier poste ; elle reprend les règles de validation de la ligne du dessus ; les formules
+      recopiées décalent bien leurs références relatives (le score de la nouvelle ligne porte sur la
+      nouvelle ligne) ; une colonne `ARRAYFORMULA` n'est jamais écrite (pas de `#REF!`). Avec une valeur
+      refusée par une règle « plage » (une valeur hors du Référentiel), `setValues` échoue avec un message
+      qui nomme la cellule : l'erreur s'affiche sous le bon champ et la source ne garde aucune ligne vide.
+- [ ] Formulaires de création, valeurs calculées : juste après la création, le score, le niveau de
+      risque et le statut du nouveau poste s'affichent dans le tableau (relus après `flush()`) ; une
+      formule lente qui affiche encore « Loading… » laisse la valeur vide jusqu'à la synchronisation
+      suivante, qui ne signale ensuite aucun changement.
+- [ ] Formulaires de création, limites connues : une liste à choix multiples (puces) accepte des valeurs
+      séparées par des virgules, ce qui n'est qu'une hypothèse (aucune API ne dit si une liste autorise
+      plusieurs valeurs) ; les dates sont écrites en texte `JJ/MM/AAAA`, donc pour une source en
+      paramètres régionaux français (comme les modifications de cellules) ; les modifications de
+      cellules dans le tableau ont le même angle mort sur les colonnes `ARRAYFORMULA` (noté pour plus
+      tard, non corrigé ici).
 - [ ] Le déclencheur `syncHourly` apparaît dans l'éditeur (Déclencheurs) et s'exécute toutes les
       heures (Exécutions) ; une synchronisation sans changement n'ajoute rien au journal.
 - [ ] Mesures : dans Exécutions, un appel (par exemple l'ouverture de l'application) montre ses lignes

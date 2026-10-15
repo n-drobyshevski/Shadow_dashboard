@@ -9,6 +9,7 @@ const assert = require('node:assert/strict');
 
 const { loadGas, timingLines } = require('../helpers/gasSandbox');
 const { buildSourceSpreadsheet, SOURCE_ID } = require('../fixtures/source');
+const data = require('../fixtures/data');
 
 const READER = 'lea.reader@decathlon.com';
 
@@ -181,6 +182,42 @@ test('write-back: sourceOpen / sourceRead / cellWrites laps for edit, append and
     { month: '2026-05', changes: [{ id: poste._id, updates: { Commentaires: 'Revu' } }] }).error.code, 'SOURCE_ERROR'));
   assert.equal(lines.filter((l) => l.stage === 'writeBack').length, 0);
   assert.deepEqual(lines.filter((l) => 'api' in l).map((l) => [l.ok, l.code]), [[false, 'SOURCE_ERROR']]);
+});
+
+test('formSchema: laps of a source read, counts only; a cache hit has no lap; the append keeps the writeBack keys', () => {
+  const sb = loadGas({ sources: [buildSourceSpreadsheet('2026-05', { form: true })] });
+  sb.ctx.Config.today = () => '2026-05-15';
+  ok(sb.ctx, 'api_setConfig', { source: SOURCE_ID });
+  ok(sb.ctx, 'api_syncNow');
+  const { ctx, env } = nextExecution(sb.env);
+
+  let lines = linesDuring(env, () => ok(ctx, 'api_getFormSchema', { entity: 'postes', month: '2026-05' }));
+  assert.deepEqual(lines.map((l) => l.stage || l.api), ['formSchema', 'api_getFormSchema']);
+  const miss = lines[0];
+  assert.deepEqual(Object.keys(miss), ['stage', 'ms', 'sourceOpen', 'sourceRead', 'validations', 'lists', 'entity', 'columns',
+    'computed', 'selects', 'cache']);
+  assert.ok(['ms', 'sourceOpen', 'sourceRead', 'validations', 'lists'].every((k) => isMs(miss[k])));
+  assert.deepEqual([miss.entity, miss.columns, miss.computed, miss.selects, miss.cache], ['postes', 26, 4, 8, 'miss']);
+
+  lines = linesDuring(env, () => ok(ctx, 'api_getFormSchema', { entity: 'postes', month: '2026-05' }));
+  assert.deepEqual(lines.map((l) => l.stage || l.api), ['formSchema', 'api_getFormSchema'], 'no ensure: nothing else is read');
+  assert.deepEqual(Object.keys(lines[0]), ['stage', 'ms', 'entity', 'columns', 'computed', 'selects', 'cache']);
+  assert.equal(lines[0].cache, 'hit');
+  lines = linesDuring(env, () => ok(ctx, 'api_getFormSchema', { entity: 'applications', month: '2026-05', fresh: true }));
+  assert.deepEqual([lines[0].entity, lines[0].cache], ['applications', 'bypass']);
+
+  lines = linesDuring(env, () => ok(ctx, 'api_addPoste', { month: '2026-05',
+    record: { 'Nom du poste': 'PC-TIMING-1', 'Équipe': 'Labo Textile' } }));
+  const wb = lines.filter((l) => l.stage === 'writeBack');
+  assert.deepEqual(wb.map((l) => Object.keys(l)), [['stage', 'ms', 'sourceOpen', 'sourceRead', 'cellWrites', 'op', 'entity']]);
+  assert.deepEqual([wb[0].op, wb[0].entity], ['append', 'postes']);
+  // No column name, no record value in any line.
+  for (const l of timingLines(env)) {
+    for (const v of Object.values(l)) {
+      assert.ok(!data.POSTES_HEADERS.includes(v) && !data.APPS_HEADERS.includes(v) && v !== 'Ancienneté', JSON.stringify(l));
+    }
+  }
+  assert.doesNotMatch(JSON.stringify(timingLines(env)), /PC-TIMING-1|Labo Textile|fs1:/);
 });
 
 test('timing lines never carry an e-mail address, an id or record contents', () => {

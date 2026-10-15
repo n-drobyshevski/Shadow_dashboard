@@ -3,19 +3,21 @@
  * window.api — Promise wrapper around google.script.run (docs/API.md §5).
  *
  * Every server function takes one JSON string and returns one JSON envelope string
- * {ok:true, data} | {ok:false, error:{code, message}}.
+ * {ok:true, data} | {ok:false, error:{code, message, field?}}.
  *   api.call('api_getMonthData', {month: '2026-05'}).then(function (data) { ... })
  * Rejections are Error objects with a `.code`: one of Core.ERROR_CODES, or 'TRANSPORT' when the
- * call itself failed (network, authorization, server crash outside apiWrap_, malformed reply).
+ * call itself failed (network, authorization, server crash outside apiWrap_, malformed reply), and a
+ * `.field` when the server named the form field a VALIDATION error is about.
  * Every call logs `[rpc] <name> <ms>ms` (plus the error code on failure) with console.debug: the
  * round trip as the browser sees it, to compare with the server's {api, ms} line (docs/API.md §4).
  */
 (function () {
   'use strict';
 
-  function makeErr(code, message) {
+  function makeErr(code, message, field) {
     var err = new Error(message || 'Erreur inconnue.');
     err.code = code;
+    if (typeof field === 'string' && field !== '') err.field = field;
     return err;
   }
 
@@ -53,7 +55,7 @@
             resolve(env.data);
           } else if (env && env.ok === false && env.error) {
             logRpc(name, t0, env.error.code || 'INTERNAL');
-            reject(makeErr(env.error.code || 'INTERNAL', env.error.message));
+            reject(makeErr(env.error.code || 'INTERNAL', env.error.message, env.error.field));
           } else {
             logRpc(name, t0, 'TRANSPORT');
             reject(makeErr('TRANSPORT', 'Réponse du serveur inattendue.'));

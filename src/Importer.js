@@ -385,8 +385,9 @@ var Importer = (function () {
   // ------------------------------------------------------------------------------- write-back
   //
   // Reading discipline: the header row is located in the first HEADER_SCAN_ROWS rows, the records by
-  // ONE read of the key column, then only the rows a write touches are read (formulas of the edited rows,
-  // the row below the last record for an append): never the whole tab.
+  // ONE read of the key column, then only the rows a write touches are read (formulas of the edited rows;
+  // for an append, readSample_ and the row below the last record, then the new row once written): never
+  // the whole tab.
   //
   // Writing discipline: one setValue per edited cell. A block setValues would also rewrite the cells
   // between the edited ones (a formula, a data-validated cell, a value someone just typed in the
@@ -514,7 +515,7 @@ var Importer = (function () {
         cells.forEach(function (cell) {
           if (formulas[cell.row - 1][cell.col - 1]) {
             throw Core.makeError('VALIDATION', 'La colonne « ' + cell.field + ' » est calculée par une formule dans ' +
-              'le Google Sheet source : modifiez-la là-bas.');
+              'le Google Sheet source : modifiez-la là-bas.', cell.field);
           }
         });
         Store.noteSourceWrite();
@@ -526,53 +527,410 @@ var Importer = (function () {
     });
   }
 
-  /** One cell write; a value refused by the cell's data validation becomes VALIDATION. */
+  /** One cell write; a value refused by the cell's data validation becomes VALIDATION (with the field). */
   function setCell_(t, cell) {
     try {
       t.sheet.getRange(cell.row, cell.col).setValue(cell.value);
     } catch (e) {
-      console.warn('Importer: source write refused (' + t.tabName + ' ' + cell.row + ':' + cell.col + '): ' + (e && e.message));
-      throw Core.makeError('VALIDATION', 'Le Google Sheet source a refusé la valeur « ' + cell.value + ' » (' +
-        String((e && e.message) || '').split('\n')[0].slice(0, 160) + ').');
+      var msg = sheetMessage_(e);
+      console.warn('Importer: source write refused (' + t.tabName + ' ' + cell.row + ':' + cell.col + '): ' + msg);
+      throw Core.makeError('VALIDATION', 'Le Google Sheet source a refusé la valeur « ' + cell.value + ' » (' + msg + ').',
+        fieldFromSheetError_(t, msg) || cell.field);
+    }
+  }
+
+  /** First line of a Sheets error message, at most 160 characters. */
+  function sheetMessage_(e) {
+    return String((e && e.message) || '').split('\n')[0].slice(0, 160);
+  }
+
+  /** 'L' -> 11 (1-based column number of A1 letters). */
+  function colNumber_(letters) {
+    var n = 0;
+    for (var i = 0; i < letters.length; i++) n = n * 26 + (letters.toUpperCase().charCodeAt(i) - 64);
+    return n;
+  }
+
+  /**
+   * The header of the first cell a Sheets refusal names (« … in cell L4 violates the data validation
+   * rules … »), or '' when the message names no cell of a known column.
+   */
+  function fieldFromSheetError_(t, message) {
+    var m = /(?:^|[^A-Za-z0-9_!$])\$?([A-Z]{1,3})\$?([1-9][0-9]{0,6})(?![A-Za-z0-9_])/.exec(String(message || ''));
+    if (!m) return '';
+    var j = t.columns.indexOf(colNumber_(m[1]) - 1);
+    return j >= 0 ? t.headers[j] : '';
+  }
+
+  // ------------------------------------------------------------------------------- creation forms
+  //
+  // A new record's fields come from the live source tab (docs/API.md §4, readFormSchema): its headers,
+  // the data validation of its last record row (dropdown lists, checkboxes, dates), and which columns
+  // are computed (a formula in the last record row, or an array formula — ARRAYFORMULA, ={…}, BYROW,
+  // MAP — in the header row or the first data row, whose results spill into the rows below).
+
+  var FORM_CACHE_TTL_S = 300;        // readFormSchema cache lifetime
+  var FORM_CACHE_MAX_CHARS = 90000;  // larger schemas are not cached (CacheService value limit: 100 KB)
+  var LIST_MAX_ROWS = 2000;          // VALUE_IN_RANGE lists: the bounding box read per sheet is capped
+  var LIST_MAX_COLS = 30;
+  var LIST_MAX_OPTIONS = 500;        // options kept per list
+  var LIST_MAX_CHARS = 200;          // longer option values are left out
+  var ARRAY_FORMULA_RE = /^=\s*\{|(?:^|[^A-Za-z0-9_.])(?:ARRAYFORMULA|BYROW|MAP)\s*\(/i;
+
+  function isDateValue_(v) {
+    return Object.prototype.toString.call(v) === '[object Date]';
+  }
+
+  /**
+   * What the forms need from the source rows (one block of formulas when the rows are close, see
+   * rowFormulas_): {lastIdx (grid row of the last record or -1), sampleRow (that row, else the first data
+   * row when the sheet has one, else -1), arrayCols {gridCol: true} (array formula in the header row or
+   * the first data row), formulas / rules / raw: the sample row's formulas, data validations and raw
+   * values, per grid column ([] when there is no sample row)}.
+   */
+  function readSample_(t) {
+    var maxRows = t.sheet.getMaxRows();
+    var lastIdx = t.rows.length ? t.rows[t.rows.length - 1] : -1;
+    var firstData = t.headerRow + 1;
+    var sampleRow = lastIdx >= 0 ? lastIdx : (firstData < maxRows ? firstData : -1);
+    var wanted = [t.headerRow];
+    if (firstData < maxRows) wanted.push(firstData);
+    if (sampleRow >= 0 && wanted.indexOf(sampleRow) < 0) wanted.push(sampleRow);
+    var formulas = rowFormulas_(t, wanted);
+    var arrayCols = {};
+    [t.headerRow, firstData].forEach(function (r) {
+      (formulas[r] || []).forEach(function (f, c) { if (f && ARRAY_FORMULA_RE.test(String(f))) arrayCols[c] = true; });
+    });
+    var out = { lastIdx: lastIdx, sampleRow: sampleRow, arrayCols: arrayCols, formulas: [], rules: [], raw: [] };
+    if (sampleRow >= 0) {
+      var range = t.sheet.getRange(sampleRow + 1, 1, 1, t.width);
+      out.formulas = formulas[sampleRow] || [];
+      out.rules = range.getDataValidations()[0] || [];
+      out.raw = range.getValues()[0] || [];
+    }
+    return out;
+  }
+
+  /** Trimmed, non-blank, de-duplicated option values (at most LIST_MAX_OPTIONS of at most LIST_MAX_CHARS). */
+  function cleanOptions_(values) {
+    var out = [];
+    (values || []).forEach(function (v) {
+      var s = Core.str(v);
+      if (s === '' || s.length > LIST_MAX_CHARS || out.indexOf(s) >= 0 || out.length >= LIST_MAX_OPTIONS) return;
+      out.push(s);
+    });
+    return out;
+  }
+
+  /**
+   * The values of VALUE_IN_RANGE lists: ONE getDisplayValues per sheet, over the bounding box of that
+   * sheet's ranges (capped at LIST_MAX_ROWS x LIST_MAX_COLS from its top-left cell). Returns
+   * lookup(range) -> options (row by row, cleanOptions_), or null when the range could not be read.
+   */
+  function rangeLists_(ranges) {
+    var boxes = {};
+    ranges.forEach(function (r) {
+      var sheet = r.getSheet();
+      var id = String(sheet.getSheetId());
+      var top = r.getRow();
+      var left = r.getColumn();
+      var bottom = top + r.getNumRows() - 1;
+      var right = left + r.getNumColumns() - 1;
+      var b = boxes[id];
+      if (!b) { boxes[id] = { sheet: sheet, top: top, left: left, bottom: bottom, right: right }; return; }
+      b.top = Math.min(b.top, top);
+      b.left = Math.min(b.left, left);
+      b.bottom = Math.max(b.bottom, bottom);
+      b.right = Math.max(b.right, right);
+    });
+    Object.keys(boxes).forEach(function (id) {
+      var b = boxes[id];
+      var rows = Math.min(b.bottom - b.top + 1, LIST_MAX_ROWS, b.sheet.getMaxRows() - b.top + 1);
+      var cols = Math.min(b.right - b.left + 1, LIST_MAX_COLS, b.sheet.getMaxColumns() - b.left + 1);
+      try {
+        b.grid = rows > 0 && cols > 0 ? b.sheet.getRange(b.top, b.left, rows, cols).getDisplayValues() : [];
+      } catch (e) {
+        console.warn('Importer: list range not readable (' + sheetMessage_(e) + ')');
+        b.grid = null;
+      }
+    });
+    return function (r) {
+      var b = boxes[String(r.getSheet().getSheetId())];
+      if (!b || !b.grid) return null;
+      var values = [];
+      for (var i = r.getRow() - b.top; i < r.getRow() - b.top + r.getNumRows() && i < b.grid.length; i++) {
+        for (var j = r.getColumn() - b.left; j < r.getColumn() - b.left + r.getNumColumns() && j < b.grid[i].length; j++) {
+          values.push(b.grid[i][j]);
+        }
+      }
+      return cleanOptions_(values);
+    };
+  }
+
+  /** Data validation of a column -> kind / options / strict / rule (lists: rangeLists_ lookup or null). */
+  function describeRule_(col, rule, lists) {
+    var type = String(rule.getCriteriaType());
+    var values = rule.getCriteriaValues() || [];
+    var strict = !rule.getAllowInvalid();
+    col.rule = type;
+    if (type === 'VALUE_IN_LIST') {
+      col.kind = 'select';
+      col.options = cleanOptions_(values[0]);
+      col.strict = strict;
+    } else if (type === 'VALUE_IN_RANGE') {
+      var options = lists && values[0] ? lists(values[0]) : null;
+      if (options) {
+        col.kind = 'select';
+        col.options = options;
+        col.strict = strict;
+      }
+    } else if (type === 'CHECKBOX') {
+      col.kind = 'checkbox';
+      col.options = values.length ? values.map(function (v) { return String(v); }) : ['TRUE', 'FALSE'];
+      col.strict = strict;
+    } else if (type.indexOf('DATE_') === 0) {
+      col.kind = 'date';
+      col.strict = strict;
     }
   }
 
   /**
-   * Appends a record as a new source row, just below the last record (a row is inserted when that row
-   * is not empty). Headers the record lacks stay blank, except the columns computed by a formula in
-   * the last record's row: the formula is copied down (relative references follow, as with a fill).
-   * Reads the row below the last record and the last record's formulas only.
+   * Form columns of a source tab, in sheet order: {name, kind, options, strict, computed, required,
+   * rule?} (docs/API.md §3, api_getFormSchema). Without `lists`, VALUE_IN_RANGE columns are plain text
+   * (the sheet itself refuses a value outside the range when the rule rejects).
    */
-  function appendRecord(entity, rec) {
-    Store.withLock(function () {
+  function describeColumns_(entity, t, sample, lists) {
+    var required = Core.FORM_REQUIRED[entity] || [];
+    return t.headers.map(function (name, j) {
+      var c = t.columns[j];
+      var computed = !!sample.arrayCols[c] || !!sample.formulas[c];
+      var col = { name: name, kind: 'text', options: null, strict: false, computed: computed,
+        required: !computed && required.indexOf(name) >= 0 };
+      var rule = sample.rules[c];
+      if (rule) describeRule_(col, rule, lists);
+      else if (Core.YES_NO_COLS.indexOf(name) >= 0) {
+        col.kind = 'select';
+        col.options = ['Oui', 'Non'];
+      }
+      var hinted = Core.FORM_DATE_HINTS.some(function (h) { return Core.normKey(h) === Core.normKey(name); });
+      if (col.kind === 'text' && (hinted || isDateValue_(sample.raw[c]))) col.kind = 'date';
+      return col;
+    });
+  }
+
+  /** Counts of a schema for the formSchema timing line (never names). */
+  function schemaCounts_(columns, cache) {
+    return {
+      columns: columns.length,
+      computed: columns.filter(function (c) { return c.computed; }).length,
+      selects: columns.filter(function (c) { return c.kind === 'select'; }).length,
+      cache: cache
+    };
+  }
+
+  /**
+   * Form schema of an entity read from the live source, OUTSIDE the script lock (nothing is written):
+   * {keyField, readAt:'YYYY-MM-DD HH:mm', columns} (describeColumns_). Reads: the tab as for a
+   * write-back (sourceTable_), readSample_, then one bounding box per sheet for the VALUE_IN_RANGE lists.
+   * Cached in CacheService (Access.cacheGet / cachePut) under 'fs1:<entity>:<sourceId>' for
+   * FORM_CACHE_TTL_S seconds (not when the JSON exceeds FORM_CACHE_MAX_CHARS); opts.fresh skips the
+   * cached value and stores the new one. NOT_CONFIGURED without a source; any read failure is SOURCE_ERROR.
+   * Logs {stage:'formSchema', ms, sourceOpen, sourceRead, validations, lists, entity, columns, computed,
+   * selects, cache:'miss'|'bypass'} ({stage, ms, entity, columns, computed, selects, cache:'hit'} from the
+   * cache): counts only, never a column name.
+   */
+  function readFormSchema(entity, opts) {
+    var fresh = !!(opts && opts.fresh);
+    var id = Config.get().sourceId;
+    if (!id) throw notConfigured_();
+    var key = 'fs1:' + entity + ':' + id;
+    var timer = Perf.start('formSchema', { entity: entity });
+    if (!fresh) {
+      var cached = null;
+      try { cached = JSON.parse(Access.cacheGet(key) || 'null'); } catch (e) { cached = null; }
+      if (cached && Array.isArray(cached.columns)) {
+        timer.end(schemaCounts_(cached.columns, 'hit'));
+        return cached;
+      }
+    }
+    var schema;
+    try {
+      var t = sourceTable_(entity, timer);
+      var sample = readSample_(t);
+      timer.lap('validations');
+      var ranges = [];
+      sample.rules.forEach(function (rule) {
+        if (!rule || String(rule.getCriteriaType()) !== 'VALUE_IN_RANGE') return;
+        var r = (rule.getCriteriaValues() || [])[0];
+        if (r && typeof r.getSheet === 'function') ranges.push(r);
+      });
+      var lists = ranges.length ? rangeLists_(ranges) : null;
+      timer.lap('lists');
+      schema = { keyField: t.keyField, readAt: Config.nowStamp(), columns: describeColumns_(entity, t, sample, lists) };
+    } catch (e) {
+      if (e && e.code) throw e;
+      throw Core.makeError('SOURCE_ERROR', 'Lecture du Google Sheet source impossible (' + sheetMessage_(e) + ').');
+    }
+    var json = JSON.stringify(schema);
+    if (json.length <= FORM_CACHE_MAX_CHARS) Access.cachePut(key, json, FORM_CACHE_TTL_S);
+    timer.end(schemaCounts_(schema.columns, fresh ? 'bypass' : 'miss'));
+    return schema;
+  }
+
+  /**
+   * A record's values under the source headers (exact name, else normKey match; `_` keys ignored). A key
+   * with no source column is skipped when blank, when it is an app-only field (Galink / IDP) or when not
+   * `strict`; otherwise VALIDATION naming it.
+   */
+  function sheetFields_(t, rec, strict) {
+    var out = {};
+    Object.keys(rec || {}).forEach(function (k) {
+      if (k.charAt(0) === '_') return;
+      var j = t.headers.indexOf(k);
+      for (var i = 0; j < 0 && i < t.headers.length; i++) if (Core.normKey(t.headers[i]) === Core.normKey(k)) j = i;
+      if (j < 0) {
+        if (!strict || Core.isBlank(rec[k]) || Core.APP_CUSTOM_FIELDS.indexOf(k) >= 0) return;
+        throw Core.makeError('VALIDATION', 'La colonne « ' + k + ' » n’existe pas dans le Google Sheet source : ' +
+          'rouvrez le formulaire.', k);
+      }
+      var h = t.headers[j];
+      if (!Object.prototype.hasOwnProperty.call(out, h) || !Core.isBlank(rec[k])) out[h] = rec[k];
+    });
+    return out;
+  }
+
+  /** Grid columns [from, to] (inclusive) of the runs of consecutive true cells of `flags`. */
+  function runs_(flags) {
+    var out = [];
+    flags.forEach(function (on, c) {
+      if (!on) return;
+      var last = out[out.length - 1];
+      if (last && last.to === c - 1) last.to = c;
+      else out.push({ from: c, to: c });
+    });
+    return out;
+  }
+
+  /** Puts back what a refused append left: the inserted row, else the cells already written. Never throws. */
+  function undoAppend_(t, at, inserted, written) {
+    try {
+      if (inserted) t.sheet.deleteRow(at);
+      else written.forEach(function (w) { t.sheet.getRange(at, w.from + 1, 1, w.to - w.from + 1).clearContent(); });
+    } catch (e) {
+      console.warn('Importer: could not undo a refused append (' + sheetMessage_(e) + ')');
+    }
+  }
+
+  /** A refused setValues of an append -> VALIDATION naming the field when the message names a cell. */
+  function appendRefusal_(t, e, values) {
+    var msg = sheetMessage_(e);
+    console.warn('Importer: source append refused (' + t.tabName + '): ' + msg);
+    var field = fieldFromSheetError_(t, msg);
+    if (field) {
+      return Core.makeError('VALIDATION', 'Le Google Sheet source a refusé la valeur « ' + Core.str(values[field]) +
+        ' » (' + msg + ').', field);
+    }
+    if (/valid/i.test(msg)) {
+      return Core.makeError('VALIDATION', 'Le Google Sheet source a refusé la nouvelle ligne (' + msg + ').');
+    }
+    return e;
+  }
+
+  /** A computed value read back right after the write: '' and « Loading… » (not computed yet) -> null. */
+  function computedValue_(v) {
+    var s = Core.str(v);
+    return s === '' || /^(loading|chargement)/i.test(s) ? null : s;
+  }
+
+  /**
+   * Appends a record as a new source row, just below the last record (a row is inserted when that row
+   * is not empty), under the lock. The record's values go under the source headers (sheetFields_);
+   * computed columns are never written: the formulas of the last record's row are copied down (relative
+   * references follow, as with a fill) and array-formula columns are left to spill. With opts.strict, the
+   * values are first checked against the sheet (Core.checkFormRecord on describeColumns_: unknown column,
+   * computed column, required field, date, list of a rejecting rule) and refused as VALIDATION with the
+   * field, before anything is written; without it, values of computed columns are dropped. A value the
+   * sheet itself refuses (a rejecting VALUE_IN_RANGE rule…) becomes VALIDATION with the field its cell
+   * belongs to, and what was written is undone. A duplicate key is VALIDATION (field = the key).
+   * Reads: the header block and key column (sourceTable_), readSample_, the row below the last record
+   * and, after SpreadsheetApp.flush(), the new row's display values.
+   * @return {{values:Object, computed:Object}} the values written (header -> value | null; dates as
+   *   'DD/MM/YYYY' when strict) and the computed columns as the sheet shows them now (null when blank or
+   *   still loading)
+   */
+  function appendRecord(entity, rec, opts) {
+    var strict = !!(opts && opts.strict);
+    return Store.withLock(function () {
       var timer = Perf.start('writeBack', { op: 'append', entity: entity });
       var t = sourceTable_(entity, timer);
       if (t.find(rec[t.keyField]) >= 0) {
-        throw Core.makeError('VALIDATION', '« ' + rec[t.keyField] + ' » existe déjà dans l’onglet « ' + t.tabName +
-          ' » du Google Sheet source.');
+        throw Core.makeError('VALIDATION', '« ' + Core.str(rec[t.keyField]) + ' » existe déjà dans l’onglet « ' +
+          t.tabName + ' » du Google Sheet source.', t.keyField);
       }
-      var cols = t.columns;
-      var width = cols.length ? cols[cols.length - 1] + 1 : 1;
-      var row = [];
-      for (var c = 0; c < width; c++) row.push('');
-      t.headers.forEach(function (h, j) {
-        if (Object.prototype.hasOwnProperty.call(rec, h) && !Core.isBlank(rec[h])) row[cols[j]] = sourceValue_(rec[h]);
-      });
-      var lastIdx = t.rows.length ? t.rows[t.rows.length - 1] : -1;
-      var last = lastIdx >= 0 ? lastIdx : t.headerRow;
-      var at = last + 2; // 1-based row just below the last record (or the header row)
+      var sample = readSample_(t);
+      var lastIdx = sample.lastIdx;
+      var at = (lastIdx >= 0 ? lastIdx : t.headerRow) + 2; // 1-based row just below the last record (or the header)
       var below = at <= t.height ? t.sheet.getRange(at, 1, 1, t.width).getDisplayValues()[0] : null;
-      var lastFormulas = lastIdx >= 0 ? rowFormulas_(t, [lastIdx])[lastIdx] : [];
       timer.lap('sourceRead');
+
+      var columns = describeColumns_(entity, t, sample, null);
+      var input = sheetFields_(t, rec, strict);
+      var values = {};
+      if (strict) {
+        var checked = Core.checkFormRecord(columns, input);
+        if (!checked.ok) throw Core.makeError('VALIDATION', checked.message, checked.field);
+        values = checked.record;
+      } else {
+        columns.forEach(function (col) {
+          if (!col.computed && Object.prototype.hasOwnProperty.call(input, col.name)) {
+            values[col.name] = Core.isBlank(input[col.name]) ? null : input[col.name];
+          }
+        });
+      }
+
+      var width = t.columns.length ? t.columns[t.columns.length - 1] + 1 : 1;
+      var row = [];
+      var writable = [];
+      for (var c = 0; c < width; c++) { row.push(''); writable.push(false); }
+      columns.forEach(function (col, j) {
+        if (col.computed) return;
+        var gc = t.columns[j];
+        writable[gc] = true;
+        if (values[col.name] !== null && values[col.name] !== undefined) row[gc] = sourceValue_(values[col.name]);
+      });
+
       Store.noteSourceWrite();
-      if (below && below.some(function (v) { return String(v) !== ''; })) t.sheet.insertRowsAfter(at - 1, 1);
-      else if (at > t.sheet.getMaxRows()) t.sheet.insertRowsAfter(t.sheet.getMaxRows(), at - t.sheet.getMaxRows());
-      t.sheet.getRange(at, 1, 1, width).setValues([row]);
-      lastFormulas.forEach(function (f, fc) {
-        if (f && fc < width && row[fc] === '') t.sheet.getRange(lastIdx + 1, fc + 1).copyTo(t.sheet.getRange(at, fc + 1));
+      var inserted = false;
+      if (below && below.some(function (v) { return String(v) !== ''; })) {
+        t.sheet.insertRowsAfter(at - 1, 1);
+        inserted = true;
+      } else if (at > t.sheet.getMaxRows()) {
+        t.sheet.insertRowsAfter(t.sheet.getMaxRows(), at - t.sheet.getMaxRows());
+      }
+      var written = [];
+      try {
+        runs_(writable).forEach(function (w) {
+          t.sheet.getRange(at, w.from + 1, 1, w.to - w.from + 1).setValues([row.slice(w.from, w.to + 1)]);
+          written.push(w);
+        });
+      } catch (e) {
+        undoAppend_(t, at, inserted, written);
+        throw appendRefusal_(t, e, values);
+      }
+      if (lastIdx >= 0) {
+        sample.formulas.forEach(function (f, fc) {
+          if (f && fc < width && !sample.arrayCols[fc]) t.sheet.getRange(lastIdx + 1, fc + 1).copyTo(t.sheet.getRange(at, fc + 1));
+        });
+      }
+      SpreadsheetApp.flush();
+      var shown = t.sheet.getRange(at, 1, 1, width).getDisplayValues()[0];
+      var computed = {};
+      columns.forEach(function (col, j) {
+        if (col.computed) computed[col.name] = computedValue_(shown[t.columns[j]]);
       });
       timer.lap('cellWrites');
       timer.end();
+      return { values: values, computed: computed };
     });
   }
 
@@ -600,6 +958,7 @@ var Importer = (function () {
     writeEdits: writeEdits,
     appendRecord: appendRecord,
     deleteRecord: deleteRecord,
+    readFormSchema: readFormSchema,
     openById_: openById_,
     tabsFound_: tabsFound_
   };
