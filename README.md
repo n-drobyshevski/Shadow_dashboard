@@ -279,7 +279,10 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
       une session pendant qu'une autre ouvre ce mois ou change de mois en boucle : jamais d'erreur
       « coordinates of the range are outside the dimensions of the sheet » (Exécutions), et après
       « Actualiser » les nombres sont justes (un mois relu pendant une synchronisation qui l'agrandit
-      ne perd pas sa dernière application).
+      ne perd pas sa dernière application). Même essai avec le mois en cours tout en bas de l'onglet
+      et une synchronisation qui lui ajoute une application pendant qu'une autre session change de
+      mois en boucle : jamais une application en moins à l'écran ; la ligne `sheet` d'Applications
+      (Exécutions) apparaît seulement quand la lecture a croisé l'écriture.
 - [ ] Le déclencheur `syncHourly` apparaît dans l'éditeur (Déclencheurs) et s'exécute toutes les
       heures (Exécutions) ; une synchronisation sans changement n'ajoute rien au journal.
 - [ ] Mesures : dans Exécutions, un appel (par exemple l'ouverture de l'application) montre ses lignes

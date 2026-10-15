@@ -529,7 +529,13 @@ var Store = (function () {
       m.col = m.table.raw.map(function (r) { return r[0]; });
     } else {
       var last = sheet.getLastRow();
-      m.col = last < 2 ? [] : sheet.getRange(2, 1, last - 1, 1).getValues().map(function (r) { return toText_(r[0]); });
+      try {
+        m.col = last < 2 ? [] : sheet.getRange(2, 1, last - 1, 1).getValues().map(function (r) { return toText_(r[0]); });
+      } catch (e) {
+        // Another execution deleted a row between getLastRow and the read, in a sheet without blank
+        // rows: the range ran past its end. ONE getValues of the whole tab instead (memoized).
+        m.col = readTable_(tab).raw.map(function (r) { return r[0]; });
+      }
     }
     return m.col;
   }
@@ -581,8 +587,10 @@ var Store = (function () {
    * appended by appendEntityRow after a later month) are skipped by the row[0] === month filter.
    * Reads happen outside the lock, so another execution may have moved rows since column A was read:
    * when the block no longer matches column A, when a row on either side of it is now `month` (the
-   * month grew, or moved, past the block: its records are no longer all inside it), or when the sheet
-   * lost rows (the block would run past its end), the whole tab is read instead. Memoized; shared.
+   * month grew, or moved, past the block: its records are no longer all inside it), when the sheet
+   * lost rows (the block would run past its end), or, for a block ending on the last row of the sheet
+   * (no row below it to check), when the sheet gained rows while the block was read, the whole tab is
+   * read instead. Memoized; shared.
    * @return {{sheet, schema, base:number, raw:string[][], items:{index:number, row:string[]}[], partial?:true}}
    *   raw = the rows of the block (raw[i] is data row base + i, i.e. sheet row base + i + 2);
    *   items = the rows of `month`, index = data row index (as in readSheet_).
@@ -613,6 +621,10 @@ var Store = (function () {
       } catch (e) {
         return wholeTab(); // the sheet shrank between getMaxRows and the read: same as above
       }
+      // No row below the block was read (it ends on the last row of the sheet): a write that grew the
+      // sheet between getMaxRows and the read (ensureSize_ inserts rows) may have pushed the month's
+      // last records below it, which the checks below cannot see. One more getMaxRows tells.
+      if (hi === last && sheet.getMaxRows() - 2 > last) return wholeTab();
       if ((lo < first && rows[0][0] === month) || (hi > last && rows[rows.length - 1][0] === month)) return wholeTab();
       span.base = first;
       span.raw = rows.slice(first - lo, first - lo + last - first + 1);
@@ -872,7 +884,8 @@ var Store = (function () {
 
   /**
    * The `limit` latest ImportLog entries, newest first, read from the bottom of the tab: the last
-   * `limit` rows, then blocks twice as large while blank rows left fewer entries than wanted.
+   * `limit` rows, then blocks twice as large while blank rows left fewer entries than wanted. A block
+   * that runs past the end of the sheet (rows deleted by hand since getLastRow) falls back to the whole tab.
    */
   function recentImportLog(limit) {
     var tab = Config.TABS.importLog;
@@ -882,7 +895,14 @@ var Store = (function () {
     var out = [];
     while (out.length < n && end > 0) {
       var k = Math.min(chunk, end);
-      var rows = readRows_(tab, end - k, k);
+      var rows;
+      try {
+        rows = readRows_(tab, end - k, k);
+      } catch (e) {
+        rows = readTable_(tab).raw; // the sheet lost rows: start over on the whole tab (last pass)
+        out = [];
+        end = 0;
+      }
       for (var i = rows.length - 1; i >= 0 && out.length < n; i--) {
         if (!isEmptyRow_(rows[i])) out.push(importLogEntry_(rows[i]));
       }
@@ -924,8 +944,14 @@ var Store = (function () {
       var count = sheet.getLastRow() - 1;
       var k = Math.min(IMPORT_LOG_TAIL, count);
       if (k <= 0) return null;
-      var hit = lastEntryIn_(readRows_(tab, count - k, k), month);
-      if (hit || k === count) return hit;
+      var tail = null;
+      try {
+        tail = readRows_(tab, count - k, k);
+      } catch (e) {
+        tail = null; // rows deleted between getLastRow and the read: column A below (same fallback)
+      }
+      var hit = tail && lastEntryIn_(tail, month);
+      if (tail && (hit || k === count)) return hit;
     }
     var j = firstColumn_(tab).lastIndexOf(month);
     if (j < 0 || month === '') return null;

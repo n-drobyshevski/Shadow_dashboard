@@ -333,9 +333,13 @@ Reads: a whole tab with one `getDataRange().getValues()`; one month of `Postes` 
 from the month's first to its last row, plus the row on each side of them when the sheet has it (rows of
 other months inside that block — a record appended after a later month — are filtered out by
 `row[0] === month`). These reads run outside the lock: when the block no longer matches column A, when a
-row on either side of it is now that month (the month grew or moved past the block), or when the sheet
+row on either side of it is now that month (the month grew or moved past the block), when the sheet
 no longer has the block's last row (rows deleted meanwhile; `getMaxRows()` is asked only when the block
-ends on the last row column A had), the whole tab is read instead; `ImportLog` from the bottom. Writes: the smallest contiguous changed block with one `setValues()` (+ one `clearContent()` when
+ends on the last row column A had), or when a block ending on the last row of the sheet (no row below it
+to check) saw the sheet gain rows during its read (`getMaxRows()` asked again after it), the whole tab is
+read instead. Column A itself (`getLastRow()` + one narrow read) falls back to the whole tab when rows
+were deleted between the two calls (the narrow range would run past the end of a sheet without blank
+rows); `ImportLog` is read from the bottom, with the same fallback. Writes: the smallest contiguous changed block with one `setValues()` (+ one `clearContent()` when
 a tab shrinks).
 
 **Read memo (per execution).** Whole-tab reads, column A and month blocks are memoized per tab for the
@@ -398,12 +402,14 @@ Store.readReferentiel(month)            -> {cat:[values]} (ordered by position);
 Store.replaceReferentiel(month, refObj) -> void
 Store.getImportLog()                    -> [ImportLog entry] in insertion order (parsed json columns; whole tab)
 Store.recentImportLog(limit)            -> the `limit` latest entries, newest first: the last `limit` rows, then
-                                           blocks twice as large while blank rows left fewer entries
+                                           blocks twice as large while blank rows left fewer entries (a
+                                           block past the end of the sheet -> whole tab)
 Store.appendImportLog(entry)            -> void
 Store.latestImportInfo(month)           -> last ImportLog entry for month or null, parsing that row only: the
                                            last 30 rows first unless column A is already memoized, then column
-                                           A from the bottom and that one row (a row that no longer matches
-                                           column A, or is past the end of the sheet -> whole tab). ImportLog
+                                           A from the bottom and that one row (last rows past the end of the
+                                           sheet -> column A; a row that no longer matches column A, or is
+                                           past the end of the sheet -> whole tab). ImportLog
                                            is append-only and never pruned:
                                            the latest row of every month is what listMonths and the
                                            incomplete-import repair rely on.

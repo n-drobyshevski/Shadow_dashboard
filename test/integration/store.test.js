@@ -493,6 +493,71 @@ test('ImportLog: the last row deleted by hand after column A was read -> whole t
   assert.equal(sb.Store.latestImportInfo('2026-05').counts.postes, 1);
 });
 
+/**
+ * Runs `race` (another execution writing) once, right after the next call of sheet[method] returns:
+ * between that call and the read that follows it in the same Store function.
+ */
+function afterNext(sheet, method, race) {
+  const orig = sheet[method];
+  sheet[method] = function () {
+    const result = orig.apply(this, arguments);
+    delete sheet[method];
+    race();
+    return result;
+  };
+}
+
+test('month span: the last month grown between getMaxRows and the block read (no blank rows) -> whole tab read', () => {
+  const { sb, sheet, other } = spanRace({ exact: true });
+  // The block ends on the last row of the sheet; the sync inserts a row and rewrites May in source
+  // order right after getMaxRows: the block still matches column A, May's last record is below it.
+  const grown = apps('2026-05');
+  grown.splice(1, 0, { [KEY_APP]: 'Nouveau' });
+  afterNext(sheet, 'getMaxRows', () => other.replaceEntityMonth('Applications', '2026-05', grown, KEY_APP));
+  const l0 = timingLines(sb.env).length;
+  const may = sb.Store.readEntityMonth('Applications', '2026-05');
+  assert.deepEqual(plain(may.map((r) => r[KEY_APP])), grown.map((r) => r[KEY_APP]), 'no record left out');
+  // The sync's own read of the tab (same log), then the span and the whole tab.
+  assert.deepEqual(spanLines(sb, l0), [['sheet', 'Applications'], ['span', 'Applications'], ['sheet', 'Applications']]);
+});
+
+test('months listing: a row deleted between getLastRow and the column A read (no blank rows) -> whole tab, no range error', () => {
+  const { sb, sheet, other } = spanRace({ exact: true });
+  sb.Store.clearMemo_();
+  const victim = other.readEntityMonth('Applications', '2026-05')[0];
+  afterNext(sheet, 'getLastRow', () => assert.equal(other.deleteEntityRow('Applications', '2026-05', victim._id), true));
+  const l0 = timingLines(sb.env).length;
+  assert.deepEqual(plain(sb.Store.listMonths()), ['2026-04', '2026-05']);
+  assert.deepEqual(spanLines(sb, l0), [['sheet', 'Applications']]);
+  // The month is then taken from that full read: the remaining records, no further read.
+  const may = sb.Store.readEntityMonth('Applications', '2026-05');
+  assert.deepEqual(plain(may.map((r) => r[KEY_APP])), apps('2026-05').slice(1).map((r) => r[KEY_APP]));
+  assert.deepEqual(spanLines(sb, l0), [['sheet', 'Applications']]);
+});
+
+test('ImportLog: a row deleted by hand between getLastRow and the bottom read -> no range error', () => {
+  const sb = boot();
+  const entry = (month, k) => ({ month, imported_at: '2026-05-01 0' + k + ':00', source_id: 'SRC',
+    counts: { postes: k, applications: 1, referentiel: 1 }, postes_headers: [], apps_headers: [], warnings: [] });
+  sb.Store.appendImportLog(entry('2026-05', 1));
+  sb.Store.appendImportLog(entry('2026-04', 2));
+  sb.Store.appendImportLog(entry('2026-05', 3));
+  const sheet = sb.ss.getSheetByName('ImportLog');
+  sheet.deleteRows(sheet.getLastRow() + 1, sheet.getMaxRows() - sheet.getLastRow());
+  const dropLast = () => sheet.deleteRow(sheet.getLastRow());
+
+  // latestImportInfo without column A: the tail read fails, column A (re-read) then that row.
+  sb.Store.clearMemo_();
+  afterNext(sheet, 'getLastRow', dropLast); // the latest 2026-05 entry
+  assert.equal(sb.Store.latestImportInfo('2026-05').counts.postes, 1);
+
+  // recentImportLog: the block read fails, the whole tab instead.
+  sb.Store.appendImportLog(entry('2026-05', 3));
+  sb.Store.clearMemo_();
+  afterNext(sheet, 'getLastRow', dropLast);
+  assert.deepEqual(plain(sb.Store.recentImportLog(5).map((e) => e.counts.postes)), [2, 1]);
+});
+
 test('ImportLog: latestImportInfo parses one row (tail, then column A); recentImportLog reads from the bottom', () => {
   const sb = boot();
   const entry = (month, k) => ({ month, imported_at: '2026-05-01 ' + String(k % 24).padStart(2, '0') + ':00', source_id: 'SRC',
