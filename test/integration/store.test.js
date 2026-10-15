@@ -618,6 +618,29 @@ test('doGet renders the real src/index.html', { skip: !fs.existsSync(path.join(S
   assert.ok(html.includes('var Core = ('));
 });
 
+test('doGet sets the ghost favicon; FAVICON_URL overrides it, « - » removes it', () => {
+  const { ctx } = loadGas();
+  const props = ctx.PropertiesService.getScriptProperties();
+  const render = () => { try { return ctx.doGet({}); } catch (e) { if (/No HTML file named/.test(e.message)) return null; throw e; } };
+  let out = render();
+  if (!out) return;
+  assert.equal(out._faviconUrl, ctx.Config.DEFAULT_FAVICON_URL);
+  assert.match(out._faviconUrl, /^https:\/\/raw\.githubusercontent\.com\/.+\/assets\/favicon\.png$/);
+  props.setProperty('FAVICON_URL', 'https://example.org/brand/ghost.png');
+  assert.equal(render()._faviconUrl, 'https://example.org/brand/ghost.png');
+  props.setProperty('FAVICON_URL', 'javascript:alert(1)');
+  assert.equal(render()._faviconUrl, ctx.Config.DEFAULT_FAVICON_URL, 'non-https values are ignored');
+  props.setProperty('FAVICON_URL', '-');
+  assert.equal(render()._faviconUrl, null);
+});
+
+test('assets/favicon.png is a 64×64 PNG', () => {
+  const buf = fs.readFileSync(path.join(__dirname, '..', '..', 'assets', 'favicon.png'));
+  assert.equal(buf.subarray(1, 4).toString('latin1'), 'PNG');
+  assert.equal(buf.readUInt32BE(16), 64);
+  assert.equal(buf.readUInt32BE(20), 64);
+});
+
 test('setup creates the data spreadsheet and logs its URL', () => {
   const { ctx, env } = loadGas();
   const url = ctx.setup();

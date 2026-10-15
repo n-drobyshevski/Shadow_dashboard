@@ -645,7 +645,8 @@ function createGasEnv(options) {
       getMetaTags() { return out._metaTags.map((m) => ({ getName: () => m.name, getContent: () => m.content })); },
       setXFrameOptionsMode(mode) { out._xFrameOptionsMode = mode; return out; },
       setSandboxMode() { return out; },
-      setFaviconUrl() { return out; },
+      _faviconUrl: null,
+      setFaviconUrl(u) { out._faviconUrl = String(u); return out; },
       setWidth() { return out; },
       setHeight() { return out; },
     };

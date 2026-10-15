@@ -4,10 +4,16 @@
 
 /** Web app entry: renders the index template. */
 function doGet(e) {
-  return HtmlService.createTemplateFromFile('index')
+  var out = HtmlService.createTemplateFromFile('index')
     .evaluate()
     .setTitle('Shadow IT — Tableau de bord')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+  // The tab icon belongs to Google's outer page: only the server can set it. Never block the app on it.
+  var icon = Config.faviconUrl();
+  if (icon) {
+    try { out.setFaviconUrl(icon); } catch (err) { console.warn('Favicon ignored (' + icon + '): ' + err.message); }
+  }
+  return out;
 }
 
 /** Template helper: raw content of another HTML file (css / js_* partials). */

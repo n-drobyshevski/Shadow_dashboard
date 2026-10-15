@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="2.5 2.75 19 19" width="64" height="64">
+  <!-- Shadow IT ghost (« Doux », same drawing as the in-app logo), tab-icon cut: paper body so it reads
+       on light and dark browser tabs, heavier outline for 16px. Rendered to favicon.png. -->
+  <path d="M5 19.5V11a7 7 0 0 1 14 0v8.5c-1.17 1.6-2.33 1.6-3.5 0s-2.33-1.6-3.5 0-2.33 1.6-3.5 0-2.33-1.6-3.5 0z"
+        fill="#ffffff" stroke="#16181b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <circle cx="9.6" cy="11" r="1.45" fill="#16181b"/>
+  <circle cx="14.4" cy="11" r="1.45" fill="#16181b"/>
+</svg>

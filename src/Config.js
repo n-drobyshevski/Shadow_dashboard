@@ -9,6 +9,12 @@ var Config = (function () {
   var PROP_SOURCE_ID = 'SOURCE_SPREADSHEET_ID';
   var PROP_THRESHOLD = 'COMPLIANCE_THRESHOLD';
   var PROP_ACCESS = 'ACCESS_JSON';
+  var PROP_FAVICON = 'FAVICON_URL';
+  /**
+   * Browser-tab icon (the ghost). Apps Script only takes a hosted image whose URL ends with its extension:
+   * assets/favicon.png of the public GitHub repo. The FAVICON_URL Script Property overrides it ('-' = none).
+   */
+  var DEFAULT_FAVICON_URL = 'https://raw.githubusercontent.com/n-drobyshevski/Shadow_dashboard/main/assets/favicon.png';
   // A Script Property value holds at most 9 KB: the access list is stored as JSON split into
   // ACCESS_JSON_0, ACCESS_JSON_1… (3000 characters each, < 9 KB even in multi-byte UTF-8), with the
   // number of parts in ACCESS_JSON_N, written in the same setProperties call: a reader never mixes
@@ -147,11 +153,21 @@ var Config = (function () {
 
   function uuid() { return Utilities.getUuid(); }
 
+  /** @return {string} favicon URL for doGet ('' = do not set one). */
+  function faviconUrl() {
+    var v = '';
+    try { v = String(props_().getProperty(PROP_FAVICON) || '').trim(); } catch (e) { v = ''; }
+    if (v === '-') return '';
+    return /^https:\/\/\S+$/.test(v) ? v : DEFAULT_FAVICON_URL;
+  }
+
   return {
     PROP_DATA_ID: PROP_DATA_ID,
     PROP_SOURCE_ID: PROP_SOURCE_ID,
     PROP_THRESHOLD: PROP_THRESHOLD,
     PROP_ACCESS: PROP_ACCESS,
+    PROP_FAVICON: PROP_FAVICON,
+    DEFAULT_FAVICON_URL: DEFAULT_FAVICON_URL,
     MAX_USERS: MAX_USERS,
     MAX_GROUPS: MAX_GROUPS,
     DATA_SPREADSHEET_NAME: DATA_SPREADSHEET_NAME,
@@ -164,6 +180,7 @@ var Config = (function () {
     setSourceId: setSourceId,
     setThreshold: setThreshold,
     setAccess: setAccess,
+    faviconUrl: faviconUrl,
     today: today,
     todayFr: todayFr,
     nowStamp: nowStamp,

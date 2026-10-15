@@ -218,6 +218,10 @@ Config.PROP_ACCESS    = 'ACCESS_JSON'  ({users:[{email, role, added_at, added_by
 Config.get()                 -> {dataId:''|id, sourceId:''|id, threshold:int (Core.THRESHOLD when unset),
                                  access:{users:[...], domainRole:'none'|'lecteur'}} (unreadable JSON -> empty list)
 Config.setDataId(id), Config.setSourceId(id), Config.setThreshold(n), Config.setAccess(access)
+Config.PROP_FAVICON   = 'FAVICON_URL'  (optional https URL of the tab icon; '-' = none)
+Config.faviconUrl()          -> FAVICON_URL when it is an https URL, '' for '-', else DEFAULT_FAVICON_URL
+                                (assets/favicon.png on raw.githubusercontent.com, main branch).
+                                doGet calls HtmlOutput.setFaviconUrl with it (errors logged, never thrown).
 Config.today()               -> 'YYYY-MM-DD'        (Utilities.formatDate, script time zone)
 Config.todayFr()             -> 'DD/MM/YYYY'
 Config.nowStamp()            -> 'YYYY-MM-DD HH:mm'
