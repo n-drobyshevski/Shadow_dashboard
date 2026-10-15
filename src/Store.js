@@ -552,19 +552,27 @@ var Store = (function () {
     return entityRecord_(row);
   }
 
+  /** First item of `table` whose raw row and object pass `test(row, obj)`, or null. */
+  function findItem_(table, test) {
+    for (var k = 0; k < table.items.length; k++) {
+      var it = table.items[k];
+      if (test(table.raw[it.index], it.obj)) return it;
+    }
+    return null;
+  }
+
+  /** Deletes the sheet row of a found item; false when there is none. */
+  function deleteItem_(table, it) {
+    if (!it) return false;
+    deleteSheetRow_(table.sheet, it.index + 2);
+    return true;
+  }
+
   /** @return {boolean} false when the id does not exist in `month`. */
   function deleteEntityRow(tab, month, id) {
     var key = Core.str(id);
     var table = readTable_(tab);
-    for (var k = 0; k < table.items.length; k++) {
-      var it = table.items[k];
-      var row = table.raw[it.index];
-      if (key !== '' && row[0] === month && row[1] === key) {
-        deleteSheetRow_(table.sheet, it.index + 2);
-        return true;
-      }
-    }
-    return false;
+    return deleteItem_(table, key === '' ? null : findItem_(table, function (row) { return row[0] === month && row[1] === key; }));
   }
 
   // ---------------------------------------------------------------------------- référentiel
@@ -678,31 +686,20 @@ var Store = (function () {
   function updateRow(tab, id, updates) {
     var key = Core.str(id);
     var table = readTable_(tab);
-    for (var k = 0; k < table.items.length; k++) {
-      var it = table.items[k];
-      if (key !== '' && it.obj.id === key) {
-        var next = mergeRow_(table.schema, it.obj, updates);
-        var rows = table.raw.slice();
-        rows[it.index] = objectToRow_(table.schema, next);
-        commit_(table, rows);
-        return next;
-      }
-    }
-    throw notFound_(key);
+    var it = key === '' ? null : findItem_(table, function (row, obj) { return obj.id === key; });
+    if (!it) throw notFound_(key);
+    var next = mergeRow_(table.schema, it.obj, updates);
+    var rows = table.raw.slice();
+    rows[it.index] = objectToRow_(table.schema, next);
+    commit_(table, rows);
+    return next;
   }
 
   /** @return {boolean} false when id is unknown. */
   function deleteRow(tab, id) {
     var key = Core.str(id);
     var table = readTable_(tab);
-    for (var k = 0; k < table.items.length; k++) {
-      var it = table.items[k];
-      if (key !== '' && it.obj.id === key) {
-        deleteSheetRow_(table.sheet, it.index + 2);
-        return true;
-      }
-    }
-    return false;
+    return deleteItem_(table, key === '' ? null : findItem_(table, function (row, obj) { return obj.id === key; }));
   }
 
   /**
