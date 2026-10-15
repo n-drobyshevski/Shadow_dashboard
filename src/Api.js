@@ -659,10 +659,61 @@ var ApiImpl_ = (function () {
         existing.email = email;
         existing.role = role;
       } else {
+        requireRoom_(access, 1);
         access.users.push({ email: email, role: role, added_at: Config.today(), added_by: user.email });
       }
       Config.setAccess(access);
       return accessView_(access, user.owner);
+    });
+  }
+
+  var MAX_BATCH = 500;
+
+  function requireRoom_(access, extra) {
+    if (access.users.length + extra > Config.MAX_USERS) {
+      throw invalid_('La liste d’accès est limitée à ' + Config.MAX_USERS + ' comptes. Pour tout le domaine, ' +
+        'réglez plutôt « Autres comptes du domaine » sur Lecteur.');
+    }
+  }
+
+  /**
+   * Adds many accounts with one role in one write. Entries that cannot be added are skipped with a
+   * reason (the client previews them first); the owner and the caller are never touched.
+   * @return {{access: Object, added: string[], updated: string[], skipped: {email: string, reason: string}[]}}
+   */
+  function addUsers(args, user) {
+    var role = Access.checkRole(args.role);
+    if (!Array.isArray(args.emails) || !args.emails.length) throw invalid_('Aucune adresse à ajouter.');
+    if (args.emails.length > MAX_BATCH) throw invalid_('Au plus ' + MAX_BATCH + ' adresses par ajout.');
+    var skipped = [];
+    var wanted = [];
+    args.emails.forEach(function (v) {
+      var email = Access.normEmail(v);
+      var reason = !Core.isEmail(email) ? 'adresse invalide' : email === user.owner ? 'propriétaire' :
+        email === user.email ? 'votre propre compte' : wanted.indexOf(email) >= 0 ? 'doublon' : '';
+      if (reason) skipped.push({ email: typeof v === 'string' ? v : Core.str(v), reason: reason });
+      else wanted.push(email);
+    });
+    return Store.withLock(function () {
+      var access = Config.get().access;
+      var byEmail = {};
+      access.users.forEach(function (u) { byEmail[Access.normEmail(u.email)] = u; });
+      var added = [];
+      var updated = [];
+      wanted.forEach(function (email) {
+        var hit = byEmail[email];
+        if (!hit) added.push(email);
+        else if (hit.role !== role) updated.push(email);
+        else skipped.push({ email: email, reason: 'déjà ' + (role === 'admin' ? 'administrateur' : 'lecteur') });
+      });
+      requireRoom_(access, added.length);
+      var today = Config.today();
+      updated.forEach(function (email) { byEmail[email].role = role; });
+      added.forEach(function (email) {
+        access.users.push({ email: email, role: role, added_at: today, added_by: user.email });
+      });
+      if (added.length || updated.length) Config.setAccess(access);
+      return { access: accessView_(access, user.owner), added: added, updated: updated, skipped: skipped };
     });
   }
 
@@ -729,6 +780,7 @@ var ApiImpl_ = (function () {
     getSettings: getSettings,
     setThreshold: setThreshold,
     saveUser: saveUser,
+    addUsers: addUsers,
     removeUser: removeUser,
     setDomainRole: setDomainRole
   };
@@ -760,5 +812,6 @@ function api_getDiff(argsJson) { return apiWrap_(ApiImpl_.getDiff, 'api_getDiff'
 function api_getSettings(argsJson) { return apiWrap_(ApiImpl_.getSettings, 'api_getSettings', 'admin')(argsJson); }
 function api_setThreshold(argsJson) { return apiWrap_(ApiImpl_.setThreshold, 'api_setThreshold', 'admin')(argsJson); }
 function api_saveUser(argsJson) { return apiWrap_(ApiImpl_.saveUser, 'api_saveUser', 'admin')(argsJson); }
+function api_addUsers(argsJson) { return apiWrap_(ApiImpl_.addUsers, 'api_addUsers', 'admin')(argsJson); }
 function api_removeUser(argsJson) { return apiWrap_(ApiImpl_.removeUser, 'api_removeUser', 'admin')(argsJson); }
 function api_setDomainRole(argsJson) { return apiWrap_(ApiImpl_.setDomainRole, 'api_setDomainRole', 'admin')(argsJson); }

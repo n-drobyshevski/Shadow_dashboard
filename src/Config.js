@@ -9,6 +9,12 @@ var Config = (function () {
   var PROP_SOURCE_ID = 'SOURCE_SPREADSHEET_ID';
   var PROP_THRESHOLD = 'COMPLIANCE_THRESHOLD';
   var PROP_ACCESS = 'ACCESS_JSON';
+  // A Script Property value holds at most 9 KB: the access list is stored as JSON split into
+  // ACCESS_JSON_0, ACCESS_JSON_1… (3000 characters each, < 9 KB even in multi-byte UTF-8), with the
+  // number of parts in ACCESS_JSON_N, written in the same setProperties call: a reader never mixes
+  // parts of two versions, and parts left over from a longer list are ignored, then deleted.
+  var ACCESS_CHUNK = 3000;
+  var MAX_USERS = 2000;
   var DATA_SPREADSHEET_NAME = 'ShadowIT_AppData';
 
   /**
@@ -57,8 +63,21 @@ var Config = (function () {
       dataId: p[PROP_DATA_ID] || '',
       sourceId: p[PROP_SOURCE_ID] || '',
       threshold: threshold === null ? Core.THRESHOLD : threshold,
-      access: parseAccess_(p[PROP_ACCESS])
+      access: parseAccess_(readAccessJson_(p))
     };
+  }
+
+  /** Concatenates ACCESS_JSON_0..N-1 ('' when unset or a part is missing). */
+  function readAccessJson_(p) {
+    var n = Number(p[PROP_ACCESS + '_N']);
+    if (!(n >= 1 && n <= 1000 && Math.floor(n) === n)) return '';
+    var json = '';
+    for (var i = 0; i < n; i++) {
+      var part = p[PROP_ACCESS + '_' + i];
+      if (typeof part !== 'string') return '';
+      json += part;
+    }
+    return json;
   }
 
   /**
@@ -82,9 +101,21 @@ var Config = (function () {
     props_().setProperty(PROP_THRESHOLD, String(n));
   }
 
-  /** @param {{users: Object[], domainRole: string}} access */
+  /**
+   * Writes the access list in one setProperties call, then drops the parts left over from a longer
+   * previous list. Call inside Store.withLock.
+   * @param {{users: Object[], domainRole: string}} access
+   */
   function setAccess(access) {
-    props_().setProperty(PROP_ACCESS, JSON.stringify({ users: access.users || [], domainRole: access.domainRole || 'none' }));
+    var json = JSON.stringify({ users: access.users || [], domainRole: access.domainRole || 'none' });
+    var store = props_();
+    var parts = {};
+    var n = 0;
+    for (var i = 0; i < json.length; i += ACCESS_CHUNK) parts[PROP_ACCESS + '_' + (n++)] = json.slice(i, i + ACCESS_CHUNK);
+    parts[PROP_ACCESS + '_N'] = String(n);
+    store.setProperties(parts);
+    var existing = store.getProperties() || {};
+    for (var k = n; Object.prototype.hasOwnProperty.call(existing, PROP_ACCESS + '_' + k); k++) store.deleteProperty(PROP_ACCESS + '_' + k);
   }
 
   function setDataId(id) {
@@ -115,6 +146,7 @@ var Config = (function () {
     PROP_SOURCE_ID: PROP_SOURCE_ID,
     PROP_THRESHOLD: PROP_THRESHOLD,
     PROP_ACCESS: PROP_ACCESS,
+    MAX_USERS: MAX_USERS,
     DATA_SPREADSHEET_NAME: DATA_SPREADSHEET_NAME,
     TIME_ZONE: TIME_ZONE,
     TABS: TABS,

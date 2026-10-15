@@ -250,3 +250,23 @@ test('escapeFormula', () => {
   assert.equal(Core.escapeFormula(null), null);
   assert.equal(Core.escapeFormula(undefined), undefined);
 });
+
+test('isEmail / parseEmailList: pasted lists in every common shape', () => {
+  for (const v of ['a@b.co', 'prenom.nom@decathlon.com', 'x+tag@sub.domain.fr']) assert.ok(Core.isEmail(v), v);
+  for (const v of ['', 'a@b', 'a b@c.com', '@b.com', 'a@@b.com', '<a@b.com>', null, 42, 'a'.repeat(250) + '@b.com']) {
+    assert.ok(!Core.isEmail(v), String(v));
+  }
+  const pasted = 'Léa Martin <Lea.Martin@decathlon.com>, "Sam" <sam@decathlon.com>; bob@decathlon.com\n' +
+    'mailto:ana@decathlon.com\tbad@x  LEA.martin@decathlon.com (jo@decathlon.com).\r\n\n' +
+    "'quoted@decathlon.com' [br@decathlon.com]";
+  assert.deepEqual(Core.parseEmailList(pasted), {
+    emails: ['lea.martin@decathlon.com', 'sam@decathlon.com', 'bob@decathlon.com', 'ana@decathlon.com',
+      'jo@decathlon.com', 'quoted@decathlon.com', 'br@decathlon.com'],
+    invalid: ['bad@x'],
+  });
+  // A Sheets column paste (one per line, header without '@').
+  assert.deepEqual(Core.parseEmailList('Email\na@decathlon.com\nb@decathlon.com\n').emails,
+    ['a@decathlon.com', 'b@decathlon.com']);
+  assert.deepEqual(Core.parseEmailList(null), { emails: [], invalid: [] });
+  assert.deepEqual(Core.parseEmailList('   '), { emails: [], invalid: [] });
+});

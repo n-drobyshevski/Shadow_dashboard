@@ -98,7 +98,7 @@ test('Config: properties and date helpers', () => {
   assert.deepEqual(plain(ctx.Config.get().access), { users: [{ email: 'a@decathlon.com', role: 'lecteur',
     added_at: '', added_by: '' }], domainRole: 'lecteur' });
   // Corrupted properties never lock anybody out with an error: defaults instead.
-  ctx.PropertiesService.getScriptProperties().setProperty('ACCESS_JSON', '{oops');
+  ctx.PropertiesService.getScriptProperties().setProperty('ACCESS_JSON_0', '{oops');
   ctx.PropertiesService.getScriptProperties().setProperty('COMPLIANCE_THRESHOLD', '250');
   assert.deepEqual(plain(ctx.Config.get().access), noAccess);
   assert.equal(ctx.Config.get().threshold, 80);

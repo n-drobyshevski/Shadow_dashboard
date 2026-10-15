@@ -13,7 +13,9 @@
  *   UI.pageHeader({title, kicker?, kickerId?, actions?:[Node]}) -> header.page-header.
  *   UI.leaderRow(label, value, attrs?)   -> div.leaders-row "label ……… value".
  *   editableTable columns also accept {numeric?:bool, mono?:bool} (right-aligned mono / identifier cells);
- *   editableTable options also accept toolbarEnd:[Node] (placed at the right end, after search + count).
+ *   editableTable options also accept toolbarEnd:[Node] (placed at the right end, after search + count)
+ *     and readOnly:bool (lecteurs: `editable` columns render as plain cells — no inline editor, no dotted
+ *     underline, no dirty bar, no Enregistrer / Annuler; sorting, search, paging and onRowClick stay).
  *   UI.fmtPctNode(n, digits?)           -> span.pct: same text as fmtPct, the space before % is set in the
  *                                           sans face so that it stays narrow inside mono figures.
  *   UI.cellMark(column, value)          -> read view of a ledger cell: Statut / Niveau de risque as marks,
@@ -875,12 +877,13 @@
 
   /**
    * UI.editableTable({columns, rows, rowKey='_id', search=true, pageSize=50, onSave?, onRowClick?,
-   *                   emptyText?, toolbar?}) -> {node, setRows(rows), getDirty()}
+   *                   emptyText?, toolbar?, readOnly?}) -> {node, setRows(rows), getDirty()}
    */
   function editableTable(o) {
     var opts = o || {};
     var columns = opts.columns || [];
     var rowKey = opts.rowKey || '_id';
+    var readOnly = !!opts.readOnly;   // read-only mode (lecteur): no column is editable
     var pageSize = opts.pageSize || 50;
     var rows = (opts.rows || []).slice();
     var dirty = {};          // id -> {colKey: newValue}
@@ -892,6 +895,7 @@
     var rowsReplaced = false;
 
     function idOf(row) { return row ? String(row[rowKey]) : ''; }
+    function isEditable(col) { return !readOnly && !!col.editable; }
     function view(row) {
       var d = dirty[idOf(row)];
       return d ? Object.assign({}, row, d) : row;
@@ -930,7 +934,9 @@
     var table = el('table', { class: 'table etable-table' }, thead, tbody);
     var pager = el('div', { class: 'etable-pager' });
     var scroller = el('div', { class: 'table-scroll' }, table);
-    var node = el('div', { class: 'etable' }, toolbar, dirtyBar, scroller, pager);
+    // Read-only: the dirty bar (Enregistrer / Annuler) is never part of the table.
+    var node = el('div', { class: ['etable', readOnly ? 'is-readonly' : null] }, toolbar, readOnly ? null : dirtyBar,
+      scroller, pager);
 
     /** Right-edge fade while columns remain hidden to the right (scroll cue). */
     function updateScrollCue() {
@@ -970,7 +976,7 @@
         } }, label, el('span', { class: 'sort-ind', 'aria-hidden': 'true' },
           sortKey === col.key ? (sortDir === 1 ? '↑' : '↓') : '')) : label;
         tr.appendChild(el('th', { scope: 'col', 'aria-sort': sortable ? ariaSort : null, style: style,
-          class: [col.editable ? 'th-editable' : null, col.numeric ? 'num' : null] }, content));
+          class: [isEditable(col) ? 'th-editable' : null, col.numeric ? 'num' : null] }, content));
       });
       thead.appendChild(tr);
     }
@@ -1063,7 +1069,7 @@
      * other columns -> text input (Enter / blur commit, Esc cancels).
      */
     function startEdit(td, row, col) {
-      if (td.classList.contains('cell-editing') || saving) return;
+      if (td.classList.contains('cell-editing') || saving || !isEditable(col)) return;
       var curStr = Core.str(view(row)[col.key]);
       var label = (col.label || col.key) + ' — modifier';
       var editor;
@@ -1158,7 +1164,7 @@
         }
         columns.forEach(function (col) {
           var td = el('td', { dataset: { col: col.key } });
-          if (col.editable) {
+          if (isEditable(col)) {
             td.classList.add('cell-editable');
             if (Array.isArray(col.options)) td.classList.add('cell-choice');
             else if (isDateColumn(col)) td.classList.add('cell-date');
@@ -1206,7 +1212,7 @@
     }
 
     function save() {
-      if (saving || !opts.onSave) return;
+      if (saving || readOnly || !opts.onSave) return;
       var changes = getDirty();
       if (!changes.length) return;
       saving = true;

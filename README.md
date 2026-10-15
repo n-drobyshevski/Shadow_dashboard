@@ -115,12 +115,18 @@ Workspace que le déployeur. Avec un compte Gmail personnel, seul le déployeur 
     Le serveur refuse toute écriture d'un lecteur, même appelée hors de l'interface.
 - Le **propriétaire du déploiement est toujours administrateur** et n'apparaît pas comme modifiable ;
   personne ne peut modifier son propre accès, ce qui évite de se bloquer.
+- **Ajout en masse** : « Ajouter plusieurs comptes… » accepte une liste collée telle quelle (colonne
+  d'un Google Sheet, adresses séparées par virgules ou points-virgules, champ « À » d'un e-mail
+  `Nom <adresse>`), affiche ce qui sera ajouté, modifié, ignoré ou invalide, puis enregistre tout en une
+  fois (500 adresses par ajout, 2000 comptes au total ; au-delà, ouvrir plutôt au domaine en lecture).
+  Une recherche filtre la liste.
 - « Autres comptes du domaine » : *Aucun accès* (par défaut, seuls les comptes listés entrent) ou
   *Lecteur* (tout le domaine peut consulter).
 - Un compte non autorisé voit « Accès refusé » avec son adresse, à transmettre à un administrateur.
-- La liste est stockée dans les propriétés du script (`ACCESS_JSON`) et le seuil dans
-  `COMPLIANCE_THRESHOLD` : Éditeur Apps Script → Paramètres du projet → Propriétés du script. Supprimer
-  `ACCESS_JSON` remet l'accès au seul propriétaire.
+- La liste est stockée dans les propriétés du script (`ACCESS_JSON_N` et `ACCESS_JSON_0`, `_1`… : une
+  propriété est limitée à 9 Ko) et le seuil dans `COMPLIANCE_THRESHOLD` : Éditeur Apps Script →
+  Paramètres du projet → Propriétés du script. Supprimer `ACCESS_JSON_N` remet l'accès au seul
+  propriétaire.
 - **Tester avec un compte Gmail personnel** : le type d'accès « domaine » n'existe pas pour ces
   comptes. Dans `src/appsscript.json`, mettre provisoirement `"access": "MYSELF"` avant de déployer.
 
@@ -220,8 +226,10 @@ Access control: the app runs as the deployer with `access: DOMAIN` (deploy from 
 account of the users' domain). Each caller is identified by `Session.getActiveUser()` and checked on
 every server call: **admin** (everything, incl. Paramètres) or **lecteur** (read only); the deployer is
 always admin and nobody can edit their own access. Unlisted domain accounts get no access by default,
-or lecteur if « Autres comptes du domaine » is set so. The list lives in the `ACCESS_JSON` script
-property, the compliance threshold (default 80 %) in `COMPLIANCE_THRESHOLD`. For a personal Gmail
+or lecteur if « Autres comptes du domaine » is set so. « Ajouter plusieurs comptes… » takes a pasted
+list in any common shape (Sheets column, comma/semicolon separated, `Name <address>`), previews it and
+saves it in one call (500 per batch, 2000 accounts max). The list lives in the `ACCESS_JSON_N` /
+`ACCESS_JSON_0..` script properties (split because one property holds 9 KB), the compliance threshold (default 80 %) in `COMPLIANCE_THRESHOLD`. For a personal Gmail
 deployer, set `"access": "MYSELF"` in `src/appsscript.json`.
 
 Updates: `DEPLOYMENT_ID=AKfy... npm run deploy` pushes and redeploys the same deployment, so the URL

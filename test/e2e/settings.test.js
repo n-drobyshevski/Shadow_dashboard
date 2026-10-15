@@ -127,6 +127,73 @@ describe('settings (admin)', () => {
     });
   });
 
+  test('bulk add: paste any list, live preview, one call, then search the list', async () => {
+    await withApp({ page: 'settings' }, async (app) => {
+      const { page } = app;
+      assert.equal((await page.textContent('#access-count')).trim(), '3 comptes');
+      await page.click('#access-bulk-open');
+      await page.waitForSelector('.modal #bulk-emails');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'bulk-emails');
+      const primary = page.locator('.modal .btn-primary');
+      assert.equal(await primary.isDisabled(), true, 'nothing to add yet');
+
+      await page.fill('#bulk-emails', [
+        'Nina Petit <Nina.Petit@decathlon.com>, "Tom" <tom.roux@decathlon.com>; jade.morel@decathlon.com',
+        ACCOUNTS.LECTEUR, ACCOUNTS.ADMIN2, ACCOUNTS.OWNER, 'lucas.blanc@decathlon', 'jade.morel@decathlon.com'].join('\n'));
+      const preview = (await page.textContent('#bulk-preview')).replace(/\s+/g, ' ').trim();
+      assert.equal(preview, '3 nouveaux comptes · 1 rôle modifié · 1 déjà lecteur · 1 ignoré (propriétaire) · ' +
+        '1 adresse invalide : lucas.blanc@decathlon');
+      assert.equal((await primary.textContent()).trim(), 'Enregistrer 4 comptes');
+
+      // Same paste as admins: the preview follows the role.
+      await chooseOption(page, '#bulk-role', 'Administrateur');
+      assert.match(await page.textContent('#bulk-preview'), /^3 nouveaux comptes · 1 rôle modifié · 1 déjà administrateur/);
+      await chooseOption(page, '#bulk-role', 'Lecteur');
+
+      await primary.click();
+      await page.waitForSelector('.modal', { state: 'detached' });
+      assert.equal(await lastToast(page), '3 comptes ajoutés · 1 rôle modifié — Lecteur.');
+      await app.waitIdle();
+      const call = (await callsNamed(app, 'api_addUsers')).pop();
+      assert.deepEqual(call.args, { role: 'lecteur', emails: ['nina.petit@decathlon.com', 'tom.roux@decathlon.com',
+        'jade.morel@decathlon.com', ACCOUNTS.ADMIN2] });
+      assert.equal((await page.textContent('#access-count')).trim(), '6 comptes');
+      assert.equal(await page.evaluate((e) => window.__mock.db.access.users.find((u) => u.email === e).role, ACCOUNTS.ADMIN2), 'lecteur');
+
+      // Search hides non-matching rows and keeps the focus; Escape clears it.
+      await page.fill('#access-search', 'nina');
+      assert.deepEqual(await page.$$eval('#access-table tbody tr:not([hidden])', (rs) => rs.map((r) => r.dataset.email)),
+        ['nina.petit@decathlon.com']);
+      assert.equal((await page.textContent('#access-count')).trim(), '1 sur 6 comptes');
+      await page.fill('#access-search', 'zzz');
+      assert.ok(await page.isVisible('#access-nomatch'));
+      await page.press('#access-search', 'Escape');
+      assert.equal(await page.$$eval('#access-table tbody tr:not([hidden])', (rs) => rs.length), 6);
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'access-search');
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('bulk add: nothing actionable keeps the dialog open; server errors show on the field', async () => {
+    await withApp({ page: 'settings' }, async (app) => {
+      const { page } = app;
+      await page.click('#access-bulk-open');
+      await page.fill('#bulk-emails', 'Léa Martin, Sam\n' + ACCOUNTS.LECTEUR);
+      assert.equal((await page.textContent('#bulk-preview')).trim(), '1 déjà lecteur');
+      assert.equal(await page.locator('.modal .btn-primary').isDisabled(), true);
+      await page.fill('#bulk-emails', 'new.person@decathlon.com');
+      await page.evaluate(() => { window.__mock.failNext.api_addUsers = { code: 'BUSY', message: 'Une autre opération est en cours.' }; });
+      await page.click('.modal .btn-primary');
+      await page.waitForSelector('#bulk-emails[aria-invalid="true"]');
+      assert.match(await page.textContent('.modal'), /Une autre opération est en cours/);
+      assert.ok(await page.isVisible('.modal'));
+      await page.click('.modal .btn-primary');
+      await page.waitForSelector('.modal', { state: 'detached' });
+      assert.match(await lastToast(page), /^1 compte ajouté — Lecteur\.$/);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
   test('source: invalid value shown on the field, valid one saved', async () => {
     await withApp({ page: 'settings' }, async (app) => {
       const { page } = app;

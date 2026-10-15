@@ -18,6 +18,19 @@
 .page-settings .access-table .access-actions { width: 96px; text-align: right; }
 .page-settings .access-note { color: var(--ink-3); font-size: 12px; margin-left: var(--s1); }
 .page-settings .settings-form .select-field { min-width: 160px; }
+/* Above the access table: search + count on the left, bulk add on the right. */
+.page-settings .access-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
+.page-settings .access-tools .search-field { flex: 0 1 280px; }
+.page-settings .access-count { color: var(--ink-3); font-size: 12px; }
+.page-settings .access-tools .access-bulk-open { margin-left: auto; }
+.page-settings .access-nomatch { margin: 0; color: var(--ink-2); }
+/* Bulk add dialog */
+.access-bulk .access-bulk-text { width: 100%; min-height: 168px; font-family: var(--font-mono); font-size: 13px; }
+.access-bulk .access-bulk-role { max-width: 200px; }
+.access-bulk .access-bulk-preview { margin: 0; font-size: 13px; color: var(--ink-2); min-height: 20px; }
+.access-bulk .access-bulk-preview .num { font-family: var(--font-mono); color: var(--ink); }
+.access-bulk .access-bulk-invalid { color: var(--ko); overflow-wrap: anywhere; }
+.access-bulk { display: flex; flex-direction: column; gap: var(--s3); }
 @media (max-width: 700px) {
   .page-settings .access-table .access-role { width: auto; }
   .page-settings .access-table .access-added { display: none; }
@@ -34,7 +47,9 @@
  *   - Seuil de conformité: integer 1–100 (api_setThreshold). Every cache is dropped and the bootstrap is
  *     reloaded so that every page re-scores with the new value.
  *   - Accès: role of the other accounts of the domain (api_setDomainRole), the access list with an inline
- *     role dropdown and « Retirer » (api_saveUser / api_removeUser), and an add form. The deployer is
+ *     role dropdown and « Retirer » (api_saveUser / api_removeUser), a search over the list, an add form,
+ *     and « Ajouter plusieurs comptes… »: paste any list of addresses (Core.parseEmailList), live
+ *     preview of new / changed / already present / invalid, one api_addUsers call. The deployer is
  *     always admin and the caller cannot edit their own access (server guards, shown here as plain text).
  * The page is also reachable before a source is configured, so that access can be set up first.
  */
@@ -156,9 +171,104 @@
 
   // ------------------------------------------------------------------------------ access
 
+  function plural(n, one, many) { return UI.fmtNum(n) + ' ' + (n > 1 ? many : one); }
+
+  /**
+   * What a bulk add would do, computed client-side from the current list (the server decides; this is
+   * only the preview): {add:[], change:[], same:[], skip:[{email, reason}], invalid:[]}.
+   */
+  function bulkPlan(text, role, view, me) {
+    var parsed = Core.parseEmailList(text);
+    var byEmail = {};
+    view.users.forEach(function (u) { byEmail[u.email] = u; });
+    var plan = { add: [], change: [], same: [], skip: [], invalid: parsed.invalid };
+    parsed.emails.forEach(function (e) {
+      if (e === view.owner) plan.skip.push({ email: e, reason: 'propriétaire' });
+      else if (e === me) plan.skip.push({ email: e, reason: 'vous' });
+      else if (!byEmail[e]) plan.add.push(e);
+      else if (byEmail[e].role !== role) plan.change.push(e);
+      else plan.same.push(e);
+    });
+    return plan;
+  }
+
+  function openBulkAdd(view, me, onDone) {
+    var text = el('textarea', { class: 'input access-bulk-text', id: 'bulk-emails', rows: 8, spellcheck: 'false',
+      autocomplete: 'off', 'aria-describedby': 'bulk-help bulk-preview',
+      placeholder: 'lea.martin@decathlon.com\nsam.durand@decathlon.com\nNina Petit <nina.petit@decathlon.com>' });
+    var role = UI.select({ label: 'Rôle pour tous', id: 'bulk-role', options: ROLE_OPTIONS, value: 'lecteur',
+      onChange: update });
+    role.classList.add('access-bulk-role');
+    var preview = el('p', { class: 'access-bulk-preview', id: 'bulk-preview', role: 'status', 'aria-live': 'polite' });
+    var plan = null;
+    var dlg = null;
+
+    function update() {
+      plan = bulkPlan(text.value, role.getValue(), view, me);
+      UI.clear(preview);
+      var parts = [];
+      if (plan.add.length) parts.push([el('span', { class: 'num' }, UI.fmtNum(plan.add.length)), plan.add.length > 1 ? ' nouveaux comptes' : ' nouveau compte']);
+      if (plan.change.length) parts.push([el('span', { class: 'num' }, UI.fmtNum(plan.change.length)), plan.change.length > 1 ? ' rôles modifiés' : ' rôle modifié']);
+      if (plan.same.length) parts.push([el('span', { class: 'num' }, UI.fmtNum(plan.same.length)), ' déjà ' + (role.getValue() === 'admin' ? 'administrateur' : 'lecteur') + (plan.same.length > 1 ? 's' : '')]);
+      if (plan.skip.length) parts.push([el('span', { class: 'num' }, UI.fmtNum(plan.skip.length)), ' ignoré' + (plan.skip.length > 1 ? 's' : '') + ' (' + plan.skip.map(function (x) { return x.reason; }).join(', ') + ')']);
+      if (!parts.length && !plan.invalid.length) preview.appendChild(document.createTextNode(text.value.trim() ? 'Aucune adresse reconnue.' : ''));
+      parts.forEach(function (p, i) { if (i) preview.appendChild(document.createTextNode(' · ')); preview.appendChild(el('span', null, p)); });
+      if (plan.invalid.length) {
+        if (parts.length) preview.appendChild(document.createTextNode(' · '));
+        var shown = plan.invalid.slice(0, 5).join(', ') + (plan.invalid.length > 5 ? '…' : '');
+        preview.appendChild(el('span', { class: 'access-bulk-invalid', id: 'bulk-invalid' },
+          plural(plan.invalid.length, 'adresse invalide', 'adresses invalides') + ' : ' + shown));
+      }
+      var n = plan.add.length + plan.change.length;
+      if (dlg) {
+        var btn = dlg.buttons[1];
+        btn.textContent = n ? (plan.add.length && !plan.change.length ? 'Ajouter ' + plural(n, 'compte', 'comptes') :
+          'Enregistrer ' + plural(n, 'compte', 'comptes')) : 'Ajouter';
+        btn.disabled = !n;
+      }
+      UI.fieldError(text, '');
+    }
+    text.addEventListener('input', update);
+
+    dlg = UI.modal({
+      title: 'Ajouter plusieurs comptes',
+      wide: true,
+      body: el('div', { class: 'access-bulk' },
+        el('p', { class: 'field-help', id: 'bulk-help' }, 'Collez les adresses : une par ligne (colonne d’un ' +
+          'Google Sheet), séparées par des virgules ou des points-virgules, ou copiées depuis le champ « À » d’un ' +
+          'e-mail (« Nom <adresse> »). Les doublons et les mots sans « @ » sont ignorés. ' +
+          '500 adresses au plus par ajout.'),
+        el('div', { class: 'form-field' }, el('label', { for: 'bulk-emails', class: 'field-label' }, 'Adresses'), text),
+        role, preview),
+      actions: [
+        { label: 'Annuler' },
+        { label: 'Ajouter', primary: true, onClick: function (close) {
+          update();
+          var emails = plan.add.concat(plan.change);
+          if (!emails.length) { UI.fieldError(text, 'Aucune adresse à ajouter.'); return null; }
+          if (emails.length > 500) { UI.fieldError(text, 'Au plus 500 adresses par ajout (' + UI.fmtNum(emails.length) + ' collées).'); return null; }
+          var r = role.getValue();
+          return api.call('api_addUsers', { emails: emails, role: r }).then(function (res) {
+            close();
+            var bits = [];
+            if (res.added.length) bits.push(plural(res.added.length, 'compte ajouté', 'comptes ajoutés'));
+            if (res.updated.length) bits.push(plural(res.updated.length, 'rôle modifié', 'rôles modifiés'));
+            if (res.skipped.length) bits.push(plural(res.skipped.length, 'ignoré', 'ignorés'));
+            UI.toast((bits.join(' · ') || 'Aucun changement') + ' — ' + roleLabel(r) + '.', 'success');
+            onDone(res.access);
+          }, function (err) {
+            UI.fieldError(text, UI.errorText(err));
+          });
+        } }
+      ]
+    });
+    update();
+  }
+
   function accessSection(s) {
     var wrap = el('div', { class: 'access-body' });
     var view = s.access;
+    var query = '';
 
     function apply(next) {
       view = next;
@@ -279,9 +389,35 @@
         role,
         el('div', { class: 'form-actions' }, add));
 
+      var count = el('span', { class: 'access-count', id: 'access-count', role: 'status' });
+      var nomatch = el('p', { class: 'access-nomatch', id: 'access-nomatch', hidden: true }, 'Aucun compte ne correspond.');
+      var search = UI.searchField({ id: 'access-search', value: query, placeholder: 'Rechercher un compte…',
+        ariaLabel: 'Rechercher un compte', onInput: function (v) { query = v; filter(); } });
+      var bulk = el('button', { type: 'button', class: 'btn btn-secondary access-bulk-open', id: 'access-bulk-open',
+        onClick: function () { openBulkAdd(view, me, apply); } }, 'Ajouter plusieurs comptes…');
+
+      // Hides the rows that do not match (no re-render: the search keeps focus while typing).
+      function filter() {
+        var q = query.trim().toLowerCase();
+        var shown = 0;
+        Array.prototype.forEach.call(tbl.querySelectorAll('tbody tr'), function (tr) {
+          var u = rows.filter(function (r) { return r.email === tr.dataset.email; })[0];
+          var hay = u ? (u.email + ' ' + roleLabel(u.role) + ' ' + (u.added_by || '')).toLowerCase() : '';
+          var ok = !q || hay.indexOf(q) >= 0;
+          tr.hidden = !ok;
+          if (ok) shown++;
+        });
+        var total = rows.length;
+        count.textContent = q ? UI.fmtNum(shown) + ' sur ' + plural(total, 'compte', 'comptes') : plural(total, 'compte', 'comptes');
+        nomatch.hidden = shown > 0;
+      }
+
       wrap.appendChild(el('div', { class: 'settings-form' }, domain));
+      wrap.appendChild(el('div', { class: 'access-tools' }, search, count, bulk));
       wrap.appendChild(tbl);
+      wrap.appendChild(nomatch);
       wrap.appendChild(form);
+      filter();
     }
 
     render();

@@ -16,7 +16,6 @@ var Access = (function () {
   var ROLES = ['admin', 'lecteur'];
   var DOMAIN_ROLES = ['none', 'lecteur'];
   var RANK = { lecteur: 1, admin: 2 };
-  var EMAIL_RE = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
 
   function normEmail(v) {
     return typeof v === 'string' ? v.trim().toLowerCase() : '';
@@ -73,7 +72,7 @@ var Access = (function () {
   /** Validated, normalised email or VALIDATION. */
   function checkEmail(v) {
     var email = normEmail(v);
-    if (!email || email.length > 254 || !EMAIL_RE.test(email)) {
+    if (!Core.isEmail(email)) {
       throw Core.makeError('VALIDATION', 'Adresse e-mail invalide : « ' + Core.str(v) + ' ».');
     }
     return email;

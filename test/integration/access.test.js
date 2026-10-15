@@ -96,11 +96,11 @@ test('lecteur: read endpoints work, every write endpoint is FORBIDDEN, links are
   ok(sb.ctx, 'api_getDiff', { oldMonth: '2026-05', newMonth: '2026-05' });
 
   const writes = apiNames(sb.ctx).filter((n) => !LECTEUR_APIS.includes(n));
-  assert.equal(writes.length, 19);
+  assert.equal(writes.length, 20);
   const poste = md.postes[0];
   for (const name of writes) {
     const err = fail(sb.ctx, name, { month: '2026-05', id: poste._id, changes: [], email: ADMIN2, role: 'admin',
-      threshold: 70, source: SOURCE_ID }, 'FORBIDDEN');
+      emails: [ADMIN2], threshold: 70, source: SOURCE_ID }, 'FORBIDDEN');
     assert.equal(err.message, 'Action réservée aux administrateurs.');
   }
   as(sb, undefined);
@@ -152,8 +152,7 @@ test('saveUser / removeUser: add, change role, remove, sorted view with audit fi
 
   as(sb, READER);
   fail(sb.ctx, 'api_bootstrap', null, 'FORBIDDEN');
-  const stored = JSON.parse(sb.env.PropertiesService.getScriptProperties().getProperty('ACCESS_JSON'));
-  assert.deepEqual(stored.users.map((u) => u.email), [ADMIN2]);
+  assert.deepEqual(plain(sb.ctx.Config.get().access.users.map((u) => u.email)), [ADMIN2]);
 });
 
 test('no lock-out: the owner and the caller\'s own account cannot be edited', () => {
@@ -229,4 +228,81 @@ test('getSettings: source info, tabs found and data url', () => {
   const empty = loadGas();
   const s2 = ok(empty.ctx, 'api_getSettings');
   assert.deepEqual(s2.source, { id: '', url: '', title: '', tabsFound: null });
+});
+
+// ------------------------------------------------------------------------------- bulk add
+
+test('addUsers: added, role changes, and every skip reason', () => {
+  const sb = imported();
+  ok(sb.ctx, 'api_saveUser', { email: READER, role: 'lecteur' });
+  ok(sb.ctx, 'api_saveUser', { email: ADMIN2, role: 'admin' });
+  const res = ok(sb.ctx, 'api_addUsers', { role: 'lecteur', emails: ['New.One@decathlon.com', 'new.two@decathlon.com',
+    'new.one@decathlon.com', READER, ADMIN2, OWNER, 'pas une adresse', 42] });
+  assert.deepEqual(res.added, ['new.one@decathlon.com', 'new.two@decathlon.com']);
+  assert.deepEqual(res.updated, [ADMIN2]);
+  assert.deepEqual(res.skipped.map((x) => x.reason).sort(), ['adresse invalide', 'adresse invalide', 'doublon',
+    'déjà lecteur', 'propriétaire'].sort());
+  assert.deepEqual(res.access.users.map((u) => [u.email, u.role]), [
+    [READER, 'lecteur'], ['new.one@decathlon.com', 'lecteur'], ['new.two@decathlon.com', 'lecteur'], [ADMIN2, 'lecteur']]);
+  assert.equal(res.access.users[1].added_by, OWNER);
+  as(sb, 'new.two@decathlon.com');
+  assert.equal(ok(sb.ctx, 'api_bootstrap').user.role, 'lecteur');
+});
+
+test('addUsers: the caller is skipped, never demoted; validation of role and list size', () => {
+  const sb = imported();
+  ok(sb.ctx, 'api_saveUser', { email: ADMIN2, role: 'admin' });
+  as(sb, ADMIN2);
+  const res = ok(sb.ctx, 'api_addUsers', { role: 'lecteur', emails: [ADMIN2] });
+  assert.deepEqual(res.skipped, [{ email: ADMIN2, reason: 'votre propre compte' }]);
+  assert.equal(ok(sb.ctx, 'api_bootstrap').user.role, 'admin');
+  fail(sb.ctx, 'api_addUsers', { role: 'owner', emails: [READER] }, 'VALIDATION');
+  fail(sb.ctx, 'api_addUsers', { role: 'lecteur', emails: [] }, 'VALIDATION');
+  fail(sb.ctx, 'api_addUsers', { role: 'lecteur', emails: 'a@decathlon.com' }, 'VALIDATION');
+  const tooMany = Array.from({ length: 501 }, (_, i) => 'u' + i + '@decathlon.com');
+  fail(sb.ctx, 'api_addUsers', { role: 'lecteur', emails: tooMany }, 'VALIDATION');
+});
+
+test('large lists: 1500 accounts are split across properties under 9 KB and read back intact', () => {
+  const sb = imported();
+  for (let b = 0; b < 3; b++) {
+    const emails = Array.from({ length: 500 }, (_, i) => 'prenom.nom.' + (b * 500 + i) + '@decathlon.com');
+    assert.equal(ok(sb.ctx, 'api_addUsers', { role: b === 2 ? 'admin' : 'lecteur', emails }).added.length, 500);
+  }
+  const props = sb.env.PropertiesService.getScriptProperties().getProperties();
+  const parts = Object.keys(props).filter((k) => /^ACCESS_JSON_\d+$/.test(k));
+  assert.equal(Number(props.ACCESS_JSON_N), parts.length);
+  assert.ok(parts.length > 10, String(parts.length));
+  for (const k of parts) assert.ok(Buffer.byteLength(k + props[k], 'utf8') <= 9 * 1024, k);
+  assert.equal(ok(sb.ctx, 'api_getSettings').access.users.length, 1500);
+  as(sb, 'prenom.nom.1499@decathlon.com');
+  assert.equal(ok(sb.ctx, 'api_bootstrap').user.role, 'admin');
+
+  // Shrinking the list removes the parts left over, and stale parts are never read.
+  as(sb, undefined);
+  for (let i = 0; i < 1500; i++) {
+    if (i % 300) continue;
+    ok(sb.ctx, 'api_removeUser', { email: 'prenom.nom.' + i + '@decathlon.com' });
+  }
+  ok(sb.ctx, 'api_setDomainRole', { role: 'lecteur' });
+  const before = parts.length;
+  sb.ctx.Config.setAccess({ users: [], domainRole: 'none' });
+  const after = sb.env.PropertiesService.getScriptProperties().getProperties();
+  assert.equal(after.ACCESS_JSON_N, '1');
+  assert.deepEqual(Object.keys(after).filter((k) => /^ACCESS_JSON_\d+$/.test(k)), ['ACCESS_JSON_0'], 'from ' + before);
+  ok(sb.ctx, 'api_addUsers', { role: 'lecteur', emails: Array.from({ length: 300 }, (_, i) => 'p' + i + '@decathlon.com') });
+  sb.env.PropertiesService.getScriptProperties().setProperty('ACCESS_JSON_N', '1');
+  assert.deepEqual(plain(sb.ctx.Config.get().access), { users: [], domainRole: 'none' }, 'truncated JSON -> empty');
+});
+
+test('the access list is capped at 2000 accounts', () => {
+  const sb = imported();
+  for (let b = 0; b < 4; b++) {
+    ok(sb.ctx, 'api_addUsers', { role: 'lecteur', emails: Array.from({ length: 500 }, (_, i) => 'a' + (b * 500 + i) + '@decathlon.com') });
+  }
+  const err = fail(sb.ctx, 'api_addUsers', { role: 'lecteur', emails: ['one.more@decathlon.com'] }, 'VALIDATION');
+  assert.match(err.message, /limitée à 2000/);
+  fail(sb.ctx, 'api_saveUser', { email: 'one.more@decathlon.com', role: 'lecteur' }, 'VALIDATION');
+  // Changing a role is still possible at the cap.
+  ok(sb.ctx, 'api_saveUser', { email: 'a1@decathlon.com', role: 'admin' });
 });

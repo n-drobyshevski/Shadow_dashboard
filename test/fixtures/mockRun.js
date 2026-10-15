@@ -458,6 +458,35 @@ function mockMain(FIX, OPTS) {
       return accessView();
     },
 
+    api_addUsers: function (args) {
+      var a = obj(args);
+      if (['admin', 'lecteur'].indexOf(a.role) < 0) fail('VALIDATION', 'Rôle invalide : « ' + s(a.role) + ' ».');
+      if (!Array.isArray(a.emails) || !a.emails.length) fail('VALIDATION', 'Aucune adresse à ajouter.');
+      if (a.emails.length > 500) fail('VALIDATION', 'Au plus 500 adresses par ajout.');
+      var me = normEmail(db.email);
+      var res = { added: [], updated: [], skipped: [] };
+      var seen = {};
+      a.emails.forEach(function (v) {
+        var email = normEmail(v);
+        var reason = !Core().isEmail(email) ? 'adresse invalide' : email === OWNER ? 'propriétaire' :
+          email === me ? 'votre propre compte' : seen[email] ? 'doublon' : '';
+        if (reason) { res.skipped.push({ email: s(v), reason: reason }); return; }
+        seen[email] = true;
+        var hit = db.access.users.filter(function (u) { return u.email === email; })[0];
+        if (!hit) {
+          db.access.users.push({ email: email, role: a.role, added_at: todayIso(), added_by: me });
+          res.added.push(email);
+        } else if (hit.role !== a.role) {
+          hit.role = a.role;
+          res.updated.push(email);
+        } else {
+          res.skipped.push({ email: email, reason: 'déjà ' + (a.role === 'admin' ? 'administrateur' : 'lecteur') });
+        }
+      });
+      res.access = accessView();
+      return res;
+    },
+
     api_removeUser: function (args) {
       var email = editableEmail(obj(args).email);
       var kept = db.access.users.filter(function (u) { return u.email !== email; });

@@ -110,6 +110,8 @@ All functions are **total**: they never throw on null/undefined/blank input unle
 | `sortMonths(months)` | ascending, unique, only valid months. |
 | `previousMonth(months, month)` | the latest month in `months` strictly before `month`, or `null`. |
 | `threshold()` | effective compliance threshold used by `enrichPostes` / `enrichApplications` (default `THRESHOLD`). |
+| `isEmail(v)` | plausible address (string, ≤ 254 chars, one `@`, a dot in the domain, no spaces / `<>(),;:"`). |
+| `parseEmailList(text)` | pasted text → `{emails:[unique, lower-cased, in order], invalid:[tokens with '@' that are not addresses]}`; accepts lines, `,` `;` tab / space separators, `Name <a@b.c>`, quotes, `mailto:`; words without `@` are ignored. |
 | `validateThreshold(v)` | integer 1–100 (number or digit string) → that number, else `null`. |
 | `setThreshold(v)` | sets the effective threshold (invalid → `THRESHOLD`); returns it. Server: every api call, from Script Properties. Client: from `api_bootstrap`. |
 
@@ -171,6 +173,7 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 | `api_getSettings` | – | `{threshold, defaultThreshold:80, source:{id, url, title, tabsFound\|null}, dataUrl, access:AccessView, me:email}` | – |
 | `api_setThreshold` | `{threshold}` | `{threshold}` | `VALIDATION` (not an integer 1–100) |
 | `api_saveUser` | `{email, role:'admin'\|'lecteur'}` | `AccessView` (adds or changes the role) | `VALIDATION` (bad email / role, the owner, or the caller's own account) |
+| `api_addUsers` | `{emails:[string] (1–500), role}` | `{access:AccessView, added:[email], updated:[email] (role changed), skipped:[{email, reason}]}` — one write; invalid addresses, duplicates, the owner, the caller and accounts that already have that role are skipped with a reason | `VALIDATION` (role, empty / too long list, more than 2000 accounts) |
 | `api_removeUser` | `{email}` | `AccessView` | `VALIDATION` (as above), `NOT_FOUND` |
 | `api_setDomainRole` | `{role:'none'\|'lecteur'}` | `AccessView` | `VALIDATION` |
 
@@ -182,7 +185,7 @@ The **complete list** of public API functions (used by the contract test) is exa
 api_addGenericPoste, api_saveApplications, api_addApplication, api_deleteApplication,
 api_renameApplication, api_getTimeline, api_getActions, api_addAction, api_updateAction,
 api_deleteAction, api_addReplacement, api_updateReplacement, api_deleteReplacement, api_getDiff,
-api_getSettings, api_setThreshold, api_saveUser, api_removeUser, api_setDomainRole`
+api_getSettings, api_setThreshold, api_saveUser, api_addUsers, api_removeUser, api_setDomainRole`
 
 ---------------------------------------------------------------------------------------------------
 ## 4. Server internals
@@ -206,7 +209,8 @@ Config.SCHEMAS = {
 }
 Config.SCHEMA_VERSION = '1'
 Config.PROP_THRESHOLD = 'COMPLIANCE_THRESHOLD'      (integer 1–100 as a string)
-Config.PROP_ACCESS    = 'ACCESS_JSON'               ({users:[{email, role, added_at, added_by}], domainRole})
+Config.PROP_ACCESS    = 'ACCESS_JSON'  ({users:[{email, role, added_at, added_by}], domainRole} as JSON split in
+                        3000-char parts ACCESS_JSON_0.. with the count in ACCESS_JSON_N; Config.MAX_USERS = 2000)
 Config.get()                 -> {dataId:''|id, sourceId:''|id, threshold:int (Core.THRESHOLD when unset),
                                  access:{users:[...], domainRole:'none'|'lecteur'}} (unreadable JSON -> empty list)
 Config.setDataId(id), Config.setSourceId(id), Config.setThreshold(n), Config.setAccess(access)

@@ -681,6 +681,38 @@ function CoreFactory_() {
     return out.sort(cmp_);
   }
 
+  var EMAIL_RE_ = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
+
+  /** Plausible e-mail address (no spaces, one '@', a dot in the domain, max 254 chars). */
+  function isEmail(v) {
+    return typeof v === 'string' && v.length <= 254 && EMAIL_RE_.test(v);
+  }
+
+  /**
+   * Addresses pasted in any common shape -> {emails:[unique, trimmed, lower-cased, in order],
+   * invalid:[tokens containing '@' that are not addresses]}. Accepts one per line (a Sheets column),
+   * comma / semicolon / tab / space separated lists, mail headers (« Léa Martin <lea@x.com> »),
+   * quotes and « mailto: ». Words without '@' (names) are ignored.
+   */
+  function parseEmailList(text) {
+    var out = { emails: [], invalid: [] };
+    if (typeof text !== 'string') return out;
+    var seen = {};
+    text.split(/[\s,;]+/).forEach(function (raw) {
+      var t = raw.replace(/^mailto:/i, '').replace(/^[<("'\[]+|[>)"'\].]+$/g, '').replace(/^mailto:/i, '');
+      if (t.indexOf('@') < 0) return;
+      var e = t.toLowerCase();
+      if (!isEmail(e)) {
+        if (out.invalid.indexOf(raw) < 0) out.invalid.push(raw);
+        return;
+      }
+      if (seen[e]) return;
+      seen[e] = true;
+      out.emails.push(e);
+    });
+    return out;
+  }
+
   /** Effective compliance threshold (integer 1–100; THRESHOLD unless changed in Paramètres). */
   function threshold() { return threshold_; }
 
@@ -759,6 +791,8 @@ function CoreFactory_() {
     previousMonth: previousMonth,
     threshold: threshold,
     validateThreshold: validateThreshold,
+    isEmail: isEmail,
+    parseEmailList: parseEmailList,
     setThreshold: setThreshold
   };
 }
