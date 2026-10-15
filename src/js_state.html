@@ -27,6 +27,10 @@
 
   var monthCache = {};     // month -> monthData
   var monthPending = {};   // month -> Promise<monthData>
+  // month -> {err, at}: a failure handed once to the next caller within FAILURE_REUSE_MS (the page mounted
+  // right after a month swap shows the error the swap just got, instead of requesting the month again).
+  var monthFailed = {};
+  var FAILURE_REUSE_MS = 2000;
   var timelineCache = null;
   var timelinePending = null;
   var actionsCache = null;
@@ -78,6 +82,9 @@
     if (!month) return Promise.reject(Object.assign(new Error('Aucun mois sélectionné.'), { code: 'VALIDATION' }));
     if (!force && monthCache[month]) return Promise.resolve(monthCache[month]);
     if (!force && monthPending[month]) return monthPending[month];
+    var failed = monthFailed[month];
+    delete monthFailed[month];
+    if (!force && failed && Date.now() - failed.at < FAILURE_REUSE_MS) return Promise.reject(failed.err);
     var gen = generation;
     var p = api.call('api_getMonthData', { month: month }).then(function (md) {
       md = normalizeMonthData(md);
@@ -85,7 +92,10 @@
       if (monthPending[month] === p) delete monthPending[month];
       return md;
     }, function (err) {
-      if (monthPending[month] === p) delete monthPending[month];
+      if (monthPending[month] === p) {
+        delete monthPending[month];
+        if (gen === generation) monthFailed[month] = { err: err, at: Date.now() };
+      }
       throw err;
     });
     monthPending[month] = p;
@@ -130,9 +140,11 @@
     if (month) {
       delete monthCache[month];
       delete monthPending[month];
+      delete monthFailed[month];
     } else {
       monthCache = {};
       monthPending = {};
+      monthFailed = {};
     }
     timelineCache = null;
     timelinePending = null;

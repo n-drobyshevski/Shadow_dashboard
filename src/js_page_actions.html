@@ -433,7 +433,8 @@
       onClick: function () { openActionForm({ trigger: addBtn, onSaved: ctx.rerender }); } },
     'Nouvelle action');
     setHeaderAction(addBtn);
-    panel.appendChild(UI.loading('Chargement des actions…'));
+    panel.appendChild(UI.skeleton('table', { label: 'Chargement des actions…',
+      columns: ['Cible', 'Type', 'Équipe', 'Action', 'Responsable', 'Priorité', 'Échéance', 'Statut'] }));
     State.loadActions().then(function (data) {
       if (ctx.token !== token) return;
       UI.clear(panel);
@@ -567,7 +568,8 @@
     var addBtn = !canEdit ? null : el('button', { type: 'button', class: 'btn btn-primary', id: 'replacement-add',
       onClick: function () { openReplacementForm(ctx, null, addBtn); } }, 'Nouveau remplacement');
     setHeaderAction(addBtn);
-    panel.appendChild(UI.loading('Chargement des remplacements…'));
+    panel.appendChild(UI.skeleton('table', { label: 'Chargement des remplacements…',
+      columns: ['Ancien poste', 'Nouveau poste', 'Équipe', 'Responsable', 'Date', 'Commentaire'] }));
     State.loadActions().then(function (data) {
       if (ctx.token !== token) return;
       UI.clear(panel);

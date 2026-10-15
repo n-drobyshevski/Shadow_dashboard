@@ -216,6 +216,28 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
 .btn-danger .btn-spinner { border-color: color-mix(in srgb, var(--ko) 30%, transparent); border-top-color: var(--ko); }
 
 /* ------------------------------------------------------------------ states: empty / loading / error */
+/* skeletons: grey silhouettes at the real sizes (UI.skeleton); one shimmer, off with reduced motion */
+.skeleton { display: flex; flex-direction: column; gap: var(--s5); }
+.skeleton-body { display: flex; flex-direction: column; gap: var(--s5); }
+.skeleton-lines .skeleton-body { gap: var(--s3); }
+.skel {
+  display: block; height: 10px; border-radius: 2px; background: var(--skel);
+  background-image: linear-gradient(90deg, transparent 0, var(--skel-hi) 50%, transparent 100%);
+  background-size: 200% 100%; background-repeat: no-repeat; animation: skel-shimmer 1.6s ease-in-out infinite;
+}
+@keyframes skel-shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+.skel-label { height: 9px; max-width: 160px; }
+.skel-figure { height: 28px; margin-top: var(--s2); max-width: 120px; }
+.skel-text { height: 9px; }
+.skeleton .kpi { gap: var(--s1); }
+.skel-gauge {
+  display: block; width: min(220px, 70%); aspect-ratio: 2 / 1; margin: var(--s4) 0 var(--s2);
+  border: 14px solid var(--skel); border-bottom: 0; border-radius: 999px 999px 0 0;
+}
+.skel-chart { display: block; height: 260px; border-left: 1px solid var(--rule-2); border-bottom: 1px solid var(--rule-2);
+  background: linear-gradient(to top, var(--skel) 0, var(--skel) 1px, transparent 1px) 0 0 / 100% 52px; }
+.skeleton-table td { height: var(--row-h); }
+.skeleton-table td .skel-text { max-width: 140px; }
 .loading-state { display: flex; align-items: center; gap: var(--s2); padding: var(--s2) 0; color: var(--ink-2); font-size: 14px; }
 .loading-state .spinner { margin: 0; }
 .empty-state.is-small, .loading-state.is-small, .error-state.is-small { padding: var(--s1) 0; font-size: 12px; }

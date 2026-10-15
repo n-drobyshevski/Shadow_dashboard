@@ -346,6 +346,9 @@ describe('dashboard', () => {
       await page.waitForSelector('#dashboard-body .alert-error');
       assert.equal((await page.textContent('#dashboard-body .alert-error p')).replace('Réessayer', '').trim(),
         'Impossible de charger avril 2026 : Feuille illisible');
+      // The month swap's failure is shown as is: the page does not request the month a second time.
+      const tries = (await app.calls()).filter((c) => c.name === 'api_getMonthData' && c.args.month === '2026-04');
+      assert.equal(tries.length, 1);
       await page.click('#dashboard-body .error-retry');
       await page.waitForSelector('[data-kpi="total_postes"]');
       await app.waitIdle();

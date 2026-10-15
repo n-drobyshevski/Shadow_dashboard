@@ -412,3 +412,112 @@ describe('shell', () => {
     });
   });
 });
+
+/** Holds every call to `name` until window.__release() (then restores api.call). */
+async function holdCalls(page, name) {
+  await page.evaluate((n) => {
+    const orig = window.api.call;
+    window.__held = [];
+    window.__release = () => { window.__held.splice(0).forEach((f) => f()); window.api.call = orig; };
+    window.api.call = function (callName, args) {
+      if (callName !== n) return orig.apply(this, arguments);
+      return new Promise((resolve, reject) => { window.__held.push(() => orig(callName, args).then(resolve, reject)); });
+    };
+  }, name);
+}
+
+describe('loading states', () => {
+  test('startup splash: team logo and boot steps, gone once the dashboard is ready', async () => {
+    await withApp({ delayMs: 300, readySelector: '#splash', idle: false }, async (app) => {
+      const { page } = app;
+      assert.ok(await page.isVisible('#splash .team-logo'));
+      assert.equal(await page.getAttribute('#splash .team-logo', 'aria-label'), 'Value Chain Information Security');
+      assert.equal(await page.getAttribute('#splash .splash-track', 'role'), 'progressbar');
+      assert.equal((await page.textContent('#splash-status')).trim(), 'Vérification de l’accès…');
+      assert.equal(await page.isVisible('#splash-note'), false);
+      // The month is fetched behind the splash, so the dashboard mounts with its data.
+      await page.waitForFunction(() => /^Chargement de mai 2026…$/.test(document.getElementById('splash-status').textContent));
+      await page.waitForSelector('#main .page[data-page="dashboard"]');
+      await page.waitForSelector('#splash', { state: 'hidden' });
+      await app.waitIdle();
+      assert.equal(await page.$('#dashboard-body .skeleton'), null);
+      const names = (await app.calls()).map((c) => c.name);
+      assert.deepEqual(names.slice(0, 2), ['api_bootstrap', 'api_getMonthData']);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('slow start: a note explains the wait after 8 s', async () => {
+    await withApp({ delayMs: 20000, readySelector: '#splash', idle: false,
+      beforeGoto: (page) => page.clock.install() }, async (app) => {
+      const { page } = app;
+      assert.equal(await page.isVisible('#splash-note'), false);
+      await page.clock.runFor(8100);
+      assert.ok(await page.isVisible('#splash-note'));
+      assert.match(await page.textContent('#splash-note'), /jusqu’à 30 secondes/);
+      await page.clock.runFor(45000);
+      await page.waitForSelector('#main .page[data-page="dashboard"]');
+      await page.clock.runFor(500);
+      await page.waitForSelector('#splash', { state: 'hidden' });
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('boot failure: the error and « Réessayer » replace the bar, retry boots the app', async () => {
+    await withApp({ failNext: { api_bootstrap: { transport: true } }, readySelector: '#splash-error:not([hidden])' }, async (app) => {
+      const { page } = app;
+      assert.match(await page.textContent('#splash-error-text'), /^Impossible de charger l’application : /);
+      assert.equal(await page.isVisible('#splash .splash-track'), false);
+      assert.ok(await page.isVisible('#splash .team-logo'), 'the logo stays');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'splash-retry');
+      await page.click('#splash-retry');
+      await page.waitForSelector('#main .page[data-page="dashboard"]');
+      await page.waitForSelector('#splash', { state: 'hidden' });
+      assert.deepEqual(app.errors.filter((e) => !/transport simulé/.test(e)), []);
+    });
+  });
+
+  test('month change: the page stays dimmed with a progress line until the new month is in', async () => {
+    await withApp({}, async (app) => {
+      const { page } = app;
+      assert.equal(await page.isVisible('#appbar-progress'), false);
+      await holdCalls(page, 'api_getMonthData');
+      await page.click('#month-prev');
+      await page.waitForSelector('#main .page.is-stale[data-page="dashboard"]');
+      assert.equal(await page.getAttribute('#main', 'aria-busy'), 'true');
+      assert.ok(await page.isVisible('#appbar-progress'));
+      assert.match(await page.textContent('#main .page'), /Mai 2026/i, 'previous month still readable');
+      assert.ok(await page.$('#appbar-filters.is-stale #filter-equipe'), 'filters kept, dimmed');
+      await page.evaluate(() => window.__release());
+      await page.waitForFunction(() => ((document.getElementById('dashboard-caption') || {}).dataset || {}).month === '2026-04');
+      await app.waitIdle();
+      assert.equal(await page.$('#main .page.is-stale'), null);
+      assert.equal(await page.$('#appbar-filters.is-stale'), null);
+      assert.equal(await page.getAttribute('#main', 'aria-busy'), null);
+      assert.equal(await page.isVisible('#appbar-progress'), false);
+      // Back to a cached month: no dimming, the page mounts at once.
+      await page.click('#month-next');
+      await page.waitForFunction(() => ((document.getElementById('dashboard-caption') || {}).dataset || {}).month === '2026-05');
+      assert.equal(await page.$('#main .page.is-stale'), null);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('page skeleton while a page body loads', async () => {
+    await withApp({ page: 'postes' }, async (app) => {
+      const { page } = app;
+      await holdCalls(page, 'api_getMonthData');
+      await page.evaluate(() => { window.State.invalidate(); window.App.refresh(); });
+      await page.waitForSelector('#postes-body .skeleton[aria-busy="true"][role="status"]');
+      assert.equal((await page.textContent('#postes-body .skeleton .sr-only')).trim(), 'Chargement des postes…');
+      assert.equal(await page.$$eval('#postes-body .skeleton-table tbody tr', (ns) => ns.length), 6);
+      assert.ok(await page.isVisible('#appbar-progress'));
+      await page.evaluate(() => window.__release());
+      await page.waitForSelector('#postes-body[aria-busy="false"]');
+      await app.waitIdle();
+      assert.equal(await page.$('#postes-body .skeleton'), null);
+      assert.equal(await page.isVisible('#appbar-progress'), false);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+});

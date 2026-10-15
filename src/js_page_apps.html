@@ -443,7 +443,7 @@
     root.appendChild(header(s, [actions.csv, actions.add].filter(Boolean)));
 
     var body = el('div', { class: 'block-stack apps-body', id: 'apps-body', 'aria-busy': 'true' },
-      UI.loading('Chargement des applications…'));
+      UI.skeleton('table', { label: 'Chargement des applications…', columns: 7 }));
     root.appendChild(body);
 
     State.loadMonth(s.month).then(function (md) {

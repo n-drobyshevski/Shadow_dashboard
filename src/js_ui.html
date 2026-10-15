@@ -23,7 +23,11 @@
  *   UI.NNBSP                            -> '\u202f' (narrow no-break space: before %, inside « »).
  *   UI.el(tag, {tooltip: text|Node})    -> custom tooltip (UI.tooltip, js_controls.html); never use title=.
  *   UI.empty(text, action? | {action?, small?})  -> one line of ink-2 text ("no data" only).
- *   UI.loading(text='Chargement…', {small?})     -> spinner + text (role=status).
+ *   UI.loading(text='Chargement…', {small?})     -> spinner + text (role=status). Small, user-triggered waits.
+ *   UI.skeleton(kind, {label, columns?, rows?}) -> div.skeleton (role=status, aria-busy, sr-only label): the
+ *                                           grey silhouette of a page body while its data loads.
+ *     kind 'dashboard' (KPI strip + two gauges), 'table' (columns: [labels] or a count; rows=6),
+ *     'chart' (one plot block), 'lines' (rows text bars). Sizes match the real blocks: nothing jumps.
  *   UI.errorState(err|text, {retry?, prefix='Erreur', small?}) -> alert-error line « Erreur : message »
  *                                           (role=alert) + optional « Réessayer » text button.
  *   UI.errorText(err)                   -> err.message || 'Erreur inconnue.' (one fallback spelling).
@@ -303,6 +307,44 @@
     var opts = o || {};
     return el('div', { class: ['loading-state', opts.small ? 'is-small' : null], role: 'status' },
       el('span', { class: 'spinner', 'aria-hidden': 'true' }), el('span', null, text || 'Chargement…'));
+  }
+
+  /** UI.skeleton(kind, {label, columns?, rows?}) -> div.skeleton (see the header). */
+  var SKEL_WIDTHS = [72, 54, 86, 40, 64, 78, 48, 60];
+  function skeleton(kind, o) {
+    var opts = o || {};
+    function bar(cls, w) { return el('span', { class: ['skel', cls], style: w ? 'width:' + w + '%' : null }); }
+    var root = el('div', { class: ['skeleton', 'skeleton-' + kind], role: 'status', 'aria-busy': 'true' },
+      el('span', { class: 'sr-only' }, opts.label || 'Chargement…'));
+    var shown = el('div', { 'aria-hidden': 'true', class: 'skeleton-body' });
+    root.appendChild(shown);
+    var rows = opts.rows || 6;
+    if (kind === 'dashboard') {
+      shown.appendChild(el('div', { class: 'kpi-strip' }, [0, 1, 2, 3].map(function (i) {
+        return el('div', { class: 'kpi' }, bar('skel-label', 60 + (i % 2) * 15), bar('skel-figure', 30 + (i % 3) * 8));
+      })));
+      shown.appendChild(el('div', { class: 'grid grid-2' }, [0, 1].map(function (i) {
+        return el('div', { class: 'section' }, bar('skel-label', 45), el('span', { class: 'skel-gauge' }), bar('skel-text', 55 + i * 10));
+      })));
+    } else if (kind === 'table') {
+      var cols = Array.isArray(opts.columns) ? opts.columns : new Array(opts.columns || 5).fill('');
+      var head = el('tr', null, cols.map(function (c, i) {
+        return el('th', { scope: 'col' }, c ? c : bar('skel-label', 50 + (i % 3) * 15));
+      }));
+      var body = [];
+      for (var r = 0; r < rows; r++) {
+        body.push(el('tr', null, cols.map(function (c, i) {
+          return el('td', null, bar('skel-text', SKEL_WIDTHS[(r + i * 3) % SKEL_WIDTHS.length]));
+        })));
+      }
+      shown.appendChild(el('div', { class: 'table-scroll' },
+        el('table', { class: 'table skeleton-table' }, el('thead', null, head), el('tbody', null, body))));
+    } else if (kind === 'chart') {
+      shown.appendChild(el('div', { class: 'section' }, bar('skel-label', 30), el('span', { class: 'skel-chart' })));
+    } else {
+      for (var j = 0; j < rows; j++) shown.appendChild(bar('skel-text', SKEL_WIDTHS[j % SKEL_WIDTHS.length]));
+    }
+    return root;
   }
 
   /** UI.errorText(err) -> the message of an Error / string, 'Erreur inconnue.' when there is none. */
@@ -1299,6 +1341,7 @@
     section: section,
     empty: empty,
     loading: loading,
+    skeleton: skeleton,
     errorState: errorState,
     errorText: errorText,
     NNBSP: NNBSP,

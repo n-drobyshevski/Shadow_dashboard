@@ -539,7 +539,7 @@
 
   function load(body) {
     var t = ++token;
-    UI.clear(body).appendChild(UI.loading('Chargement des paramètres…'));
+    UI.clear(body).appendChild(UI.skeleton('lines', { label: 'Chargement des paramètres…', rows: 8 }));
     body.setAttribute('aria-busy', 'true');
     api.call('api_getSettings', null).then(function (s) {
       if (t !== token) return;

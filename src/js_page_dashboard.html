@@ -330,7 +330,7 @@
     }
 
     var body = el('div', { class: 'dashboard-body', id: 'dashboard-body', 'aria-busy': 'true' },
-      UI.loading('Chargement des données…'));
+      UI.skeleton('dashboard', { label: 'Chargement des données…' }));
     root.appendChild(body);
     root.appendChild(canEdit ? importPanel(s, myToken) : importHistoryPanel(myToken));
 

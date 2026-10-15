@@ -63,6 +63,7 @@
   var filterOptionsMonth = null;   // month whose options are rendered in the filters box
   var suppressFilterRender = false; // filters changed by the app bar widgets themselves
   var filtersPage = null;           // page the filters box was rendered for (Bâtiment disabled on actions)
+  var monthSwap = 0;                // bumped by every mount: a month swap only mounts if nothing else did
 
   function pages() { return window.Pages || {}; }
   /** Pages the current user may open (Paramètres is admin only). */
@@ -108,8 +109,10 @@
     var s = State.get();
     var info = navInfo(s.page) || visibleNav()[0];
     var page = pages()[info.id];
+    monthSwap++;
     unmountCurrent();
     UI.clear(main);
+    main.removeAttribute('aria-busy');
     var root = el('div', { class: 'page page-' + info.id, dataset: { page: info.id } });
     main.appendChild(root);
     updateNavActive();
@@ -321,6 +324,7 @@
     appbar.appendChild(toggle);
     appbar.appendChild(filtersBox);
     appbar.appendChild(el('p', { class: 'appbar-count', id: 'appbar-count', role: 'status', hidden: true }));
+    appbar.appendChild(el('span', { class: 'appbar-progress', id: 'appbar-progress', 'aria-hidden': 'true' }));
     updateStepper();
     setFiltersOpen(false);
     renderFilters();
@@ -370,11 +374,14 @@
     if (s.month && !md) {
       // Load once, then render the options (the page usually triggers the same cached request).
       var month = s.month;
-      UI.clear(filtersBox).appendChild(el('p', { class: 'field-help', role: 'status' }, UI.spinner(), 'Chargement des filtres…'));
+      // Month change: the current filters stay (dimmed) until the new month's options are in.
+      if (filterOptionsMonth) filtersBox.classList.add('is-stale');
+      else UI.clear(filtersBox).appendChild(el('p', { class: 'field-help', role: 'status' }, UI.spinner(), 'Chargement des filtres…'));
       State.loadMonth(month).then(function () {
         if (State.get().month === month) renderFilters();
       }, function () {
         if (State.get().month === month) {
+          filtersBox.classList.remove('is-stale');
           UI.clear(filtersBox).appendChild(el('p', { class: 'field-help', role: 'status' }, 'Filtres indisponibles.'));
         }
       });
@@ -382,6 +389,7 @@
     }
     filterOptionsMonth = s.month;
     filtersPage = s.page;
+    filtersBox.classList.remove('is-stale');
     updateNavCounts();
     var postes = md ? md.postes : [];
     var f = s.filters || { equipes: [], batiments: [] };
@@ -616,7 +624,26 @@
         (has(changed, 'page') && (s.page === 'actions') !== (filtersPage === 'actions'))) {
       renderFilters();
     }
-    if (has(changed, 'page') || has(changed, 'month') || has(changed, 'filters')) mountPage();
+    if (has(changed, 'page') || has(changed, 'filters')) mountPage();
+    else if (has(changed, 'month')) swapMonth(s.month);
+  }
+
+  /**
+   * Month change on the page being read: while the new month loads, the current page stays in place,
+   * dimmed (.is-stale, not interactive) with the app bar progress line; then the page re-mounts from
+   * the cache. A month already in cache mounts at once.
+   */
+  function swapMonth(month) {
+    if (!month || State.getMonthData(month)) { mountPage(); return; }
+    var current = main.querySelector('.page');
+    if (current) current.classList.add('is-stale');
+    main.setAttribute('aria-busy', 'true');
+    var ticket = ++monthSwap;
+    function finish() {
+      if (ticket !== monthSwap || State.get().month !== month) return;
+      mountPage();
+    }
+    State.loadMonth(month).then(finish, finish);
   }
 
   /** Initial page from the Apps Script URL (?page=xxx), with a short timeout outside Apps Script. */
@@ -637,14 +664,60 @@
     });
   }
 
-  function renderBootError(err) {
-    UI.clear(main);
-    main.appendChild(el('div', { class: 'page' },
-      el('div', { class: 'alert alert-error', role: 'alert' },
-        el('strong', null, 'Impossible de charger l’application. '),
-        (err && err.message) || ''),
-      el('button', { type: 'button', class: 'btn btn-primary', onClick: boot }, 'Réessayer')));
-  }
+  // ------------------------------------------------------------------------------ startup splash
+
+  /**
+   * #splash (static in index.html, so it paints before any script): team logo, an indeterminate bar and
+   * the current boot step; after SLOW_MS a note explains the Apps Script cold start; on failure the bar
+   * gives way to the error and « Réessayer ». done() fades it out without ever blocking clicks.
+   */
+  var SLOW_MS = 8000;
+  var SLOW_NOTE = 'Le serveur Google démarre, cela peut prendre jusqu’à 30 secondes au premier accès de la journée.';
+  var splash = (function () {
+    var slowTimer = null;
+    var hideTimer = null;
+    function node(id) { return document.getElementById(id); }
+    function stopSlow() { clearTimeout(slowTimer); slowTimer = null; }
+    return {
+      show: function () {
+        var n = node('splash');
+        if (!n) return;
+        clearTimeout(hideTimer);
+        n.hidden = false;
+        n.classList.remove('is-done', 'is-failed');
+        node('splash-note').hidden = true;
+        node('splash-error').hidden = true;
+        stopSlow();
+        slowTimer = setTimeout(function () {
+          var note = node('splash-note');
+          note.textContent = SLOW_NOTE;
+          note.hidden = false;
+        }, SLOW_MS);
+      },
+      step: function (text) {
+        var st = node('splash-status');
+        if (st) st.textContent = text;
+      },
+      done: function () {
+        var n = node('splash');
+        stopSlow();
+        if (!n || n.hidden) return;
+        n.classList.add('is-done');
+        hideTimer = setTimeout(function () { n.hidden = true; }, 220);
+      },
+      fail: function (err, retry) {
+        var n = node('splash');
+        stopSlow();
+        if (!n) return;
+        n.classList.add('is-failed');
+        node('splash-error-text').textContent = 'Impossible de charger l’application : ' + UI.errorText(err);
+        node('splash-error').hidden = false;
+        var b = node('splash-retry');
+        b.onclick = retry;
+        b.focus();
+      }
+    };
+  })();
 
   function boot() {
     sidebar = document.getElementById('sidebar');
@@ -665,14 +738,23 @@
         });
       } catch (e) { /* ignore */ }
     }
+    splash.show();
+    splash.step('Vérification de l’accès…');
     Promise.all([State.refreshBootstrap(), initialPage()]).then(function (res) {
       if (res[1]) State.set({ page: res[1] });
+      var s = State.get();
+      if (!s.configured || !s.month) return null;
+      // Warm the month cache behind the splash: the first page then mounts with its data, no skeleton.
+      splash.step('Chargement de ' + Fmt.monthLong(s.month) + '…');
+      return State.loadMonth(s.month).catch(function () { return null; }); // the page shows its own error
+    }).then(function () {
       booted = true;
       renderAll();
+      splash.done();
     }, function (err) {
-      if (err && err.code === 'FORBIDDEN') { booted = true; renderDeniedScreen(err); return; }
+      if (err && err.code === 'FORBIDDEN') { booted = true; splash.done(); renderDeniedScreen(err); return; }
       console.error(err);
-      renderBootError(err);
+      splash.fail(err, reboot);
     });
   }
 

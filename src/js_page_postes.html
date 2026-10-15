@@ -397,7 +397,7 @@
     root.appendChild(header(s, [actions.csv, actions.generic].filter(Boolean)));
 
     var body = el('div', { class: 'block-stack postes-body', id: 'postes-body', 'aria-busy': 'true' },
-      UI.loading('Chargement des postes…'));
+      UI.skeleton('table', { label: 'Chargement des postes…', columns: 7 }));
     root.appendChild(body);
 
     State.loadMonth(s.month).then(function (md) {

@@ -384,6 +384,9 @@ State.removeRecord(month, entity, id)
 State.addRecord(month, entity, record)
 State.invalidate(month?)         -> drop one/all cached months (also the timeline/actions caches)
 State.filtered(monthData)        -> Core.filterData({postes, applications}, state.filters)
+State.loadMonth(month)           -> cached / shared pending request; a failure is handed once more to the next
+                                    caller within 2 s (the page mounted after a month swap shows it, no 2nd call);
+                                    State.invalidate(month) clears it.
 State.loadTimeline({force}?)     -> Promise<timeline> (cached)
 State.loadActions({force}?)      -> Promise<{actions, replacements}> (cached)
 State.refreshBootstrap()         -> Promise (api_bootstrap -> sets configured/months/... ; keeps month if still valid else latest)
@@ -461,8 +464,16 @@ Charts.purge(el)
 ```
 App.go(pageId)        -> navigate (also google.script.history.push({page}) when available)
 App.refresh()         -> re-mount current page
-App.boot()            -> called on DOMContentLoaded: State.refreshBootstrap(); if !configured show the
-                         configuration screen (paste source sheet URL -> api_setConfig); render sidebar.
+App.boot()            -> called on DOMContentLoaded, behind the #splash (static in index.html: team logo,
+                         indeterminate bar, step line): « Vérification de l’accès… » State.refreshBootstrap();
+                         « Chargement de mai 2026… » State.loadMonth(month) (warms the cache); then renders and
+                         fades the splash out. After 8 s a note explains the Apps Script cold start; a failure
+                         shows the error + « Réessayer » on the splash; FORBIDDEN → « Accès refusé ».
+                         If !configured: configuration screen (paste source sheet URL -> api_setConfig).
+Loading:               page bodies show UI.skeleton(...) (aria-busy) while their data loads; any
+                         [aria-busy] in #main draws the app bar progress line. Month change on the same page:
+                         the page and the filters stay, dimmed (.is-stale), until the new month is cached,
+                         then the page re-mounts.
 ```
 Sidebar: ghost logo (inline SVG, `svg.brand-logo`) + app title `Shadow IT`, nav links (one line icon + label each), footer links "Données (Google
 Sheet)" → `dataUrl`, "Source" → `sourceUrl` (target `_blank`, admins only), then the signed-in account

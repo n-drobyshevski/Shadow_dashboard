@@ -309,7 +309,7 @@
     var myToken = ++token;
     chartEls.forEach(function (n) { Charts.purge(n); });
     chartEls = [];
-    UI.clear(body).appendChild(UI.loading('Chargement de l’historique…'));
+    UI.clear(body).appendChild(UI.skeleton('chart', { label: 'Chargement de l’historique…' }));
     body.setAttribute('aria-busy', 'true');
     return State.loadTimeline({ force: !!force }).then(function (tl) {
       if (myToken !== token) return;

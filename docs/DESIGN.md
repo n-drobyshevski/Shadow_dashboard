@@ -148,6 +148,21 @@ with the system fallbacks above.
   « Erreur : <message> ».
 - Numbers fr-FR: `71,4 %` (narrow no-break space before %), thousands with narrow no-break space.
 
+## Loading
+- **Startup splash** (the only screen with the team brand): on paper, the Value Chain Information
+  Security lockup in ink (mark redrawn as inline SVG; wordmark in Inter 400 / 700, the team's face),
+  a 168×2px indeterminate ink bar, one 13px `--ink-2` line naming the real step (« Vérification de
+  l'accès… », « Chargement de mai 2026… »), the ghost + « Shadow IT » in mono `--ink-3` at the foot.
+  After 8 s a second line explains the Apps Script cold start; on failure the bar and step give way to
+  an alert line and a primary « Réessayer ». It fades out in 200 ms and never blocks clicks.
+- **Skeletons** for page bodies (UI.skeleton): `--skel` grey bars at the real sizes and positions
+  (KPI strip, half-gauges, 32px table rows, chart block), one slow shimmer, real labels where known.
+  Spinners + text stay only for small waits the user started (busy buttons, drawers, history panels).
+- **Progress line**: 2px indeterminate ink line on the app bar's bottom edge while anything in the
+  page is `aria-busy`.
+- **Month change**: the page and the filters stay readable at 45 % opacity (not interactive) until
+  the new month is in; no blank page between two months.
+
 ## Accessibility
 Contrast ≥ 4.5:1 for text (all tokens above pass on `--paper`), visible focus ring on everything
 interactive, never colour-only status (always text + colour), `prefers-reduced-motion` respected,

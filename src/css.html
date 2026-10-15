@@ -106,6 +106,8 @@
   --backdrop: rgba(22, 24, 27, .35);
   --sidebar-w: 232px;
   --rail-w: 56px;
+  --skel: #eeeeec;       /* skeleton silhouettes (loading) */
+  --skel-hi: #f8f8f6;    /* their shimmer */
   --appbar-h: 48px;
   --sticky-top: var(--appbar-h);   /* height of the sticky chrome above the page (app bar; + top bar < 900px) */
   --row-h: 32px;
@@ -184,7 +186,41 @@ a[target="_blank"]::after { content: '\2009\2197\FE0E'; color: var(--ink-3); fon
 .main { flex: 1 1 auto; min-width: 0; padding: var(--s6) var(--s7) var(--s7); outline: none; background: var(--paper); }
 html { scroll-padding-top: var(--sticky-top); }
 .page { max-width: 1180px; display: flex; flex-direction: column; gap: var(--s6); }
-.boot-loading { display: flex; align-items: center; gap: var(--s2); color: var(--ink-2); }
+
+/* ------------------------------------------------------------------ startup splash (index.html, App.boot) */
+.splash {
+  position: fixed; inset: 0; z-index: 300; background: var(--paper);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s5);
+  padding: var(--s5) max(var(--s4), env(safe-area-inset-right, 0px)) var(--s7) max(var(--s4), env(safe-area-inset-left, 0px));
+  transition: opacity .2s ease;
+}
+.splash.is-done { opacity: 0; pointer-events: none; }
+/* team lockup: the Value Chain Information Security mark in ink, wordmark in Inter (the team's face) */
+.team-logo { display: flex; align-items: center; gap: 14px; color: var(--ink); }
+.team-mark { flex: 0 0 auto; width: 52px; height: 52px; }
+.team-mark .arc { fill: none; stroke: currentColor; stroke-width: 3.2; stroke-linecap: round; }
+.team-mark .solid { fill: currentColor; }
+.team-mark .halo { fill: var(--paper); }
+.team-mark .cut { fill: none; stroke: var(--paper); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.team-logo-text { display: flex; flex-direction: column; margin: 0; font-family: "Inter", var(--font-sans); line-height: 1.12; color: var(--ink); }
+.team-logo-text span { font-size: 16px; font-weight: 400; }
+.team-logo-text b { font-size: 20px; font-weight: 700; letter-spacing: -.01em; }
+.splash-track { width: 168px; height: 2px; background: var(--rule); position: relative; overflow: hidden; }
+.splash-track::after, .appbar-progress::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 40%; background: var(--ink);
+  animation: indeterminate 1.4s cubic-bezier(.45, .05, .55, .95) infinite;
+}
+@keyframes indeterminate { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+.splash-status { min-height: 20px; margin: calc(-1 * var(--s2)) 0 0; font-size: 13px; color: var(--ink-2); text-align: center; }
+.splash-note { max-width: 40ch; margin: 0; font-size: 13px; color: var(--ink-2); text-align: center; text-wrap: balance; }
+.splash-error { display: flex; flex-direction: column; align-items: center; gap: var(--s3); max-width: 48ch; text-align: left; }
+.splash.is-failed .splash-track, .splash.is-failed .splash-status, .splash.is-failed .splash-note { display: none; }
+.splash-foot {
+  position: absolute; left: 0; right: 0; bottom: max(var(--s4), env(safe-area-inset-bottom, 0px)); margin: 0;
+  display: flex; justify-content: center; align-items: center; gap: 6px;
+  font-family: var(--font-mono); font-weight: 500; font-size: 12px; color: var(--ink-3); word-spacing: -.3em;
+}
+.splash-foot .brand-logo { width: 16px; height: 16px; color: var(--ink-3); stroke-width: 2; }
 
 /* brand: the mono space is a full cell wide, so the wordmark tightens it (no double-space look) */
 .brand { display: flex; align-items: center; gap: 10px; padding: 0 var(--s2); }
@@ -270,6 +306,11 @@ body.unconfigured { --sticky-top: 0px; }
 }
 
 /* ------------------------------------------------------------------ app bar (période + filtres) */
+/* Progress line on the bar's bottom edge while the page (or one of its blocks) is loading. */
+.appbar-progress { position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; overflow: hidden; pointer-events: none; display: none; }
+.workspace:has(#main[aria-busy="true"], #main [aria-busy="true"]:not(button)) .appbar-progress { display: block; }
+/* Month change on the same page: the previous month stays readable, dimmed, until the new one is in. */
+.page.is-stale, .appbar-filters.is-stale { opacity: .45; pointer-events: none; transition: opacity .15s ease; }
 .appbar {
   position: sticky; top: 0; z-index: 20;
   display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2) var(--s4);
@@ -921,6 +962,7 @@ body.unconfigured .toast-root { left: var(--s4); }
 
 /* Motion off, except the scroll-driven edge fades (they follow the scroll position, nothing moves). */
 @media (prefers-reduced-motion: reduce) {
+  .skel { background-image: none; }
   *:not(.table-scroll), *::before, *::after {
     animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }

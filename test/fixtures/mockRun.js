@@ -592,7 +592,7 @@ function mockMain(FIX, OPTS) {
   window.__calls = [];
   window.__pending = 0;
   window.__history = [];
-  window.__mock = { db: db, failNext: {} };
+  window.__mock = { db: db, failNext: OPTS.failNext || {} };
 
   function dispatch(name, argsJson, onSuccess, onFailure, userObject) {
     var args;
@@ -656,12 +656,12 @@ function mockMain(FIX, OPTS) {
 }
 
 /**
- * @param {{empty?:boolean, configured?:boolean, delayMs?:number, email?:string}} [options]
+ * @param {{empty?:boolean, configured?:boolean, delayMs?:number, email?:string, failNext?:object}} [options]
  *   email: the visitor (default the owner, admin). 'lea.reader@decathlon.com' is a lecteur,
  *   'sam.admin@decathlon.com' a second admin, any other address has no access, '' = identity not passed.
  * @returns {string} browser JavaScript (no surrounding <script> tag)
  */
-function buildMockScript({ empty = false, configured = true, delayMs = 0, email } = {}) {
+function buildMockScript({ empty = false, configured = true, delayMs = 0, email, failNext } = {}) {
   const fixtures = {
     POSTES_HEADERS: data.POSTES_HEADERS,
     APPS_HEADERS: data.APPS_HEADERS,
@@ -676,7 +676,7 @@ function buildMockScript({ empty = false, configured = true, delayMs = 0, email 
   // Escape '<' so that fixture strings such as '</script>' cannot terminate the inline script.
   const json = (v) => JSON.stringify(v).replace(/</g, '\\u003c')
     .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
-  return '(' + mockMain.toString() + ')(' + json(fixtures) + ', ' + json({ empty, configured, delayMs, email }) + ');';
+  return '(' + mockMain.toString() + ')(' + json(fixtures) + ', ' + json({ empty, configured, delayMs, email, failNext: failNext || {} }) + ');';
 }
 
 module.exports = { buildMockScript };
