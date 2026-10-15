@@ -450,6 +450,70 @@ test('a source configured anew while the sync read the old one: read again under
   assert.equal(byName(monthData(sb.ctx, '2026-05').postes, KEY_POSTE, 'LAB-TEX-01').Statut, 'Autre source');
 });
 
+// ------------------------------------------------------------------------------ source title
+
+test('bootstrap never opens the source: its title is stored by setConfig and refreshed by the sync', () => {
+  const sb = live();
+  const st = sb.env.__state;
+  const url = 'https://docs.google.com/spreadsheets/d/' + SOURCE_ID + '/edit';
+  assert.equal(sb.setConfig.sourceTitle, 'ShadowIT_Industry');
+  assert.equal(sb.setConfig.sourceUrl, url);
+  assert.equal(execution(sb.env).Config.get().sourceTitle, 'ShadowIT_Industry', 'stored with the id');
+
+  let opened = st.opened.length;
+  let boot = ok(execution(sb.env), 'api_bootstrap');
+  assert.deepEqual([boot.sourceTitle, boot.sourceUrl], ['ShadowIT_Industry', url]);
+  assert.equal(boot.dataUrl, 'https://docs.google.com/spreadsheets/d/' + sb.ctx.Config.get().dataId + '/edit');
+  assert.deepEqual(st.opened.slice(opened).filter((id) => id === SOURCE_ID), [], 'source not opened');
+
+  // Renamed in Drive: bootstrap keeps the stored title until the sync, which opens the source anyway.
+  st.spreadsheets.get(SOURCE_ID).rename('Shadow IT — Industrie');
+  assert.equal(ok(execution(sb.env), 'api_bootstrap').sourceTitle, 'ShadowIT_Industry');
+  let writes = st.propertyWrites.length;
+  ok(execution(sb.env), 'api_syncNow');
+  assert.ok(st.propertyWrites.slice(writes).includes('SOURCE_INFO'), 'title refreshed by the sync');
+  opened = st.opened.length;
+  boot = ok(execution(sb.env), 'api_bootstrap');
+  assert.equal(boot.sourceTitle, 'Shadow IT — Industrie');
+  assert.deepEqual(st.opened.slice(opened).filter((id) => id === SOURCE_ID), []);
+  // An unchanged title is not written again (the hourly run that changes nothing writes nothing).
+  writes = st.propertyWrites.length;
+  ok(execution(sb.env), 'api_syncNow');
+  assert.equal(st.propertyWrites.slice(writes).includes('SOURCE_INFO'), false);
+});
+
+test('source title: a deployment that predates it, or a title stored for another source, shows none until the sync', () => {
+  const sb = loadGas({ sources: [source('2026-05')], props: { SOURCE_SPREADSHEET_ID: SOURCE_ID,
+    SOURCE_INFO: JSON.stringify({ id: '1AnotherSourceSpreadsheetId0000000000000', title: 'Ancienne source' }) } });
+  sb.ctx.Config.today = () => '2026-05-15';
+  let boot = ok(execution(sb.env), 'api_bootstrap');
+  assert.equal(boot.sourceTitle, '', 'a title about another id is ignored');
+  assert.equal(boot.sourceUrl, 'https://docs.google.com/spreadsheets/d/' + SOURCE_ID + '/edit');
+  sb.env.PropertiesService.getScriptProperties().deleteProperty('SOURCE_INFO');
+  assert.equal(ok(execution(sb.env), 'api_bootstrap').sourceTitle, '', 'no title stored yet');
+  ok(execution(sb.env), 'api_syncNow');
+  boot = ok(execution(sb.env), 'api_bootstrap');
+  assert.equal(boot.sourceTitle, 'ShadowIT_Industry');
+});
+
+test('Paramètres checks the source live; when it is not accessible the stored title stays', () => {
+  const sb = synced();
+  const st = sb.env.__state;
+  let opened = st.opened.length;
+  let s = ok(execution(sb.env), 'api_getSettings');
+  assert.deepEqual(st.opened.slice(opened), [SOURCE_ID], 'live check of the source only (no data spreadsheet open)');
+  assert.deepEqual(plain(s.source.tabsFound), { postes: true, applications: true, referentiel: true });
+  assert.equal(s.dataUrl, 'https://docs.google.com/spreadsheets/d/' + sb.ctx.Config.get().dataId + '/edit');
+  sb.env.__fault({ method: 'openById', id: SOURCE_ID, times: Infinity });
+  s = ok(execution(sb.env), 'api_getSettings');
+  assert.deepEqual(plain(s.source), { id: SOURCE_ID, url: 'https://docs.google.com/spreadsheets/d/' + SOURCE_ID + '/edit',
+    title: 'ShadowIT_Industry', tabsFound: null });
+  // Bootstrap does not notice (it does not open the source): the sync status reports the failure.
+  opened = st.opened.length;
+  assert.equal(ok(execution(sb.env), 'api_bootstrap').sourceTitle, 'ShadowIT_Industry');
+  assert.deepEqual(st.opened.slice(opened).filter((id) => id === SOURCE_ID), []);
+});
+
 test('the source write stamp moves after the flush, under the lock, only when the source may have changed', () => {
   const sb = synced();
   const env = sb.env;

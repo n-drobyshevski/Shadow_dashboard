@@ -29,6 +29,7 @@ const SOURCE_ID = '1PerfSourceSpreadsheetId0000000000000000000';
 const DATA_ID = '1PerfDataSpreadsheetId00000000000000000000000';
 const READER = 'lea.reader@decathlon.com';
 const ADMIN_GROUP = 'secu-admins@decathlon.com';
+const GROUP_ADMIN = 'chef@decathlon.com';
 
 /**
  * Upper bounds = the numbers measured when they were last lowered (only ever lower them). History:
@@ -38,24 +39,36 @@ const ADMIN_GROUP = 'secu-admins@decathlon.com';
  * The live-month save then read the whole source tab twice (display values + formulas: 15100 source
  * cells); it now reads the header block, the key column and the edited row's formulas (700 cells),
  * which costs one more, narrow, getDisplayValues (the only bound ever raised, 1 -> 2). The hourly sync
- * read the source while holding the script lock; it now reads it before (sourceReadsLocked: 0).
+ * read the source while holding the script lock; it now reads it before (sourceReadsLocked: 0). The admin
+ * bootstrap opened the source for its title and URL (openById 2); it now uses the title stored in the Script
+ * Properties and builds the URLs from the ids (1). Cache reads count get and getAll calls: the group
+ * memberships a call may need are read in one getAll.
  */
 const BASELINE = {
-  bootstrapAdmin: { openById: 2, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 12801, getDataRange: 0,
-    propertiesReads: 2, cacheReads: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  bootstrapAdmin: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 12801, getDataRange: 0,
+    propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  // An explicit lecteur: the admin groups are checked (they could raise the role), cold here.
   bootstrapLecteur: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 12801, getDataRange: 0,
-    propertiesReads: 2, cacheReads: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
+    propertiesReads: 2, cacheReads: 1, cacheWrites: 1, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  bootstrapGroupCold: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 12801, getDataRange: 0,
+    propertiesReads: 2, cacheReads: 1, cacheWrites: 1, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  // Warm: one getAll, no GroupsApp call, one put (the sliding renewal).
+  bootstrapGroupWarm: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 12801, getDataRange: 0,
+    propertiesReads: 2, cacheReads: 1, cacheWrites: 1, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  // Paramètres opens the source (the live check), not the data spreadsheet (its URL is built from the id).
+  getSettings: { openById: 1, getValues: 0, getDisplayValues: 0, getFormulas: 0, cellsRead: 0, getDataRange: 0,
+    propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   getMonthData: { openById: 1, getValues: 8, getDisplayValues: 0, getFormulas: 0, cellsRead: 16265, getDataRange: 0,
-    propertiesReads: 1, cacheReads: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+    propertiesReads: 1, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   getTimeline: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 66813, getDataRange: 2,
-    propertiesReads: 1, cacheReads: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+    propertiesReads: 1, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   getImportLog: { openById: 1, getValues: 1, getDisplayValues: 0, getFormulas: 0, cellsRead: 96, getDataRange: 0,
-    propertiesReads: 1, cacheReads: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+    propertiesReads: 1, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   // The write-back reads the source under the lock by design (it writes there next).
   savePostesLive: { openById: 2, getValues: 4, getDisplayValues: 2, getFormulas: 1, cellsRead: 15301, getDataRange: 1,
-    propertiesReads: 2, cacheReads: 0, sourceCellsRead: 700, sourceReadsLocked: 3 },
+    propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 700, sourceReadsLocked: 3 },
   syncNoChange: { openById: 2, getValues: 10, getDisplayValues: 3, getFormulas: 0, cellsRead: 35965, getDataRange: 3,
-    propertiesReads: 4, cacheReads: 0, sourceCellsRead: 19700, sourceReadsLocked: 0 },
+    propertiesReads: 4, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 19700, sourceReadsLocked: 0 },
 };
 
 // ------------------------------------------------------------------------------------- fixture
@@ -197,7 +210,8 @@ const n = (o, k) => o[k] || 0;
 /**
  * Runs fn and returns the counts it caused: Sheets round trips (getValues includes getValue), cells
  * read by every read method together, Properties reads (script + user: getProperty, getProperties,
- * getKeys), CacheService gets, cells read from the SOURCE spreadsheet and source reads made while the
+ * getKeys), CacheService reads (get / getAll) and writes (put / putAll),
+ * GroupsApp calls (hasUser), cells read from the SOURCE spreadsheet and source reads made while the
  * script lock was held (gasFakes state.reads).
  */
 function measure(env, fn) {
@@ -205,6 +219,7 @@ function measure(env, fn) {
   const c0 = Object.assign({}, st.calls);
   const k0 = Object.assign({}, st.cells);
   const r0 = st.reads.length;
+  const g0 = st.groupCalls;
   const lines0 = timingLines(env).length;
   const value = fn();
   const sourceReads = st.reads.slice(r0).filter((r) => r.spreadsheetId === SOURCE_ID);
@@ -221,7 +236,9 @@ function measure(env, fn) {
       cellsRead: cells('getValues') + cells('getValue') + cells('getDisplayValues') + cells('getFormulas'),
       getDataRange: d('getDataRange'),
       propertiesReads: d('getProperty') + d('getProperties') + d('getKeys'),
-      cacheReads: d('cacheGet'),
+      cacheReads: d('cacheGet') + d('cacheGetAll'),
+      cacheWrites: d('cachePut') + d('cachePutAll'),
+      groupCalls: st.groupCalls - g0,
       sourceCellsRead: sourceReads.reduce((sum, r) => sum + r.cells, 0),
       sourceReadsLocked: sourceReads.filter((r) => r.lockHeld).length,
     },
@@ -236,7 +253,7 @@ function setup() {
     props: { DATA_SPREADSHEET_ID: DATA_ID, SOURCE_SPREADSHEET_ID: SOURCE_ID },
   });
   const env = sb.env;
-  env.__setGroups({ [ADMIN_GROUP]: { members: ['chef@decathlon.com'] } });
+  env.__setGroups({ [ADMIN_GROUP]: { members: [GROUP_ADMIN] } });
   let ctx = execution(env);
   call(ctx, 'api_saveUser', { email: READER, role: 'lecteur' });
   call(ctx, 'api_saveGroup', { email: ADMIN_GROUP, role: 'admin' });
@@ -261,6 +278,20 @@ test('call counts of the main flows on a large data spreadsheet stay within the 
   m = measure(env, () => call(ctx, 'api_bootstrap'));
   assert.equal(m.value.user.role, 'lecteur');
   results.bootstrapLecteur = m;
+
+  // An admin through a Google Group: cold (GroupsApp), then warm (one cache read, renewed).
+  ctx = execution(env, GROUP_ADMIN);
+  m = measure(env, () => call(ctx, 'api_bootstrap'));
+  assert.equal(m.value.user.role, 'admin');
+  results.bootstrapGroupCold = m;
+  ctx = execution(env, GROUP_ADMIN);
+  m = measure(env, () => call(ctx, 'api_bootstrap'));
+  results.bootstrapGroupWarm = m;
+
+  ctx = execution(env);
+  m = measure(env, () => call(ctx, 'api_getSettings'));
+  assert.deepEqual(Object.values(m.value.source.tabsFound), [true, true, true]);
+  results.getSettings = m;
 
   ctx = execution(env);
   m = measure(env, () => call(ctx, 'api_getMonthData', { month: LIVE_MONTH }));

@@ -274,20 +274,18 @@ var ApiImpl_ = (function () {
     });
   }
 
-  function sourceUrl_(id) {
-    return 'https://docs.google.com/spreadsheets/d/' + id + '/edit';
-  }
-
   /**
-   * The configured source spreadsheet: {id, url, title, tabsFound|null}. When it cannot be opened, the url
-   * is built from the id and title / tabsFound stay empty (logged, never thrown).
+   * The configured source spreadsheet, checked live (Paramètres only: api_bootstrap never opens it):
+   * {id, url, title, tabsFound|null}. The url is built from the id. When the file cannot be opened,
+   * tabsFound is null (« Classeur inaccessible ») and the title is the stored one (Config SOURCE_INFO);
+   * the failure is logged, never thrown.
    */
-  function sourceInfo_(id, caller) {
-    var info = { id: id, url: id ? sourceUrl_(id) : '', title: '', tabsFound: null };
+  function liveSourceInfo_(cfg, caller) {
+    var id = cfg.sourceId;
+    var info = { id: id, url: id ? Config.spreadsheetUrl(id) : '', title: id ? cfg.sourceTitle : '', tabsFound: null };
     if (!id) return info;
     try {
       var ss = SpreadsheetApp.openById(id);
-      info.url = ss.getUrl();
       info.title = ss.getName();
       info.tabsFound = Importer.tabsFound_(ss);
     } catch (e) {
@@ -306,16 +304,17 @@ var ApiImpl_ = (function () {
     Store.ensure();
 
     var months = Store.listMonths();
-    // The spreadsheets are private to the deployer: links are only useful to admins.
-    var src = admin ? sourceInfo_(cfg.sourceId, 'api_bootstrap') : sourceInfo_('', '');
+    // The spreadsheets are private to the deployer: links are only useful to admins. Neither file is
+    // opened for them: URLs are built from the ids, the source title is the stored one (Config.get).
+    var showSource = admin && !!cfg.sourceId;
     return {
       configured: !!cfg.sourceId,
       months: months,
       latestMonth: months.length ? months[months.length - 1] : '',
       currentMonth: Config.today().slice(0, 7),
       dataUrl: admin ? Store.dataUrl() : '',
-      sourceUrl: src.url,
-      sourceTitle: src.title,
+      sourceUrl: showSource ? Config.spreadsheetUrl(cfg.sourceId) : '',
+      sourceTitle: showSource ? cfg.sourceTitle : '',
       threshold: cfg.threshold,
       user: { email: user.email, role: user.role, isOwner: user.isOwner },
       prefs: Config.getPrefs(user.email),
@@ -349,8 +348,9 @@ var ApiImpl_ = (function () {
       throw Core.makeError('SOURCE_ERROR', 'Le classeur « ' + ss.getName() + ' » ne contient ni l’onglet « ' +
         Core.SOURCE_TABS.postes + ' » ni l’onglet « ' + Core.SOURCE_TABS.applications + ' ».');
     }
-    Store.withLock(function () { Config.setSourceId(id); });
-    return { sourceId: id, sourceTitle: ss.getName(), sourceUrl: ss.getUrl(), tabsFound: tabs, sync: startSync_() };
+    var title = ss.getName();
+    Store.withLock(function () { Config.setSourceId(id, title); });
+    return { sourceId: id, sourceTitle: title, sourceUrl: Config.spreadsheetUrl(id), tabsFound: tabs, sync: startSync_() };
   }
 
   /**
@@ -737,7 +737,7 @@ var ApiImpl_ = (function () {
 
   function getSettings(args, user) {
     var cfg = Config.get();
-    var source = sourceInfo_(cfg.sourceId, 'api_getSettings');
+    var source = liveSourceInfo_(cfg, 'api_getSettings');
     return {
       threshold: cfg.threshold,
       defaultThreshold: Core.THRESHOLD,

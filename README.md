@@ -61,7 +61,9 @@ modifiable depuis l'application. Les modifications d'un mois passé ne changent 
 | `Meta` | Version du schéma |
 
 Les identifiants des deux classeurs sont stockés dans les propriétés du script
-(`DATA_SPREADSHEET_ID`, `SOURCE_SPREADSHEET_ID`), l'état de la synchronisation dans `SYNC_STATE`, et
+(`DATA_SPREADSHEET_ID`, `SOURCE_SPREADSHEET_ID`), le titre du classeur source dans `SOURCE_INFO`
+(affiché sans ouvrir la source, mis à jour à chaque synchronisation), l'état de la synchronisation dans
+`SYNC_STATE`, et
 `SOURCE_WRITE_STAMP` avance à chaque écriture de l'application dans la source (la synchronisation s'en
 sert pour ne jamais annuler une modification enregistrée pendant qu'elle lisait la source).
 
@@ -152,9 +154,13 @@ synchronisation horaire ». Les mois déjà importés sont conservés.
 - **Groupes Google** : ajouter l'adresse d'un groupe (ex. `labo-industry@decathlon.com`) avec un rôle ;
   tous ses membres le reçoivent, sous-groupes compris (3 niveaux). Si un compte a plusieurs rôles
   (liste, groupes, domaine), le plus élevé l'emporte. L'appartenance est vérifiée avec le compte du
-  propriétaire, qui doit pouvoir **voir les membres** du groupe (sinon l'ajout est refusé), et mise en
-  cache 10 minutes : un changement de membres dans Google s'applique sous 10 minutes, le retrait d'un
-  groupe de la liste immédiatement. Un administrateur ne peut pas retirer ni rétrograder le groupe qui
+  propriétaire, qui doit pouvoir **voir les membres** du groupe (sinon l'ajout est refusé), puis mise en
+  cache : un compte membre le reste 10 minutes après sa dernière utilisation de l'application, mais
+  l'appartenance est revérifiée au moins **toutes les heures** ; un compte retiré d'un groupe dans Google
+  perd donc ce rôle sous 1 heure au plus (sous 10 minutes s'il n'utilise pas l'application), un compte
+  ajouté l'obtient sous 10 minutes. Un groupe devenu illisible (supprimé, membres masqués) ne donne
+  aucun rôle et n'est réessayé qu'après 2 minutes. Le retrait d'un groupe de la liste s'applique
+  immédiatement. Pour retirer un accès sur-le-champ, retirer le compte (ou le groupe) de la liste. Un administrateur ne peut pas retirer ni rétrograder le groupe qui
   lui donne ce rôle.
 - « Autres comptes du domaine » : *Aucun accès* (par défaut, seuls les comptes listés entrent) ou
   *Lecteur* (tout le domaine peut consulter).
@@ -275,6 +281,20 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
 - [ ] Paramètres → Journal des synchronisations : les 12 dernières synchronisations, la plus récente en
       haut, avec leurs alertes ; l'appel `api_getImportLog` ne lit que le bas de l'onglet `ImportLog`
       (ligne `span`, `rows` = 12).
+- [ ] Titre de la source sans ouverture : dans Exécutions, l'appel `api_bootstrap` d'un admin ne montre
+      plus qu'une ouverture (le classeur de données ; ligne `ensure`) ; les liens « Données » et
+      « Source » de la barre latérale ouvrent les bons classeurs (URL construites à partir des ids).
+      Renommer le classeur source dans Drive : le nouveau nom apparaît après la synchronisation horaire
+      suivante (ou « Synchroniser maintenant ») ; Propriétés du script contient `SOURCE_INFO`
+      (`{"id":…,"title":…}`). Retirer au propriétaire l'accès à la source : Paramètres affiche
+      « Classeur inaccessible. » (vérification en direct), l'ouverture de l'application reste rapide.
+- [ ] Cache des groupes : un membre d'un groupe autorisé entre ; le retirer du groupe dans Google
+      Admin : il perd l'accès au plus tard 1 heure après la dernière vérification, même en utilisant
+      l'application sans arrêt (10 minutes s'il ne l'utilise pas). L'ajouter à un groupe : accès sous
+      10 minutes. Un groupe aux membres masqués pour le propriétaire refuse l'accès sans erreur, et un
+      seul avertissement « not readable » apparaît dans Exécutions par compte toutes les 2 minutes.
+      Vérifier que `CacheService.getScriptCache().getAll` est disponible (ce que les faux services ne
+      peuvent prouver).
 - [ ] Deux sessions admin : ajouter un compte différent dans Paramètres → Accès depuis chacune, à
       quelques instants d'intervalle (la seconde attend le verrou) ; après rechargement, la liste
       contient les deux comptes.
@@ -350,7 +370,11 @@ or lecteur if « Autres comptes du domaine » is set so. « Ajouter plusieurs co
 list in any common shape (Sheets column, comma/semicolon separated, `Name <address>`), previews it and
 saves it in one call (500 per batch, 2000 accounts max). Google Groups can be granted a role too:
 members (sub-groups included, 3 levels) get it, the highest role wins, memberships are checked with
-GroupsApp as the deployer (who must see the members) and cached 10 minutes. After pulling this
+GroupsApp as the deployer (who must see the members) and cached: a membership slides 10 minutes past
+its last use but is re-verified at least every hour (a removal from a group in Google applies within
+1 h), a non-membership is cached 10 minutes, an unreadable group 2 minutes (it grants nothing), all of
+a call's group entries are read in one `CacheService.getAll`, and a cache failure only means a live
+check. After pulling this
 version, run `setup()` again to grant the new groups scope. The list lives in the `ACCESS_JSON_N` /
 `ACCESS_JSON_0..` script properties (split because one property holds 9 KB), the compliance threshold (default 80 %) in `COMPLIANCE_THRESHOLD`. For a personal Gmail
 deployer, set `"access": "MYSELF"` in `src/appsscript.json`.
@@ -365,7 +389,10 @@ Executions log, and the browser console logs `[rpc] <name> <ms>ms` at the Verbos
 spreadsheet. Server reads are scoped: one month's rows are located through column A and read as one
 block (never every month), ImportLog is read from the bottom, reads are memoized per execution (dropped
 on every write and when the script lock is taken), and the schema version is kept in the
-`DATA_SCHEMA_VERSION` script property so that each call skips the `Meta` read. The sync reads the
+`DATA_SCHEMA_VERSION` script property so that each call skips the `Meta` read. The admin bootstrap
+does not open the source: spreadsheet URLs are built from the ids and the source title is kept in the
+`SOURCE_INFO` script property (saved with the source, refreshed by every sync); Paramètres is where the
+source is checked live. The sync reads the
 source before taking the script lock (a `SOURCE_WRITE_STAMP` script property, moved by every
 write-back, makes it read again under the lock when a save landed meanwhile), and a write-back reads
 the header block, the key column and the edited rows only. Tests: `npm test`, `npm run test:e2e`. Limits: 6-minute execution time, users of the deployer's Workspace domain only.

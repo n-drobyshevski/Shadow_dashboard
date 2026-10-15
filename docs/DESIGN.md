@@ -65,8 +65,9 @@ with the system fallbacks above.
   "Shadow IT" in mono 500 with a small "Industry · conformité" subtitle. Nav = text links led by a 16px « Trait »
   line icon (1.5px stroke, square caps, mitred joins, `currentColor`; `--ink-3` at rest, `--ink` on
   hover / active), with a 2px ink bar on the left of the active item; numbers on the right showing
-  counts are allowed (e.g. postes 7). Footer: text links to the data sheet and the source sheet, the
-  signed-in account, then « Réduire le menu ».
+  counts are allowed (e.g. postes 7). Footer: text links to the data sheet and the source sheet (from
+  the bootstrap: built from the ids, the source title as last stored by a sync, so the open never waits
+  on the source), the signed-in account, then « Réduire le menu ».
 - **Collapsed rail** (> 900px, remembered per Google account, with a browser copy for an instant start): 56px wide, the ghost alone (no wordmark), icons
   only (labels kept for screen readers), the page name in an ink tooltip to the right of the icon,
   footer links hidden. The active page keeps its 2px ink bar.
@@ -125,8 +126,8 @@ with the system fallbacks above.
 - **Config screen**: left-aligned within the main column like any page: title "Source de données",
   one paragraph, the input (full width up to 640px) and one primary button. No centered card.
 - **Paramètres** (admin only, last nav item): three sections on paper like any page, each saved on
-  its own: « Source de données » (`dl.kv` of the source, tabs found as status marks, data spreadsheet
-  link; a one-line form « Nouvelle source » + secondary button), « Seuil de conformité » (a 72px mono
+  its own: « Source de données » (`dl.kv` of the source, tabs found as status marks — the one live
+  check of the source, « Classeur inaccessible. » when it cannot be opened —, data spreadsheet link; a one-line form « Nouvelle source » + secondary button), « Seuil de conformité » (a 72px mono
   figure field with its `%` unit, primary « Enregistrer », quiet « Rétablir 80 % » only when changed),
   « Accès » (« Autres comptes du domaine » dropdown, ledger table Compte (mono) / Rôle (small dropdown,
   saved on change) / Ajouté le / « Retirer » quiet destructive button with a confirm; the owner and the

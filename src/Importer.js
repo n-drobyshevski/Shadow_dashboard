@@ -267,6 +267,8 @@ var Importer = (function () {
         reread = true;
         t.lap('rereadSource');
       }
+      // The source was opened anyway: keep the title api_bootstrap shows up to date (no write unless it changed).
+      Config.rememberSourceTitle(src.sourceId, src.title);
       var months = Store.listMonths();
       var exists = months.indexOf(month) >= 0;
       if (exists && !overwrite) {

@@ -33,12 +33,14 @@
  *   cells {getValues|getValue|getDisplayValues|getFormulas: cells read},
  *   reads [{spreadsheetId, sheet, method, a1, cells, lockHeld}] (one entry per range read, in order:
  *   which rows / columns a flow reads, and whether the script lock was held at that moment),
- *   lock {acquired, released, timeouts, held}, logs [], console [], lockTimeout (mutable).
+ *   lock {acquired, released, timeouts, held}, logs [], console [], lockTimeout (mutable),
+ *   opened [ids passed to openById, in order], propertyWrites [keys written by setProperty / setProperties].
  * state.onWaitLock = fn runs fn ONCE, at the start of the next waitLock / tryLock, before the lock is
  * taken: a test simulates another execution that takes the lock first (e.g. a save landing while an
  * hourly sync reads the source outside the lock).
  * calls also counts the Properties reads / writes (getProperty, getProperties, getKeys, setProperty,
- * setProperties, deleteProperty) and the CacheService ones (cacheGet, cachePut, cacheRemove).
+ * setProperties, deleteProperty) and the CacheService ones (cacheGet, cacheGetAll, cachePut, cachePutAll,
+ * cacheRemove; entries expire with their TTL on the Date.now() clock, state.cacheFaults makes them throw).
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -149,7 +151,9 @@ function createGasEnv(options) {
     lockTimeout: !!opts.lockTimeout,
     onWaitLock: null,
     reads: [],
+    opened: [],
     properties: {},
+    propertyWrites: [],
     logs: [],
     console: [],
     evalContext: null,   // set by gasSandbox so template scriptlets evaluate in the GAS globals
@@ -529,6 +533,7 @@ function createGasEnv(options) {
   const SpreadsheetApp = {
     openById(id) {
       count('openById');
+      state.opened.push(String(id));
       maybeFail('openById', { id: String(id) });
       const ss = state.spreadsheets.get(String(id));
       if (!ss) throw new Error('Exception: Requested entity was not found.');
@@ -554,9 +559,10 @@ function createGasEnv(options) {
   function makePropertyStore(store) {
     const api = {
       getProperty(key) { count('getProperty'); return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null; },
-      setProperty(key, value) { count('setProperty'); store[key] = String(value); return api; },
+      setProperty(key, value) { count('setProperty'); state.propertyWrites.push(String(key)); store[key] = String(value); return api; },
       setProperties(props, deleteAllOthers) {
         count('setProperties');
+        state.propertyWrites.push(...Object.keys(props || {}));
         if (deleteAllOthers) for (const k of Object.keys(store)) delete store[k];
         for (const [k, v] of Object.entries(props || {})) store[k] = String(v);
         return api;
@@ -654,11 +660,38 @@ function createGasEnv(options) {
   };
 
   // ------------------------------------------------------------------------------ CacheService
+  // state.cache: key -> value (string); state.cacheExpiry: key -> expiry (ms, Date.now() clock, so a test
+  // that moves Date.now moves the cache clock too). TTL in seconds as in Apps Script: default 600, at
+  // most 21600. state.cacheFaults.read / .write = true makes the reads (get, getAll) / writes (put,
+  // putAll, remove) throw, like an unavailable CacheService.
   state.cache = new Map();
+  state.cacheExpiry = new Map();
+  state.cacheFaults = { read: false, write: false };
+  function cacheLive(k) {
+    if (!state.cache.has(k)) return false;
+    if (state.cacheExpiry.get(k) <= Date.now()) { state.cache.delete(k); state.cacheExpiry.delete(k); return false; }
+    return true;
+  }
+  function cacheSet(k, v, ttl) {
+    const s = ttl === undefined || ttl === null ? 600 : Number(ttl);
+    if (!(s >= 1 && s <= 21600)) throw new Error('Exception: Argument too large / invalid: expirationInSeconds ' + ttl);
+    state.cache.set(k, String(v));
+    state.cacheExpiry.set(k, Date.now() + s * 1000);
+  }
+  function cacheFault(kind) {
+    if (state.cacheFaults[kind]) throw new Error('Exception: Service CacheService failed (' + kind + ')');
+  }
   const scriptCache = {
-    get(k) { count('cacheGet'); return state.cache.has(k) ? state.cache.get(k) : null; },
-    put(k, v) { count('cachePut'); state.cache.set(k, String(v)); },
-    remove(k) { count('cacheRemove'); state.cache.delete(k); },
+    get(k) { count('cacheGet'); cacheFault('read'); return cacheLive(k) ? state.cache.get(k) : null; },
+    getAll(keys) {
+      count('cacheGetAll'); cacheFault('read');
+      const out = {};
+      for (const k of keys) if (cacheLive(k)) out[k] = state.cache.get(k);
+      return out;
+    },
+    put(k, v, ttl) { count('cachePut'); cacheFault('write'); cacheSet(k, v, ttl); },
+    putAll(values, ttl) { count('cachePutAll'); cacheFault('write'); for (const [k, v] of Object.entries(values)) cacheSet(k, v, ttl); },
+    remove(k) { count('cacheRemove'); cacheFault('write'); state.cache.delete(k); state.cacheExpiry.delete(k); },
   };
   const CacheService = { getScriptCache() { return scriptCache; } };
 

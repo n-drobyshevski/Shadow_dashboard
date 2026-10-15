@@ -443,8 +443,12 @@ var Store = (function () {
     Config.clearMemo_();
   }
 
+  /**
+   * URL of the data spreadsheet, built from the configured id without opening the file; only when no id
+   * is configured yet does it go through ensure() (which creates the spreadsheet).
+   */
   function dataUrl() {
-    return ensure().getUrl();
+    return Config.spreadsheetUrl(Config.get().dataId || ensure().getId());
   }
 
   // ------------------------------------------------------------------------------- lock

@@ -179,7 +179,7 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 
 | Function | Args | Returns `data` | Errors |
 |---|---|---|---|
-| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:'', threshold:int, user:{email, role:'admin'|'lecteur', isOwner:bool}, prefs:{sidebar?, period?}, sync:SyncStatus}` (`dataUrl` / `sourceUrl` / `sourceTitle` are `''` for lecteurs: the spreadsheets are private to the deployer) | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
+| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:'', threshold:int, user:{email, role:'admin'|'lecteur', isOwner:bool}, prefs:{sidebar?, period?}, sync:SyncStatus}` (`dataUrl` / `sourceUrl` / `sourceTitle` are `''` for lecteurs: the spreadsheets are private to the deployer). Never opens the source: the URLs are built from the ids and `sourceTitle` is the stored one (`SOURCE_INFO`, refreshed by every sync; `''` until the first sync on a deployment that predates it), so it can be one sync old and says nothing about access — Paramètres checks the source live. | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
 | `api_savePrefs` | `{sidebar:'open'\|'collapsed', period:'month'\|'last3'\|'last6'\|'year'\|'all'}` (any subset of the known keys) | `{prefs}` = the caller's stored preferences. Every role (lecteurs included): interface state only, per account (`PREFS_<email>` Script Property). | `VALIDATION` (unknown key or value, nothing to save, no identity) |
 | `api_setConfig` | `{source:'url or id'}` | `{sourceId, sourceTitle, sourceUrl, tabsFound:{postes:bool, applications:bool, referentiel:bool}, sync:SyncStatus}` — also creates the hourly trigger (`sync.authError` when ScriptApp is not authorised; the source is saved anyway). The client then calls `api_syncNow`. | `VALIDATION` (bad id), `SOURCE_ERROR` (cannot open / no postes+apps tab). Saved only on success. |
 | `api_getMonthData` | `{month}` | `{month, postes:[rec], applications:[rec], referentiel:{cat:[v]}, columns:{postes:[h], applications:[h]}, importInfo:{imported_at, warnings:[]}\|null}` | `VALIDATION`, `NOT_FOUND` (month not imported). `columns.applications` always ends with `Galink`, `IDP` if missing from the source headers. |
@@ -202,7 +202,7 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 | `api_updateReplacement` | `{id, updates}` | `Replacement` | `NOT_FOUND` |
 | `api_deleteReplacement` | `{id}` | `{deleted:true, id}` | `NOT_FOUND` |
 | `api_getDiff` | `{oldMonth, newMonth}` | `{oldMonth, newMonth, postes:Core.diffPostes(...), applications:Core.diffApplications(...)}` (records enriched) | `VALIDATION`, `NOT_FOUND` |
-| `api_getSettings` | – | `{threshold, defaultThreshold:80, source:{id, url, title, tabsFound\|null}, dataUrl, access:AccessView, me:email, sync:SyncStatus}` (`sync.enabled` checked against the real triggers) | – |
+| `api_getSettings` | – | `{threshold, defaultThreshold:80, source:{id, url, title, tabsFound\|null}, dataUrl, access:AccessView, me:email, sync:SyncStatus}` (`sync.enabled` checked against the real triggers). The live check of the app: opens the source (`tabsFound:null` = not accessible, `title` then the stored one); `url` / `dataUrl` are built from the ids, the data spreadsheet is not opened. | – |
 | `api_setThreshold` | `{threshold}` | `{threshold}` | `VALIDATION` (not an integer 1–100) |
 | `api_saveUser` | `{email, role:'admin'\|'lecteur'}` | `AccessView` (adds or changes the role) | `VALIDATION` (bad email / role, the owner, or the caller's own account) |
 | `api_addUsers` | `{emails:[string] (1–500), role}` | `{access:AccessView, added:[email], updated:[email] (role changed), skipped:[{email, reason}]}` — one write; invalid addresses, duplicates, the owner, the caller and accounts that already have that role are skipped with a reason | `VALIDATION` (role, empty / too long list, more than 2000 accounts) |
@@ -251,7 +251,8 @@ Config.PROP_SCHEMA    = 'DATA_SCHEMA_VERSION'  (JSON {dataId, version}: the sche
 Config.PROP_THRESHOLD = 'COMPLIANCE_THRESHOLD'      (integer 1–100 as a string)
 Config.PROP_ACCESS    = 'ACCESS_JSON'  ({users:[{email, role, added_at, added_by}], domainRole} as JSON split in
                         3000-char parts ACCESS_JSON_0.. with the count in ACCESS_JSON_N; Config.MAX_USERS = 2000)
-Config.get({fresh?})         -> {dataId:''|id, sourceId:''|id, threshold:int (Core.THRESHOLD when unset),
+Config.get({fresh?})         -> {dataId:''|id, sourceId:''|id, sourceTitle:''|title stored for sourceId
+                                 (PROP_SOURCE_INFO), threshold:int (Core.THRESHOLD when unset),
                                  schemaVersion:''|version recorded for dataId (PROP_SCHEMA),
                                  access:{users:[...], domainRole:'none'|'lecteur'}} (unreadable JSON -> empty list)
                                 A new object on every call, built from ONE getProperties per execution (memo);
@@ -260,7 +261,15 @@ Config.get({fresh?})         -> {dataId:''|id, sourceId:''|id, threshold:int (Co
                                 Store.resetCache_) and when Store.withLock acquires the lock, so every
                                 read-modify-write under the lock (access list, first-run creation) starts
                                 from the stored values.
-Config.setDataId(id), Config.setSourceId(id), Config.setThreshold(n), Config.setAccess(access)
+Config.setDataId(id), Config.setSourceId(id, title), Config.setThreshold(n), Config.setAccess(access)
+                                (setSourceId writes the id and PROP_SOURCE_INFO in one setProperties call)
+Config.PROP_SOURCE_INFO = 'SOURCE_INFO'  (JSON {id, title}: the source title api_bootstrap shows without
+                        opening the file. Written by api_setConfig, refreshed by every import under the lock;
+                        keyed by the source id, so another source never inherits it. Deleting it only hides
+                        the title until the next sync.)
+Config.rememberSourceTitle(id, title) -> bool  (Importer.importMonth, under the lock, with the title it read:
+                                writes only when `id` is the configured source and the title changed)
+Config.spreadsheetUrl(id)    -> 'https://docs.google.com/spreadsheets/d/<id>/edit' (links without opening files)
 Config.PROP_SOURCE_STAMP = 'SOURCE_WRITE_STAMP'  (source write stamp: a number moved forward by every
                         execution that wrote into the source spreadsheet; see Store.withLock and
                         Importer.importMonth. Deleting it is harmless: at worst one extra source read.)
@@ -291,7 +300,16 @@ Access.activeEmail()         -> Session.getActiveUser() email ('' when Google do
 Access.roleOf(email, owner, access) -> 'admin' for the owner, else the highest of: listed role, roles of the
                                Google Groups the account belongs to, 'lecteur' if domainRole is lecteur; '' = none
 Access.isGroupMember(group, email) -> GroupsApp hasUser, sub-groups up to 3 levels (cycle-safe, ≤ 30 calls),
-                               cached 600 s in CacheService ('grp:<group>|<email>' -> '1'/'0'); errors -> false, not cached
+                               cached in CacheService under 'grp:<group>|<email>':
+                                 'm:<ms of the live check>' member: GROUP_CACHE_S = 600 s, renewed on every hit
+                                   (sliding) but checked live again GROUP_MAX_AGE_S = 3600 s after the live check
+                                   at the latest (a removal from the group applies within 1 h);
+                                 'n' not a member: 600 s, fixed (an addition applies within 10 min);
+                                 'e' group not readable (gone, members hidden, quota): GROUP_ERROR_CACHE_S = 120 s,
+                                   fixed; denies (false) like the live error it stands for.
+                               Any other value is a miss. roleOf reads the entries of every group the call may
+                               need in ONE CacheService getAll; a cache failure (read or write) only means a live
+                               GroupsApp check, never an access granted.
 Access.checkGroup(v)         -> normalised group email, or VALIDATION if unknown / members hidden from the owner
 Access.currentUser(access?)  -> {email, role, isOwner, owner}
 Access.requireRole(minRole, access?) -> currentUser or FORBIDDEN
@@ -341,7 +359,8 @@ Store.ensure()                          -> Spreadsheet. Idempotent. Cached per e
                                              current, else one Meta read (a current Meta version is then
                                              copied into the property). Any repair runs under Store.withLock
                                              and writes Meta and the property.
-Store.dataUrl()                         -> string
+Store.dataUrl()                         -> Config.spreadsheetUrl(dataId): built from the configured id, the file
+                                           is not opened (ensure() only when no id is configured yet)
 Store.withLock(fn)                      -> fn() result; LockService.getScriptLock().waitLock(20000)
                                            (timeout -> makeError('BUSY')); drops the Store and Config read
                                            memos once acquired; SpreadsheetApp.flush(), then, when fn wrote
@@ -777,15 +796,18 @@ compares the first and last months by default.
 - `test/fixtures/source.js` — `buildSourceSpreadsheet(month)` → fake live spreadsheet definition (banner row,
   header row, Date cells, `0.304` raw vs `'30,4%'` display, empty/ghost rows) built from `data.js`.
 - `test/helpers/gasFakes.js` — in-memory `SpreadsheetApp`, `PropertiesService`, `LockService`,
-  `Utilities`, `HtmlService`, `Logger`; counters in `env.__state.calls` (Sheets, Properties and Cache calls)
+  `Utilities`, `HtmlService`, `Logger`, `GroupsApp`, `CacheService` (get / getAll / put / putAll with TTLs on the
+  `Date.now()` clock; `env.__state.cacheFaults.read / .write` make them throw); counters in `env.__state.calls`
+  (Sheets, Properties and Cache calls), `env.__state.opened` (ids passed to `openById`),
+  `env.__state.propertyWrites` (keys written)
   and `env.__state.cells` (cells read per read method); `env.__state.reads` logs every range read
   (spreadsheet, sheet, method, A1, cells, whether the script lock was held); `env.__state.onWaitLock = fn`
   runs fn once before the next lock acquisition (another execution taking the lock first).
 - `test/helpers/gasSandbox.js` — `loadGas({sources})` → `vm` context with fakes + every `src/*.js`
   loaded in alphabetical order (proves load-order independence); `loadGas({env})` = a new execution over
   the same spreadsheets; `timingLines(env)` = the Perf lines captured by the fake console.
-- `test/integration/perf.test.js` — call counts (openById, reads, cells read, Properties / Cache reads,
-  source cells read, source reads made under the lock)
+- `test/integration/perf.test.js` — call counts (openById, reads, cells read, Properties reads, Cache reads and
+  writes, GroupsApp calls, source cells read, source reads made under the lock)
   of the main flows on a large generated data spreadsheet, bounded by today's numbers (`BASELINE`);
   `PERF_OUT=<file>` writes the measurement as JSON.
 - `test/helpers/render.js` — renders `src/index.html` (scriptlets `include`/`coreScript`) to static

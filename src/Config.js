@@ -17,6 +17,14 @@ var Config = (function () {
    */
   var PROP_SCHEMA = 'DATA_SCHEMA_VERSION';
   /**
+   * Title of the source spreadsheet, so that api_bootstrap shows it without opening the file: JSON
+   * {id, title}. Written together with the source id (setSourceId: api_setConfig has just opened the file)
+   * and refreshed under the lock by every import, which opens the source anyway (rememberSourceTitle), so
+   * it is at most one hourly sync old. Keyed by the source id like DATA_SCHEMA_VERSION: Config.get reports
+   * '' for a source the property is not about (e.g. a deployment that predates it, until its next sync).
+   */
+  var PROP_SOURCE_INFO = 'SOURCE_INFO';
+  /**
    * Source write stamp: moved forward (Store.withLock, after its flush, still holding the lock) by every
    * execution that wrote into the source spreadsheet (write-back of a live-month edit). The sync reads the
    * source outside the lock: it notes the stamp before that read and reads the source again under the
@@ -102,18 +110,21 @@ var Config = (function () {
 
   /**
    * @param {{fresh?: boolean}=} opts fresh: read the properties again instead of this execution's memo
-   * @return {{dataId: string, sourceId: string, threshold: number, schemaVersion: string,
+   * @return {{dataId: string, sourceId: string, sourceTitle: string, threshold: number, schemaVersion: string,
    *           access: {users: Object[], groups: Object[], domainRole: string}}}
-   *   ids are '' when unset; threshold is Core.THRESHOLD when unset or invalid; schemaVersion is the
-   *   version recorded for dataId (setSchemaVersion), '' when none is.
+   *   ids are '' when unset; sourceTitle is the stored title of sourceId (SOURCE_INFO), '' when none is;
+   *   threshold is Core.THRESHOLD when unset or invalid; schemaVersion is the version recorded for dataId
+   *   (setSchemaVersion), '' when none is.
    */
   function get(opts) {
     var p = all_(!!(opts && opts.fresh));
     var threshold = Core.validateThreshold(p[PROP_THRESHOLD] || '');
     var dataId = p[PROP_DATA_ID] || '';
+    var sourceId = p[PROP_SOURCE_ID] || '';
     return {
       dataId: dataId,
-      sourceId: p[PROP_SOURCE_ID] || '',
+      sourceId: sourceId,
+      sourceTitle: sourceTitleFor_(p, sourceId),
       threshold: threshold === null ? Core.THRESHOLD : threshold,
       schemaVersion: schemaVersionFor_(p, dataId),
       access: parseAccess_(readAccessJson_(p))
@@ -126,6 +137,33 @@ var Config = (function () {
     var v = null;
     try { v = JSON.parse(p[PROP_SCHEMA]); } catch (e) { v = null; }
     return v && v.dataId === dataId && typeof v.version === 'string' ? v.version : '';
+  }
+
+  /** Title stored in SOURCE_INFO when it is about the source `sourceId`, else ''. */
+  function sourceTitleFor_(p, sourceId) {
+    if (!sourceId || !p[PROP_SOURCE_INFO]) return '';
+    var v = null;
+    try { v = JSON.parse(p[PROP_SOURCE_INFO]); } catch (e) { v = null; }
+    return v && v.id === sourceId && typeof v.title === 'string' ? v.title : '';
+  }
+
+  function sourceInfoJson_(id, title) {
+    return JSON.stringify({ id: String(id || ''), title: String(title || '') });
+  }
+
+  /**
+   * Refreshes the stored title of the source `id` with the one just read from the file. Writes nothing
+   * when `id` is no longer the configured source or the title did not change (the usual case). Call under
+   * Store.withLock (the memo it compares with was then read under the lock, and setSourceId, the other
+   * writer, also runs under it). @return {boolean} whether it wrote
+   */
+  function rememberSourceTitle(id, title) {
+    var p = all_(false);
+    var t = String(title || '');
+    if (!id || p[PROP_SOURCE_ID] !== id || (p[PROP_SOURCE_INFO] && sourceTitleFor_(p, id) === t)) return false;
+    clearMemo_();
+    props_().setProperty(PROP_SOURCE_INFO, sourceInfoJson_(id, t));
+    return true;
   }
 
   /** Records that the data spreadsheet `dataId` carries schema `version` (Store.ensure, after checking Meta). */
@@ -218,9 +256,18 @@ var Config = (function () {
     props_().setProperty(PROP_DATA_ID, String(id || ''));
   }
 
-  function setSourceId(id) {
+  /** Saves the source id with its title (SOURCE_INFO) in one setProperties call. Call inside Store.withLock. */
+  function setSourceId(id, title) {
+    var parts = {};
+    parts[PROP_SOURCE_ID] = String(id || '');
+    parts[PROP_SOURCE_INFO] = sourceInfoJson_(id, title);
     clearMemo_();
-    props_().setProperty(PROP_SOURCE_ID, String(id || ''));
+    props_().setProperties(parts);
+  }
+
+  /** Edit URL of a Google Sheet built from its id: links are returned without opening the file for getUrl(). */
+  function spreadsheetUrl(id) {
+    return 'https://docs.google.com/spreadsheets/d/' + encodeURIComponent(String(id || '')) + '/edit';
   }
 
   function fmt_(pattern) {
@@ -282,6 +329,7 @@ var Config = (function () {
     PROP_ACCESS: PROP_ACCESS,
     PROP_FAVICON: PROP_FAVICON,
     PROP_SCHEMA: PROP_SCHEMA,
+    PROP_SOURCE_INFO: PROP_SOURCE_INFO,
     PROP_SOURCE_STAMP: PROP_SOURCE_STAMP,
     PROP_PREFS_PREFIX: PROP_PREFS_PREFIX,
     PREF_VALUES: PREF_VALUES,
@@ -296,6 +344,7 @@ var Config = (function () {
     get: get,
     setDataId: setDataId,
     setSourceId: setSourceId,
+    rememberSourceTitle: rememberSourceTitle,
     setThreshold: setThreshold,
     setAccess: setAccess,
     setSchemaVersion: setSchemaVersion,
@@ -303,6 +352,7 @@ var Config = (function () {
     bumpSourceStamp: bumpSourceStamp,
     clearMemo_: clearMemo_,
     faviconUrl: faviconUrl,
+    spreadsheetUrl: spreadsheetUrl,
     getPrefs: getPrefs,
     setPrefs: setPrefs,
     today: today,

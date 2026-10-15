@@ -89,11 +89,19 @@ test('fakes: Sheets typing rules (apostrophe, formulas, auto-conversion unless "
 test('Config: properties and date helpers', () => {
   const { ctx } = loadGas({ props: { SOURCE_SPREADSHEET_ID: 'src-id' } });
   const noAccess = { users: [], groups: [], domainRole: 'none' };
-  assert.deepEqual(plain(ctx.Config.get()), { dataId: '', sourceId: 'src-id', threshold: 80, schemaVersion: '', access: noAccess });
+  assert.deepEqual(plain(ctx.Config.get()), { dataId: '', sourceId: 'src-id', sourceTitle: '', threshold: 80,
+    schemaVersion: '', access: noAccess });
   ctx.Config.setDataId('data-id');
-  ctx.Config.setSourceId('other');
+  ctx.Config.setSourceId('other', 'Classeur source');
   ctx.Config.setThreshold(75);
-  assert.deepEqual(plain(ctx.Config.get()), { dataId: 'data-id', sourceId: 'other', threshold: 75, schemaVersion: '', access: noAccess });
+  assert.deepEqual(plain(ctx.Config.get()), { dataId: 'data-id', sourceId: 'other', sourceTitle: 'Classeur source',
+    threshold: 75, schemaVersion: '', access: noAccess });
+  // The sync refreshes the stored title of the configured source only, and writes only when it changed.
+  assert.equal(ctx.Config.rememberSourceTitle('src-id', 'Ancienne'), false, 'not the configured source');
+  assert.equal(ctx.Config.rememberSourceTitle('other', 'Classeur source'), false, 'unchanged');
+  assert.equal(ctx.Config.rememberSourceTitle('other', 'Renommé'), true);
+  assert.equal(ctx.Config.get().sourceTitle, 'Renommé');
+  assert.equal(ctx.Config.spreadsheetUrl('1AbC_dEf-123'), 'https://docs.google.com/spreadsheets/d/1AbC_dEf-123/edit');
   ctx.Config.setAccess({ users: [{ email: 'a@decathlon.com', role: 'lecteur' }], domainRole: 'lecteur' });
   assert.deepEqual(plain(ctx.Config.get().access), { users: [{ email: 'a@decathlon.com', role: 'lecteur',
     added_at: '', added_by: '' }], groups: [], domainRole: 'lecteur' });
