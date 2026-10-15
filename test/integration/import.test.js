@@ -317,6 +317,20 @@ test('import: Date cells are formatted in the SOURCE spreadsheet time zone', () 
   assert.equal(m.postes[0]['Date visite'], expected);
 });
 
+test('import: a source without a time zone (null / \'\') falls back to Europe/Paris instead of failing', () => {
+  for (const tz of [null, '']) {
+    const def = source('2026-04');
+    def.timeZone = tz;
+    const { ctx, env } = loadGas({ sources: [def] });
+    ok(ctx, 'api_setConfig', { source: SOURCE_ID });
+    const res = ok(ctx, 'api_importMonth', { month: '2026-04' });
+    assert.ok(res.counts.postes > 0);
+    const rawDate = def.sheets['Suivi des postes'].values[2][1];
+    const m = ok(ctx, 'api_getMonthData', { month: '2026-04' });
+    assert.equal(m.postes[0]['Date visite'], env.Utilities.formatDate(rawDate, 'Europe/Paris', 'dd/MM/yyyy'), String(tz));
+  }
+});
+
 // ------------------------------------------------------------------------------- carry-over
 
 test('Galink/IDP are carried over from the previous month and preserved on overwrite', () => {
