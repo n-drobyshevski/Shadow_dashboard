@@ -266,7 +266,7 @@ Only the scriptlet form `<?!= fn('arg') ?>` is used (so the Node renderer stays 
 ```html
 <!DOCTYPE html><html lang="fr"><head><base target="_top"><meta charset="utf-8">
 <?!= include('css') ?>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.2/plotly.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.3/plotly.min.js"></script>
 </head><body>
 <div id="app"> … sidebar (#sidebar) + main (#main) … </div>
 <div id="toast-root"></div><div id="modal-root"></div>
