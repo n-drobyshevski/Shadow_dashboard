@@ -15,6 +15,19 @@
  *   - in any other cell, strings that look like numbers / dates / booleans / percentages are
  *     auto-converted (this is how tests detect missing '@' formatting).
  *
+ *   - data validation (Range.getDataValidations / setDataValidation(s) / clearDataValidations,
+ *     SpreadsheetApp.newDataValidation() and the DataValidationCriteria enum): rules live on a sparse
+ *     per-sheet grid that insertRowsAfter / deleteRows shift (an inserted row takes the rules of the row
+ *     above, as in Sheets); a write (setValue / setValues, checked for the whole range before any cell
+ *     is written) that a rejecting rule (allowInvalid false) refuses throws « Exception: The data you
+ *     entered in cell <A1> violates the data validation rules set on this cell. ». Supported criteria
+ *     checks: VALUE_IN_LIST, VALUE_IN_RANGE, CHECKBOX, DATE_* (any other criteria accepts everything).
+ *     A fixture tab declares rules with `validations: [{a1, type, values?, range?, allowInvalid?,
+ *     helpText?}]` (range: "'Tab name'!A2:A20", resolved in the same spreadsheet when read);
+ *   - formula cells display their formula text, unless env.__setFormulaDisplay(fn) is set:
+ *     fn({sheet, row, col, formula, value(row, col)}) (1-based) returns the displayed text, or
+ *     undefined for the default.
+ *
  * Fault injection (real Apps Script calls fail transiently: "Service Spreadsheets failed while
  * accessing document…", timeouts): env.__fault({method, id?, sheet?, times?, message?}) makes the
  * next `times` (default 1, Infinity allowed) matching calls throw. Supported methods: 'openById'
@@ -30,7 +43,7 @@
  * Instrumentation lives in env.__state:
  *   spreadsheets (Map id -> Spreadsheet), formulas [{spreadsheetId, sheet, a1, formula}],
  *   writes [{sheet, a1, rows, cols, plainText}], calls {methodName: count}, flushes,
- *   cells {getValues|getValue|getDisplayValues|getFormulas: cells read},
+ *   cells {getValues|getValue|getDisplayValues|getFormulas|getDataValidations: cells read},
  *   reads [{spreadsheetId, sheet, method, a1, cells, lockHeld}] (one entry per range read, in order:
  *   which rows / columns a flow reads, and whether the script lock was held at that moment),
  *   lock {acquired, released, timeouts, held}, logs [], console [], lockTimeout (mutable),
@@ -157,6 +170,7 @@ function createGasEnv(options) {
     logs: [],
     console: [],
     evalContext: null,   // set by gasSandbox so template scriptlets evaluate in the GAS globals
+    formulaDisplay: null, // env.__setFormulaDisplay
   };
   const count = (name) => { state.calls[name] = (state.calls[name] || 0) + 1; };
   const countCells = (name, n) => { state.cells[name] = (state.cells[name] || 0) + n; };
@@ -184,6 +198,99 @@ function createGasEnv(options) {
 
   let nextSheetId = 1;
 
+  // ---------------------------------------------------------------------------- Data validation
+  // Enum stand-in: String(value) gives the criteria name, as with the real SpreadsheetApp enum.
+  const CRITERIA_NAMES = ['CHECKBOX', 'CUSTOM_FORMULA', 'DATE_AFTER', 'DATE_BEFORE', 'DATE_BETWEEN', 'DATE_EQUAL_TO',
+    'DATE_IS_VALID_DATE', 'DATE_NOT_BETWEEN', 'DATE_ON_OR_AFTER', 'DATE_ON_OR_BEFORE', 'NUMBER_BETWEEN',
+    'NUMBER_EQUAL_TO', 'NUMBER_GREATER_THAN', 'NUMBER_GREATER_THAN_OR_EQUAL_TO', 'NUMBER_LESS_THAN',
+    'NUMBER_LESS_THAN_OR_EQUAL_TO', 'NUMBER_NOT_BETWEEN', 'NUMBER_NOT_EQUAL_TO', 'TEXT_CONTAINS',
+    'TEXT_DOES_NOT_CONTAIN', 'TEXT_EQUAL_TO', 'TEXT_IS_VALID_EMAIL', 'TEXT_IS_VALID_URL', 'VALUE_IN_LIST',
+    'VALUE_IN_RANGE'];
+  const DataValidationCriteria = {};
+  for (const name of CRITERIA_NAMES) {
+    DataValidationCriteria[name] = Object.freeze({ name, toString() { return name; }, toJSON() { return name; } });
+  }
+
+  /** "'Tab name'!B2:B20" / "Tab!B2:B20" -> {sheet, a1}. */
+  function parseSheetA1(ref) {
+    const m = /^(?:'((?:[^']|'')+)'|([^!]+))!(.+)$/.exec(String(ref).trim());
+    if (!m) throw new Error('Range not found: ' + ref);
+    return { sheet: m[1] !== undefined ? m[1].replace(/''/g, "'") : m[2], a1: m[3] };
+  }
+
+  class DataValidation {
+    /** def = {type, values?, range? (Range or "'Tab'!A1:B2"), allowInvalid?, helpText?}; ss resolves a string range. */
+    constructor(def, ss) {
+      if (!DataValidationCriteria[def.type]) throw new Error('Unknown data validation criteria ' + def.type);
+      this._type = def.type;
+      this._values = def.values ? def.values.slice() : null;
+      this._range = def.range || null;
+      this._allowInvalid = !!def.allowInvalid;
+      this._helpText = def.helpText || '';
+      this._ss = ss || null;
+    }
+    getCriteriaType() { return DataValidationCriteria[this._type]; }
+    getCriteriaValues() {
+      if (this._type === 'VALUE_IN_LIST') return [this._values.slice(), true];
+      if (this._type === 'VALUE_IN_RANGE') return [this._resolveRange(), true];
+      return this._values ? this._values.slice() : [];
+    }
+    getAllowInvalid() { return this._allowInvalid; }
+    getHelpText() { return this._helpText; }
+    copy() { return newDataValidation(this); }
+    _resolveRange() {
+      if (this._range instanceof Range) return this._range;
+      const ref = parseSheetA1(this._range);
+      const sheet = this._ss && this._ss._sheets.find((s) => s._name === ref.sheet);
+      if (!sheet) throw new Error('Range not found: ' + this._range);
+      const p = parseA1(ref.a1);
+      return new Range(sheet, p.row, p.col, p.numRows, p.numCols);
+    }
+    /** Does this rule accept `v` (the value as written)? Blank values always pass. */
+    _accepts(v) {
+      if (this._allowInvalid || v === null || v === undefined || v === '') return true;
+      const s = String(v).trim();
+      switch (this._type) {
+        case 'VALUE_IN_LIST': return this._values.map((x) => String(x).trim()).includes(s);
+        case 'VALUE_IN_RANGE': {
+          const r = this._resolveRange();
+          const out = [];
+          for (let i = 0; i < r._nr; i++) {
+            for (let j = 0; j < r._nc; j++) out.push(r._displayCell(r._row - 1 + i, r._col - 1 + j).trim());
+          }
+          return out.includes(s);
+        }
+        case 'CHECKBOX':
+          if (this._values && this._values.length) return this._values.map((x) => String(x)).includes(String(v));
+          return typeof v === 'boolean' || /^(true|false)$/i.test(s);
+        default:
+          if (this._type.indexOf('DATE_') === 0) return isDate(v) || (typeof v === 'string' && isDate(autoConvert(v)));
+          return true;
+      }
+    }
+  }
+
+  /** SpreadsheetApp.newDataValidation(): the builder subset the server code may use. */
+  function newDataValidation(from) {
+    const def = from ? { type: from._type, values: from._values, range: from._range, allowInvalid: from._allowInvalid,
+      helpText: from._helpText } : { type: null, allowInvalid: true };
+    let ss = from ? from._ss : null;
+    const b = {
+      requireValueInList(values) { def.type = 'VALUE_IN_LIST'; def.values = values.slice(); return b; },
+      requireValueInRange(range) { def.type = 'VALUE_IN_RANGE'; def.range = range; ss = range._sheet._ss; return b; },
+      requireCheckbox(checked, unchecked) {
+        def.type = 'CHECKBOX';
+        def.values = checked === undefined ? null : (unchecked === undefined ? [checked] : [checked, unchecked]);
+        return b;
+      },
+      requireDate() { def.type = 'DATE_IS_VALID_DATE'; return b; },
+      setAllowInvalid(v) { def.allowInvalid = !!v; return b; },
+      setHelpText(t) { def.helpText = String(t); return b; },
+      build() { return new DataValidation(def, ss); },
+    };
+    return b;
+  }
+
   // ------------------------------------------------------------------------------------ Sheet
   class Sheet {
     constructor(ss, name, rows, cols) {
@@ -195,6 +302,7 @@ function createGasEnv(options) {
       this._vals = [];   // sparse 2D array, 0-based
       this._fmts = [];   // number formats per cell
       this._disp = [];   // display overrides (fixtures only)
+      this._rules = [];  // data validation rules per cell (DataValidation | undefined)
       this._frozenRows = 0;
     }
 
@@ -305,7 +413,7 @@ function createGasEnv(options) {
         throw new Error('Those rows are out of bounds.');
       }
       if (this._maxRows - howMany <= this._frozenRows) throw new Error('Sorry, it is not possible to delete all non-frozen rows.');
-      for (const grid of [this._vals, this._fmts, this._disp]) grid.splice(rowPosition - 1, howMany);
+      for (const grid of [this._vals, this._fmts, this._disp, this._rules]) grid.splice(rowPosition - 1, howMany);
       this._maxRows -= howMany;
       return this;
     }
@@ -315,13 +423,18 @@ function createGasEnv(options) {
       for (const grid of [this._vals, this._fmts, this._disp]) {
         if (grid.length > afterPosition) grid.splice(afterPosition, 0, ...new Array(howMany).fill(undefined));
       }
+      // The inserted rows take the data validation of the row above (as Sheets does).
+      if (this._rules.length >= afterPosition) {
+        const above = afterPosition >= 1 ? this._rules[afterPosition - 1] : undefined;
+        this._rules.splice(afterPosition, 0, ...Array.from({ length: howMany }, () => (above ? above.slice() : undefined)));
+      }
       this._maxRows += howMany;
       return this;
     }
 
     insertColumnsAfter(afterPosition, howMany) {
       count('insertColumnsAfter');
-      for (const grid of [this._vals, this._fmts, this._disp]) {
+      for (const grid of [this._vals, this._fmts, this._disp, this._rules]) {
         for (const row of grid) if (row && row.length > afterPosition) row.splice(afterPosition, 0, ...new Array(howMany).fill(undefined));
       }
       this._maxCols += howMany;
@@ -381,21 +494,61 @@ function createGasEnv(options) {
     getDisplayValues() {
       count('getDisplayValues');
       recordRead(this, 'getDisplayValues');
-      const tz = this._sheet._ss.getSpreadsheetTimeZone() || 'Europe/Paris';
-      return this._each((r, c) => {
-        const d = this._sheet._get(this._sheet._disp, r, c);
-        if (d !== undefined) return String(d);
-        const v = this._sheet._value(r, c);
-        if (isDate(v)) return formatDate(v, tz, 'dd/MM/yyyy');
-        if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
-        return String(v);
+      return this._each((r, c) => this._displayCell(r, c));
+    }
+
+    /** Displayed text of a cell of this range's sheet (0-based), without counting a read. */
+    _displayCell(r, c) {
+      const sheet = this._sheet;
+      const d = sheet._get(sheet._disp, r, c);
+      if (d !== undefined) return String(d);
+      const v = sheet._value(r, c);
+      if (typeof v === 'string' && v.charAt(0) === '=' && typeof state.formulaDisplay === 'function') {
+        const shown = state.formulaDisplay({ sheet: sheet._name, row: r + 1, col: c + 1, formula: v,
+          value: (row, col) => sheet._value(row - 1, col - 1) });
+        if (shown !== undefined) return String(shown);
+      }
+      const tz = sheet._ss.getSpreadsheetTimeZone() || 'Europe/Paris';
+      if (isDate(v)) return formatDate(v, tz, 'dd/MM/yyyy');
+      if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
+      return String(v);
+    }
+
+    /** Throws the Sheets refusal when a rejecting data validation rule refuses a value (whole range first). */
+    _checkRules(valueAt) {
+      this._each((r, c, i, j) => {
+        const rule = this._sheet._get(this._sheet._rules, r, c);
+        if (rule && !rule._accepts(valueAt(i, j))) {
+          throw new Error('Exception: The data you entered in cell ' + a1(r + 1, c + 1, 1, 1) +
+            ' violates the data validation rules set on this cell.');
+        }
       });
     }
+
+    getDataValidations() {
+      count('getDataValidations');
+      recordRead(this, 'getDataValidations');
+      return this._each((r, c) => this._sheet._get(this._sheet._rules, r, c) || null);
+    }
+    getDataValidation() { return this.getDataValidations()[0][0]; }
+    setDataValidation(rule) {
+      count('setDataValidation');
+      this._each((r, c) => this._sheet._set(this._sheet._rules, r, c, rule || undefined));
+      return this;
+    }
+    setDataValidations(rules) {
+      count('setDataValidations');
+      this._checkDims(rules, 'setDataValidations');
+      this._each((r, c, i, j) => this._sheet._set(this._sheet._rules, r, c, rules[i][j] || undefined));
+      return this;
+    }
+    clearDataValidations() { return this.setDataValidation(null); }
 
     setValues(values) {
       count('setValues');
       this._checkDims(values, 'setValues');
       maybeFail('setValues', { id: this._sheet._ss._id, sheet: this._sheet._name });
+      this._checkRules((i, j) => values[i][j]);
       let plainText = true;
       this._each((r, c) => { if (this._sheet._format(r, c) !== '@') plainText = false; });
       state.writes.push({ spreadsheetId: this._sheet._ss._id, sheet: this._sheet._name, a1: this.getA1Notation(), rows: this._nr, cols: this._nc, plainText });
@@ -406,6 +559,7 @@ function createGasEnv(options) {
     setValue(value) {
       count('setValue');
       maybeFail('setValue', { id: this._sheet._ss._id, sheet: this._sheet._name });
+      this._checkRules(() => value);
       const r = this._row - 1;
       const c = this._col - 1;
       state.writes.push({ spreadsheetId: this._sheet._ss._id, sheet: this._sheet._name, a1: a1(this._row, this._col, 1, 1), rows: 1, cols: 1, plainText: this._sheet._format(r, c) === '@' });
@@ -421,10 +575,17 @@ function createGasEnv(options) {
     }
     getFormula() { return this.getFormulas()[0][0]; }
 
-    /** Copies values (formulas included, verbatim) to the top-left of `target`. */
+    /** Copies values (formulas included, verbatim) and data validation to the top-left of `target`. */
     copyTo(target) {
       count('copyTo');
-      this._each((r, c, i, j) => target._sheet._set(target._sheet._vals, target._row - 1 + i, target._col - 1 + j, copyCell(this._sheet._value(r, c))));
+      this._each((r, c, i, j) => {
+        const tr = target._row - 1 + i;
+        const tc = target._col - 1 + j;
+        const ts = target._sheet;
+        ts._set(ts._vals, tr, tc, copyCell(this._sheet._value(r, c)));
+        if (ts._disp[tr]) delete ts._disp[tr][tc];
+        ts._set(ts._rules, tr, tc, this._sheet._get(this._sheet._rules, r, c));
+      });
       state.copies = (state.copies || 0) + 1;
       return this;
     }
@@ -512,7 +673,7 @@ function createGasEnv(options) {
     return '1' + crypto.randomBytes(33).toString('base64url').slice(0, 43);
   }
 
-  /** Loads a fixture definition {id, name, timeZone, sheets:{name:{values, display}}} verbatim. */
+  /** Loads a fixture definition {id, name, timeZone, sheets:{name:{values, display, validations?}}} verbatim. */
   function addSpreadsheet(def) {
     const ss = new Spreadsheet(def.id || newId(), def.name || 'Untitled spreadsheet', def.timeZone);
     for (const [name, tab] of Object.entries(def.sheets || {})) {
@@ -522,6 +683,13 @@ function createGasEnv(options) {
       values.forEach((row, r) => row.forEach((v, c) => sh._set(sh._vals, r, c, copyCell(v))));
       (tab.display || []).forEach((row, r) => row.forEach((d, c) => sh._set(sh._disp, r, c, d)));
       if (tab.frozenRows) sh._frozenRows = tab.frozenRows;
+      for (const v of tab.validations || []) {
+        const rule = new DataValidation(v, ss);
+        const p = parseA1(v.a1);
+        for (let r = p.row - 1; r < p.row - 1 + p.numRows; r++) {
+          for (let c = p.col - 1; c < p.col - 1 + p.numCols; c++) sh._set(sh._rules, r, c, rule);
+        }
+      }
       ss._sheets.push(sh);
     }
     state.spreadsheets.set(ss._id, ss);
@@ -554,6 +722,8 @@ function createGasEnv(options) {
     },
     flush() { count('flush'); state.flushes++; },
     getActiveSpreadsheet() { return null; },
+    DataValidationCriteria,
+    newDataValidation() { return newDataValidation(null); },
   };
 
   function makePropertyStore(store) {
@@ -844,6 +1014,8 @@ function createGasEnv(options) {
     __addSpreadsheet: addSpreadsheet,
     __fault: addFault,
     __clearFaults() { state.faults.length = 0; },
+    /** Displayed text of formula cells: fn({sheet, row, col, formula, value(row, col)}) -> string | undefined. */
+    __setFormulaDisplay(fn) { state.formulaDisplay = typeof fn === 'function' ? fn : null; },
   };
 }
 

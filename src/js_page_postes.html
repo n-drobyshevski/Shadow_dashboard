@@ -1,12 +1,15 @@
 <script>
 /**
  * Pages.postes — workstation inventory (docs/API.md §6 "Postes"), typeset per docs/DESIGN.md. Built by
- * InventoryPage (js_page_inventory.html): header (« Exporter CSV » / « Ajouter un poste générique »), stat
- * line, editable ledger, conformity filter. Specific here: the computed « Score » / « Applis » columns, the
- * generic poste and the drawer (criteria, installed applications, linked remediation actions).
+ * InventoryPage (js_page_inventory.html): header (« Exporter CSV » / « Poste générique » / « Nouveau poste »),
+ * stat line, editable ledger, conformity filter. Specific here: the computed « Score » / « Applis » columns, the
+ * « Nouveau poste » form (EntityForm: fields read from the source sheet, in sections), the generic poste and the
+ * drawer (criteria, installed applications, linked remediation actions).
  *
- * Read-only mode (lecteur, !State.canEdit()): no « Ajouter un poste générique », no inline editing (plain
- * cells, a click anywhere on a row opens the drawer), no « Nouvelle action »; CSV export and the drawer stay.
+ * Read-only mode (lecteur, !State.canEdit()): no « Nouveau poste » / « Poste générique », no inline editing
+ * (plain cells, a click anywhere on a row opens the drawer), no « Nouvelle action »; CSV export and the drawer
+ * stay. Admins lose the create buttons when Paramètres turns creation off (State.can('create')), the inline
+ * editors when it turns modification off (State.can('edit')); « Nouvelle action » stays.
  */
 (function () {
   'use strict';
@@ -108,8 +111,54 @@
         UI.toast(label + ' existe déjà pour ' + Fmt.monthLong(ctx.month) + '.', 'info');
       }
       ctx.refresh();
-    }, function (err) { UI.errorToast(err); });
+    }, function (err) {
+      UI.errorToast(err);
+      // Creation turned off meanwhile (FORBIDDEN): the bootstrap reload removes the create buttons.
+      State.afterWriteError(err);
+    });
     UI.busy(button, p);
+  }
+
+  /** Sections of the « Nouveau poste » form (EntityForm): source columns by name, unknown ones go to « Autres colonnes ». */
+  var POSTE_SECTIONS = [
+    { id: 'identification', title: 'Identification', open: true, columns: [KEY, 'Équipe', 'Bâtiment / Labo', 'Responsable'] },
+    { id: 'equipement', title: 'Équipement', open: true, columns: ["Date d'achat", 'Criticité équipement', 'OS', 'Version OS'] },
+    { id: 'conformite', title: 'Conformité', open: true,
+      columns: ['IT Decathlon', 'EDR Decathlon', 'Chiffrement disque', 'Réseau Decathlon', 'Type de compte', 'Enrolée'] },
+    { id: 'visite', title: 'Visite', open: false, columns: ['N° Visite', 'Date visite', 'Prochaine revue'] },
+    { id: 'suivi', title: 'Suivi', open: false, columns: ['Action corrective', 'Responsable action', 'Deadline', 'Statut',
+      'Niveau de risque', 'Score conformité', 'Application', 'Commentaires'] }
+  ];
+
+  var POSTE_PRESENTATION = {
+    'Nom du poste': { mono: true },
+    'N° Visite': { mono: true },
+    'Version OS': { mono: true },
+    'Action corrective': { type: 'textarea' },
+    'Commentaires': { type: 'textarea' },
+    'Application': function (md) {
+      return { tokens: true, options: Core.uniqueSorted(md.applications, Core.KEY_APP),
+        hint: 'Plusieurs applications : séparées par des virgules.' };
+    }
+  };
+
+  function posteForm(ctx) { return State.loadFormSchema('postes', ctx.month); }
+
+  function newPoste(ctx, button) {
+    return EntityForm.open(ctx, {
+      entity: 'postes',
+      keyField: KEY,
+      title: 'Nouveau poste — ' + Fmt.monthLong(ctx.month),
+      submitLabel: 'Créer le poste',
+      api: 'api_addPoste',
+      sections: POSTE_SECTIONS,
+      presentation: POSTE_PRESENTATION,
+      button: button,
+      toast: function (name, o) {
+        return 'Poste ' + UI.quote(name) + (o.live ? ' créé dans le Google Sheet source' :
+          ' ajouté à l’historique de ' + Fmt.monthLong(o.month)) + (o.hidden ? ' (masqué par les filtres actifs).' : '.');
+      }
+    }).catch(function (err) { UI.errorToast(err); });
   }
 
   window.Pages = window.Pages || {};
@@ -145,7 +194,9 @@
     csvTooltip: 'Exporte les lignes affichées (filtres compris).',
     csv: function (ctx) { return { file: 'postes_' + ctx.month + '.csv', columns: ctx.columns, rows: ctx.visible() }; },
     saveApi: 'api_savePostes',
-    primary: { id: 'postes-add-generic', label: 'Ajouter un poste générique', run: addGeneric,
+    primary: { id: 'postes-add', label: 'Nouveau poste', run: newPoste,
+      prefetch: function (ctx) { posteForm(ctx).catch(function () { return null; }); } },
+    secondary: { id: 'postes-add-generic', label: 'Poste générique', run: addGeneric,
       tooltip: 'Ajoute ' + UI.quote(Core.GENERIC_POSTE_NAME) + ' pour rattacher les applications non liées à un poste suivi.' },
     openDrawer: openDrawer
   });

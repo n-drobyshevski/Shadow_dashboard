@@ -1,6 +1,6 @@
 <style>
 /* ==================================================================================================
-   Controls (js_controls.html): popover, dropdown / combobox, date & month fields, checkbox, tooltip,
+   Controls (js_controls.html): popover, dropdown / combobox, date & month fields, checkbox, toggle, tooltip,
    search field, busy buttons, loading / error states, plus the global browser-chrome resets.
    Tokens only (css.html :root). Loaded right after css.html.
    ================================================================================================== */
@@ -145,6 +145,45 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
 .cb.is-disabled .cb-input:checked + .cb-box { background: var(--ink-3); border-color: var(--ink-3); }
 .dd-multiple .dd-option[aria-selected="true"] { font-weight: 400; }
 
+/* ------------------------------------------------------------------ toggle (setting switch)
+   Label + description on the left, the switch on the right: an outlined track whose thumb slides right
+   when on (track filled with --ink), and the state word, so the state is never told by colour alone. */
+.toggle-row { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s4); }
+.toggle-text { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0; padding-top: 6px; }
+.toggle-label { font-size: 14px; font-weight: 500; color: var(--ink); cursor: pointer; }
+.toggle-desc { font-size: 13px; color: var(--ink-2); max-width: 68ch; }
+.toggle-row.is-disabled .toggle-label { color: var(--ink-3); cursor: not-allowed; }
+.toggle {
+  display: inline-flex; align-items: center; gap: var(--s2); flex: 0 0 auto; min-height: var(--control-h);
+  padding: 0 var(--s1); border: 0; border-radius: var(--radius); background: transparent;
+  color: var(--ink-2); font: inherit; font-size: 13px; cursor: pointer;
+}
+.toggle-track {
+  position: relative; flex: 0 0 auto; width: 34px; height: 20px; border-radius: 10px;
+  border: 1px solid var(--ink-3); background: var(--paper); transition: background-color .12s ease-out, border-color .12s ease-out;
+}
+.toggle-thumb {
+  position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--ink-3); transition: transform .12s ease-out, background-color .12s ease-out;
+}
+.toggle[aria-checked="true"] { color: var(--ink); }
+.toggle[aria-checked="true"] .toggle-track { background: var(--ink); border-color: var(--ink); }
+.toggle[aria-checked="true"] .toggle-thumb { background: var(--on-ink); transform: translateX(14px); }
+/* Fixed width: « Activé » / « Désactivé » never moves the track. */
+.toggle-state { min-width: 68px; text-align: left; }
+.toggle:hover:not(:disabled) .toggle-track { border-color: var(--ink); }
+.toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.toggle.is-busy { cursor: progress; }
+.toggle.is-busy .toggle-track { opacity: .6; }
+.toggle:disabled { color: var(--ink-3); cursor: not-allowed; }
+.toggle:disabled .toggle-track { border-color: var(--rule-2); background: var(--paper-2); }
+.toggle:disabled .toggle-thumb { background: var(--rule-2); }
+@media (max-width: 600px) {
+  .toggle-row { gap: var(--s3); }
+  .toggle { min-height: 40px; }
+  .toggle-text { padding-top: 10px; }
+}
+
 /* ------------------------------------------------------------------ calendar / month grid */
 .cal { width: 268px; padding: var(--s2) var(--s2) var(--s1); }
 .cal-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); padding-bottom: var(--s1); }
@@ -265,5 +304,6 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
 
 @media (prefers-reduced-motion: reduce) {
   .dd-caret { transition: none; }
+  .toggle-track, .toggle-thumb { transition: none; }
 }
 </style>

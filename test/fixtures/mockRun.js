@@ -16,8 +16,12 @@
  *                                   default), calls counted in window.__locationCalls
  *   - window.__calls                [{name, args}] every call, args already JSON-parsed
  *   - window.__pending              number of calls whose handler has not run yet
- *   - window.__mock                 {db, failNext:{api_name: {code, message} | {transport:true}}}; a key
- *                                   'api_name:YYYY-MM' fails only the next call for that month (args.month)
+ *   - window.__mock                 {db, failNext:{api_name: {code, message, field?} | {transport:true}},
+ *                                   formSchema, delays}; a failNext key 'api_name:YYYY-MM' fails only the
+ *                                   next call for that month (args.month). formSchema / delays: see
+ *                                   buildMockScript (tests may change them at run time). db.editing
+ *                                   {edit, create, delete}: the editing switches (Paramètres), changeable
+ *                                   at run time (e.g. turned off behind an open page)
  *
  * Records are enriched at call time with window.Core (served by coreScript()), so the mock always
  * agrees with the real Core implementation. Nothing here references Node globals at runtime.
@@ -38,11 +42,23 @@ function mockMain(FIX, OPTS) {
   var LECTEUR_APIS = ['api_bootstrap', 'api_savePrefs', 'api_getMonthData', 'api_getSyncStatus', 'api_getImportLog',
     'api_getTimeline', 'api_getActions', 'api_getDiff'];
   var PREF_VALUES = { sidebar: ['open', 'collapsed'] };
+  var EDITING_KEYS = ['edit', 'create', 'delete'];
+  // Same refusals as Api.js requireEditing_.
+  var EDITING_REFUSED = {
+    edit: 'La modification des postes et des applications est désactivée dans les Paramètres.',
+    create: 'La création de postes et d’applications est désactivée dans les Paramètres.',
+    delete: 'La suppression d’applications est désactivée dans les Paramètres.'
+  };
   var OWNER = 'owner@decathlon.com';
   var seq = 0;
 
   function clone(v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); }
-  function fail(code, message) { var e = new Error(message); e.code = code; throw e; }
+  function fail(code, message, field) {
+    var e = new Error(message);
+    e.code = code;
+    if (typeof field === 'string' && field) e.field = field;
+    throw e;
+  }
   function uuid(prefix) { seq++; return (prefix || 'id') + '-' + Date.now().toString(36) + '-' + seq; }
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
   function todayIso() { var d = new Date(); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
@@ -94,6 +110,8 @@ function mockMain(FIX, OPTS) {
     actions: OPTS.empty ? [] : clone(FIX.ACTIONS),
     replacements: OPTS.empty ? [] : clone(FIX.REPLACEMENTS),
     threshold: 80,
+    // Editing switches (Config EDITING_JSON): only an explicit false in OPTS.editing turns one off.
+    editing: { edit: true, create: true, delete: true },
     // Visitor: OPTS.email ('' = identity not passed); default = the owner (deployer).
     email: OPTS.email === undefined ? OWNER : OPTS.email,
     prefs: {},           // email -> {sidebar}
@@ -127,7 +145,16 @@ function mockMain(FIX, OPTS) {
     warnings: []
   };
   if (OPTS.sync) Object.keys(OPTS.sync).forEach(function (k) { db.sync[k] = OPTS.sync[k]; });
+  if (OPTS.editing) EDITING_KEYS.forEach(function (k) { db.editing[k] = OPTS.editing[k] !== false; });
   function syncStatus() { var st = clone(db.sync); st.month = currentMonth(); return st; }
+  function editingView() {
+    var out = {};
+    EDITING_KEYS.forEach(function (k) { out[k] = db.editing[k] !== false; });
+    return out;
+  }
+  function requireEditing(kind) {
+    if (db.editing[kind] === false) fail('FORBIDDEN', EDITING_REFUSED[kind]);
+  }
 
   if (!OPTS.empty) {
     var stamps = { '2026-04': '2026-04-02 09:15', '2026-05': '2026-05-04 10:30' };
@@ -282,6 +309,123 @@ function mockMain(FIX, OPTS) {
       carriedOver: merged.carried, warnings: warnings, changed: true, changes: changes } };
   }
 
+  // ------------------------------------------------------------------------------ creation forms
+  // Form columns as the server builds them (Core.snapshotFormColumns over the month's source headers).
+  // In the current month the "live source" also has: formulas in Score conformité / Niveau de risque /
+  // Statut (computed), rejecting lists on the Oui/Non columns, Chiffrement disque, Données sensibles
+  // exposées and Criticité équipement, plus window.__mock.formSchema.columns[entity] (extra source
+  // columns). window.__mock.formSchema.fallback = true answers as when the source cannot be read.
+  var POSTE_COMPUTED = ['Score conformité', 'Niveau de risque', 'Statut'];
+  var LIVE_LISTS = { 'Chiffrement disque': ['Oui', 'Non'], 'Données sensibles exposées': ['Oui', 'Non'] };
+  var LIVE_STRICT = ['Criticité équipement'];
+  var FALLBACK_WARNING = 'Le Google Sheet source n’a pas pu être lu : les champs et les listes viennent de la ' +
+    'dernière synchronisation. Les colonnes calculées et les règles de la source seront vérifiées à l’enregistrement.';
+
+  function formOpts() { return window.__mock.formSchema || {}; }
+  function keyOf(entity) { return entity === 'postes' ? KEY_POSTE : KEY_APP; }
+  function latestLog(month) {
+    for (var i = db.importLog.length - 1; i >= 0; i--) if (db.importLog[i].month === month) return db.importLog[i];
+    return null;
+  }
+  function sourceHeaders(entity, month) {
+    var log = latestLog(month);
+    var h = log ? (entity === 'postes' ? log.postes_headers : log.apps_headers) : null;
+    return h && h.length ? h.slice() : (entity === 'postes' ? FIX.POSTES_HEADERS : FIX.APPS_HEADERS).slice();
+  }
+  function formColumns(entity, month, live) {
+    var m = db.months[month];
+    var cols = Core().snapshotFormColumns(entity, sourceHeaders(entity, month), m ? m.referentiel : FIX.REFERENTIEL);
+    var fo = formOpts();
+    if (!live || fo.fallback) return cols;
+    cols.forEach(function (c) {
+      if (entity === 'postes' && POSTE_COMPUTED.indexOf(c.name) >= 0) {
+        c.computed = true;
+        c.required = false;
+        c.kind = 'text';
+        c.options = null;
+        c.strict = false;
+      } else if (LIVE_LISTS[c.name]) {
+        c.kind = 'select';
+        c.options = LIVE_LISTS[c.name].slice();
+        c.strict = true;
+        c.rule = 'VALUE_IN_LIST';
+      } else if (c.kind === 'select' && !c.appOnly && (c.strict || LIVE_STRICT.indexOf(c.name) >= 0)) {
+        c.strict = true;
+        c.rule = 'VALUE_IN_LIST';
+      }
+    });
+    var extra = (fo.columns && fo.columns[entity]) || [];
+    var at = cols.filter(function (c) { return !c.appOnly; }).length;
+    extra.forEach(function (x, i) {
+      var c = { name: x.name, kind: x.kind || 'text', options: x.options || null, strict: !!x.strict, computed: !!x.computed,
+        required: !!x.required };
+      if (x.rule) c.rule = x.rule;
+      cols.splice(at + i, 0, c);
+    });
+    return cols;
+  }
+  function formSchema(args) {
+    var a = obj(args);
+    if (a.entity !== 'postes' && a.entity !== 'applications') {
+      fail('VALIDATION', '« entity » doit valoir « postes » ou « applications ».');
+    }
+    if (!Core().validateMonth(a.month)) fail('VALIDATION', 'Mois invalide : « ' + s(a.month) + ' » (format AAAA-MM).');
+    var live = a.month === currentMonth();
+    if (!live) requireMonth(a.month);
+    var fallback = live && !!formOpts().fallback;
+    var log = latestLog(a.month);
+    var out = { entity: a.entity, month: a.month, live: live, origin: live ? (fallback ? 'fallback' : 'source') : 'snapshot',
+      keyField: keyOf(a.entity), readAt: live && !fallback ? nowStamp() : (log ? log.imported_at : ''),
+      columns: formColumns(a.entity, a.month, live) };
+    if (fallback) out.warning = FALLBACK_WARNING;
+    return out;
+  }
+  /** Computed columns of a new live poste, as the source formulas would show them. */
+  function computePoste(rec) {
+    var n = ['IT Decathlon', 'EDR Decathlon', 'Chiffrement disque', 'Réseau Decathlon', 'Enrolée']
+      .filter(function (c) { return s(rec[c]) === 'Oui'; }).length;
+    var pct = n * 20;
+    rec['Score conformité'] = pct + '%';
+    rec['Niveau de risque'] = pct >= 80 ? 'Faible' : pct >= 60 ? 'Moyen' : pct >= 40 ? 'Élevé' : 'Critique';
+    rec['Statut'] = pct >= 80 ? 'Conforme' : 'Non conforme';
+  }
+  /** api_addPoste / api_addApplication: same checks as the server (Core.checkFormRecord, field errors). */
+  function addEntity(entity, args) {
+    var a = obj(args);
+    var keyField = keyOf(entity);
+    var m = requireMonth(a.month);
+    var input = a.record;
+    if (!input || typeof input !== 'object' || Array.isArray(input)) fail('VALIDATION', '« record » doit être un objet.');
+    var name = s(input[keyField]);
+    if (!name) {
+      fail('VALIDATION', entity === 'postes' ? 'Le nom du poste est obligatoire.' : "Le nom de l'application est obligatoire.",
+        keyField);
+    }
+    Object.keys(input).forEach(function (k) {
+      if (k.charAt(0) === '_') fail('VALIDATION', 'Champ non modifiable : « ' + k + ' ».');
+    });
+    if (m[entity].some(function (r) { return nk(r[keyField]) === nk(name); })) {
+      fail('VALIDATION', (entity === 'postes' ? 'Le poste « ' : "L'application « ") + name + ' » existe déjà pour ce mois.',
+        keyField);
+    }
+    var live = a.month === currentMonth();
+    var given = clone(input);
+    given[keyField] = name;
+    var checked = Core().checkFormRecord(formColumns(entity, a.month, live), given);
+    if (!checked.ok) fail('VALIDATION', checked.message, checked.field);
+    var rec = {};
+    m.columns[entity].forEach(function (c) { rec[c] = null; });
+    Object.keys(checked.record).forEach(function (k) { rec[k] = checked.record[k]; });
+    rec[keyField] = name;
+    if (live && entity === 'postes' && !formOpts().fallback) computePoste(rec);
+    rec._id = uuid(entity === 'postes' ? 'p' : 'a');
+    rec._key = name;
+    rec._order = maxOrder(m[entity]) + 1;
+    rec._updated_at = new Date().toISOString();
+    m[entity].push(rec);
+    return enrich(entity, [rec])[0];
+  }
+
   // ------------------------------------------------------------------------------ api_*
   var API = {
     api_bootstrap: function () {
@@ -299,6 +443,7 @@ function mockMain(FIX, OPTS) {
         threshold: db.threshold,
         user: user,
         prefs: clone(db.prefs[user.email] || {}),
+        editing: editingView(),
         sync: syncStatus()
       };
     },
@@ -343,7 +488,7 @@ function mockMain(FIX, OPTS) {
       };
     },
 
-    api_getSyncStatus: function () { return syncStatus(); },
+    api_getSyncStatus: function () { var st = syncStatus(); st.editing = editingView(); return st; },
 
     api_syncNow: function () { return runSync(); },
 
@@ -362,10 +507,11 @@ function mockMain(FIX, OPTS) {
       });
     },
 
-    api_savePostes: function (args) { return saveEntity('postes', KEY_POSTE, args); },
-    api_saveApplications: function (args) { return saveEntity('applications', KEY_APP, args); },
+    api_savePostes: function (args) { requireEditing('edit'); return saveEntity('postes', KEY_POSTE, args); },
+    api_saveApplications: function (args) { requireEditing('edit'); return saveEntity('applications', KEY_APP, args); },
 
     api_addGenericPoste: function (args) {
+      requireEditing('create');
       var month = obj(args).month;
       var m = requireMonth(month);
       var names = m.postes.map(function (r) { return r[KEY_POSTE]; });
@@ -382,28 +528,14 @@ function mockMain(FIX, OPTS) {
       return { created: true, record: enrich('postes', [rec])[0] };
     },
 
-    api_addApplication: function (args) {
-      var a = obj(args);
-      var m = requireMonth(a.month);
-      var input = obj(a.record);
-      var name = s(input[KEY_APP]);
-      if (!name) fail('VALIDATION', "Le nom de l'application est obligatoire.");
-      if (m.applications.some(function (r) { return nk(r[KEY_APP]) === nk(name); })) {
-        fail('VALIDATION', "L'application « " + name + ' » existe déjà pour ce mois.');
-      }
-      var rec = {};
-      m.columns.applications.forEach(function (c) { rec[c] = blankToNull(input[c]); });
-      Object.keys(input).forEach(function (k) { if (k.charAt(0) !== '_') rec[k] = blankToNull(input[k]); });
-      rec[KEY_APP] = name;
-      rec._id = uuid('a');
-      rec._key = name;
-      rec._order = maxOrder(m.applications) + 1;
-      rec._updated_at = new Date().toISOString();
-      m.applications.push(rec);
-      return enrich('applications', [rec])[0];
-    },
+    api_addPoste: function (args) { requireEditing('create'); return addEntity('postes', args); },
+
+    api_getFormSchema: function (args) { requireEditing('create'); return formSchema(args); },
+
+    api_addApplication: function (args) { requireEditing('create'); return addEntity('applications', args); },
 
     api_deleteApplication: function (args) {
+      requireEditing('delete');
       var a = obj(args);
       var m = requireMonth(a.month);
       var i = findIndexById(m.applications, a.id);
@@ -413,6 +545,7 @@ function mockMain(FIX, OPTS) {
     },
 
     api_renameApplication: function (args) {
+      requireEditing('edit');
       var a = obj(args);
       var m = requireMonth(a.month);
       var newName = s(a.newName);
@@ -520,8 +653,21 @@ function mockMain(FIX, OPTS) {
         dataUrl: sheetUrl('1MockDataSpreadsheetId_ShadowIT_AppData'),
         access: accessView(),
         me: db.email,
+        editing: editingView(),
         sync: syncStatus()
       };
+    },
+
+    api_setEditing: function (args) {
+      var a = obj(args);
+      var keys = Object.keys(a);
+      if (!keys.length) fail('VALIDATION', 'Aucun réglage à enregistrer.');
+      keys.forEach(function (k) {
+        if (EDITING_KEYS.indexOf(k) < 0) fail('VALIDATION', 'Réglage inconnu : « ' + k + ' ».');
+        if (typeof a[k] !== 'boolean') fail('VALIDATION', '« ' + k + ' » doit valoir true ou false.');
+      });
+      keys.forEach(function (k) { db.editing[k] = a[k]; });
+      return { editing: editingView() };
     },
 
     api_setThreshold: function (args) {
@@ -668,7 +814,7 @@ function mockMain(FIX, OPTS) {
   window.__pending = 0;
   window.__history = [];
   if (OPTS.prefs) db.prefs[normEmail(db.email)] = clone(OPTS.prefs);
-  window.__mock = { db: db, failNext: OPTS.failNext || {} };
+  window.__mock = { db: db, failNext: OPTS.failNext || {}, formSchema: OPTS.formSchema || {}, delays: OPTS.delays || {} };
 
   function dispatch(name, argsJson, onSuccess, onFailure, userObject) {
     var args;
@@ -689,17 +835,19 @@ function mockMain(FIX, OPTS) {
       }
       var envelope;
       try {
-        if (forced) fail(forced.code || 'INTERNAL', forced.message || 'Erreur simulée');
+        if (forced) fail(forced.code || 'INTERNAL', forced.message || 'Erreur simulée', forced.field);
         checkAccess(name);
         if (parseError || typeof argsJson !== 'string') fail('VALIDATION', 'Arguments JSON invalides.');
         envelope = { ok: true, data: API[name](args) };
       } catch (err) {
         var code = ERROR_CODES.indexOf(err.code) >= 0 ? err.code : 'INTERNAL';
         envelope = { ok: false, error: { code: code, message: String(err.message || err) } };
+        if (code === 'VALIDATION' && typeof err.field === 'string' && err.field) envelope.error.field = err.field;
         if (code === 'INTERNAL') console.warn('[mock] ' + name + ' failed', err);
       }
       if (onSuccess) onSuccess(JSON.stringify(envelope), userObject);
-    }, OPTS.delayMs || 0);
+    }, (OPTS.delayMs || 0) + (window.__mock.delays[name] || 0) +
+      (name === 'api_getFormSchema' ? (window.__mock.formSchema.delayMs || 0) : 0));
   }
 
   function makeRunner(onSuccess, onFailure, userObject) {
@@ -743,14 +891,22 @@ function mockMain(FIX, OPTS) {
 
 /**
  * @param {{empty?:boolean, configured?:boolean, delayMs?:number, email?:string, failNext?:object,
- *          prefs?:object, currentMonth?:string, sync?:object}} [options]  prefs: the visitor's stored
+ *          prefs?:object, currentMonth?:string, sync?:object, formSchema?:object, delays?:object,
+ *          editing?:object}} [options]
+ *   formSchema: api_getFormSchema of the current month (window.__mock.formSchema): {columns:{postes:[col],
+ *   applications:[col]} (extra source columns, {name, kind?, options?, strict?, computed?, required?, rule?}),
+ *   fallback:true (origin 'fallback' + warning, no computed column), delayMs (extra answer delay)}.
+ *   delays: extra answer delay per api name ({api_addPoste: 400}). failNext entries may carry a `field`.
+ *   prefs: the visitor's stored
  *   preferences ({sidebar:'collapsed'}). currentMonth: the month the sync follows (default: today's).
  *   sync: fields of the synchronisation status to override ({lastError:{at, code, message}}, …).
+ *   editing: the editing switches of Paramètres ({edit:false} turns modification off; default all on).
  *   email: the visitor (default the owner, admin). 'lea.reader@decathlon.com' is a lecteur,
  *   'sam.admin@decathlon.com' a second admin, any other address has no access, '' = identity not passed.
  * @returns {string} browser JavaScript (no surrounding <script> tag)
  */
-function buildMockScript({ empty = false, configured = true, delayMs = 0, email, failNext, prefs, currentMonth, sync } = {}) {
+function buildMockScript({ empty = false, configured = true, delayMs = 0, email, failNext, prefs, currentMonth, sync,
+  formSchema, delays, editing } = {}) {
   const fixtures = {
     POSTES_HEADERS: data.POSTES_HEADERS,
     APPS_HEADERS: data.APPS_HEADERS,
@@ -766,7 +922,8 @@ function buildMockScript({ empty = false, configured = true, delayMs = 0, email,
   const json = (v) => JSON.stringify(v).replace(/</g, '\\u003c')
     .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
   return '(' + mockMain.toString() + ')(' + json(fixtures) + ', ' + json({ empty, configured, delayMs, email, failNext: failNext || {}, prefs: prefs || null,
-    currentMonth: currentMonth || null, sync: sync || null }) + ');';
+    currentMonth: currentMonth || null, sync: sync || null, formSchema: formSchema || null, delays: delays || null,
+    editing: editing || null }) + ');';
 }
 
 /**

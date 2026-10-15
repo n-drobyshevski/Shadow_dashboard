@@ -1,6 +1,6 @@
 'use strict';
 /**
- * E2E tests of Paramètres (source, threshold, access list) and of the access-dependent shell:
+ * E2E tests of Paramètres (source, threshold, editing switches, access list) and of the access-dependent shell:
  * admin-only navigation, signed-in account in the sidebar, « Accès refusé » and the lecteur screens.
  * Run: NODE_PATH=$(npm root -g) PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node --test test/e2e/
  */
@@ -31,12 +31,13 @@ async function lastToast(page) {
 }
 
 describe('settings (admin)', () => {
-  test('renders the four sections with the current values', async () => {
+  test('renders the five sections with the current values', async () => {
     await withApp({ page: 'settings' }, async (app) => {
       const { page } = app;
       assert.equal((await page.textContent('#main .page-title')).trim(), 'Paramètres');
       const titles = await page.$$eval('#settings-body .section-title', (ns) => ns.map((n) => n.textContent.trim()));
-      assert.deepEqual(titles, ['Source de données', 'Synchronisation', 'Seuil de conformité', 'Accès']);
+      assert.deepEqual(titles, ['Source de données', 'Synchronisation', 'Seuil de conformité', 'Saisie dans l’application',
+        'Accès']);
       assert.equal((await page.textContent('#settings-source-link')).trim(), 'ShadowIT_Industry');
       assert.match(await page.textContent('#settings-source-info'), /Suivi des postes/);
       assert.equal(await page.inputValue('#settings-threshold'), '80');
@@ -324,6 +325,145 @@ describe('settings (admin)', () => {
       await page.waitForFunction(() => !document.body.classList.contains('unconfigured'));
       await page.waitForSelector('#main .page[data-page="settings"] #settings-source-link');
       assert.equal(await page.evaluate(() => State.get().configured), true);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+});
+
+describe('settings: « Saisie dans l’application »', () => {
+  const SWITCHES = ['#settings-editing-edit', '#settings-editing-create', '#settings-editing-delete'];
+
+  async function switchState(page) {
+    return page.$$eval('#settings-editing [role="switch"]', (ns) => ns.map((n) =>
+      [n.id, n.getAttribute('aria-checked'), n.querySelector('.toggle-state').textContent]));
+  }
+
+  test('three switches with their labels, descriptions and states (from api_getSettings)', async () => {
+    await withApp({ page: 'settings', editing: { create: false } }, async (app) => {
+      const { page } = app;
+      await page.waitForSelector('#settings-editing');
+      assert.equal(await page.textContent('#settings-editing-help'), 'Ces réglages s’appliquent à tous les administrateurs ' +
+        'et à tous les mois, en cours comme passés, pour les postes et les applications. Le suivi des actions et les ' +
+        'remplacements ne sont pas concernés.');
+      assert.deepEqual(await switchState(page), [
+        ['settings-editing-edit', 'true', 'Activé'],
+        ['settings-editing-create', 'false', 'Désactivé'],
+        ['settings-editing-delete', 'true', 'Activé'],
+      ]);
+      // Named by the visible label, described by the description; the track is decoration.
+      const a11y = await page.$$eval('#settings-editing [role="switch"]', (ns) => ns.map((n) => {
+        const label = document.getElementById(n.getAttribute('aria-labelledby'));
+        const desc = document.getElementById(n.getAttribute('aria-describedby'));
+        return [n.tagName, n.type, label.textContent, desc.textContent, n.querySelector('.toggle-track').getAttribute('aria-hidden')];
+      }));
+      assert.deepEqual(a11y, [
+        ['BUTTON', 'button', 'Modifier les entrées', 'Modification des cellules des tableaux Postes et Applications ' +
+          '(Galink et IDP compris) et «\u202fRenommer\u202f» une application.', 'true'],
+        ['BUTTON', 'button', 'Créer des entrées', '«\u202fNouveau poste\u202f», «\u202fPoste générique\u202f» et ' +
+          '«\u202fNouvelle application\u202f».', 'true'],
+        ['BUTTON', 'button', 'Supprimer des entrées', '«\u202fSupprimer\u202f» une application. Les postes ne se ' +
+          'suppriment pas depuis l’application.', 'true'],
+      ]);
+      // Before « Accès », after « Seuil de conformité ».
+      const order = await page.$$eval('#settings-body > .section', (ns) => ns.map((n) => n.id || n.querySelector('.section-title').textContent));
+      assert.deepEqual(order.slice(2), ['Seuil de conformité', 'settings-editing', 'Accès']);
+      assert.deepEqual(await page.$$eval('#settings-body select, #settings-body input[type=date], #settings-body input[type=month], ' +
+        '#settings-body input[list], #settings-body datalist, #settings-body [title], #settings-body input[type=checkbox]',
+        (ns) => ns.map((n) => n.outerHTML.slice(0, 80))), [], 'no native controls');
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('a click saves at once: one api_setEditing call, aria-checked, toast, State and the other pages follow', async () => {
+    await withApp({ page: 'settings' }, async (app) => {
+      const { page } = app;
+      await page.waitForSelector('#settings-editing-create');
+      await page.click('#settings-editing-create');
+      assert.equal(await page.getAttribute('#settings-editing-create', 'aria-checked'), 'false');
+      assert.equal(await lastToast(page), 'Création d’entrées désactivée.');
+      await app.waitIdle();
+      assert.deepEqual((await callsNamed(app, 'api_setEditing')).map((c) => c.args), [{ create: false }]);
+      assert.deepEqual(await page.evaluate(() => State.get().editing), { edit: true, create: false, delete: true });
+      assert.deepEqual(await page.evaluate(() => window.__mock.db.editing), { edit: true, create: false, delete: true });
+      // Clicking the label switches it too; the toast names the switch.
+      await page.click('#settings-editing-delete-label');
+      await page.waitForFunction(() => document.getElementById('settings-editing-delete').getAttribute('aria-checked') === 'false');
+      await app.waitIdle();
+      assert.equal(await lastToast(page), 'Suppression d’entrées désactivée.');
+      await page.click('#settings-editing-create');
+      await app.waitIdle();
+      assert.equal(await lastToast(page), 'Création d’entrées activée.');
+      assert.deepEqual((await callsNamed(app, 'api_setEditing')).map((c) => c.args), [{ create: false }, { delete: false }, { create: true }]);
+
+      // Create is back on: Postes shows its create buttons.
+      await page.click('#sidebar .nav-link[data-page="postes"]');
+      await page.waitForSelector('#postes-table');
+      assert.equal(await page.locator('#postes-add').count(), 1);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('keyboard: Space and Enter switch it; a failure puts the switch back and shows the error', async () => {
+    await withApp({ page: 'settings', delays: { api_setEditing: 300 } }, async (app) => {
+      const { page } = app;
+      await page.waitForSelector('#settings-editing-edit');
+      await page.focus('#settings-editing-edit');
+      await page.keyboard.press('Space');
+      // Busy while saving: the new state shows at once, presses are ignored, the focus stays.
+      assert.equal(await page.getAttribute('#settings-editing-edit', 'aria-checked'), 'false');
+      assert.equal(await page.getAttribute('#settings-editing-edit', 'aria-busy'), 'true');
+      await page.keyboard.press('Space');
+      await app.waitIdle();
+      assert.equal(await page.getAttribute('#settings-editing-edit', 'aria-busy'), null);
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'settings-editing-edit');
+      assert.deepEqual((await callsNamed(app, 'api_setEditing')).map((c) => c.args), [{ edit: false }], 'the second press was ignored');
+      assert.equal(await lastToast(page), 'Modification des entrées désactivée.');
+      await page.keyboard.press('Enter');
+      await app.waitIdle();
+      assert.equal(await page.getAttribute('#settings-editing-edit', 'aria-checked'), 'true');
+
+      await page.evaluate(() => { window.__mock.failNext.api_setEditing = { code: 'BUSY', message: 'Serveur occupé, réessayez.' }; });
+      await page.keyboard.press('Space');
+      assert.equal(await page.getAttribute('#settings-editing-edit', 'aria-checked'), 'false');
+      await app.waitIdle();
+      await page.waitForFunction(() => document.getElementById('settings-editing-edit').getAttribute('aria-checked') === 'true');
+      assert.equal(await page.textContent('#settings-editing-edit .toggle-state'), 'Activé');
+      assert.match(await lastToast(page), /^Erreur : Serveur occupé, réessayez\.$/);
+      assert.deepEqual(await page.evaluate(() => State.get().editing), { edit: true, create: true, delete: true });
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('follows switches changed elsewhere (sync status poll) without re-mounting', async () => {
+    await withApp({ page: 'settings' }, async (app) => {
+      const { page } = app;
+      await page.waitForSelector('#settings-editing-delete');
+      await page.evaluate(() => { document.getElementById('settings-body').__marker = 1; });
+      await page.evaluate(() => { window.__mock.db.editing.delete = false; });
+      await page.click('#sync-chip');   // the panel refreshes the status (api_getSyncStatus)
+      await app.waitIdle();
+      assert.equal(await page.getAttribute('#settings-editing-delete', 'aria-checked'), 'false');
+      assert.equal(await page.evaluate(() => document.getElementById('settings-body').__marker), 1, 'not re-mounted');
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('390px: rows fit without sideways scroll, the switch stays on the right of its label', async () => {
+    await withApp({ page: 'settings', viewport: { width: 390, height: 844 } }, async (app) => {
+      const { page } = app;
+      await page.waitForSelector('#settings-editing-edit');
+      await page.locator('#settings-editing').scrollIntoViewIfNeeded();
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'no sideways scroll');
+      const boxes = await page.$$eval(SWITCHES.join(', '), (ns) => ns.map((n) => {
+        const b = n.getBoundingClientRect();
+        const l = document.getElementById(n.id + '-label').getBoundingClientRect();
+        return { right: b.right, left: b.left, height: b.height, labelRight: l.right };
+      }));
+      for (const b of boxes) {
+        assert.ok(b.right <= 390 - 8, 'inside the viewport: ' + JSON.stringify(b));
+        assert.ok(b.left >= b.labelRight, 'beside its label: ' + JSON.stringify(b));
+        assert.ok(b.height >= 40, 'touch target: ' + JSON.stringify(b));
+      }
       assert.deepEqual(app.errors, []);
     });
   });

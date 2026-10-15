@@ -48,35 +48,46 @@ const GROUP_ADMIN = 'chef@decathlon.com';
  * that grew or moved past the block while it was read outside the lock is detected: cellsRead of the
  * flows that read spans went up by those rows (getMonthData +16, savePostesLive +6, syncNoChange +16).
  * These are the only bounds ever raised, both for correctness.
+ * The creation forms added getDataValidations (0 for every earlier flow) and three flows: the form schema
+ * read cold (the source only: header block, key column, two formula blocks, the last row's rules and raw
+ * values, one box of Référentiel lists; cached), warm (the cache alone: no spreadsheet opened) and a
+ * live poste added from the form (the append reads + the new row read back after the write).
  */
 const BASELINE = {
-  bootstrapAdmin: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 12801, getDataRange: 0,
-    propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  bootstrapAdmin: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
+    getDataRange: 0, propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   // An explicit lecteur: the admin groups are checked (they could raise the role), cold here.
-  bootstrapLecteur: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 12801, getDataRange: 0,
-    propertiesReads: 2, cacheReads: 1, cacheWrites: 1, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
-  bootstrapGroupCold: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 12801, getDataRange: 0,
-    propertiesReads: 2, cacheReads: 1, cacheWrites: 1, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  bootstrapLecteur: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
+    getDataRange: 0, propertiesReads: 2, cacheReads: 1, cacheWrites: 1, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  bootstrapGroupCold: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
+    getDataRange: 0, propertiesReads: 2, cacheReads: 1, cacheWrites: 1, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
   // Warm: one getAll, no GroupsApp call, one put (the sliding renewal).
-  bootstrapGroupWarm: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 12801, getDataRange: 0,
-    propertiesReads: 2, cacheReads: 1, cacheWrites: 1, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  bootstrapGroupWarm: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
+    getDataRange: 0, propertiesReads: 2, cacheReads: 1, cacheWrites: 1, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   // doGet with the bootstrap inline: the admin bootstrap + the FAVICON_URL property, nothing else.
-  doGetAdmin: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 12801, getDataRange: 0,
-    propertiesReads: 3, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  doGetAdmin: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
+    getDataRange: 0, propertiesReads: 3, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   // Paramètres opens the source (the live check), not the data spreadsheet (its URL is built from the id).
-  getSettings: { openById: 1, getValues: 0, getDisplayValues: 0, getFormulas: 0, cellsRead: 0, getDataRange: 0,
-    propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
-  getMonthData: { openById: 1, getValues: 8, getDisplayValues: 0, getFormulas: 0, cellsRead: 16281, getDataRange: 0,
-    propertiesReads: 1, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
-  getTimeline: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 66813, getDataRange: 2,
-    propertiesReads: 1, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
-  getImportLog: { openById: 1, getValues: 1, getDisplayValues: 0, getFormulas: 0, cellsRead: 96, getDataRange: 0,
-    propertiesReads: 1, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  getSettings: { openById: 1, getValues: 0, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 0,
+    getDataRange: 0, propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  getMonthData: { openById: 1, getValues: 8, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 16281,
+    getDataRange: 0, propertiesReads: 1, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  getTimeline: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 66813,
+    getDataRange: 2, propertiesReads: 1, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  getImportLog: { openById: 1, getValues: 1, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 96,
+    getDataRange: 0, propertiesReads: 1, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   // The write-back reads the source under the lock by design (it writes there next).
-  savePostesLive: { openById: 2, getValues: 4, getDisplayValues: 2, getFormulas: 1, cellsRead: 15307, getDataRange: 1,
-    propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 700, sourceReadsLocked: 3 },
-  syncNoChange: { openById: 2, getValues: 10, getDisplayValues: 3, getFormulas: 0, cellsRead: 35981, getDataRange: 3,
-    propertiesReads: 4, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 19700, sourceReadsLocked: 0 },
+  savePostesLive: { openById: 2, getValues: 4, getDisplayValues: 2, getFormulas: 1, getDataValidations: 0, cellsRead: 15307,
+    getDataRange: 1, propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 700, sourceReadsLocked: 3 },
+  formSchemaCold: { openById: 1, getValues: 1, getDisplayValues: 3, getFormulas: 2, getDataValidations: 1, cellsRead: 812,
+    getDataRange: 1, propertiesReads: 1, cacheReads: 1, cacheWrites: 1, groupCalls: 0, sourceCellsRead: 812, sourceReadsLocked: 0 },
+  formSchemaWarm: { openById: 0, getValues: 0, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 0,
+    getDataRange: 0, propertiesReads: 1, cacheReads: 1, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  // Under the lock by design, like savePostesLive (the sheet's rules are checked where the row is written).
+  addPosteLive: { openById: 2, getValues: 6, getDisplayValues: 3, getFormulas: 2, getDataValidations: 1, cellsRead: 15440,
+    getDataRange: 1, propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 825, sourceReadsLocked: 7 },
+  syncNoChange: { openById: 2, getValues: 10, getDisplayValues: 3, getFormulas: 0, getDataValidations: 0, cellsRead: 35981,
+    getDataRange: 3, propertiesReads: 4, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 19700, sourceReadsLocked: 0 },
 };
 
 // ------------------------------------------------------------------------------------- fixture
@@ -140,6 +151,34 @@ function sourceReferentiel() {
   return { values: rows, display: rows.map((r) => r.slice()) };
 }
 
+/** Column letter of a header (A..Y: the fixture has fewer than 27 columns). */
+function letter(headers, name) {
+  return String.fromCharCode(65 + headers.indexOf(name));
+}
+
+/**
+ * The postes tab as a real source has it: a formula in « Score conformité » on every record row (the
+ * display keeps the value) and data validation on whole columns (Oui/Non lists, OS and Équipe from the
+ * Référentiel), so that the form flows read real rules. Nothing else reads them.
+ */
+function withFormRules(tab) {
+  const H = data.POSTES_HEADERS;
+  const score = H.indexOf('Score conformité');
+  for (let r = 2; r < tab.values.length; r++) tab.values[r][score] = '=COUNTIF(J' + (r + 1) + ':P' + (r + 1) + ',"Oui")/5';
+  const cats = Object.keys(data.REFERENTIEL);
+  const height = Math.max(...cats.map((c) => data.REFERENTIEL[c].length));
+  const ref = (cat) => {
+    const c = String.fromCharCode(65 + cats.indexOf(cat));
+    return "'Référentiel'!" + c + '2:' + c + (height + 1);
+  };
+  const rule = (name, def) => Object.assign({ a1: letter(H, name) + '3:' + letter(H, name) + tab.values.length }, def);
+  const yesNo = { type: 'VALUE_IN_LIST', values: ['Oui', 'Non'] };
+  tab.validations = [rule('IT Decathlon', yesNo), rule('EDR Decathlon', yesNo), rule('Réseau Decathlon', yesNo),
+    rule('OS', { type: 'VALUE_IN_RANGE', range: ref('OS') }),
+    rule('Équipe', { type: 'VALUE_IN_RANGE', range: ref('Équipe'), allowInvalid: true })];
+  return tab;
+}
+
 function buildSource() {
   const mi = MONTH_COUNT - 1;
   const postes = Array.from({ length: POSTES_PER_MONTH }, (_, i) => poste(i, mi));
@@ -147,7 +186,7 @@ function buildSource() {
   return {
     id: SOURCE_ID, name: 'ShadowIT_Industry', timeZone: 'Europe/Paris',
     sheets: {
-      'Suivi des postes': sourceTab('Suivi des postes', data.POSTES_HEADERS, postes),
+      'Suivi des postes': withFormRules(sourceTab('Suivi des postes', data.POSTES_HEADERS, postes)),
       'Suivi des applications': sourceTab('Suivi des applications', data.APPS_HEADERS, apps),
       'Référentiel': sourceReferentiel(),
     },
@@ -216,9 +255,9 @@ function execution(env, email) {
 const n = (o, k) => o[k] || 0;
 
 /**
- * Runs fn and returns the counts it caused: Sheets round trips (getValues includes getValue), cells
- * read by every read method together, Properties reads (script + user: getProperty, getProperties,
- * getKeys), CacheService reads (get / getAll) and writes (put / putAll),
+ * Runs fn and returns the counts it caused: Sheets round trips (getValues includes getValue; data
+ * validation reads: getDataValidations), cells read by every read method together, Properties reads
+ * (script + user: getProperty, getProperties, getKeys), CacheService reads (get / getAll) and writes (put / putAll),
  * GroupsApp calls (hasUser), cells read from the SOURCE spreadsheet and source reads made while the
  * script lock was held (gasFakes state.reads).
  */
@@ -241,7 +280,9 @@ function measure(env, fn) {
       getValues: d('getValues') + d('getValue'),
       getDisplayValues: d('getDisplayValues'),
       getFormulas: d('getFormulas'),
-      cellsRead: cells('getValues') + cells('getValue') + cells('getDisplayValues') + cells('getFormulas'),
+      getDataValidations: d('getDataValidations'),
+      cellsRead: cells('getValues') + cells('getValue') + cells('getDisplayValues') + cells('getFormulas') +
+        cells('getDataValidations'),
       getDataRange: d('getDataRange'),
       propertiesReads: d('getProperty') + d('getProperties') + d('getKeys'),
       cacheReads: d('cacheGet') + d('cacheGetAll'),
@@ -341,6 +382,24 @@ test('call counts of the main flows on a large data spreadsheet stay within the 
     { month: LIVE_MONTH, changes: [{ id: target._id, updates: { Commentaires: 'Revu le ' + TODAY } }] }));
   assert.equal(m.value.sourceUpdated, true);
   results.savePostesLive = m;
+
+  // The creation form: the schema read from the source (cold), then from the cache (no spreadsheet
+  // opened at all), then a new poste of the live month (strict checks, formula copied down, read back).
+  ctx = execution(env);
+  m = measure(env, () => call(ctx, 'api_getFormSchema', { entity: 'postes', month: LIVE_MONTH }));
+  assert.equal(m.value.origin, 'source');
+  assert.deepEqual(m.value.columns.filter((c) => c.computed).map((c) => c.name), ['Score conformité']);
+  assert.deepEqual(m.value.columns.find((c) => c.name === 'OS').options, ['Windows', 'macOS', 'Linux']);
+  results.formSchemaCold = m;
+  ctx = execution(env);
+  m = measure(env, () => call(ctx, 'api_getFormSchema', { entity: 'postes', month: LIVE_MONTH }));
+  assert.equal(m.lines.find((l) => l.stage === 'formSchema').cache, 'hit');
+  results.formSchemaWarm = m;
+  ctx = execution(env);
+  m = measure(env, () => call(ctx, 'api_addPoste', { month: LIVE_MONTH, record: { 'Nom du poste': 'PC-NEW-0001',
+    'Équipe': TEAMS[0], 'IT Decathlon': 'Oui', OS: 'Linux', 'Version OS': 'Ubuntu 24.04' } }));
+  assert.equal(m.value['Nom du poste'], 'PC-NEW-0001');
+  results.addPosteLive = m;
 
   const measured = {};
   for (const [k, r] of Object.entries(results)) measured[k] = r.counts;

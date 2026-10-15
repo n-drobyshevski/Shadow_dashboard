@@ -91,12 +91,12 @@ test('Core exposes every contract name and nothing private', () => {
   const expected = ['THRESHOLD', 'KEY_POSTE', 'KEY_APP', 'GENERIC_POSTE_NAME', 'RISK_ORDER', 'RISK_COLORS',
     'COLOR_OK', 'COLOR_KO', 'COLOR_THRESHOLD', 'APP_REQUIRED_FIELDS', 'APP_CUSTOM_FIELDS', 'YES_NO_COLS',
     'POSTE_DIFF_COLS', 'POSTE_TEMPLATE_KEYS', 'COLUMN_REF_ALIASES', 'ACTION_STATUSES', 'ACTION_PRIORITIES',
-    'SOURCE_TABS', 'ERROR_CODES',
+    'SOURCE_TABS', 'ERROR_CODES', 'FORM_REQUIRED', 'FORM_DATE_HINTS',
     'normKey', 'isBlank', 'str', 'parseScore', 'makeError', 'validateMonth', 'currentMonth', 'fmtDDMMYYYY',
     'frToIso', 'isoToFr', 'extractSpreadsheetId', 'escapeFormula', 'findHeaderRow', 'rowsToRecords',
     'parseReferentiel', 'scoreApplication', 'enrichPostes', 'enrichApplications', 'uniqueSorted', 'filterData',
     'computeKpis', 'riskCounts', 'histogramBins', 'buildPosteAppsRelation', 'diffPostes', 'diffApplications',
-    'makeGenericPoste', 'mergeCarryOver', 'optionsForColumn', 'sortMonths', 'previousMonth',
+    'makeGenericPoste', 'mergeCarryOver', 'optionsForColumn', 'snapshotFormColumns', 'checkFormRecord', 'sortMonths', 'previousMonth',
     'PERIOD_PRESETS', 'addMonths', 'monthsInRange', 'presetPeriod', 'scoreEvolution',
     'threshold', 'validateThreshold', 'setThreshold', 'isEmail', 'parseEmailList'];
   assert.deepEqual(Object.keys(ctx.Core).sort(), expected.slice().sort());

@@ -97,7 +97,7 @@ test('lecteur: read endpoints work, every write endpoint is FORBIDDEN, links are
   ok(sb.ctx, 'api_getDiff', { oldMonth: '2026-05', newMonth: '2026-05' });
 
   const writes = apiNames(sb.ctx).filter((n) => !LECTEUR_APIS.includes(n));
-  assert.equal(writes.length, 24); // 23 admin endpoints + the test-only api_importMonth
+  assert.equal(writes.length, 27); // 26 admin endpoints + the test-only api_importMonth
   const poste = md.postes[0];
   for (const name of writes) {
     const err = fail(sb.ctx, name, { month: '2026-05', id: poste._id, changes: [], email: ADMIN2, role: 'admin',

@@ -45,7 +45,11 @@
                       (related names),
                       .stat-line (inline "label value · label value" summary, figures in .num).
    - Drawer content   .drawer-section (block, rule on top) > h3 or .section-head (label + action) ;
-                      .drawer-head ; .drawer-buttons.
+                      .drawer-head ; .drawer-buttons ; .drawer-footer (UI.drawer footer: .drawer-footer-note left,
+                      .drawer-footer-buttons right; the note on its own line under 480px).
+   - Form panel       .drawer.form-panel (UI.formPanel): sans title, .form-sections > details.form-section
+                      (summary.form-section-title with the +/− marker, div.form, p.form-section-note),
+                      .form-panel-meta (« Relire les colonnes »).
    - Buttons          variant × size. Variants:
                         .btn.btn-primary    ink fill, white text (one create/commit action per view)
                         .btn.btn-secondary  1px --rule-2 outline on paper
@@ -158,7 +162,7 @@ a[target="_blank"]::after { content: '\2009\2197\FE0E'; color: var(--ink-3); fon
 }
 /* The small-caps label (one face for every label role). */
 .label, .section-title, .subsection-title, .section-head > h3, .drawer-section > h3,
-.metric-title, .page-kicker, .table thead th, .kv dt {
+.metric-title, .page-kicker, .table thead th, .kv dt, .form-section-label {
   font-family: var(--font-sans); font-size: 12px; font-weight: 500; line-height: 1.3; letter-spacing: .06em;
   text-transform: uppercase; color: var(--ink-2); font-variant-numeric: tabular-nums;
 }
@@ -687,6 +691,7 @@ body.unconfigured .sync-chip { display: none; }
   background-color: var(--paper); color: var(--ink); font: inherit; font-size: 13px; line-height: 30px;
 }
 textarea.input { line-height: 1.5; padding: 6px var(--s2); resize: vertical; min-height: 72px; }
+.input.mono { font-family: var(--font-mono); }   /* identifiers typed in a field (`font: inherit` above resets .mono) */
 .input::placeholder { color: var(--ink-3); }
 .input:hover:not(:disabled) { border-color: var(--ink-3); }
 .input:focus, .input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--rule-2); }
@@ -953,6 +958,41 @@ th.num .th-sort { flex-direction: row-reverse; }
 .entity-drawer .action-title { font-weight: 500; font-size: 13px; }
 .entity-drawer .action-comment { margin: 0; font-size: 12px; color: var(--ink-2); }
 .entity-drawer .drawer-head-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s3); }
+/* Drawer footer (UI.drawer footer): under the scrolling body, a note on the left, the buttons on the right. */
+.drawer-footer {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s2) var(--s4);
+  padding: var(--s3) var(--s5); border-top: 1px solid var(--rule); background: var(--paper); flex: 0 0 auto;
+}
+.drawer-footer-note { flex: 1 1 180px; min-width: 0; margin: 0; font-size: 12px; line-height: 1.4; color: var(--ink-3); }
+.drawer-footer-buttons { display: flex; gap: var(--s2); margin-left: auto; }
+/* Form panel (UI.formPanel): the title is a sentence (sans); sections are collapsible ledger blocks, a hairline
+   on top and the small-caps label led by the dashboard's +/− marker (.detail-summary). */
+.drawer.form-panel .drawer-title { font-family: var(--font-sans); letter-spacing: 0; }
+.form-panel-body { display: flex; flex-direction: column; gap: var(--s4); }
+.form-sections { display: flex; flex-direction: column; gap: var(--s3); }
+.form-sections > .form { padding-bottom: var(--s1); }
+details.form-section { border-top: 1px solid var(--rule); }
+/* The panel header's ink rule already opens the form: no hairline on the first section. */
+.form-panel-body > .form-sections:first-child > .form-alert:first-child + details.form-section { border-top: 0; }
+details.form-section > .form { grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: var(--s3) var(--s4);
+  padding: var(--s1) 0 var(--s2); }
+.form-section-title {
+  display: flex; align-items: center; gap: var(--s2); min-height: var(--control-h); cursor: pointer; list-style: none;
+  user-select: none;
+}
+.form-section-title::-webkit-details-marker { display: none; }
+.form-section-title::before {
+  content: '+'; width: 12px; flex: 0 0 12px; font-family: var(--font-mono); font-size: 12px; color: var(--ink-3);
+}
+details.form-section[open] > .form-section-title::before { content: '−'; }
+.form-section-title:hover .form-section-label { color: var(--ink); }
+.form-section-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.form-section-note { margin: 0 0 var(--s2); font-size: 12px; color: var(--ink-3); }
+.form-panel-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--s3); margin: 0; font-size: 12px; color: var(--ink-3); }
+.form-panel-meta .btn-quiet { min-height: 28px; }
+.skel-form-section { display: flex; flex-direction: column; gap: var(--s3); border-top: 1px solid var(--rule); padding-top: var(--s3); }
+.skeleton-body > .skel-form-section:first-child { border-top: 0; padding-top: var(--s2); }
+.skel.skel-input { height: var(--control-h); border-radius: var(--radius); }
 
 /* ------------------------------------------------------------------ toasts + spinner */
 .toast-root {
@@ -1030,7 +1070,7 @@ body.unconfigured .toast-root { left: var(--s4); }
   .etable-search { flex: 1 1 auto; width: auto; min-width: 0; }
   .etable-count { flex: 0 0 auto; }
   .toast-root { left: var(--s3); right: var(--s3); bottom: var(--s3); max-width: none; }
-  .drawer-header, .drawer-body { padding-left: var(--s4); padding-right: var(--s4); }
+  .drawer-header, .drawer-body, .drawer-footer { padding-left: var(--s4); padding-right: var(--s4); }
   .modal-header, .modal-body, .modal-footer { padding-left: var(--s4); padding-right: var(--s4); }
 }
 @media (max-width: 480px) {
@@ -1039,6 +1079,8 @@ body.unconfigured .toast-root { left: var(--s4); }
   .inline-form .input { min-width: 0; flex: 1 1 140px; }
   .kv { grid-template-columns: 1fr; }
   .kv dt { border-bottom: 0; padding-bottom: 0; min-height: 0; }
+  /* Drawer footer: the note on its own line, the buttons under it on the right. */
+  .drawer-footer-note { flex-basis: 100%; }
 }
 
 /* Motion off, except the scroll-driven edge fades (they follow the scroll position, nothing moves). */

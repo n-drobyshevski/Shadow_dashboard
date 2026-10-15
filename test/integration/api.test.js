@@ -63,7 +63,15 @@ function call(ctx, name, args) {
     assertJsonNative(res.data, name);
   } else {
     assert.deepEqual(Object.keys(res).sort(), ['error', 'ok']);
-    assert.deepEqual(Object.keys(res.error).sort(), ['code', 'message']);
+    // `field` only on VALIDATION errors that name a form field (a non-empty string).
+    const keys = Object.keys(res.error).sort();
+    if ('field' in res.error) {
+      assert.deepEqual(keys, ['code', 'field', 'message']);
+      assert.equal(res.error.code, 'VALIDATION');
+      assert.ok(typeof res.error.field === 'string' && res.error.field !== '', 'field');
+    } else {
+      assert.deepEqual(keys, ['code', 'message']);
+    }
     assert.ok(ERROR_CODES.includes(res.error.code), res.error.code);
     assert.equal(typeof res.error.message, 'string');
     assert.doesNotMatch(res.error.message, /\n|\s+at\s+\S+\s+\(|\.js:\d+/, 'stack leaked by ' + name);

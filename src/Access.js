@@ -54,6 +54,21 @@ var Access = (function () {
     try { return CacheService.getScriptCache(); } catch (e) { return null; }
   }
 
+  /**
+   * Script cache for the other modules (this file owns CacheService): the value of `key`, or null when
+   * absent, expired or when the cache fails (never throws).
+   */
+  function cacheGet(key) {
+    var cache = cache_();
+    if (!cache) return null;
+    try { return cache.get(key); } catch (e) { return null; }
+  }
+
+  /** Best-effort put (ttlS seconds); a full or unavailable cache is ignored. */
+  function cachePut(key, value, ttlS) {
+    cachePut_(cache_(), key, value, ttlS);
+  }
+
   function groupKey_(group, email) {
     return 'grp:' + group + '|' + email;
   }
@@ -245,6 +260,8 @@ var Access = (function () {
     checkRole: checkRole,
     checkGroup: checkGroup,
     isGroupMember: isGroupMember,
+    cacheGet: cacheGet,
+    cachePut: cachePut,
     GROUP_DEPTH: GROUP_DEPTH,
     GROUP_CACHE_S: GROUP_CACHE_S,
     GROUP_MAX_AGE_S: GROUP_MAX_AGE_S,

@@ -120,22 +120,48 @@ with the system fallbacks above. The stylesheet must not block the first paint (
   `--rule-2` border on paper. Destructive = `--ko` text, outline. Text buttons for low-priority
   actions. No icons-only buttons except close (×) with aria-label.
 - **Inputs/selects**: 1px `--rule-2`, 3px radius, 32px tall, focus = 2px `--accent` outline offset 1px.
+- **Switch** (`UI.toggle`, a setting saved at once): one row per setting, the label (14px, 500) and its 13px
+  `--ink-2` description on the left, the switch on the right. The switch is a 34×20px track with a 14px round
+  thumb: off = 1px `--ink-3` outline on paper, `--ink-3` thumb on the left; on = track filled `--ink`, white
+  thumb on the right. The word « Activé » / « Désactivé » follows it (fixed width, so the track never moves),
+  so the state is never told by colour or position alone. `button role=switch aria-checked`, named by the
+  label; Space / Enter / a click on it or on the label switch it; focus = 2px `--accent` outline offset 2px;
+  the thumb slides in 120 ms, not at all under reduced motion. While saving the track dims and the switch
+  ignores presses; a failure puts it back. Rows split by hairlines; 40px tall under 600px, still beside its
+  label at 390px. Never a checkbox for a setting that saves on change.
 - **Modal / drawer**: the only elevated surfaces (shadow `0 12px 32px rgba(0,0,0,.18)`), 6px radius
   (drawer: none, full height, 1px left rule). Backdrop `rgba(22,24,27,.35)`, no blur.
+- **Form panel** (« Nouveau poste », « Nouvelle application »): a drawer, so the table stays in view. Title in
+  sans (« Nouveau poste — mai 2026 »). The fields come in collapsible sections: a hairline on top and the
+  small-caps label led by the same mono +/− marker as the dashboard's detail rows; two columns of fields when
+  the panel is wide enough, one at 390px. Required fields carry a `--ko` asterisk. Columns the Google Sheet
+  computes are no fields: one 12px `--ink-3` note names them. A fallback schema shows its warning as an
+  `alert-warning` line above the form; a 12px `--ink-3` line under it says where the columns were read, with a
+  quiet « Relire les colonnes ». Footer (fixed under the scrolling fields, hairline on top): a 12px `--ink-3`
+  note saying where the record goes, then « Annuler » (secondary) and the primary button; under 480px the note
+  takes its own line and the buttons stay right. Skeleton (label bars + 32px input outlines) while the
+  columns load. Closing with typed values asks first; while saving nothing closes the panel.
 - **Toasts**: bottom-left, ink background, white text, 3px radius, no icons; errors get a `--ko`
   left bar.
 - **Config screen**: left-aligned within the main column like any page: title "Source de données",
   one paragraph, the input (full width up to 640px) and one primary button. No centered card.
-- **Paramètres** (admin only, last nav item): three sections on paper like any page, each saved on
+- **Paramètres** (admin only, last nav item): five sections on paper like any page, each saved on
   its own: « Source de données » (`dl.kv` of the source, tabs found as status marks — the one live
   check of the source, « Classeur inaccessible. » when it cannot be opened —, data spreadsheet link; a one-line form « Nouvelle source » + secondary button), « Seuil de conformité » (a 72px mono
   figure field with its `%` unit, primary « Enregistrer », quiet « Rétablir 80 % » only when changed),
-  « Accès » (« Autres comptes du domaine » dropdown, ledger table Compte (mono) / Rôle (small dropdown,
+  « Saisie dans l’application » (one intro paragraph — for every admin and every month, actions not
+  concerned — then three switches: « Modifier les entrées », « Créer des entrées », « Supprimer des
+  entrées », each saved on toggle with a toast), « Accès » (« Autres comptes du domaine » dropdown, ledger table Compte (mono) / Rôle (small dropdown,
   saved on change) / Ajouté le / « Retirer » quiet destructive button with a confirm; the owner and the
   signed-in rows are plain text with a « propriétaire » / « vous » note; add form under the table).
 - **Signed-in account**: last block of the sidebar footer, email in 12px mono `--ink-2`, role under it
   in `--ink-3` (« Lecteur · lecture seule »). Lecteurs get no spreadsheet links and no write controls
   (hidden, not disabled), and no per-page banner.
+- **Switched-off writes** (Paramètres › « Saisie dans l’application »): on Postes / Applications the controls
+  of a switch that is off are hidden for every admin, like for lecteurs (create buttons, inline editors,
+  « Renommer », « Supprimer »); the admins' edit note (`alert-info` above the stat line) adds one sentence
+  naming them, « La modification et la création des entrées sont désactivées dans les Paramètres. », and
+  keeps only that sentence when the page has no write left. « Nouvelle action » and Suivi des actions stay.
 - **Accès refusé**: same left-aligned layout as the configuration screen: kicker, title, the server
   message (it names the account), one help line, « Réessayer » as a secondary button.
 - **Empty states**: one line of `--ink-2` text (plus an action link if relevant), left-aligned.
@@ -145,11 +171,23 @@ with the system fallbacks above. The stylesheet must not block the first paint (
 ## Copy
 - Titles: « Tableau de bord », « Postes », « Applications », « Suivi temporel », « Suivi des actions ».
 - Buttons: « Synchroniser maintenant », « Activer la synchronisation horaire », « Actualiser »,
-  « Enregistrer », « Annuler », « Ajouter un poste générique »,
-  « Nouvelle application », « Renommer », « Supprimer », « Exporter CSV », « Nouvelle action ».
+  « Enregistrer », « Annuler », « Nouveau poste », « Poste générique », « Créer le poste »,
+  « Nouvelle application », « Ajouter l’application », « Relire les colonnes », « Renommer », « Supprimer »,
+  « Exporter CSV », « Nouvelle action ».
+- Paramètres › « Saisie dans l’application »: switches « Modifier les entrées », « Créer des entrées »,
+  « Supprimer des entrées », states « Activé » / « Désactivé »; toasts « Modification des entrées
+  activée. » / « … désactivée. », « Création d’entrées activée. » / « … désactivée. », « Suppression d’entrées
+  activée. » / « … désactivée. »; refusals « La modification des postes et des applications est désactivée
+  dans les Paramètres. », « La création de postes et d’applications est désactivée dans les Paramètres. »,
+  « La suppression d’applications est désactivée dans les Paramètres. »; unsaved cells dropped « Modification
+  des entrées désactivée : les modifications non enregistrées sont abandonnées. ».
+- Unsaved form: « Abandonner la saisie ? » / « Les valeurs saisies seront perdues. », buttons « Continuer la
+  saisie » and « Abandonner ».
 - Toasts: « Synchronisé — +2 postes · 1 application modifiée. », « Synchronisé — aucune modification. »,
   « 3 modifications enregistrées dans le Google Sheet source. », « 1 modification enregistrée (historique de
-  mai 2026). »,
+  mai 2026). », « Poste « LAB-TEX-04 » créé dans le Google Sheet source. », « Poste « LAB-TEX-04 » ajouté à
+  l’historique de avril 2026. », « Application « Slack » ajoutée. » (each + « (masqué par les filtres actifs). »
+  when the filters hide the new row),
   « Erreur : <message> ».
 - Numbers fr-FR: `71,4 %` (narrow no-break space before %), thousands with narrow no-break space.
 

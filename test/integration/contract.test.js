@@ -56,9 +56,9 @@ function stripComments(src) {
 
 // ----------------------------------------------------------------------------------------------
 
-test('docs/API.md lists 31 distinct api_* functions', () => {
+test('docs/API.md lists 34 distinct api_* functions', () => {
   const names = contractApiNames();
-  assert.equal(names.length, 31, names.join(', '));
+  assert.equal(names.length, 34, names.join(', '));
 });
 
 test('sandbox api_* globals == docs/API.md complete list', () => {

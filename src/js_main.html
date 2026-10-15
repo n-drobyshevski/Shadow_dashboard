@@ -532,6 +532,8 @@
     return api.call('api_getSyncStatus', null).then(function (st) {
       if (seenChangeAt !== null && st.lastChangeAt && st.lastChangeAt !== seenChangeAt) newData = true;
       State.set({ sync: st });
+      // The poll also brings the editing switches another admin may have changed in Paramètres.
+      State.setEditing(st.editing);
       updateSyncChip();
       return st;
     }, function (err) {
@@ -1013,6 +1015,10 @@
     if (has(changed, 'page')) mountPage();
     else if (has(changed, 'month') || has(changed, 'from')) swapMonth(s.month);
     else if (has(changed, 'filters')) updatePage(changed);
+    // Editing switches: Postes / Applications show or hide their controls in place (Paramètres follows
+    // them itself; no other page has such controls).
+    if (has(changed, 'editing') && !has(changed, 'page') && !has(changed, 'month') && !has(changed, 'from') &&
+        (s.page === 'postes' || s.page === 'apps')) updatePage(['editing']);
   }
 
   /**

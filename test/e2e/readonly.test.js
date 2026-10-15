@@ -18,20 +18,21 @@ const posteId = (name) => 'p-' + MONTH + '-' + (data.MONTHS[MONTH].postes.findIn
 const appId = (name) => 'a-' + MONTH + '-' + (data.MONTHS[MONTH].applications.findIndex((a) => a[KEY_APP] === name) + 1);
 
 /** Every endpoint a lecteur must never call (the server answers FORBIDDEN). */
-const ADMIN_APIS = ['api_setConfig', 'api_syncNow', 'api_enableSync', 'api_savePostes', 'api_addGenericPoste', 'api_saveApplications',
+const ADMIN_APIS = ['api_setConfig', 'api_syncNow', 'api_enableSync', 'api_savePostes', 'api_addGenericPoste', 'api_addPoste',
+  'api_getFormSchema', 'api_saveApplications',
   'api_addApplication', 'api_deleteApplication', 'api_renameApplication', 'api_addAction', 'api_updateAction',
   'api_deleteAction', 'api_addReplacement', 'api_updateReplacement', 'api_deleteReplacement',
-  'api_getSettings', 'api_setThreshold', 'api_saveUser', 'api_removeUser', 'api_setDomainRole', 'api_saveGroup',
+  'api_getSettings', 'api_setThreshold', 'api_setEditing', 'api_saveUser', 'api_removeUser', 'api_setDomainRole', 'api_saveGroup',
   'api_removeGroup'];
 
 /** Write controls of the data pages (ids, classes of row actions / inline editing, dirty bar). */
-const WRITE_SELECTORS = ['#dashboard-sync', '#sync-now', '#sync-enable', '.edit-note', '#postes-add-generic',
-  '#apps-add', '#app-rename', '#app-delete', '#drawer-add-action', '#action-add', '#replacement-add', '.btn-delete',
+const WRITE_SELECTORS = ['#dashboard-sync', '#sync-now', '#sync-enable', '.edit-note', '#postes-add-generic', '#postes-add',
+  '.form-panel', '#apps-add', '#app-rename', '#app-delete', '#drawer-add-action', '#action-add', '#replacement-add', '.btn-delete',
   '.btn-mark-done', '.cell-editable', '.th-editable', '.cell-editor-host', '.etable-dirtybar', '.etable-save',
   '.etable-cancel', '.modal'];
 
 /** Button labels of write actions (docs/DESIGN.md "Copy"). */
-const WRITE_LABELS = /^(Synchroniser maintenant|Activer la synchronisation horaire|Ajouter un poste générique|Nouvelle application|Renommer|Supprimer|Nouvelle action|Nouveau remplacement|Enregistrer.*|Annuler)$/;
+const WRITE_LABELS = /^(Synchroniser maintenant|Activer la synchronisation horaire|Nouveau poste|Poste générique|Créer le poste|Nouvelle application|Ajouter l’application|Abandonner|Renommer|Supprimer|Nouvelle action|Nouveau remplacement|Enregistrer.*|Annuler)$/;
 
 const LECTEUR_EMPTY = 'Aucune donnée pour le moment. Les données arrivent à la prochaine synchronisation horaire.';
 
@@ -50,8 +51,9 @@ async function assertNoWriteControls(page, where) {
     assert.equal(await page.$$eval(`#main ${sel}, #modal-root ${sel}, .drawer ${sel}, body > ${sel}`, (ns) => ns.length), 0,
       `${where}: no ${sel}`);
   }
+  // Column headers are sort buttons, not actions (the replacements table has a « Nouveau poste » column).
   const labels = await page.$$eval('#main button, #modal-root button, .drawer button',
-    (bs) => bs.map((b) => b.textContent.replace(/\s+/g, ' ').trim()));
+    (bs) => bs.filter((b) => !b.closest('thead')).map((b) => b.textContent.replace(/\s+/g, ' ').trim()));
   assert.deepEqual(labels.filter((l) => WRITE_LABELS.test(l)), [], `${where}: no write button`);
 }
 
@@ -117,6 +119,8 @@ describe('read-only mode (lecteur)', () => {
       await app.waitIdle();
       await assertNoWriteControls(page, 'postes after filter');
       await assertNoAdminCalls(app, 'postes');
+      // No creation form: its fields are never asked for (api_getFormSchema is admin only).
+      assert.equal((await app.calls()).filter((c) => c.name === 'api_getFormSchema').length, 0);
       assert.deepEqual(app.errors, []);
     });
   });
@@ -245,6 +249,7 @@ describe('admin still edits (light check)', () => {
       await app.goto('postes');
       await page.waitForSelector('#postes-table .cell-editable');
       assert.ok(await page.$('#postes-add-generic'));
+      assert.ok(await page.$('#postes-add'));
       assert.ok(await page.$('#postes-table .etable-dirtybar'));
       await page.click(`#postes-table tr[data-id="${posteId('LAB-MEC-01')}"] .postes-key`);
       await page.waitForSelector('.drawer.open #drawer-add-action');
