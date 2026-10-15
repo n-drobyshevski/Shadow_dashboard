@@ -70,6 +70,33 @@
 
   function plural(n, one, many) { return UI.fmtNum(n) + ' ' + (n > 1 ? many : one); }
 
+  /**
+   * Keeps the computed (non-editable) columns in sync with unsaved edits.
+   * UI.editableTable only re-renders the edited cell, so a computed cell of the same row would keep
+   * showing the saved value until "Enregistrer". After every edit interaction we re-render the
+   * computed cells of the visible rows from (record + dirty updates).
+   */
+  function liveComputedColumns(table, computed, recordById) {
+    function sync() {
+      var dirty = {};
+      table.getDirty().forEach(function (d) { dirty[String(d.id)] = d.updates; });
+      Array.prototype.forEach.call(table.node.querySelectorAll('tbody tr[data-id]'), function (tr) {
+        var rec = recordById(tr.dataset.id);
+        if (!rec) return;
+        var view = dirty[tr.dataset.id] ? Object.assign({}, rec, dirty[tr.dataset.id]) : rec;
+        computed.forEach(function (col) {
+          var td = tr.querySelector('td[data-col="' + col.key + '"]');
+          if (!td) return;
+          var out = col.render(view);
+          UI.clear(td).appendChild(out instanceof Node ? out : document.createTextNode(String(out)));
+        });
+      });
+    }
+    ['change', 'focusout', 'keyup'].forEach(function (type) {
+      table.node.addEventListener(type, function () { setTimeout(sync, 0); });
+    });
+  }
+
   function filterNote(s) {
     var f = s.filters || {};
     var parts = [];
@@ -432,6 +459,9 @@
       }
     });
     table.node.id = 'apps-table';
+    liveComputedColumns(table, columns.slice(1, 3), function (id) {
+      return (State.getMonthData(month) || md).applications.filter(function (r) { return String(r._id) === id; })[0];
+    });
 
     function refresh() {
       table.setRows(visible());
