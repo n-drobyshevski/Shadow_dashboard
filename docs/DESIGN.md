@@ -59,10 +59,20 @@ with the system fallbacks above.
 
 ## Components
 - **Sidebar**: `--paper-2`, full viewport height (sticky), 1px right rule. Wordmark "Shadow IT" in
-  mono 500 with a small "Industry · conformité" subtitle. Nav = plain text links with a 2px ink bar
-  on the left of the active item; numbers on the right showing counts are allowed (e.g. postes 7).
-  Period + filters below a small-caps "PÉRIODE" / "FILTRES" label. Footer: text links to the data
-  sheet and the source sheet, "Changer de source" as a text button.
+  mono 500 with a small "Industry · conformité" subtitle. Nav = text links led by a 16px « Trait »
+  line icon (1.5px stroke, square caps, mitred joins, `currentColor`; `--ink-3` at rest, `--ink` on
+  hover / active), with a 2px ink bar on the left of the active item; numbers on the right showing
+  counts are allowed (e.g. postes 7). Footer: text links to the data sheet and the source sheet, the
+  signed-in account, then « Réduire le menu ».
+- **Collapsed rail** (> 900px, remembered per browser): 56px wide, wordmark shortened to « SI », icons
+  only (labels kept for screen readers), the page name in an ink tooltip to the right of the icon,
+  footer links hidden. The active page keeps its 2px ink bar.
+- **App bar**: sticky 48px bar on paper above every page, 1px `--rule` below. Small-caps « PÉRIODE »
+  then the month stepper `‹ Mai 2026 ›` (one outlined control: two 28px step buttons around the month
+  dropdown), a hairline separator, then « ÉQUIPE » and « BÂTIMENT / LABO » multiselects with inline
+  small-caps labels and « Réinitialiser ». An active filter gets an ink outline; on the right, « 2 postes
+  sur 7 » while a filter is active. A filter that does not apply to the page (Bâtiment on Suivi des
+  actions) is disabled with a dashed border and reads « Non applicable » (reason in a tooltip).
 - **Page header**: small-caps breadcrumb/month line (`MAI 2026 · EXPORT 2026-05`) above a 20px title.
   A hairline below. Page-level actions right-aligned, as text or outline buttons.
 - **KPI strip** (dashboard): one row, 4 columns divided by vertical hairlines, no boxes. Label in
@@ -138,4 +148,6 @@ with the system fallbacks above.
 ## Accessibility
 Contrast ≥ 4.5:1 for text (all tokens above pass on `--paper`), visible focus ring on everything
 interactive, never colour-only status (always text + colour), `prefers-reduced-motion` respected,
-touch targets ≥ 32px, works at 390px wide (sidebar becomes a top bar with a menu button).
+touch targets ≥ 32px, works at 390px wide (sidebar becomes a top bar with a menu button; the app bar
+keeps the month stepper and folds the filters behind a « Filtres » button showing the number of
+active values).

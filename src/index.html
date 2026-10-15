@@ -20,9 +20,12 @@
             aria-label="Afficher le menu">Menu</button>
   </header>
   <aside id="sidebar" class="sidebar" aria-label="Navigation principale"></aside>
-  <main id="main" class="main" tabindex="-1">
-    <div class="boot-loading" role="status"><span class="spinner" aria-hidden="true"></span>Chargement…</div>
-  </main>
+  <div class="workspace">
+    <div id="appbar" class="appbar" role="region" aria-label="Période et filtres"></div>
+    <main id="main" class="main" tabindex="-1">
+      <div class="boot-loading" role="status"><span class="spinner" aria-hidden="true"></span>Chargement…</div>
+    </main>
+  </div>
 </div>
 <div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="false"></div>
 <div id="modal-root"></div>

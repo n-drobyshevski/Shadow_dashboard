@@ -1,6 +1,7 @@
 'use strict';
 /**
- * E2E smoke tests of the client shell (App router, sidebar, configuration screen, filters).
+ * E2E smoke tests of the client shell (App router, sidebar + collapsed rail, app bar with Période and
+ * filters, configuration screen).
  * Run: NODE_PATH=$(npm root -g) PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node --test test/e2e/
  */
 const { test, describe } = require('node:test');
@@ -171,6 +172,95 @@ describe('shell', () => {
     });
   });
 
+  test('app bar: Période stepper and filters above every page', async () => {
+    await withApp({}, async (app) => {
+      const { page } = app;
+      // Période / Filtres live in the sticky app bar, no longer in the sidebar.
+      for (const id of ['#month-select', '#filter-equipe', '#filter-batiment']) {
+        assert.equal(await page.$(`#appbar ${id}`) !== null, true, `${id} in the app bar`);
+        assert.equal(await page.$(`#sidebar ${id}`), null, `${id} not in the sidebar`);
+      }
+      assert.equal((await page.textContent('#appbar-period-label')).trim(), 'Période');
+      assert.equal(await page.isVisible('#filters-toggle'), false, 'no « Filtres » button on wide screens');
+
+      // ‹ / › step through the imported months (2026-04, 2026-05; latest selected).
+      assert.equal(await page.isDisabled('#month-next'), true);
+      assert.equal(await page.isDisabled('#month-prev'), false);
+      await page.click('#month-prev');
+      await page.waitForFunction(() => ((document.getElementById('dashboard-caption') || {}).dataset || {}).month === '2026-04');
+      await app.waitIdle();
+      assert.equal(await dropdownValue(page, '#month-select'), '2026-04');
+      assert.equal(await page.isDisabled('#month-prev'), true);
+      assert.equal(await page.isDisabled('#month-next'), false);
+      await page.click('#month-next');
+      await page.waitForFunction(() => window.State.get().month === '2026-05');
+      await app.waitIdle();
+
+      // « 2 postes sur 7 » only while a filter is active.
+      assert.equal(await page.isVisible('#appbar-count'), false);
+      await chooseOptions(page, '#filter-equipe .dd-trigger', ['Labo Textile']);
+      await app.waitIdle();
+      assert.match((await page.textContent('#appbar-count')).trim(), /^\d+ postes? sur 7$/);
+
+      // The bar stays on screen while the page scrolls.
+      await page.evaluate(() => window.scrollTo(0, 600));
+      const top = await page.$eval('#appbar', (n) => n.getBoundingClientRect().top);
+      assert.equal(Math.round(top), 0);
+
+      // Suivi des actions: Bâtiment does not apply, said in words (and in the accessible description).
+      await app.goto('actions');
+      assert.equal(await page.isDisabled('#filter-batiment .dd-trigger'), true);
+      assert.equal((await page.textContent('#filter-batiment .dd-value')).trim(), 'Non applicable');
+      assert.match(await page.textContent('#filter-batiment-na'), /les actions n’ont pas de bâtiment/);
+      await app.goto('postes');
+      assert.equal(await page.isDisabled('#filter-batiment .dd-trigger'), false);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('sidebar collapses to an icon rail and remembers it', async () => {
+    await withApp({}, async (app) => {
+      const { page } = app;
+      // One line icon per page, hidden from assistive technology (the label names the link).
+      const icons = await page.$$eval('#sidebar .nav-link', (ns) => ns.map((n) => {
+        const svg = n.querySelector('svg.icon');
+        return svg ? svg.getAttribute('aria-hidden') : null;
+      }));
+      assert.deepEqual(icons, PAGES.map(() => 'true'));
+      assert.equal(await page.getAttribute('#nav-collapse', 'aria-expanded'), 'true');
+      assert.equal((await page.textContent('#nav-collapse')).trim(), 'Réduire le menu');
+      const wide = await page.$eval('#sidebar', (n) => n.getBoundingClientRect().width);
+      assert.equal(Math.round(wide), 232);
+
+      await page.click('#nav-collapse');
+      await page.waitForFunction(() => Math.round(document.getElementById('sidebar').getBoundingClientRect().width) === 56);
+      assert.equal(await page.evaluate(() => document.body.classList.contains('nav-collapsed')), true);
+      assert.equal(await page.getAttribute('#nav-collapse', 'aria-expanded'), 'false');
+      const labelW = await page.$eval('#sidebar .nav-label', (n) => n.getBoundingClientRect().width);
+      assert.ok(labelW <= 1, 'labels visually hidden in the rail (' + labelW + 'px)');
+      assert.equal(await page.isVisible('#side-user'), false);
+      // Labels stay in the accessibility tree; the name shows as a tooltip beside the icon.
+      assert.match(await page.textContent('#sidebar .nav-link[data-page="postes"]'), /Postes/);
+      await page.hover('#sidebar .nav-link[data-page="postes"]');
+      await page.waitForSelector('.tooltip');
+      assert.equal((await page.textContent('.tooltip')).trim(), 'Postes');
+      assert.equal(await page.getAttribute('.tooltip', 'data-placement'), 'right');
+      // Navigation still works from the rail.
+      await page.click('#sidebar .nav-link[data-page="apps"]');
+      await page.waitForSelector('#main .page[data-page="apps"]');
+
+      // Remembered per browser.
+      await page.reload();
+      await page.waitForSelector('#sidebar .nav-link');
+      assert.equal(await page.evaluate(() => document.body.classList.contains('nav-collapsed')), true);
+      await page.click('#nav-collapse');
+      assert.equal(await page.evaluate(() => document.body.classList.contains('nav-collapsed')), false);
+      assert.equal(await page.evaluate(() => localStorage.getItem('shadowit.sidebar')), 'open');
+      assert.equal(await page.$('#sidebar .nav-link .tooltip'), null);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
   test('collapses the sidebar into a top bar below 900px', async () => {
     await withApp({ viewport: { width: 700, height: 900 } }, async (app) => {
       const { page } = app;
@@ -182,6 +272,15 @@ describe('shell', () => {
       await page.click('#sidebar .nav-link[data-page="postes"]');
       await page.waitForSelector('#main .page[data-page="postes"]');
       assert.ok(!(await page.isVisible('#sidebar')), 'menu closes after navigation');
+      // Période stays visible; the filters fold behind « Filtres » (with the number of active values).
+      assert.ok(await page.isVisible('#month-select'));
+      assert.equal(await page.isVisible('#filter-equipe'), false);
+      await page.click('#filters-toggle');
+      assert.equal(await page.getAttribute('#filters-toggle', 'aria-expanded'), 'true');
+      assert.ok(await page.isVisible('#filter-equipe'));
+      await chooseOptions(page, '#filter-equipe .dd-trigger', ['Labo Textile']);
+      await app.waitIdle();
+      assert.equal((await page.textContent('#filters-toggle-count')).trim(), '1');
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       assert.ok(overflow <= 0, 'no horizontal page scroll (' + overflow + 'px)');
       assert.deepEqual(app.errors, []);

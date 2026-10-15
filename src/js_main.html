@@ -13,7 +13,8 @@
 
   /**
    * Navigation order + labels. The shell owns the labels: each one is the page title (docs/DESIGN.md
-   * « Copy »), whatever the page registers. Text-only nav: page icons are not rendered.
+   * « Copy »), whatever the page registers. Each link leads with a 16px line icon (ICONS), the only thing
+   * left visible in the collapsed rail.
    */
   var NAV = [
     { id: 'dashboard', title: 'Tableau de bord' },
@@ -23,17 +24,38 @@
     { id: 'actions', title: 'Suivi des actions' },
     { id: 'settings', title: 'Paramètres', admin: true }
   ];
+
+  /**
+   * « Trait » icons: 16×16 grid, 1.5px stroke, square caps and mitred joins (the hairlines and status
+   * squares of the ledger). Each entry = [tag, attributes]; `fill: true` marks the solid parts.
+   */
+  var ICONS = {
+    dashboard: [['path', { d: 'M2.5 11.5a5.5 5.5 0 0 1 11 0' }], ['path', { d: 'M8 11.5l2.5-4' }], ['path', { d: 'M1.75 13.75h12.5' }]],
+    postes: [['rect', { x: 2, y: 2.75, width: 12, height: 8.25 }], ['path', { d: 'M8 11v2.5M5 13.75h6' }]],
+    apps: [['rect', { x: 2, y: 2, width: 4.75, height: 4.75 }], ['rect', { x: 9.25, y: 2, width: 4.75, height: 4.75 }],
+      ['rect', { x: 2, y: 9.25, width: 4.75, height: 4.75 }], ['circle', { cx: 11.6, cy: 11.6, r: 2.4 }]],
+    timeline: [['path', { d: 'M2 14h12' }], ['path', { d: 'M2.5 11l3.5-4 3 2.5 4.5-5.5' }]],
+    actions: [['path', { d: 'M2 4.25l1.5 1.5 2.75-3' }], ['path', { d: 'M8.5 4.25H14' }],
+      ['rect', { x: 2.25, y: 9.5, width: 3.5, height: 3.5 }], ['path', { d: 'M8.5 11.25H14' }]],
+    settings: [['path', { d: 'M2 4h12M2 8h12M2 12h12' }], ['rect', { x: 9, y: 2.5, width: 3, height: 3, fill: true }],
+      ['rect', { x: 4, y: 6.5, width: 3, height: 3, fill: true }], ['rect', { x: 10, y: 10.5, width: 3, height: 3, fill: true }]],
+    collapse: [['rect', { x: 2, y: 2.5, width: 12, height: 11 }], ['path', { d: 'M6 2.5v11' }], ['path', { d: 'M11 6l-2 2 2 2' }]],
+    expand: [['rect', { x: 2, y: 2.5, width: 12, height: 11 }], ['path', { d: 'M6 2.5v11' }], ['path', { d: 'M9 6l2 2-2 2' }]]
+  };
   var ROLE_LABELS = { admin: 'Administrateur', lecteur: 'Lecteur' };
   var BRAND = 'Shadow IT';
   var BRAND_SUB = 'Industry · conformité';
+  var COLLAPSE_KEY = 'shadowit.sidebar';
 
   var sidebar = null;
+  var appbar = null;
   var main = null;
+  var monthSelect = null;
   var booted = false;
   var currentPage = null;
   var filtersBox = null;
   var filterOptionsMonth = null;   // month whose options are rendered in the filters box
-  var suppressFilterRender = false; // filters changed by the sidebar widgets themselves
+  var suppressFilterRender = false; // filters changed by the app bar widgets themselves
   var filtersPage = null;           // page the filters box was rendered for (Bâtiment disabled on actions)
 
   function pages() { return window.Pages || {}; }
@@ -112,6 +134,61 @@
     }
   }
 
+  /** Collapsed rail (wide screens only): remembered per browser, never required to work. */
+  /** Inline SVG icon (aria-hidden: the label next to it, or the rail tooltip + sr-only label, names it). */
+  function icon(name) {
+    var NS = 'http://www.w3.org/2000/svg';
+    var svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('class', 'icon icon-' + name);
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('width', '16');
+    svg.setAttribute('height', '16');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    (ICONS[name] || []).forEach(function (part) {
+      var node = document.createElementNS(NS, part[0]);
+      Object.keys(part[1]).forEach(function (k) {
+        if (k === 'fill') node.setAttribute('class', 'icon-fill');
+        else node.setAttribute(k, String(part[1][k]));
+      });
+      svg.appendChild(node);
+    });
+    return svg;
+  }
+
+  function readCollapsed() {
+    try { return window.localStorage.getItem(COLLAPSE_KEY) === 'collapsed'; } catch (e) { return false; }
+  }
+  function isCollapsed() { return document.body.classList.contains('nav-collapsed'); }
+
+  function setCollapsed(on) {
+    document.body.classList.toggle('nav-collapsed', !!on);
+    try { window.localStorage.setItem(COLLAPSE_KEY, on ? 'collapsed' : 'open'); } catch (e) { /* private mode */ }
+    syncCollapseButton();
+    syncRailTooltips();
+  }
+
+  function syncCollapseButton() {
+    var b = document.getElementById('nav-collapse');
+    if (!b) return;
+    var on = isCollapsed();
+    b.setAttribute('aria-expanded', on ? 'false' : 'true');
+    UI.clear(b.querySelector('.nav-collapse-glyph')).appendChild(icon(on ? 'expand' : 'collapse'));
+    b.querySelector('.nav-collapse-label').textContent = on ? 'Ouvrir le menu' : 'Réduire le menu';
+  }
+
+  /** In the rail the labels are hidden: each link gets its title as a tooltip (removed when expanded). */
+  function syncRailTooltips() {
+    if (!sidebar) return;
+    var on = isCollapsed();
+    Array.prototype.forEach.call(sidebar.querySelectorAll('.nav-link'), function (b) {
+      var info = navInfo(b.dataset.page);
+      UI.tooltip(b, on && info ? info.title : null, { placement: 'right' });
+    });
+    var c = document.getElementById('nav-collapse');
+    if (c) UI.tooltip(c, on ? 'Ouvrir le menu' : null, { placement: 'right' });
+  }
+
   function updateNavActive() {
     if (!sidebar) return;
     var page = State.get().page;
@@ -134,20 +211,32 @@
   function brand() {
     return el('div', { class: 'brand' },
       el('span', { class: 'brand-name' }, BRAND),
+      el('span', { class: 'brand-short', 'aria-hidden': 'true' }, 'SI'),
       el('span', { class: 'brand-sub' }, BRAND_SUB));
   }
 
-  /** Right-aligned mono counts next to Postes / Applications (filtered data of the selected month). */
+  /**
+   * Right-aligned mono counts next to Postes / Applications (filtered data of the selected month), and the
+   * « 3 postes sur 7 » line of the app bar while a filter is active.
+   */
   function updateNavCounts() {
-    if (!sidebar) return;
     var s = State.get();
     var md = s.month ? State.getMonthData(s.month) : null;
     var f = md ? State.filtered(md) : null;
     var counts = { postes: f ? f.postes.length : null, apps: f ? f.applications.length : null };
-    Array.prototype.forEach.call(sidebar.querySelectorAll('.nav-count'), function (n) {
-      var v = counts[n.dataset.count];
-      n.textContent = v === null || v === undefined ? '' : UI.fmtNum(v);
-    });
+    if (sidebar) {
+      Array.prototype.forEach.call(sidebar.querySelectorAll('.nav-count'), function (n) {
+        var v = counts[n.dataset.count];
+        n.textContent = v === null || v === undefined ? '' : UI.fmtNum(v);
+      });
+    }
+    var line = document.getElementById('appbar-count');
+    if (line) {
+      var active = md && hasActiveFilters(s.filters);
+      line.textContent = active ? UI.fmtNum(f.postes.length) + ' poste' + (f.postes.length > 1 ? 's' : '') +
+        ' sur ' + UI.fmtNum(md.postes.length) : '';
+      line.hidden = !active;
+    }
   }
 
   function renderSidebar() {
@@ -158,25 +247,10 @@
         var counted = n.id === 'postes' || n.id === 'apps';
         return el('li', null, el('button', { type: 'button', class: 'nav-link', dataset: { page: n.id },
           onClick: function () { go(n.id); } },
+          el('span', { class: 'nav-glyph', 'aria-hidden': 'true' }, icon(n.id)),
           el('span', { class: 'nav-label' }, n.title),
           counted ? el('span', { class: 'nav-count', dataset: { count: n.id } }) : null));
       })));
-
-    var monthOptions = s.months.length ?
-      s.months.map(function (m) { return { value: m, label: Fmt.monthTitle(m) }; }) :
-      [{ value: '', label: 'Aucun mois importé' }];
-    var monthSelect = UI.select({
-      label: 'Mois',
-      id: 'month-select',
-      options: monthOptions,
-      value: s.month,
-      disabled: !s.months.length,
-      onChange: function (v) { if (v) State.set({ month: v }); }
-    });
-    monthSelect.classList.add('month-select');
-
-    filtersBox = el('div', { class: 'filters' });
-    filterOptionsMonth = null;
 
     // Spreadsheet links are only sent to admins (the sheets are private to the deployer).
     var footer = el('div', { class: 'sidebar-footer' },
@@ -185,14 +259,91 @@
         'aria-label': s.sourceTitle ? 'Source : ' + s.sourceTitle : null }) : null,
       userLine(s.user));
 
-    sidebar.appendChild(el('div', { class: 'sidebar-inner' },
-      brand(),
-      nav,
-      el('div', { class: 'sidebar-section' }, el('h2', { class: 'sidebar-heading' }, 'Période'), monthSelect),
-      el('div', { class: 'sidebar-section' }, el('h2', { class: 'sidebar-heading' }, 'Filtres'), filtersBox),
-      footer));
+    var collapse = el('button', { type: 'button', class: 'nav-collapse', id: 'nav-collapse', 'aria-controls': 'sidebar',
+      onClick: function () { setCollapsed(!isCollapsed()); } },
+      el('span', { class: 'nav-collapse-glyph', 'aria-hidden': 'true' }),
+      el('span', { class: 'nav-collapse-label' }));
+
+    sidebar.appendChild(el('div', { class: 'sidebar-inner' }, brand(), nav, footer, collapse));
+    syncCollapseButton();
     updateNavActive();
+    syncRailTooltips();
+    updateNavCounts();
+  }
+
+  // ------------------------------------------------------------------------------ app bar (période + filtres)
+
+  /** Sticky bar above every page: « Période ‹ Mai 2026 › » then the Équipe / Bâtiment filters. */
+  function renderAppbar() {
+    var s = State.get();
+    UI.clear(appbar);
+    var monthOptions = s.months.length ?
+      s.months.map(function (m) { return { value: m, label: Fmt.monthTitle(m) }; }) :
+      [{ value: '', label: 'Aucun mois importé' }];
+    monthSelect = UI.dropdown({
+      id: 'month-select',
+      labelledBy: 'appbar-period-label',
+      options: monthOptions,
+      value: s.month,
+      disabled: !s.months.length,
+      onChange: function (v) { if (v) State.set({ month: v }); },
+      className: 'field select-field month-select'
+    });
+    var prev = el('button', { type: 'button', class: 'period-step', id: 'month-prev', 'aria-label': 'Mois précédent',
+      onClick: function () { stepMonth(-1); } }, '‹');
+    var next = el('button', { type: 'button', class: 'period-step', id: 'month-next', 'aria-label': 'Mois suivant',
+      onClick: function () { stepMonth(1); } }, '›');
+
+    filtersBox = el('div', { class: 'appbar-filters', id: 'appbar-filters' });
+    filterOptionsMonth = null;
+
+    var toggle = el('button', { type: 'button', class: 'btn btn-secondary btn-sm filters-toggle', id: 'filters-toggle',
+      'aria-controls': 'appbar-filters', 'aria-expanded': 'false',
+      onClick: function () { setFiltersOpen(!document.body.classList.contains('filters-open')); } },
+      'Filtres', el('span', { class: 'filters-toggle-count', id: 'filters-toggle-count' }));
+
+    appbar.appendChild(el('div', { class: 'appbar-group appbar-period' },
+      el('span', { class: 'appbar-label', id: 'appbar-period-label' }, 'Période'),
+      el('div', { class: 'period-stepper' }, prev, monthSelect, next)));
+    appbar.appendChild(el('span', { class: 'appbar-sep', 'aria-hidden': 'true' }));
+    appbar.appendChild(toggle);
+    appbar.appendChild(filtersBox);
+    appbar.appendChild(el('p', { class: 'appbar-count', id: 'appbar-count', role: 'status', hidden: true }));
+    updateStepper();
+    setFiltersOpen(false);
     renderFilters();
+  }
+
+  /** ‹ / › move to the previous / next imported month (months are sorted ascending). */
+  function stepMonth(delta) {
+    var s = State.get();
+    var i = s.months.indexOf(s.month);
+    var m = s.months[i + delta];
+    if (i >= 0 && m) State.set({ month: m });
+  }
+
+  function updateStepper() {
+    var s = State.get();
+    var i = s.months.indexOf(s.month);
+    var prev = document.getElementById('month-prev');
+    var next = document.getElementById('month-next');
+    if (prev) prev.disabled = i <= 0;
+    if (next) next.disabled = i < 0 || i >= s.months.length - 1;
+  }
+
+  /** Below 900px the filters fold behind a « Filtres » button. */
+  function setFiltersOpen(open) {
+    document.body.classList.toggle('filters-open', !!open);
+    var t = document.getElementById('filters-toggle');
+    if (t) t.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function syncFilterBadges(f) {
+    var n = f ? (f.equipes || []).length + (f.batiments || []).length : 0;
+    var c = document.getElementById('filters-toggle-count');
+    if (c) c.textContent = n ? String(n) : '';
+    var reset = document.getElementById('filters-reset');
+    if (reset) reset.hidden = !n;
   }
 
   /**
@@ -243,16 +394,20 @@
     filtersBox.appendChild(el('button', { type: 'button', class: 'btn btn-quiet btn-sm', id: 'filters-reset',
       hidden: !hasActiveFilters(f),
       onClick: function () { State.set({ filters: { equipes: [], batiments: [] } }); } },
-      'Réinitialiser les filtres'));
+      'Réinitialiser'));
+    syncFilterBadges(f);
   }
 
-  /** Shows `month` in the sidebar month dropdown without firing onChange. */
+  /** Shows `month` in the app bar month dropdown without firing onChange. */
   function syncMonthSelect(month) {
-    var dd = sidebar && sidebar.querySelector('.month-select');
-    if (dd && dd.getValue() !== month) dd.setValue(month);
+    if (monthSelect && monthSelect.getValue() !== month) monthSelect.setValue(month);
+    updateStepper();
   }
 
-  /** Disables every control of a filter widget and adds a visible note under it (never colour only). */
+  /**
+   * Disables every control of a filter widget (never colour only): the trigger reads « Non applicable »
+   * and the full reason is its accessible description and tooltip.
+   */
   function disableFilter(node, noteId) {
     node.classList.add('is-disabled');
     node.setAttribute('aria-disabled', 'true');
@@ -261,7 +416,11 @@
       if ('disabled' in c) c.disabled = true; else c.setAttribute('tabindex', '-1');
       c.setAttribute('aria-describedby', noteId);
     });
-    node.appendChild(el('p', { class: 'filter-na', id: noteId }, 'Non applicable ici : les actions n’ont pas de bâtiment.'));
+    var value = node.querySelector('.dd-value');
+    if (value) value.textContent = 'Non applicable';
+    var reason = 'Non applicable ici : les actions n’ont pas de bâtiment.';
+    node.appendChild(el('p', { class: 'filter-na sr-only', id: noteId }, reason));
+    UI.tooltip(node, reason);
   }
 
   function hasActiveFilters(f) {
@@ -272,8 +431,7 @@
     var f = State.get().filters || { equipes: [], batiments: [] };
     var next = { equipes: (f.equipes || []).slice(), batiments: (f.batiments || []).slice() };
     Object.keys(patch).forEach(function (k) { next[k] = patch[k]; });
-    var reset = document.getElementById('filters-reset');
-    if (reset) reset.hidden = !hasActiveFilters(next);
+    syncFilterBadges(next);
     // The widgets already show the new values: do not re-render them (keeps the open list in place).
     suppressFilterRender = true;
     State.set({ filters: next });
@@ -313,6 +471,9 @@
     document.body.classList.add('unconfigured');
     UI.clear(sidebar);
     sidebar.appendChild(el('div', { class: 'sidebar-inner' }, brand()));
+    UI.clear(appbar);
+    monthSelect = null;
+    filtersBox = null;
     UI.clear(main);
   }
 
@@ -421,6 +582,7 @@
     if (!s.configured && !onSettings()) { renderConfigScreen(); return; }
     document.body.classList.remove('unconfigured');
     renderSidebar();
+    renderAppbar();
     mountPage();
   }
 
@@ -434,6 +596,7 @@
     }
     if (has(changed, 'months') || has(changed, 'dataUrl') || has(changed, 'sourceUrl') || has(changed, 'sourceTitle')) {
       renderSidebar();
+      renderAppbar();
     } else if (has(changed, 'month')) {
       syncMonthSelect(s.month);
       renderFilters();
@@ -473,7 +636,9 @@
 
   function boot() {
     sidebar = document.getElementById('sidebar');
+    appbar = document.getElementById('appbar');
     main = document.getElementById('main');
+    document.body.classList.toggle('nav-collapsed', readCollapsed());
     var toggle = document.getElementById('nav-toggle');
     if (toggle && !toggle.dataset.bound) {
       toggle.dataset.bound = '1';

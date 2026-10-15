@@ -41,7 +41,7 @@ identifiers and comments are **English**.
 | `src/js_ui.html` | `window.UI` | DOM builder + components. |
 | `src/js_charts.html` | `window.Charts` | Plotly wrappers. |
 | `src/js_page_*.html` | `window.Pages.<id>` | One page each (incl. `settings`, admin only). |
-| `src/js_main.html` | `window.App` | Router, sidebar, boot. **Included last.** |
+| `src/js_main.html` | `window.App` | Router, sidebar, app bar (période + filtres), boot. **Included last.** |
 
 ---------------------------------------------------------------------------------------------------
 ## 1. Domain constants (exposed by `Core`)
@@ -344,7 +344,7 @@ Only the scriptlet form `<?!= fn('arg') ?>` is used (so the Node renderer stays 
 <?!= include('css') ?>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.3/plotly.min.js"></script>
 </head><body>
-<div id="app"> … sidebar (#sidebar) + main (#main) … </div>
+<div id="app"> … sidebar (#sidebar) + .workspace (app bar #appbar + main #main) … </div>
 <div id="toast-root"></div><div id="modal-root"></div>
 <script><?!= coreScript() ?></script>
 <?!= include('js_api') ?>  <?!= include('js_state') ?>  <?!= include('js_ui') ?>  <?!= include('js_charts') ?>
@@ -460,11 +460,15 @@ App.refresh()         -> re-mount current page
 App.boot()            -> called on DOMContentLoaded: State.refreshBootstrap(); if !configured show the
                          configuration screen (paste source sheet URL -> api_setConfig); render sidebar.
 ```
-Sidebar: app title `👻 Shadow IT`, nav links (5 pages), `Période` month select (asc list, default latest),
-`Filtres` with `Équipe` and `Bâtiment / Labo` multiselects (options from current month postes via
-`Core.uniqueSorted`), footer links "Données (Google Sheet)" → `dataUrl`, "Source" → `sourceUrl`
-(target `_blank`, admins only), then the signed-in account (`#side-user`: email + role). The source is
-changed in Paramètres (`App.applySource`). « Paramètres » is in the nav for admins only.
+Sidebar: app title `Shadow IT`, nav links (one line icon + label each), footer links "Données (Google
+Sheet)" → `dataUrl`, "Source" → `sourceUrl` (target `_blank`, admins only), then the signed-in account
+(`#side-user`: email + role) and `#nav-collapse` (« Réduire le menu »: 56px icon rail, state in
+`localStorage['shadowit.sidebar']`, wide screens only). The source is changed in Paramètres
+(`App.applySource`). « Paramètres » is in the nav for admins only.
+App bar (`#appbar`, sticky): `Période` = `#month-prev` ‹ `#month-select` (asc list, default latest) ›
+`#month-next`; `Équipe` (`#filter-equipe`) and `Bâtiment / Labo` (`#filter-batiment`) multiselects
+(options from current month postes via `Core.uniqueSorted`), `#filters-reset`, `#appbar-count`
+(« 2 postes sur 7 » while a filter is active). Below 900px the filters fold behind `#filters-toggle`.
 Boot: `FORBIDDEN` from `api_bootstrap` → « Accès refusé » screen (`.page-denied`, server message,
 « Réessayer »); a lecteur on an unconfigured app gets a waiting screen (`data-page="unconfigured"`)
 instead of the configuration form.
