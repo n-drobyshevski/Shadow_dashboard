@@ -103,7 +103,9 @@ Workspace que le déployeur. Avec un compte Gmail personnel, seul le déployeur 
    → Exécuter → accepter l'autorisation (Google Sheets ; l'adresse e-mail du compte et la lecture
    des membres de Google Groups pour le contrôle d'accès ; les déclencheurs, pour la synchronisation
    horaire ; écran « Google n'a pas validé cette application » → Paramètres avancés →
-   Accéder au projet). Le journal d'exécution
+   Accéder au projet). **Cocher toutes les autorisations** (« Tout sélectionner ») : l'écran
+   permet d'en décocher, et une autorisation refusée n'est plus redemandée d'elle-même — `setup`
+   la redemande au lancement suivant. Le journal d'exécution
    affiche l'URL du classeur `ShadowIT_AppData` qui vient d'être créé ; le déclencheur horaire
    `syncHourly` est créé (visible dans Déclencheurs).
 7. **Déployer l'application web** : dans l'éditeur, Déployer → Nouveau déploiement → type
