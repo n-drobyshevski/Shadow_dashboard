@@ -1,0 +1,243 @@
+<script>
+/**
+ * window.Charts — thin Plotly wrappers with French labels (docs/API.md §5).
+ *
+ * Every function draws into `el` with Plotly.react (idempotent: redraws reuse the same element),
+ * config {responsive:true, displayModeBar:false}, and falls back to UI.empty('Graphique indisponible')
+ * when Plotly could not be loaded (CDN blocked, offline...).
+ */
+(function () {
+  'use strict';
+
+  var CONFIG = { responsive: true, displayModeBar: false };
+  var FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+  var ACCENT = '#0082c3';
+  var PALETTE = ['#0082c3', '#f39c12', '#2ecc71', '#8e44ad', '#e74c3c', '#16a085', '#7f8c8d'];
+  var GRID = '#e5e9f0';
+
+  function baseLayout(extra) {
+    var layout = {
+      font: { family: FONT, size: 12, color: '#334155' },
+      paper_bgcolor: 'rgba(0,0,0,0)',
+      plot_bgcolor: 'rgba(0,0,0,0)',
+      margin: { l: 52, r: 16, t: 24, b: 44 },
+      separators: ', ',            // French: decimal comma, space as thousands separator
+      hoverlabel: { font: { family: FONT } }
+    };
+    return Object.assign(layout, extra || {});
+  }
+
+  function unavailable(el) {
+    UI.clear(el);
+    el.appendChild(UI.empty('Graphique indisponible'));
+    return null;
+  }
+
+  function draw(el, data, layout) {
+    if (!el) return null;
+    if (!window.Plotly || typeof window.Plotly.react !== 'function') return unavailable(el);
+    el.classList.add('chart');
+    try {
+      var p = window.Plotly.react(el, data, layout, CONFIG);
+      if (p && typeof p.catch === 'function') {
+        p.catch(function (e) { console.error('Plotly', e); unavailable(el); });
+      }
+      return p;
+    } catch (e) {
+      console.error('Plotly', e);
+      return unavailable(el);
+    }
+  }
+
+  function thresholdShape(axis, value) {
+    var line = { color: Core.COLOR_THRESHOLD, width: 2, dash: 'dash' };
+    return axis === 'x' ?
+      { type: 'line', xref: 'x', yref: 'paper', x0: value, x1: value, y0: 0, y1: 1, line: line } :
+      { type: 'line', xref: 'paper', yref: 'y', x0: 0, x1: 1, y0: value, y1: value, line: line };
+  }
+
+  function thresholdAnnotation(axis, value) {
+    return axis === 'x' ?
+      { x: value, xref: 'x', y: 1, yref: 'paper', text: 'Seuil ' + value + '%', showarrow: false,
+        xanchor: 'left', yanchor: 'top', xshift: 4, font: { color: Core.COLOR_THRESHOLD, size: 11 } } :
+      { x: 1, xref: 'paper', y: value, yref: 'y', text: 'Seuil ' + value + '%', showarrow: false,
+        xanchor: 'right', yanchor: 'bottom', font: { color: Core.COLOR_THRESHOLD, size: 11 } };
+  }
+
+  /** Indicator gauge 0–100 %, green when >= threshold, red otherwise, threshold marker at 80. */
+  function gauge(el, value, opts) {
+    var o = opts || {};
+    var v = value === null || value === undefined || !isFinite(Number(value)) ? 0 : Number(value);
+    var ok = v >= Core.THRESHOLD;
+    return draw(el, [{
+      type: 'indicator',
+      mode: 'gauge+number',
+      value: v,
+      number: { suffix: ' %', valueformat: '.1f', font: { size: 34, color: ok ? '#1e8449' : '#c0392b' } },
+      gauge: {
+        shape: 'angular',
+        axis: { range: [0, 100], ticksuffix: '%', tickwidth: 1, tickcolor: '#94a3b8' },
+        bar: { color: ok ? Core.COLOR_OK : Core.COLOR_KO, thickness: 0.7 },
+        bgcolor: '#f1f5f9',
+        borderwidth: 0,
+        threshold: { line: { color: Core.COLOR_THRESHOLD, width: 4 }, thickness: 0.9, value: Core.THRESHOLD }
+      }
+    }], baseLayout({ height: o.height || 250, margin: { l: 28, r: 28, t: 24, b: 8 } }));
+  }
+
+  /** One bar per risk level (Core.RISK_ORDER) with Core.RISK_COLORS, no legend. */
+  function riskBars(el, counts) {
+    var c = counts || {};
+    var x = Core.RISK_ORDER.slice();
+    var y = x.map(function (k) { return Number(c[k]) || 0; });
+    return draw(el, [{
+      type: 'bar',
+      x: x,
+      y: y,
+      text: y.map(String),
+      textposition: 'outside',
+      cliponaxis: false,
+      marker: { color: x.map(function (k) { return Core.RISK_COLORS[k]; }) },
+      hovertemplate: '%{x} : %{y}<extra></extra>'
+    }], baseLayout({
+      height: 280,
+      showlegend: false,
+      bargap: 0.35,
+      xaxis: { title: { text: 'Niveau de risque' }, fixedrange: true },
+      yaxis: { title: { text: 'Nombre' }, rangemode: 'tozero', fixedrange: true, gridcolor: GRID,
+        range: [0, Math.max(1, Math.max.apply(null, y)) * 1.25] }
+    }));
+  }
+
+  /** 10 equal bins on 0–100 (Core.histogramBins), dashed vertical line at 80 + 'Seuil 80%'. */
+  function histogram(el, scores) {
+    var bins = Core.histogramBins((scores || []).filter(function (s) { return s !== null && s !== undefined; }), 10);
+    return draw(el, [{
+      type: 'bar',
+      x: bins.map(function (b) { return (b.x0 + b.x1) / 2; }),
+      y: bins.map(function (b) { return b.count; }),
+      width: bins.map(function (b) { return (b.x1 - b.x0) * 0.92; }),
+      customdata: bins.map(function (b) { return b.x0 + '–' + b.x1 + ' %'; }),
+      marker: { color: bins.map(function (b) { return b.x0 >= Core.THRESHOLD ? Core.COLOR_OK : ACCENT; }) },
+      hovertemplate: 'Score %{customdata} : %{y}<extra></extra>'
+    }], baseLayout({
+      height: 280,
+      showlegend: false,
+      xaxis: { title: { text: 'Score de conformité (%)' }, range: [0, 100], dtick: 10, fixedrange: true },
+      yaxis: { title: { text: 'Nombre' }, rangemode: 'tozero', fixedrange: true, gridcolor: GRID },
+      shapes: [thresholdShape('x', Core.THRESHOLD)],
+      annotations: [thresholdAnnotation('x', Core.THRESHOLD)]
+    }));
+  }
+
+  /** Line chart: {x, series:[{name, y, color?}], threshold?, yTitle?, yRange?} */
+  function line(el, opts) {
+    var o = opts || {};
+    var data = (o.series || []).map(function (s, i) {
+      return {
+        type: 'scatter',
+        mode: 'lines+markers',
+        name: s.name,
+        x: o.x || [],
+        y: s.y || [],
+        connectgaps: false,
+        line: { color: s.color || PALETTE[i % PALETTE.length], width: 3 },
+        marker: { size: 8 },
+        hovertemplate: '%{x} — ' + String(s.name || '').replace(/[<>%{}]/g, '') + ' : %{y}<extra></extra>'
+      };
+    });
+    var hasThreshold = o.threshold !== undefined && o.threshold !== null;
+    return draw(el, data, baseLayout({
+      height: o.height || 320,
+      xaxis: { type: 'category', fixedrange: true },
+      yaxis: { title: { text: o.yTitle || '' }, range: o.yRange || undefined, rangemode: 'tozero',
+        fixedrange: true, gridcolor: GRID },
+      legend: { orientation: 'h', x: 0, y: 1.12 },
+      shapes: hasThreshold ? [thresholdShape('y', o.threshold)] : [],
+      annotations: hasThreshold ? [thresholdAnnotation('y', o.threshold)] : []
+    }));
+  }
+
+  /**
+   * Bar chart: {x, y, colors?, yTitle?, horizontal?}. Extension: {x, series:[{name, y, color?}]}
+   * draws grouped bars with a legend.
+   */
+  function bars(el, opts) {
+    var o = opts || {};
+    var horizontal = !!o.horizontal;
+    function trace(name, y, color, i) {
+      var t = {
+        type: 'bar',
+        name: name,
+        orientation: horizontal ? 'h' : 'v',
+        marker: { color: color || PALETTE[i % PALETTE.length] },
+        hovertemplate: (horizontal ? '%{y} : %{x}' : '%{x} : %{y}') + '<extra></extra>'
+      };
+      if (horizontal) { t.x = y; t.y = o.x || []; } else { t.x = o.x || []; t.y = y; }
+      return t;
+    }
+    var data = o.series && o.series.length ?
+      o.series.map(function (s, i) { return trace(s.name, s.y || [], s.color, i); }) :
+      [trace('', o.y || [], o.colors || ACCENT, 0)];
+    var valueAxis = { title: { text: o.yTitle || '' }, rangemode: 'tozero', fixedrange: true, gridcolor: GRID };
+    var catAxis = { type: 'category', fixedrange: true, automargin: true };
+    return draw(el, data, baseLayout({
+      height: o.height || (horizontal ? Math.max(240, 32 * (o.x || []).length + 80) : 300),
+      barmode: 'group',
+      showlegend: !!(o.series && o.series.length > 1),
+      legend: { orientation: 'h', x: 0, y: 1.12 },
+      xaxis: horizontal ? valueAxis : catAxis,
+      yaxis: horizontal ? catAxis : valueAxis
+    }));
+  }
+
+  /** Heatmap: {x, y, z:[[number|null]], zmin=0, zmax=100, title?}; red -> green around the 80 threshold. */
+  function heatmap(el, opts) {
+    var o = opts || {};
+    var zmin = o.zmin === undefined ? 0 : o.zmin;
+    var zmax = o.zmax === undefined ? 100 : o.zmax;
+    var z = o.z || [];
+    var text = z.map(function (row) {
+      return (row || []).map(function (v) { return v === null || v === undefined ? '' : UI.fmtPct(v, 0); });
+    });
+    var yLabels = o.y || [];
+    return draw(el, [{
+      type: 'heatmap',
+      x: o.x || [],
+      y: yLabels,
+      z: z,
+      zmin: zmin,
+      zmax: zmax,
+      text: text,
+      texttemplate: '%{text}',
+      hovertemplate: '%{y} — %{x} : %{text}<extra></extra>',
+      xgap: 2,
+      ygap: 2,
+      colorscale: [[0, '#e74c3c'], [0.5, '#f39c12'], [0.79, '#f7dc6f'], [0.8, '#a9dfbf'], [1, '#2ecc71']],
+      colorbar: { ticksuffix: '%', thickness: 12, outlinewidth: 0 }
+    }], baseLayout({
+      height: Math.max(260, 36 * yLabels.length + 110),
+      title: o.title ? { text: o.title, x: 0, xanchor: 'left', font: { size: 14 } } : undefined,
+      margin: { l: 140, r: 16, t: o.title ? 44 : 20, b: 44 },
+      xaxis: { type: 'category', fixedrange: true },
+      yaxis: { type: 'category', fixedrange: true, automargin: true, autorange: 'reversed' }
+    }));
+  }
+
+  function purge(el) {
+    if (el && window.Plotly && typeof window.Plotly.purge === 'function') {
+      try { window.Plotly.purge(el); } catch (e) { /* ignore */ }
+    }
+  }
+
+  window.Charts = {
+    gauge: gauge,
+    riskBars: riskBars,
+    histogram: histogram,
+    line: line,
+    bars: bars,
+    heatmap: heatmap,
+    purge: purge
+  };
+})();
+</script>

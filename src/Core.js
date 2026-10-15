@@ -1,0 +1,744 @@
+/**
+ * Core — pure domain logic shared by the Apps Script server and the browser client.
+ *
+ * Contract: docs/API.md §1 (constants) and §2 (functions).
+ *
+ * IMPORTANT: CoreFactory_ is serialised with Function.prototype.toString() by coreScript() and
+ * evaluated in the browser. It must therefore stay fully self-contained:
+ *   - no reference to anything declared outside its body (no GAS globals, no other modules);
+ *   - ES2019-safe syntax (no optional chaining, no nullish coalescing, no regex lookbehind);
+ *   - the source text must never contain the HTML closing tag of a script element.
+ * All functions are total: they never throw on null / undefined / blank input unless stated.
+ */
+function CoreFactory_() {
+  'use strict';
+
+  // ------------------------------------------------------------------------------------------
+  // §1 Domain constants
+  // ------------------------------------------------------------------------------------------
+
+  var THRESHOLD = 80;
+  var KEY_POSTE = 'Nom du poste';
+  var KEY_APP = 'Nom du logiciel / service';
+  var GENERIC_POSTE_NAME = 'Poste générique Decathlon';
+  var GENERIC_POSTE_COMMENT =
+    'Poste générique regroupant les applications non liées à un poste suivi individuellement.';
+  var RISK_ORDER = ['Critique', 'Élevé', 'Moyen', 'Faible'];
+  var RISK_COLORS = { 'Critique': '#e74c3c', 'Élevé': '#e67e22', 'Moyen': '#f39c12', 'Faible': '#2ecc71' };
+  var COLOR_OK = '#2ecc71';
+  var COLOR_KO = '#e74c3c';
+  var COLOR_THRESHOLD = '#2c3e50';
+  var APP_REQUIRED_FIELDS = ['Éditeur', 'Type', 'Équipe', 'Installé sur poste', 'Niveau de risque',
+    'Données sensibles exposées'];
+  var APP_CUSTOM_FIELDS = ['Galink', 'IDP'];
+  var YES_NO_COLS = ['Galink', 'IDP', 'Contrat', 'SIP', 'IT Decathlon', 'EDR Decathlon', 'Réseau Decathlon',
+    'Enrolée'];
+  var POSTE_DIFF_COLS = ['Score conformité', 'IT Decathlon', 'EDR Decathlon', 'Chiffrement disque',
+    'Type de compte', 'Réseau Decathlon', 'Action corrective', 'Statut', 'Niveau de risque'];
+  var POSTE_TEMPLATE_KEYS = ['N° Visite', 'Date visite', 'Prochaine revue', 'Équipe', 'Bâtiment / Labo',
+    'Responsable', 'Nom du poste', "Date d'achat", 'Criticité équipement', 'IT Decathlon', 'OS', 'Version OS',
+    'EDR Decathlon', 'Chiffrement disque', 'Type de compte', 'Réseau Decathlon', 'Score conformité',
+    'Niveau de risque', 'Action corrective', 'Responsable action', 'Deadline', 'Statut',
+    'Application', 'Commentaires', 'Enrolée'];
+  var COLUMN_REF_ALIASES = { 'Bâtiment / Labo': 'Bâtiment' };
+  var ACTION_STATUSES = ['À faire', 'En cours', 'Terminé', 'Abandonné'];
+  var ACTION_PRIORITIES = ['Haute', 'Moyenne', 'Basse'];
+  var SOURCE_TABS = { postes: 'Suivi des postes', applications: 'Suivi des applications',
+    referentiel: 'Référentiel' };
+  var ERROR_CODES = ['NOT_CONFIGURED', 'MONTH_EXISTS', 'NOT_FOUND', 'BUSY', 'VALIDATION', 'SOURCE_ERROR',
+    'INTERNAL'];
+
+  // Field names used by several functions below.
+  var F_EQUIPE = 'Équipe';
+  var F_BATIMENT = 'Bâtiment / Labo';
+  var F_SCORE = 'Score conformité';
+  var F_RISK = 'Niveau de risque';
+  var F_ACTION = 'Action corrective';
+  var F_ACTION_OWNER = 'Responsable action';
+  var F_INSTALLED_ON = 'Installé sur poste';
+
+  // Non-breaking spaces (NBSP and narrow NBSP) as found in Google Sheets exports.
+  var NBSP_RE = /[  ]/g;
+
+  // ------------------------------------------------------------------------------------------
+  // Private helpers
+  // ------------------------------------------------------------------------------------------
+
+  var hasOwn = Object.prototype.hasOwnProperty;
+
+  /** Deep-freezes the plain constant arrays/objects so consumers cannot corrupt shared state. */
+  function freeze_(v) {
+    if (v && typeof v === 'object' && !Object.isFrozen(v)) {
+      Object.keys(v).forEach(function (k) { freeze_(v[k]); });
+      Object.freeze(v);
+    }
+    return v;
+  }
+
+  /** Assigns an own enumerable property (safe even for keys such as "__proto__"). */
+  function setOwn_(obj, key, value) {
+    Object.defineProperty(obj, key, { value: value, writable: true, enumerable: true, configurable: true });
+    return obj;
+  }
+
+  /** Reads an own property, ignoring the prototype chain. */
+  function getOwn_(obj, key) {
+    return obj && hasOwn.call(obj, key) ? obj[key] : undefined;
+  }
+
+  /** Shallow copy of a record (own enumerable keys only). */
+  function copy_(rec) {
+    var out = {};
+    if (rec && typeof rec === 'object') {
+      Object.keys(rec).forEach(function (k) { setOwn_(out, k, rec[k]); });
+    }
+    return out;
+  }
+
+  /** Cross-realm Date test (vm contexts / iframes have their own Date constructor). */
+  function isDate_(v) {
+    return Object.prototype.toString.call(v) === '[object Date]';
+  }
+
+  function isValidDate_(v) {
+    return isDate_(v) && !isNaN(v.getTime());
+  }
+
+  function nfc_(s) {
+    return typeof s.normalize === 'function' ? s.normalize('NFC') : s;
+  }
+
+  function pad2_(n) {
+    return (n < 10 ? '0' : '') + n;
+  }
+
+  function toArray_(v) {
+    if (Array.isArray(v)) return v;
+    if (v === null || v === undefined) return [];
+    return [v];
+  }
+
+  /** Codepoint comparison (deterministic everywhere; mirrors Python's sorted()). */
+  function cmp_(a, b) {
+    return a < b ? -1 : (a > b ? 1 : 0);
+  }
+
+  /** Removes floating-point noise such as 30.400000000000002 -> 30.4. */
+  function round10_(n) {
+    return Math.round(n * 1e10) / 1e10;
+  }
+
+  /** Cleans a header / category label: NFC, NBSP -> space, trimmed. */
+  function cleanLabel_(v) {
+    return nfc_(str(v)).replace(NBSP_RE, ' ').trim();
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // §2 Basic value helpers
+  // ------------------------------------------------------------------------------------------
+
+  /** Normalised key for header / tab / category matching. */
+  function normKey(s) {
+    var v = (s === null || s === undefined || (typeof s === 'number' && isNaN(s))) ? '' : String(s);
+    return nfc_(v).replace(NBSP_RE, ' ').trim().replace(/\s+/g, ' ').toLowerCase();
+  }
+
+  /** True for null, undefined, NaN, or a string that is empty after trim. */
+  function isBlank(v) {
+    if (v === null || v === undefined) return true;
+    if (typeof v === 'number') return isNaN(v);
+    if (typeof v === 'string') return v.trim() === '';
+    return false;
+  }
+
+  /** Trimmed string, or '' for blank values. */
+  function str(v) {
+    return isBlank(v) ? '' : String(v).trim();
+  }
+
+  // Strict decimal number (after % / spaces removal and comma -> dot).
+  var NUMBER_RE = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
+
+  /**
+   * Parses a compliance score into a 0–100 number.
+   * '30,4%' -> 30.4, '25%' -> 25, '25' -> 25, '0,5' -> 50, 0.304 -> 30.4, 85 -> 85, 1 -> 100,
+   * blank / unparseable -> null. Values in [0,1] without a '%' sign are treated as fractions.
+   */
+  function parseScore(v) {
+    if (isBlank(v)) return null;
+    var n;
+    if (typeof v === 'number') {
+      if (!isFinite(v)) return null;
+      n = v;
+      return round10_(n >= 0 && n <= 1 ? n * 100 : n);
+    }
+    if (typeof v !== 'string') return null;
+    var hasPct = v.indexOf('%') >= 0;
+    var cleaned = v.replace(/%/g, '').replace(NBSP_RE, '').replace(/\s+/g, '').replace(',', '.');
+    if (!NUMBER_RE.test(cleaned)) return null;
+    n = Number(cleaned);
+    if (!isFinite(n)) return null;
+    if (!hasPct && n >= 0 && n <= 1) n = n * 100;
+    return round10_(n);
+  }
+
+  /** Error with a machine-readable `.code` (one of ERROR_CODES). */
+  function makeError(code, message) {
+    var err = new Error(message === null || message === undefined ? String(code) : String(message));
+    err.code = code;
+    return err;
+  }
+
+  /** 'YYYY-MM' with a month in 01..12. */
+  function validateMonth(m) {
+    return typeof m === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(m);
+  }
+
+  /** 'YYYY-MM' of a Date (local getters); defaults to now; '' for an invalid date. */
+  function currentMonth(date) {
+    var d = (date === null || date === undefined) ? new Date() : date;
+    if (!isValidDate_(d)) return '';
+    return d.getFullYear() + '-' + pad2_(d.getMonth() + 1);
+  }
+
+  /** 'DD/MM/YYYY' of a Date (local getters); '' for anything that is not a valid Date. */
+  function fmtDDMMYYYY(date) {
+    if (!isValidDate_(date)) return '';
+    return pad2_(date.getDate()) + '/' + pad2_(date.getMonth() + 1) + '/' + date.getFullYear();
+  }
+
+  /** '15/03/2025' -> '2025-03-15' (also accepts 1-digit day/month); '' otherwise. */
+  function frToIso(s) {
+    var m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(str(s));
+    if (!m) return '';
+    var d = Number(m[1]);
+    var mo = Number(m[2]);
+    if (d < 1 || d > 31 || mo < 1 || mo > 12) return '';
+    return m[3] + '-' + pad2_(mo) + '-' + pad2_(d);
+  }
+
+  /** '2025-03-15' -> '15/03/2025'; '' otherwise. */
+  function isoToFr(s) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(str(s));
+    if (!m) return '';
+    var mo = Number(m[2]);
+    var d = Number(m[3]);
+    if (d < 1 || d > 31 || mo < 1 || mo > 12) return '';
+    return m[3] + '/' + m[2] + '/' + m[1];
+  }
+
+  /** Spreadsheet ID from a full Sheets URL or a bare ID; null otherwise. */
+  function extractSpreadsheetId(urlOrId) {
+    var s = str(urlOrId);
+    if (!s) return null;
+    // Also accepts multi-account URLs such as /spreadsheets/u/1/d/<ID>/edit.
+    var m = /\/spreadsheets\/(?:u\/\d+\/)?d\/([A-Za-z0-9_-]+)/.exec(s);
+    if (m) return m[1].length >= 20 ? m[1] : null;
+    return /^[A-Za-z0-9_-]{20,}$/.test(s) ? s : null;
+  }
+
+  /** Prevents formula injection when writing user strings to a sheet. */
+  function escapeFormula(v) {
+    if (typeof v === 'string' && /^[=+\-@]/.test(v)) return "'" + v;
+    return v;
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // §2 Source sheet parsing
+  // ------------------------------------------------------------------------------------------
+
+  /** Index of the first row (within maxScan) containing one of the anchors (normKey match); -1 if none. */
+  function findHeaderRow(rows, anchors, maxScan) {
+    if (!Array.isArray(rows)) return -1;
+    var limit = (typeof maxScan === 'number' && maxScan > 0) ? maxScan : 15;
+    var keys = toArray_(anchors).map(normKey).filter(function (k) { return k !== ''; });
+    if (!keys.length) return -1;
+    var n = Math.min(rows.length, limit);
+    for (var i = 0; i < n; i++) {
+      var row = rows[i];
+      if (!Array.isArray(row)) continue;
+      for (var j = 0; j < row.length; j++) {
+        if (keys.indexOf(normKey(row[j])) >= 0) return i;
+      }
+    }
+    return -1;
+  }
+
+  /**
+   * Converts a sheet (display values + optional raw values) into records.
+   * opts = {display, raw?, anchors?, keyField?, fmtDate?}. Throws SOURCE_ERROR when no header row
+   * is found, or when keyField is given but no header matches it.
+   */
+  function rowsToRecords(opts) {
+    var o = opts || {};
+    var display = Array.isArray(o.display) ? o.display : (Array.isArray(o.raw) ? o.raw : []);
+    var raw = Array.isArray(o.raw) ? o.raw : null;
+    var keyField = str(o.keyField);
+    var anchors = toArray_(o.anchors).length ? toArray_(o.anchors) : (keyField ? [keyField] : []);
+    var fmtDate = typeof o.fmtDate === 'function' ? o.fmtDate : fmtDDMMYYYY;
+
+    var headerIdx = findHeaderRow(display, anchors);
+    if (headerIdx < 0) {
+      throw makeError('SOURCE_ERROR', 'Ligne d’en-tête introuvable (colonne attendue : « ' +
+        toArray_(anchors).map(str).join(' », « ') + ' »).');
+    }
+
+    // Header cells -> cleaned unique names; blank headers are dropped (cols keeps their index).
+    var headerRow = display[headerIdx] || [];
+    var keyNorm = normKey(keyField);
+    var headers = [];
+    var cols = [];
+    var keyHeader = null;
+    for (var c = 0; c < headerRow.length; c++) {
+      var h = cleanLabel_(headerRow[c]);
+      if (!h) continue;
+      // The key column takes the canonical keyField spelling so that record[keyField] always works.
+      if (keyField && keyHeader === null && normKey(h) === keyNorm) {
+        h = keyField;
+        keyHeader = h;
+      }
+      if (headers.indexOf(h) >= 0) {
+        var k = 2;
+        while (headers.indexOf(h + ' (' + k + ')') >= 0) k++;
+        h = h + ' (' + k + ')';
+      }
+      headers.push(h);
+      cols.push(c);
+    }
+    if (keyField && keyHeader === null) {
+      throw makeError('SOURCE_ERROR', 'Colonne « ' + keyField + ' » introuvable.');
+    }
+
+    var records = [];
+    var missingKey = 0;
+    for (var r = headerIdx + 1; r < display.length; r++) {
+      var dRow = Array.isArray(display[r]) ? display[r] : [];
+      var rRow = raw && Array.isArray(raw[r]) ? raw[r] : [];
+      var rec = {};
+      var allNull = true;
+      for (var i = 0; i < headers.length; i++) {
+        var ci = cols[i];
+        var rawCell = rRow[ci];
+        var value = isValidDate_(rawCell) ? str(fmtDate(rawCell)) : str(dRow[ci]);
+        if (value === '') {
+          value = null;
+        } else {
+          allNull = false;
+        }
+        setOwn_(rec, headers[i], value);
+      }
+      if (allNull) continue; // ghost / empty row
+      if (keyField && rec[keyHeader] === null) {
+        missingKey++;
+        continue;
+      }
+      records.push(rec);
+    }
+
+    var warnings = [];
+    if (missingKey > 0) {
+      warnings.push(missingKey + ' ligne(s) sans « ' + keyField + ' » ignorée(s)');
+    }
+    return { headers: headers, records: records, warnings: warnings };
+  }
+
+  /**
+   * Parses the transposed Référentiel tab: first non-empty row = category names, each column below
+   * holds the category values (ragged; blanks skipped; trimmed; de-duplicated preserving order).
+   */
+  function parseReferentiel(display) {
+    var out = {};
+    if (!Array.isArray(display)) return out;
+    var h = -1;
+    for (var i = 0; i < display.length; i++) {
+      var row = display[i];
+      if (Array.isArray(row) && row.some(function (v) { return !isBlank(v); })) { h = i; break; }
+    }
+    if (h < 0) return out;
+    var header = display[h];
+    for (var c = 0; c < header.length; c++) {
+      var cat = cleanLabel_(header[c]);
+      if (!cat) continue;
+      var values = getOwn_(out, cat);
+      if (!values) { values = []; setOwn_(out, cat, values); }
+      for (var r = h + 1; r < display.length; r++) {
+        var v = str(Array.isArray(display[r]) ? display[r][c] : '');
+        if (v !== '' && values.indexOf(v) < 0) values.push(v);
+      }
+    }
+    return out;
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // §2 Scoring and enrichment
+  // ------------------------------------------------------------------------------------------
+
+  /** Application score: 5 criteria worth 20 points each. */
+  function scoreApplication(rec) {
+    var r = rec || {};
+    var criteria = {
+      contrat: str(r['Contrat']) === 'Oui',
+      sip: str(r['SIP']) === 'Oui',
+      idp: str(r['IDP']) === 'Oui',
+      galink: str(r['Galink']) === 'Oui',
+      champs: APP_REQUIRED_FIELDS.every(function (f) { return !isBlank(r[f]); })
+    };
+    var score = 0;
+    Object.keys(criteria).forEach(function (k) { if (criteria[k]) score += 20; });
+    return { score: score, criteria: criteria };
+  }
+
+  /** New poste objects with `_score` (from 'Score conformité') and `_conforme`. */
+  function enrichPostes(list) {
+    return toArray_(list).map(function (rec) {
+      var out = copy_(rec);
+      var score = parseScore(out[F_SCORE]);
+      out._score = score;
+      out._conforme = score !== null && score >= THRESHOLD;
+      return out;
+    });
+  }
+
+  /** New application objects with `_score`, `_conforme` and `_criteria`. */
+  function enrichApplications(list) {
+    return toArray_(list).map(function (rec) {
+      var out = copy_(rec);
+      var s = scoreApplication(out);
+      out._score = s.score;
+      out._conforme = s.score >= THRESHOLD;
+      out._criteria = s.criteria;
+      return out;
+    });
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // §2 Filtering and KPIs
+  // ------------------------------------------------------------------------------------------
+
+  /** Distinct non-blank values of `field`, sorted the French way. */
+  function uniqueSorted(list, field) {
+    var seen = {};
+    var out = [];
+    toArray_(list).forEach(function (rec) {
+      var v = str(rec ? rec[field] : null);
+      if (v !== '' && !hasOwn.call(seen, v)) { setOwn_(seen, v, true); out.push(v); }
+    });
+    return out.sort(function (a, b) { return a.localeCompare(b, 'fr'); });
+  }
+
+  /** Applies the sidebar filters (Équipe -> both entities, Bâtiment / Labo -> postes only). */
+  function filterData(data, filters) {
+    var d = data || {};
+    var f = filters || {};
+    var equipes = toArray_(f.equipes).map(str);
+    var batiments = toArray_(f.batiments).map(str);
+    function keep(rec, useBatiment) {
+      if (!rec) return false;
+      if (equipes.length && equipes.indexOf(str(rec[F_EQUIPE])) < 0) return false;
+      if (useBatiment && batiments.length && batiments.indexOf(str(rec[F_BATIMENT])) < 0) return false;
+      return true;
+    }
+    return {
+      postes: toArray_(d.postes).filter(function (r) { return keep(r, true); }),
+      applications: toArray_(d.applications).filter(function (r) { return keep(r, false); })
+    };
+  }
+
+  function countNon_(list, field) {
+    return list.filter(function (r) { return r && str(r[field]) === 'Non'; }).length;
+  }
+
+  /** Dashboard KPIs (uses the `_conforme` enrichment flag). */
+  function computeKpis(postes, apps) {
+    var p = toArray_(postes);
+    var a = toArray_(apps);
+    var pOk = p.filter(function (r) { return r && r._conforme === true; }).length;
+    var aOk = a.filter(function (r) { return r && r._conforme === true; }).length;
+    return {
+      total_postes: p.length,
+      postes_conformes: pOk,
+      postes_non_conformes: p.length - pOk,
+      taux_postes: p.length ? (pOk / p.length) * 100 : 0,
+      total_apps: a.length,
+      apps_conformes: aOk,
+      apps_non_conformes: a.length - aOk,
+      taux_apps: a.length ? (aOk / a.length) * 100 : 0,
+      postes_sans_edr: countNon_(p, 'EDR Decathlon'),
+      postes_non_it: countNon_(p, 'IT Decathlon'),
+      postes_hors_reseau: countNon_(p, 'Réseau Decathlon'),
+      apps_sans_sip: countNon_(a, 'SIP'),
+      apps_sans_contrat: countNon_(a, 'Contrat'),
+      apps_sans_galink: countNon_(a, 'Galink'),
+      apps_sans_idp: countNon_(a, 'IDP')
+    };
+  }
+
+  /** Count per risk level, keys in RISK_ORDER order; other values are ignored. */
+  function riskCounts(list) {
+    var out = {};
+    RISK_ORDER.forEach(function (k) { out[k] = 0; });
+    toArray_(list).forEach(function (rec) {
+      var v = str(rec ? rec[F_RISK] : null);
+      if (hasOwn.call(out, v)) out[v]++;
+    });
+    return out;
+  }
+
+  /**
+   * Equal-width bins on the fixed range 0–100; 100 falls in the last bin. Non-numeric values
+   * (null, NaN, strings) and values outside [0, 100] are ignored.
+   */
+  function histogramBins(scores, nbins) {
+    var n = (typeof nbins === 'number' && isFinite(nbins) && nbins >= 1) ? Math.floor(nbins) : 10;
+    var bins = [];
+    for (var i = 0; i < n; i++) {
+      bins.push({ x0: round10_((i * 100) / n), x1: round10_(((i + 1) * 100) / n), count: 0 });
+    }
+    toArray_(scores).forEach(function (s) {
+      if (typeof s !== 'number' || !isFinite(s) || s < 0 || s > 100) return;
+      var idx = Math.min(n - 1, Math.floor((s * n) / 100));
+      bins[idx].count++;
+    });
+    return bins;
+  }
+
+  /** Poste <-> application relation from the comma-separated 'Installé sur poste' column. */
+  function buildPosteAppsRelation(apps) {
+    var relations = [];
+    var byPoste = {};
+    var byApp = {};
+    toArray_(apps).forEach(function (rec) {
+      if (!rec) return;
+      var application = str(rec[KEY_APP]);
+      if (!application) return;
+      var equipe = str(rec[F_EQUIPE]);
+      var score = (typeof rec._score === 'number' && !isNaN(rec._score)) ? rec._score : scoreApplication(rec).score;
+      var postes = str(rec[F_INSTALLED_ON]).split(',')
+        .map(function (s) { return s.trim(); })
+        .filter(function (s, i, arr) { return s !== '' && arr.indexOf(s) === i; });
+      postes.forEach(function (poste) {
+        relations.push({ poste: poste, application: application, equipe: equipe, score: score });
+        var pl = getOwn_(byPoste, poste);
+        if (!pl) { pl = []; setOwn_(byPoste, poste, pl); }
+        pl.push({ application: application, equipe: equipe, score: score });
+        var al = getOwn_(byApp, application);
+        if (!al) { al = []; setOwn_(byApp, application, al); }
+        if (al.indexOf(poste) < 0) al.push(poste);
+      });
+    });
+    return { relations: relations, byPoste: byPoste, byApp: byApp };
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // §2 Month-to-month change detection
+  // ------------------------------------------------------------------------------------------
+
+  /** {key: firstRecord} for non-blank keys, plus the key list in first-seen order. */
+  function indexBy_(list, keyField) {
+    var map = {};
+    var keys = [];
+    toArray_(list).forEach(function (rec) {
+      var k = str(rec ? rec[keyField] : null);
+      if (k === '' || hasOwn.call(map, k)) return; // first occurrence wins
+      setOwn_(map, k, rec);
+      keys.push(k);
+    });
+    return { map: map, keys: keys };
+  }
+
+  /** Shared part of diffPostes / diffApplications: removed, added, common keys, resolved actions. */
+  function diffBase_(oldList, newList, keyField) {
+    var o = indexBy_(oldList, keyField);
+    var n = indexBy_(newList, keyField);
+    var removedKeys = o.keys.filter(function (k) { return !hasOwn.call(n.map, k); }).sort(cmp_);
+    var addedKeys = n.keys.filter(function (k) { return !hasOwn.call(o.map, k); }).sort(cmp_);
+    var common = o.keys.filter(function (k) { return hasOwn.call(n.map, k); }).sort(cmp_);
+    var resolved = [];
+    common.forEach(function (k) {
+      var oldRec = o.map[k];
+      var newRec = n.map[k];
+      if (!isBlank(oldRec[F_ACTION]) && isBlank(newRec[F_ACTION])) {
+        resolved.push({
+          name: k,
+          equipe: str(oldRec[F_EQUIPE]),
+          action: str(oldRec[F_ACTION]),
+          responsable: str(oldRec[F_ACTION_OWNER])
+        });
+      }
+    });
+    return {
+      removed: removedKeys.map(function (k) { return o.map[k]; }),
+      added: addedKeys.map(function (k) { return n.map[k]; }),
+      common: common,
+      oldMap: o.map,
+      newMap: n.map,
+      resolved_actions: resolved
+    };
+  }
+
+  /**
+   * Postes diff keyed by 'Nom du poste'. `changes` compares POSTE_DIFF_COLS with str() and reports
+   * {old, new} as trimmed strings ('' for blank); `equipe` comes from the new row (old as fallback).
+   */
+  function diffPostes(oldList, newList) {
+    var b = diffBase_(oldList, newList, KEY_POSTE);
+    var changes = [];
+    b.common.forEach(function (k) {
+      var oldRec = b.oldMap[k];
+      var newRec = b.newMap[k];
+      var diffs = {};
+      var any = false;
+      POSTE_DIFF_COLS.forEach(function (col) {
+        var ov = str(oldRec[col]);
+        var nv = str(newRec[col]);
+        if (ov !== nv) { diffs[col] = { old: ov, 'new': nv }; any = true; }
+      });
+      if (any) {
+        changes.push({ name: k, equipe: str(newRec[F_EQUIPE]) || str(oldRec[F_EQUIPE]), diffs: diffs });
+      }
+    });
+    return { removed: b.removed, added: b.added, changes: changes, resolved_actions: b.resolved_actions };
+  }
+
+  /** Applications diff keyed by 'Nom du logiciel / service'. */
+  function diffApplications(oldList, newList) {
+    var b = diffBase_(oldList, newList, KEY_APP);
+    return { removed: b.removed, added: b.added, resolved_actions: b.resolved_actions };
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // §2 Record helpers
+  // ------------------------------------------------------------------------------------------
+
+  /** Generic poste record, or null when it already exists in existingNames (normKey match). */
+  function makeGenericPoste(templateKeys, existingNames) {
+    var target = normKey(GENERIC_POSTE_NAME);
+    var exists = toArray_(existingNames).some(function (n) { return normKey(n) === target; });
+    if (exists) return null;
+    var keys = toArray_(templateKeys).map(str).filter(function (k) { return k !== ''; });
+    if (!keys.length) keys = POSTE_TEMPLATE_KEYS;
+    var rec = {};
+    keys.forEach(function (k) { setOwn_(rec, k, null); });
+    rec[KEY_POSTE] = GENERIC_POSTE_NAME;
+    rec['Commentaires'] = GENERIC_POSTE_COMMENT;
+    return rec;
+  }
+
+  /**
+   * Carries app-only fields (e.g. Galink/IDP) over from a previous snapshot.
+   * Every returned record has each field (null when nothing to carry); `carried` counts copied values.
+   */
+  function mergeCarryOver(newRecs, prevRecs, keyField, fields) {
+    var prev = {};
+    toArray_(prevRecs).forEach(function (rec) {
+      var k = normKey(rec ? rec[keyField] : null);
+      if (k !== '' && !hasOwn.call(prev, k)) setOwn_(prev, k, rec); // first occurrence wins
+    });
+    var fieldList = toArray_(fields);
+    var carried = 0;
+    var records = toArray_(newRecs).map(function (rec) {
+      var out = copy_(rec);
+      var k = normKey(out[keyField]);
+      var p = k !== '' && hasOwn.call(prev, k) ? prev[k] : null;
+      fieldList.forEach(function (f) {
+        if (!isBlank(getOwn_(out, f))) return;
+        var pv = p ? getOwn_(p, f) : undefined;
+        if (!isBlank(pv)) {
+          setOwn_(out, f, pv);
+          carried++;
+        } else {
+          setOwn_(out, f, null);
+        }
+      });
+      return out;
+    });
+    return { records: records, carried: carried };
+  }
+
+  /** Dropdown options for a column: Référentiel category, else Oui/Non, else null (free text). */
+  function optionsForColumn(col, referentiel) {
+    var c = str(col);
+    var target = normKey(hasOwn.call(COLUMN_REF_ALIASES, c) ? COLUMN_REF_ALIASES[c] : c);
+    if (target !== '' && referentiel && typeof referentiel === 'object') {
+      var cats = Object.keys(referentiel);
+      for (var i = 0; i < cats.length; i++) {
+        if (normKey(cats[i]) === target) return toArray_(referentiel[cats[i]]).slice();
+      }
+    }
+    if (YES_NO_COLS.indexOf(c) >= 0) return ['Oui', 'Non'];
+    return null;
+  }
+
+  /** Ascending, unique, valid 'YYYY-MM' months. */
+  function sortMonths(months) {
+    var out = [];
+    toArray_(months).forEach(function (m) {
+      if (validateMonth(m) && out.indexOf(m) < 0) out.push(m);
+    });
+    return out.sort(cmp_);
+  }
+
+  /** Latest month in `months` strictly before `month`, or null. */
+  function previousMonth(months, month) {
+    if (!validateMonth(month)) return null;
+    var before = sortMonths(months).filter(function (m) { return m < month; });
+    return before.length ? before[before.length - 1] : null;
+  }
+
+  return {
+    // §1 constants
+    THRESHOLD: THRESHOLD,
+    KEY_POSTE: KEY_POSTE,
+    KEY_APP: KEY_APP,
+    GENERIC_POSTE_NAME: GENERIC_POSTE_NAME,
+    RISK_ORDER: freeze_(RISK_ORDER),
+    RISK_COLORS: freeze_(RISK_COLORS),
+    COLOR_OK: COLOR_OK,
+    COLOR_KO: COLOR_KO,
+    COLOR_THRESHOLD: COLOR_THRESHOLD,
+    APP_REQUIRED_FIELDS: freeze_(APP_REQUIRED_FIELDS),
+    APP_CUSTOM_FIELDS: freeze_(APP_CUSTOM_FIELDS),
+    YES_NO_COLS: freeze_(YES_NO_COLS),
+    POSTE_DIFF_COLS: freeze_(POSTE_DIFF_COLS),
+    POSTE_TEMPLATE_KEYS: freeze_(POSTE_TEMPLATE_KEYS),
+    COLUMN_REF_ALIASES: freeze_(COLUMN_REF_ALIASES),
+    ACTION_STATUSES: freeze_(ACTION_STATUSES),
+    ACTION_PRIORITIES: freeze_(ACTION_PRIORITIES),
+    SOURCE_TABS: freeze_(SOURCE_TABS),
+    ERROR_CODES: freeze_(ERROR_CODES),
+    // §2 functions
+    normKey: normKey,
+    isBlank: isBlank,
+    str: str,
+    parseScore: parseScore,
+    makeError: makeError,
+    validateMonth: validateMonth,
+    currentMonth: currentMonth,
+    fmtDDMMYYYY: fmtDDMMYYYY,
+    frToIso: frToIso,
+    isoToFr: isoToFr,
+    extractSpreadsheetId: extractSpreadsheetId,
+    escapeFormula: escapeFormula,
+    findHeaderRow: findHeaderRow,
+    rowsToRecords: rowsToRecords,
+    parseReferentiel: parseReferentiel,
+    scoreApplication: scoreApplication,
+    enrichPostes: enrichPostes,
+    enrichApplications: enrichApplications,
+    uniqueSorted: uniqueSorted,
+    filterData: filterData,
+    computeKpis: computeKpis,
+    riskCounts: riskCounts,
+    histogramBins: histogramBins,
+    buildPosteAppsRelation: buildPosteAppsRelation,
+    diffPostes: diffPostes,
+    diffApplications: diffApplications,
+    makeGenericPoste: makeGenericPoste,
+    mergeCarryOver: mergeCarryOver,
+    optionsForColumn: optionsForColumn,
+    sortMonths: sortMonths,
+    previousMonth: previousMonth
+  };
+}
+
+var Core = CoreFactory_();

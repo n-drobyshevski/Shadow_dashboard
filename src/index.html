@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shadow IT — Tableau de bord</title>
+<?!= include('css') ?>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.3/plotly.min.js"></script>
+</head>
+<body>
+<div id="app" class="app">
+  <header class="topbar" role="banner">
+    <button type="button" id="nav-toggle" class="topbar-toggle" aria-controls="sidebar" aria-expanded="false"
+            aria-label="Afficher le menu">☰</button>
+    <span class="topbar-brand">👻 Shadow IT</span>
+  </header>
+  <aside id="sidebar" class="sidebar" aria-label="Navigation principale"></aside>
+  <main id="main" class="main" tabindex="-1">
+    <div class="boot-loading" role="status"><span class="spinner" aria-hidden="true"></span> Chargement…</div>
+  </main>
+</div>
+<div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="false"></div>
+<div id="modal-root"></div>
+<script><?!= coreScript() ?></script>
+<?!= include('js_api') ?>
+<?!= include('js_state') ?>
+<?!= include('js_ui') ?>
+<?!= include('js_charts') ?>
+<?!= include('js_page_dashboard') ?>
+<?!= include('js_page_postes') ?>
+<?!= include('js_page_apps') ?>
+<?!= include('js_page_timeline') ?>
+<?!= include('js_page_actions') ?>
+<?!= include('js_main') ?>
+</body>
+</html>

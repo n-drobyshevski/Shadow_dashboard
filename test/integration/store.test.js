@@ -1,0 +1,537 @@
+'use strict';
+/**
+ * Integration tests for Config + Store + Code running inside the GAS sandbox (all src/*.js loaded
+ * alphabetically into a vm context backed by the in-memory fakes).
+ */
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const vm = require('node:vm');
+
+const { loadGas, plain, sheetValues, SRC_DIR } = require('../helpers/gasSandbox');
+const { createGasEnv } = require('../helpers/gasFakes');
+const data = require('../fixtures/data');
+
+const TAB_NAMES = ['Postes', 'Applications', 'Referentiel', 'Actions', 'Replacements', 'ImportLog', 'Meta'];
+
+/** Fresh sandbox with the data spreadsheet already created. */
+function boot(opts) {
+  const sb = loadGas(opts);
+  const ss = sb.ctx.Store.ensure();
+  return Object.assign(sb, { Store: sb.ctx.Store, Config: sb.ctx.Config, ss, dataId: ss.getId() });
+}
+
+function tabValues(sb, tab) {
+  return sheetValues(sb.env, sb.dataId, tab);
+}
+
+/** Every setValues issued since `from` targeted cells formatted '@'. */
+function assertAllWritesPlainText(env, from) {
+  const writes = env.__state.writes.slice(from || 0);
+  const bad = writes.filter((w) => !w.plainText);
+  assert.deepEqual(bad, [], 'setValues on cells without the plain-text format');
+}
+
+function postes(month) { return data.MONTHS[month].postes.map((r) => Object.assign({}, r)); }
+function apps(month) { return data.MONTHS[month].applications.map((r) => Object.assign({}, r)); }
+const KEY_POSTE = 'Nom du poste';
+const KEY_APP = 'Nom du logiciel / service';
+
+// ------------------------------------------------------------------------------- sandbox / fakes
+
+test('sandbox loads every src/*.js alphabetically and exposes globals', () => {
+  const { ctx, files } = loadGas();
+  assert.deepEqual(files, files.slice().sort());
+  for (const name of ['Core', 'Config', 'Store']) assert.equal(typeof ctx[name], 'object', name);
+  for (const fn of ['doGet', 'include', 'coreScript', 'setup', 'CoreFactory_']) assert.equal(typeof ctx[fn], 'function', fn);
+});
+
+test('fakes: Sheets typing rules (apostrophe, formulas, auto-conversion unless "@")', () => {
+  const env = createGasEnv();
+  const ss = env.SpreadsheetApp.create('t');
+  const sh = ss.getSheets()[0];
+  sh.getRange(1, 1, 1, 6).setValues([['2026-05', '15/03/2025', '0042', "'0042", '=1+1', 'texte']]);
+  const row = sh.getRange(1, 1, 1, 6).getValues()[0];
+  assert.ok(row[0] instanceof Date);
+  assert.ok(row[1] instanceof Date);
+  assert.equal(row[2], 42);
+  assert.equal(row[3], '0042');
+  assert.equal(row[4], '=1+1');
+  assert.equal(row[5], 'texte');
+  assert.equal(env.__state.formulas.length, 1);
+  sh.getRange(2, 1, 1, 3).setNumberFormat('@').setValues([['2026-05', '15/03/2025', '0042']]);
+  assert.deepEqual(sh.getRange(2, 1, 1, 3).getValues()[0], ['2026-05', '15/03/2025', '0042']);
+  assert.equal(sh.getRange('A2').getNumberFormat(), '@');
+  assert.throws(() => sh.getRange(1, 1, 2, 2).setValues([[1, 2]]), /number of rows in the data does not match/);
+  assert.throws(() => sh.getRange(1, 1, 1, 2).setValues([[1]]), /number of columns in the data does not match/);
+  assert.throws(() => sh.getRange(1001, 1), /outside the dimensions/);
+  assert.throws(() => env.SpreadsheetApp.openById('nope'), /not found/);
+  assert.equal(env.Utilities.formatDate(new Date(Date.UTC(2026, 0, 31, 23, 30)), 'Europe/Paris', 'yyyy-MM-dd HH:mm'), '2026-02-01 00:30');
+});
+
+// ------------------------------------------------------------------------------------- Config
+
+test('Config: properties and date helpers', () => {
+  const { ctx } = loadGas({ props: { SOURCE_SPREADSHEET_ID: 'src-id' } });
+  assert.deepEqual(plain(ctx.Config.get()), { dataId: '', sourceId: 'src-id' });
+  ctx.Config.setDataId('data-id');
+  ctx.Config.setSourceId('other');
+  assert.deepEqual(plain(ctx.Config.get()), { dataId: 'data-id', sourceId: 'other' });
+  assert.match(ctx.Config.today(), /^\d{4}-\d{2}-\d{2}$/);
+  assert.match(ctx.Config.todayFr(), /^\d{2}\/\d{2}\/\d{4}$/);
+  assert.match(ctx.Config.nowStamp(), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  assert.match(ctx.Config.uuid(), /^[0-9a-f-]{36}$/);
+  assert.deepEqual(Object.keys(ctx.Config.SCHEMAS), TAB_NAMES);
+  assert.deepEqual(plain(Object.values(ctx.Config.TABS)), TAB_NAMES);
+});
+
+// ------------------------------------------------------------------------------------- ensure
+
+test('Store.ensure creates the data spreadsheet once, with every tab, header and frozen row', () => {
+  const sb = loadGas();
+  const ss1 = sb.ctx.Store.ensure();
+  const id = ss1.getId();
+  assert.equal(sb.env.PropertiesService.getScriptProperties().getProperty('DATA_SPREADSHEET_ID'), id);
+  assert.equal(ss1.getName(), 'ShadowIT_AppData');
+  assert.deepEqual(ss1.getSheets().map((s) => s.getName()), TAB_NAMES);
+  for (const tab of TAB_NAMES) {
+    const sh = ss1.getSheetByName(tab);
+    assert.deepEqual(sh.getRange(1, 1, 1, sb.ctx.Config.SCHEMAS[tab].length).getValues()[0], plain(sb.ctx.Config.SCHEMAS[tab]), tab);
+    assert.equal(sh.getFrozenRows(), 1, tab);
+  }
+  assert.deepEqual(tabValues(Object.assign(sb, { dataId: id }), 'Meta'), [['key', 'value'], ['schema_version', '1']]);
+  assertAllWritesPlainText(sb.env);
+
+  // cached within the execution: no extra Sheets calls
+  const calls = sb.env.__state.calls.openById || 0;
+  assert.equal(sb.ctx.Store.ensure(), ss1);
+  assert.equal(sb.env.__state.calls.openById || 0, calls);
+
+  // a new execution re-opens the same spreadsheet and writes nothing
+  const writes = sb.env.__state.writes.length;
+  sb.ctx.Store.resetCache_();
+  const ss2 = sb.ctx.Store.ensure();
+  assert.equal(ss2.getId(), id);
+  assert.equal(sb.env.__state.writes.length, writes);
+  assert.equal(sb.env.__state.spreadsheets.size, 1);
+  assert.deepEqual(ss2.getSheets().map((s) => s.getName()), TAB_NAMES);
+  for (const tab of TAB_NAMES) assert.equal(ss2.getSheetByName(tab).getLastRow(), tab === 'Meta' ? 2 : 1, tab);
+  assert.equal(sb.ctx.Store.dataUrl(), 'https://docs.google.com/spreadsheets/d/' + id + '/edit');
+});
+
+test('Store.ensure repairs a missing tab / header and recreates an unopenable spreadsheet', () => {
+  const sb = boot();
+  sb.ss.deleteSheet(sb.ss.getSheetByName('Replacements'));
+  sb.ss.getSheetByName('Actions').getRange(1, 1, 1, 2).setValues([['x', 'y']]);
+  sb.Store.resetCache_();
+  sb.Store.ensure();
+  assert.ok(sb.ss.getSheetByName('Replacements'));
+  assert.deepEqual(tabValues(sb, 'Actions')[0], plain(sb.Config.SCHEMAS.Actions));
+  assert.deepEqual(tabValues(sb, 'Meta'), [['key', 'value'], ['schema_version', '1']]);
+
+  const stale = loadGas({ props: { DATA_SPREADSHEET_ID: 'deleted-spreadsheet-id' } });
+  const ss = stale.ctx.Store.ensure();
+  assert.notEqual(ss.getId(), 'deleted-spreadsheet-id');
+  assert.equal(stale.ctx.Config.get().dataId, ss.getId());
+  assert.deepEqual(ss.getSheets().map((s) => s.getName()), TAB_NAMES);
+});
+
+// ----------------------------------------------------------------------------- entity months
+
+test('replaceEntityMonth stores a month snapshot and keeps the other months', () => {
+  const sb = boot();
+  const april = sb.Store.replaceEntityMonth('Postes', '2026-04', postes('2026-04'), KEY_POSTE);
+  assert.equal(april.length, 6);
+  assert.deepEqual(april.map((r) => r._order), [0, 1, 2, 3, 4, 5]);
+  assert.ok(april.every((r) => /^[0-9a-f-]{36}$/.test(r._id)));
+  assert.equal(april[1]._key, 'LAB-TEX-02');
+  sb.Store.replaceEntityMonth('Postes', '2026-05', postes('2026-05'), KEY_POSTE);
+
+  // re-import April with fewer rows: May must be untouched
+  const before = sb.Store.readEntityMonth('Postes', '2026-05');
+  sb.Store.replaceEntityMonth('Postes', '2026-04', postes('2026-04').slice(0, 2), KEY_POSTE);
+  assert.equal(sb.Store.readEntityMonth('Postes', '2026-04').length, 2);
+  assert.deepEqual(plain(sb.Store.readEntityMonth('Postes', '2026-05')), plain(before));
+  assert.equal(tabValues(sb, 'Postes').length, 1 + 2 + 7, 'leftover rows cleared');
+
+  // record round trip (source columns, null preserved, _json without meta / enrichment)
+  const may = sb.Store.readEntityMonth('Postes', '2026-05');
+  const expected = postes('2026-05');
+  assert.equal(may.length, expected.length);
+  may.forEach((rec, i) => {
+    const copy = plain(rec);
+    for (const k of ['_id', '_key', '_order', '_updated_at']) delete copy[k];
+    assert.deepEqual(copy, expected[i]);
+    assert.equal(rec._key, expected[i][KEY_POSTE]);
+  });
+  const rows = tabValues(sb, 'Postes').slice(1);
+  assert.ok(rows.every((r) => !/"_/.test(r[4])), '_json has no _-prefixed field');
+  assert.deepEqual(rows.map((r) => r[0]), ['2026-04', '2026-04', '2026-05', '2026-05', '2026-05', '2026-05', '2026-05', '2026-05', '2026-05']);
+
+  // enrichment is stripped, existing _id kept
+  const enriched = may.map((r) => Object.assign({}, r, { _score: 50, _conforme: false, _criteria: { a: 1 } }));
+  const stored = sb.Store.replaceEntityMonth('Postes', '2026-05', enriched, KEY_POSTE);
+  assert.deepEqual(stored.map((r) => r._id), may.map((r) => r._id));
+  assert.ok(!('_score' in sb.Store.readEntityMonth('Postes', '2026-05')[0]));
+
+  const all = sb.Store.readEntityAll('Postes');
+  assert.deepEqual(Object.keys(all).sort(), ['2026-04', '2026-05']);
+  assert.equal(all['2026-05'].length, 7);
+  assertAllWritesPlainText(sb.env);
+});
+
+test('replaceEntityMonth does one read and one write per tab', () => {
+  const sb = boot();
+  sb.Store.replaceEntityMonth('Applications', '2026-04', apps('2026-04'), KEY_APP);
+  const c0 = Object.assign({}, sb.env.__state.calls);
+  const w0 = sb.env.__state.writes.length;
+  sb.Store.replaceEntityMonth('Applications', '2026-05', apps('2026-05'), KEY_APP);
+  assert.equal(sb.env.__state.calls.getValues - c0.getValues, 1);
+  assert.equal(sb.env.__state.writes.length - w0, 1);
+  // reading a month = one getValues
+  const c1 = sb.env.__state.calls.getValues;
+  sb.Store.readEntityMonth('Applications', '2026-05');
+  assert.equal(sb.env.__state.calls.getValues - c1, 1);
+});
+
+test('updateEntityRows / appendEntityRow / deleteEntityRow / NOT_FOUND', () => {
+  const sb = boot();
+  sb.Store.replaceEntityMonth('Applications', '2026-04', apps('2026-04'), KEY_APP);
+  const stored = sb.Store.replaceEntityMonth('Applications', '2026-05', apps('2026-05'), KEY_APP);
+  const minitab = stored[0];
+
+  // update: one write, only the changed row
+  const w0 = sb.env.__state.writes.length;
+  const updated = sb.Store.updateEntityRows('Applications', '2026-05', [
+    { id: minitab._id, updates: { Galink: 'Oui', IDP: '', _score: 99 } },
+  ]);
+  assert.equal(updated.length, 1);
+  assert.equal(updated[0].Galink, 'Oui');
+  assert.equal(updated[0].IDP, null, 'blank -> null');
+  assert.ok(!('_score' in updated[0]));
+  assert.match(updated[0]._updated_at, /^\d{4}-\d{2}-\d{2}T/);
+  const writes = sb.env.__state.writes.slice(w0);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].rows, 1);
+
+  // renaming through the key column keeps _key in sync
+  const renamed = sb.Store.updateEntityRows('Applications', '2026-05', [{ id: minitab._id, updates: { [KEY_APP]: 'Minitab 22' } }]);
+  assert.equal(renamed[0]._key, 'Minitab 22');
+
+  // unknown id: NOT_FOUND and nothing written
+  const w1 = sb.env.__state.writes.length;
+  assert.throws(() => sb.Store.updateEntityRows('Applications', '2026-05', [
+    { id: stored[1]._id, updates: { Galink: 'Non' } }, { id: 'missing', updates: { Galink: 'Non' } },
+  ]), (e) => e.code === 'NOT_FOUND');
+  assert.equal(sb.env.__state.writes.length, w1);
+  assert.equal(sb.Store.readEntityMonth('Applications', '2026-05')[1].Galink, undefined);
+  // id of another month is unknown in this month
+  const aprilId = sb.Store.readEntityMonth('Applications', '2026-04')[0]._id;
+  assert.throws(() => sb.Store.updateEntityRows('Applications', '2026-05', [{ id: aprilId, updates: {} }]), { code: 'NOT_FOUND' });
+
+  // append: new id, _order = max + 1
+  const added = sb.Store.appendEntityRow('Applications', '2026-05', { [KEY_APP]: 'Slack', _id: 'forced', 'Équipe': 'R&D Vélo' }, KEY_APP);
+  assert.notEqual(added._id, 'forced');
+  assert.equal(added._order, 5);
+  assert.equal(added._key, 'Slack');
+  let may = sb.Store.readEntityMonth('Applications', '2026-05');
+  assert.equal(may.length, 6);
+  assert.equal(may[5][KEY_APP], 'Slack');
+
+  // delete
+  assert.equal(sb.Store.deleteEntityRow('Applications', '2026-05', may[2]._id), true);
+  assert.equal(sb.Store.deleteEntityRow('Applications', '2026-05', 'missing'), false);
+  assert.equal(sb.Store.deleteEntityRow('Applications', '2026-04', may[0]._id), false, 'wrong month');
+  may = sb.Store.readEntityMonth('Applications', '2026-05');
+  assert.equal(may.length, 5);
+  assert.ok(!may.some((r) => r[KEY_APP] === 'Dropbox perso'));
+  assert.equal(sb.Store.readEntityMonth('Applications', '2026-04').length, 5);
+  assertAllWritesPlainText(sb.env);
+});
+
+test('Store grows the sheet beyond its default 1000 rows', () => {
+  const sb = boot();
+  const many = Array.from({ length: 1205 }, (_, i) => ({ [KEY_POSTE]: 'P-' + String(i).padStart(4, '0') }));
+  sb.Store.replaceEntityMonth('Postes', '2026-05', many, KEY_POSTE);
+  const back = sb.Store.readEntityMonth('Postes', '2026-05');
+  assert.equal(back.length, 1205);
+  assert.equal(back[1204][KEY_POSTE], 'P-1204');
+});
+
+test('months listing: ImportLog ∪ Postes ∪ Applications, ascending', () => {
+  const sb = boot();
+  assert.deepEqual(plain(sb.Store.listMonths()), []);
+  sb.Store.replaceEntityMonth('Postes', '2026-05', postes('2026-05'), KEY_POSTE);
+  sb.Store.replaceEntityMonth('Applications', '2026-03', apps('2026-04'), KEY_APP);
+  sb.Store.appendImportLog({ month: '2026-04', source_id: 's', counts: {}, postes_headers: [], apps_headers: [], warnings: [] });
+  assert.deepEqual(plain(sb.Store.listMonths()), ['2026-03', '2026-04', '2026-05']);
+  assert.equal(sb.Store.hasMonth('2026-05'), true);
+  assert.equal(sb.Store.hasMonth('2026-06'), false);
+  assert.equal(sb.Store.hasMonth('bad'), false);
+  assert.throws(() => sb.Store.replaceEntityMonth('Postes', '2026-13', [], KEY_POSTE), { code: 'VALIDATION' });
+});
+
+// ------------------------------------------------------------------------ référentiel / log
+
+test('référentiel round trip per month', () => {
+  const sb = boot();
+  sb.Store.replaceReferentiel('2026-04', data.REFERENTIEL);
+  sb.Store.replaceReferentiel('2026-05', { 'Statut': ['Conforme', 'Non conforme'], 'OS': ['Windows'] });
+  assert.deepEqual(plain(sb.Store.readReferentiel('2026-04')), data.REFERENTIEL);
+  assert.deepEqual(plain(sb.Store.readReferentiel('2026-05')), { 'Statut': ['Conforme', 'Non conforme'], 'OS': ['Windows'] });
+  assert.deepEqual(plain(sb.Store.readReferentiel('2026-06')), {});
+  sb.Store.replaceReferentiel('2026-04', {});
+  assert.deepEqual(plain(sb.Store.readReferentiel('2026-04')), {});
+  assert.equal(Object.keys(sb.Store.readReferentiel('2026-05')).length, 2);
+});
+
+test('import log round trip and latestImportInfo', () => {
+  const sb = boot();
+  const e1 = { month: '2026-04', imported_at: '2026-04-02 09:15', source_id: 'SRC', counts: { postes: 6, applications: 5, referentiel: 8 },
+    postes_headers: data.POSTES_HEADERS, apps_headers: data.APPS_HEADERS, warnings: ['2 ligne(s) sans « Nom du poste » ignorée(s)'] };
+  const e2 = Object.assign({}, e1, { month: '2026-05', imported_at: '2026-05-03 10:00', warnings: [] });
+  const e3 = Object.assign({}, e1, { imported_at: '2026-05-04 11:00', counts: { postes: 7, applications: 5, referentiel: 8 } });
+  [e1, e2, e3].forEach((e) => sb.Store.appendImportLog(e));
+  assert.deepEqual(plain(sb.Store.getImportLog()), [e1, e2, e3]);
+  assert.deepEqual(plain(sb.Store.latestImportInfo('2026-04')), e3);
+  assert.equal(sb.Store.latestImportInfo('2026-01'), null);
+  // imported_at defaults to now
+  sb.Store.appendImportLog({ month: '2026-06', source_id: 'SRC' });
+  const last = sb.Store.latestImportInfo('2026-06');
+  assert.match(last.imported_at, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  assert.deepEqual(plain(last.warnings), []);
+  assertAllWritesPlainText(sb.env);
+});
+
+// ---------------------------------------------------------------------------- Actions / rows
+
+test('Actions CRUD and updateRowsWhere', () => {
+  const sb = boot();
+  for (const a of data.ACTIONS) sb.Store.insertRow('Actions', a);
+  assert.deepEqual(plain(sb.Store.listRows('Actions')), data.ACTIONS);
+
+  const inserted = sb.Store.insertRow('Actions', { target_type: 'poste', target_name: 'X', action: 'Faire', extra: 'ignored' });
+  assert.match(inserted.id, /^[0-9a-f-]{36}$/);
+  assert.equal(inserted.comment, '');
+  assert.ok(!('extra' in inserted));
+  assert.equal(sb.Store.listRows('Actions').length, 4);
+
+  const up = sb.Store.updateRow('Actions', 'a-0002', { status: 'Terminé', date_completed: '01/06/2026', id: 'hacked', bogus: 1 });
+  assert.equal(up.id, 'a-0002');
+  assert.equal(up.status, 'Terminé');
+  assert.ok(!('bogus' in up));
+  assert.deepEqual(plain(sb.Store.listRows('Actions').find((a) => a.id === 'a-0002')), plain(up));
+  assert.throws(() => sb.Store.updateRow('Actions', 'nope', { status: 'x' }), { code: 'NOT_FOUND' });
+
+  // one read + one write
+  const r0 = sb.env.__state.calls.getValues;
+  const w0 = sb.env.__state.writes.length;
+  const n = sb.Store.updateRowsWhere('Actions', (a) => a.target_type === 'poste',
+    (a) => ({ comment: a.comment + ' [revu]' }));
+  assert.equal(n, 3);
+  assert.equal(sb.env.__state.calls.getValues - r0, 1);
+  assert.equal(sb.env.__state.writes.length - w0, 1);
+  const m = sb.Store.updateRowsWhere('Actions', (a) => a.target_name === 'Dropbox perso', (a) => { a.target_name = 'Dropbox'; });
+  assert.equal(m, 1);
+  assert.equal(sb.Store.updateRowsWhere('Actions', () => false, () => ({})), 0);
+  const rows = sb.Store.listRows('Actions');
+  assert.equal(rows.find((a) => a.id === 'a-0001').comment, 'Remplacé par LAB-TEX-03 [revu]');
+  assert.equal(rows.find((a) => a.id === 'a-0003').target_name, 'Dropbox');
+  assert.equal(rows.find((a) => a.id === 'a-0003').comment, '');
+
+  assert.equal(sb.Store.deleteRow('Actions', 'a-0001'), true);
+  assert.equal(sb.Store.deleteRow('Actions', 'a-0001'), false);
+  assert.deepEqual(plain(sb.Store.listRows('Actions').map((a) => a.id)), ['a-0002', 'a-0003', inserted.id]);
+
+  for (const r of data.REPLACEMENTS) sb.Store.insertRow('Replacements', r);
+  assert.deepEqual(plain(sb.Store.listRows('Replacements')), data.REPLACEMENTS);
+  // writeTab rewrites everything (and shrinks)
+  sb.Store.writeTab('Replacements', []);
+  assert.deepEqual(plain(sb.Store.listRows('Replacements')), []);
+  assertAllWritesPlainText(sb.env);
+});
+
+test('deleting the only data row of a minimal sheet works', () => {
+  const sb = boot();
+  const sh = sb.ss.getSheetByName('Actions');
+  sh.deleteRows(3, sh.getMaxRows() - 2); // leave header + 1 row
+  sb.Store.insertRow('Actions', { id: 'only' });
+  assert.equal(sb.Store.deleteRow('Actions', 'only'), true);
+  assert.deepEqual(plain(sb.Store.listRows('Actions')), []);
+});
+
+// ------------------------------------------------------------------- text format / formulas
+
+test('plain-text format: date-like and numeric strings survive', () => {
+  const sb = boot();
+  const tricky = { id: 'a-x', target_type: 'poste', target_name: '0042', equipe: 'TRUE', action: '30%',
+    date_created: '15/03/2025', deadline: '2026-05-31', source_month: '2026-05', comment: '1e3',
+    recorded_at: '2026-05-01', updated_at: '-12' };
+  sb.Store.insertRow('Actions', tricky);
+  const back = sb.Store.listRows('Actions')[0];
+  for (const [k, v] of Object.entries(tricky)) assert.equal(back[k], v, k);
+  // raw cells are strings, cells are '@'
+  const raw = tabValues(sb, 'Actions')[1];
+  assert.ok(raw.every((v) => typeof v === 'string'));
+  assert.equal(sb.ss.getSheetByName('Actions').getRange(2, 1).getNumberFormat(), '@');
+
+  sb.Store.replaceEntityMonth('Postes', '2026-05', [{ [KEY_POSTE]: '0042', 'Date visite': '15/03/2025' }], KEY_POSTE);
+  const rec = sb.Store.readEntityMonth('Postes', '2026-05')[0];
+  assert.equal(rec._key, '0042');
+  assert.equal(rec['Date visite'], '15/03/2025');
+  assert.equal(rec._order, 0);
+  const pr = tabValues(sb, 'Postes')[1];
+  assert.equal(pr[0], '2026-05');
+  assert.equal(pr[2], '0042');
+  assert.equal(pr[3], '0');
+  assert.deepEqual(plain(sb.Store.listMonths()), ['2026-05']);
+  assertAllWritesPlainText(sb.env);
+});
+
+test('formula escaping: strings are stored literally, no formula ever written', () => {
+  const sb = boot();
+  const nasty = ['=HYPERLINK("http://evil","clic")', '+33 6 12 34 56 78', '-cmd', '@SUM(A1)', "'apostrophe", '=1+1'];
+  sb.Store.insertRow('Actions', { id: 'f1', target_type: 'poste', target_name: nasty[0], equipe: nasty[1],
+    action: nasty[2], responsable: nasty[3], comment: nasty[4], priorite: nasty[5] });
+  const back = sb.Store.listRows('Actions')[0];
+  assert.deepEqual([back.target_name, back.equipe, back.action, back.responsable, back.comment, back.priorite], nasty);
+
+  sb.Store.replaceEntityMonth('Applications', '2026-05', [{ [KEY_APP]: nasty[0], 'Éditeur': nasty[3] }], KEY_APP);
+  const rec = sb.Store.readEntityMonth('Applications', '2026-05')[0];
+  assert.equal(rec[KEY_APP], nasty[0]);
+  assert.equal(rec._key, nasty[0]);
+  sb.Store.replaceReferentiel('2026-05', { '=cat': ['=val', '+1'] });
+  assert.deepEqual(plain(sb.Store.readReferentiel('2026-05')), { '=cat': ['=val', '+1'] });
+  sb.Store.updateRowsWhere('Actions', () => true, () => ({ comment: '=IMPORTXML("x")' }));
+  assert.equal(sb.Store.listRows('Actions')[0].comment, '=IMPORTXML("x")');
+
+  assert.deepEqual(sb.env.__state.formulas, []);
+});
+
+// ------------------------------------------------------------------------------------- lock
+
+test('withLock returns the result, flushes and releases', () => {
+  const sb = boot();
+  const lock = sb.env.__state.lock;
+  const f0 = sb.env.__state.flushes;
+  assert.equal(sb.Store.withLock(() => 42), 42);
+  assert.equal(lock.acquired, 1);
+  assert.equal(lock.released, 1);
+  assert.equal(lock.lastTimeout, 20000);
+  assert.equal(sb.env.__state.flushes, f0 + 1);
+  // re-entrant: nested call does not release the outer lock
+  sb.Store.withLock(() => sb.Store.withLock(() => assert.equal(lock.held, true)));
+  assert.equal(lock.acquired, 2);
+  assert.equal(lock.released, 2);
+});
+
+test('withLock releases the lock when fn throws', () => {
+  const sb = boot();
+  assert.throws(() => sb.Store.withLock(() => {
+    sb.Store.insertRow('Actions', { id: 'w' });
+    throw new Error('boom');
+  }), /boom/);
+  assert.equal(sb.env.__state.lock.acquired, 1);
+  assert.equal(sb.env.__state.lock.released, 1);
+  assert.equal(sb.env.__state.lock.held, false);
+  assert.ok(sb.env.__state.flushes >= 1);
+  assert.throws(() => sb.Store.withLock(() => sb.Store.updateRow('Actions', 'nope', {})), { code: 'NOT_FOUND' });
+  assert.equal(sb.env.__state.lock.held, false);
+});
+
+test('withLock maps a lock timeout to BUSY without running fn', () => {
+  const sb = boot({ lockTimeout: true });
+  let ran = false;
+  assert.throws(() => sb.Store.withLock(() => { ran = true; }), (e) => e.code === 'BUSY' && /opération est en cours/.test(e.message));
+  assert.equal(ran, false);
+  assert.equal(sb.env.__state.lock.released, 0);
+  sb.env.__state.lockTimeout = false;
+  assert.equal(sb.Store.withLock(() => 'ok'), 'ok');
+});
+
+// ------------------------------------------------------------------------------------- Code
+
+test('coreScript is script-safe and evaluates to a working Core', () => {
+  const { ctx } = loadGas();
+  const src = ctx.coreScript();
+  assert.ok(!/<\/script/i.test(src));
+  assert.ok(src.startsWith('var Core = ('));
+  const browser = vm.createContext({});
+  vm.runInContext(src, browser);
+  assert.equal(browser.Core.normKey('  Équipe '), 'équipe');
+  assert.equal(browser.Core.escapeFormula('=x'), "'=x");
+});
+
+test('coreScript neutralises a closing script tag inside CoreFactory_', () => {
+  const { ctx } = loadGas();
+  vm.runInContext("CoreFactory_ = function () { return { tag: '</script>', re: /<\\/SCRIPT>/i.source }; };", ctx);
+  const src = ctx.coreScript();
+  assert.ok(!/<\/script/i.test(src));
+  const browser = vm.createContext({});
+  vm.runInContext(src, browser);
+  assert.equal(browser.Core.tag, '</script>');
+});
+
+test('doGet renders the index template with title and viewport (temp templates)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gas-src-'));
+  for (const f of fs.readdirSync(SRC_DIR).filter((n) => n.endsWith('.js'))) fs.copyFileSync(path.join(SRC_DIR, f), path.join(dir, f));
+  fs.writeFileSync(path.join(dir, 'index.html'),
+    '<!DOCTYPE html><html><head><?!= include(\'css\') ?></head><body><script><?!= coreScript() ?></script></body></html>');
+  fs.writeFileSync(path.join(dir, 'css.html'), '<style>body{margin:0}</style>');
+  try {
+    const { ctx } = loadGas({ srcDir: dir });
+    const out = ctx.doGet({});
+    assert.equal(out.getTitle(), 'Shadow IT — Tableau de bord');
+    assert.deepEqual(plain(out._metaTags), [{ name: 'viewport', content: 'width=device-width, initial-scale=1' }]);
+    const html = out.getContent();
+    assert.ok(html.includes('<style>body{margin:0}</style>'));
+    assert.ok(html.includes('var Core = ('));
+    assert.equal(ctx.include('css'), '<style>body{margin:0}</style>');
+    assert.throws(() => ctx.include('missing'), /No HTML file named missing/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('doGet renders the real src/index.html', { skip: !fs.existsSync(path.join(SRC_DIR, 'index.html')) && 'src/index.html not written yet' }, () => {
+  const { ctx } = loadGas();
+  let out;
+  try {
+    out = ctx.doGet({});
+  } catch (e) {
+    if (/No HTML file named/.test(e.message)) return; // partials of other units still missing
+    throw e;
+  }
+  assert.equal(out.getTitle(), 'Shadow IT — Tableau de bord');
+  const html = out.getContent();
+  assert.ok(!html.includes('<?'), 'all scriptlets evaluated');
+  assert.ok(html.includes('var Core = ('));
+});
+
+test('setup creates the data spreadsheet and logs its URL', () => {
+  const { ctx, env } = loadGas();
+  const url = ctx.setup();
+  assert.match(url, /^https:\/\/docs\.google\.com\/spreadsheets\/d\/[\w-]+\/edit$/);
+  assert.ok(env.__state.logs.some((l) => l.includes(url)));
+});
+
+test('fakes: fixture source spreadsheet keeps raw values, display values and trims the data range', () => {
+  const { buildSourceSpreadsheet, SOURCE_ID } = require('../fixtures/source');
+  const env = createGasEnv({ sources: [buildSourceSpreadsheet('2026-05')] });
+  const ss = env.SpreadsheetApp.openById(SOURCE_ID);
+  assert.equal(ss.getSpreadsheetTimeZone(), 'Europe/Paris');
+  assert.deepEqual(ss.getSheets().map((s) => s.getName()), ['Suivi des postes', 'Suivi des applications', 'Référentiel', 'Dashboard']);
+  const range = ss.getSheetByName('Suivi des postes').getDataRange();
+  // banner + header + 7 postes + blank row + ghost score row (trailing blank row excluded)
+  assert.equal(range.getNumRows(), 11);
+  const values = range.getValues();
+  const display = range.getDisplayValues();
+  const scoreCol = data.POSTES_HEADERS.indexOf('Score conformité');
+  assert.equal(values[2][scoreCol], 1);
+  assert.equal(display[2][scoreCol], '100%');
+  assert.ok(values[2][1] instanceof Date);
+  assert.equal(display[2][1], '12/03/2026');
+  assert.equal(display[10][scoreCol], '0%');
+});

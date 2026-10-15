@@ -1,0 +1,211 @@
+<script>
+/**
+ * window.State — global client state + data caches (docs/API.md §5).
+ *
+ * The state object is replaced (never mutated) on every State.set(), so subscribers can compare
+ * references. Month data, the timeline and the actions are cached; in-flight requests are shared
+ * so that concurrent callers (sidebar + page) trigger a single server call.
+ */
+(function () {
+  'use strict';
+
+  var state = {
+    page: 'dashboard',
+    configured: false,
+    months: [],
+    month: '',
+    currentMonth: '',
+    dataUrl: '',
+    sourceUrl: '',
+    sourceTitle: '',
+    filters: { equipes: [], batiments: [] },
+    loading: false
+  };
+  var subscribers = [];
+
+  var monthCache = {};     // month -> monthData
+  var monthPending = {};   // month -> Promise<monthData>
+  var timelineCache = null;
+  var timelinePending = null;
+  var actionsCache = null;
+  var actionsPending = null;
+  // Bumped by invalidate(): responses of requests started before an invalidation are not cached.
+  var generation = 0;
+
+  function get() { return state; }
+
+  function set(patch) {
+    if (!patch) return;
+    var next = {};
+    var changed = [];
+    Object.keys(state).forEach(function (k) { next[k] = state[k]; });
+    Object.keys(patch).forEach(function (k) {
+      if (next[k] !== patch[k]) changed.push(k);
+      next[k] = patch[k];
+    });
+    if (!changed.length) return;
+    state = next;
+    subscribers.slice().forEach(function (fn) {
+      try { fn(state, changed); } catch (e) { console.error(e); }
+    });
+  }
+
+  function subscribe(fn) {
+    subscribers.push(fn);
+    return function unsubscribe() {
+      var i = subscribers.indexOf(fn);
+      if (i >= 0) subscribers.splice(i, 1);
+    };
+  }
+
+  function enrich(entity, records) {
+    return entity === 'postes' ? Core.enrichPostes(records) : Core.enrichApplications(records);
+  }
+
+  /** Server records are already enriched; re-enrich defensively so the cache is always consistent. */
+  function normalizeMonthData(md) {
+    md.postes = enrich('postes', md.postes || []);
+    md.applications = enrich('applications', md.applications || []);
+    md.referentiel = md.referentiel || {};
+    md.columns = md.columns || { postes: [], applications: [] };
+    return md;
+  }
+
+  function loadMonth(month, opts) {
+    var force = !!(opts && opts.force);
+    if (!month) return Promise.reject(Object.assign(new Error('Aucun mois sélectionné.'), { code: 'VALIDATION' }));
+    if (!force && monthCache[month]) return Promise.resolve(monthCache[month]);
+    if (!force && monthPending[month]) return monthPending[month];
+    var gen = generation;
+    var p = api.call('api_getMonthData', { month: month }).then(function (md) {
+      md = normalizeMonthData(md);
+      if (gen === generation) monthCache[month] = md;
+      if (monthPending[month] === p) delete monthPending[month];
+      return md;
+    }, function (err) {
+      if (monthPending[month] === p) delete monthPending[month];
+      throw err;
+    });
+    monthPending[month] = p;
+    return p;
+  }
+
+  function getMonthData(month) { return monthCache[month] || null; }
+
+  function patchRecords(month, entity, records) {
+    var md = monthCache[month];
+    if (!md || !md[entity]) return;
+    var byId = {};
+    (records || []).forEach(function (r) { if (r && r._id) byId[r._id] = r; });
+    md[entity] = enrich(entity, md[entity].map(function (r) { return byId[r._id] || r; }));
+  }
+
+  function removeRecord(month, entity, id) {
+    var md = monthCache[month];
+    if (!md || !md[entity]) return;
+    md[entity] = md[entity].filter(function (r) { return r._id !== id; });
+  }
+
+  function addRecord(month, entity, record) {
+    var md = monthCache[month];
+    if (!md || !md[entity] || !record) return;
+    md[entity] = md[entity].filter(function (r) { return r._id !== record._id; })
+      .concat(enrich(entity, [record]));
+    md[entity].sort(function (a, b) { return (a._order || 0) - (b._order || 0); });
+  }
+
+  function invalidate(month) {
+    generation++;
+    if (month) {
+      delete monthCache[month];
+      delete monthPending[month];
+    } else {
+      monthCache = {};
+      monthPending = {};
+    }
+    timelineCache = null;
+    timelinePending = null;
+    actionsCache = null;
+    actionsPending = null;
+  }
+
+  function filtered(monthData) {
+    var md = monthData || {};
+    return Core.filterData({ postes: md.postes || [], applications: md.applications || [] }, state.filters);
+  }
+
+  function loadTimeline(opts) {
+    var force = !!(opts && opts.force);
+    if (!force && timelineCache) return Promise.resolve(timelineCache);
+    if (!force && timelinePending) return timelinePending;
+    var gen = generation;
+    var p = api.call('api_getTimeline', null).then(function (tl) {
+      tl = tl || [];
+      if (gen === generation) timelineCache = tl;
+      if (timelinePending === p) timelinePending = null;
+      return tl;
+    }, function (err) {
+      if (timelinePending === p) timelinePending = null;
+      throw err;
+    });
+    timelinePending = p;
+    return p;
+  }
+
+  function loadActions(opts) {
+    var force = !!(opts && opts.force);
+    if (!force && actionsCache) return Promise.resolve(actionsCache);
+    if (!force && actionsPending) return actionsPending;
+    var gen = generation;
+    var p = api.call('api_getActions', null).then(function (res) {
+      res = { actions: (res && res.actions) || [], replacements: (res && res.replacements) || [] };
+      if (gen === generation) actionsCache = res;
+      if (actionsPending === p) actionsPending = null;
+      return res;
+    }, function (err) {
+      if (actionsPending === p) actionsPending = null;
+      throw err;
+    });
+    actionsPending = p;
+    return p;
+  }
+
+  function refreshBootstrap() {
+    set({ loading: true });
+    return api.call('api_bootstrap', null).then(function (b) {
+      var months = Core.sortMonths(b.months || []);
+      var month = months.indexOf(state.month) >= 0 ? state.month : (b.latestMonth || months[months.length - 1] || '');
+      set({
+        configured: !!b.configured,
+        months: months,
+        month: month,
+        currentMonth: b.currentMonth || Core.currentMonth(new Date()),
+        dataUrl: b.dataUrl || '',
+        sourceUrl: b.sourceUrl || '',
+        sourceTitle: b.sourceTitle || '',
+        loading: false
+      });
+      return state;
+    }, function (err) {
+      set({ loading: false });
+      throw err;
+    });
+  }
+
+  window.State = {
+    get: get,
+    set: set,
+    subscribe: subscribe,
+    loadMonth: loadMonth,
+    getMonthData: getMonthData,
+    patchRecords: patchRecords,
+    removeRecord: removeRecord,
+    addRecord: addRecord,
+    invalidate: invalidate,
+    filtered: filtered,
+    loadTimeline: loadTimeline,
+    loadActions: loadActions,
+    refreshBootstrap: refreshBootstrap
+  };
+})();
+</script>

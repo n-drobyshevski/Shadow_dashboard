@@ -1,0 +1,921 @@
+<script>
+/**
+ * window.UI — DOM builder and UI components (docs/API.md §5).
+ *
+ * Security rule: every piece of text goes through textContent (UI.el); innerHTML is never used.
+ * URL-bearing attributes (href, src, action, formaction) reject javascript:/data:/vbscript: URLs.
+ */
+(function () {
+  'use strict';
+
+  var UNSAFE_URL = /^\s*(javascript|data|vbscript)\s*:/i;
+  var URL_ATTRS = { href: 1, src: 1, action: 1, formaction: 1, xlinkHref: 1 };
+  var uid = 0;
+  function nextId(prefix) { uid++; return (prefix || 'ui') + '-' + uid; }
+
+  // ------------------------------------------------------------------------------ DOM builder
+
+  function appendChildren(node, children) {
+    children.forEach(function (c) {
+      if (c === null || c === undefined || c === false || c === true) return;
+      if (Array.isArray(c)) { appendChildren(node, c); return; }
+      if (c instanceof Node) { node.appendChild(c); return; }
+      node.appendChild(document.createTextNode(String(c)));
+    });
+  }
+
+  /**
+   * UI.el(tag, attrs?, ...children)
+   * attrs: class, id, style (object|string), dataset (object), on<Event> (function), text
+   * (textContent), value (set as a property after children, so <select> works), any other attribute
+   * via setAttribute (true -> '', false/null/undefined -> omitted).
+   */
+  function el(tag, attrs) {
+    var node = document.createElement(tag);
+    var children = Array.prototype.slice.call(arguments, 2);
+    var value;
+    var hasValue = false;
+    if (attrs && (attrs instanceof Node || Array.isArray(attrs) || typeof attrs !== 'object')) {
+      // Called as UI.el(tag, child, ...): no attributes object.
+      children.unshift(attrs);
+      attrs = null;
+    }
+    if (attrs) {
+      Object.keys(attrs).forEach(function (k) {
+        var v = attrs[k];
+        if (v === undefined || v === null || v === false) return;
+        if (k === 'class' || k === 'className') {
+          node.className = Array.isArray(v) ? v.filter(Boolean).join(' ') : String(v);
+        } else if (k === 'style') {
+          if (typeof v === 'string') {
+            node.style.cssText = v;
+          } else {
+            Object.keys(v).forEach(function (p) {
+              if (v[p] === null || v[p] === undefined) return;
+              if (p.indexOf('-') >= 0) node.style.setProperty(p, String(v[p]));
+              else node.style[p] = v[p];
+            });
+          }
+        } else if (k === 'dataset') {
+          Object.keys(v).forEach(function (d) { if (v[d] !== null && v[d] !== undefined) node.dataset[d] = String(v[d]); });
+        } else if (k === 'text') {
+          node.textContent = String(v);
+        } else if (k === 'value') {
+          value = v;
+          hasValue = true;
+        } else if (/^on[A-Za-z]/.test(k) && typeof v === 'function') {
+          node.addEventListener(k.slice(2).toLowerCase(), v);
+        } else if (k === 'innerHTML' || k === 'outerHTML') {
+          throw new Error('UI.el: ' + k + ' is not allowed');
+        } else if (URL_ATTRS[k] && UNSAFE_URL.test(String(v))) {
+          // dropped on purpose
+        } else {
+          node.setAttribute(k, v === true ? '' : String(v));
+        }
+      });
+    }
+    appendChildren(node, children);
+    if (hasValue) node.value = value === null || value === undefined ? '' : value;
+    return node;
+  }
+
+  function clear(node) {
+    if (!node) return node;
+    while (node.firstChild) node.removeChild(node.firstChild);
+    return node;
+  }
+
+  /** External link (new tab, rel=noopener). */
+  function extLink(href, text, attrs) {
+    var a = el('a', Object.assign({ href: href || '#', target: '_blank', rel: 'noopener noreferrer' }, attrs || {}),
+      text);
+    return a;
+  }
+
+  // ------------------------------------------------------------------------------ formatting
+
+  function isNum(n) { return n !== null && n !== undefined && n !== '' && isFinite(Number(n)); }
+
+  function fmtPct(n, digits) {
+    if (!isNum(n)) return '—';
+    var d = digits === undefined ? 1 : digits;
+    return new Intl.NumberFormat('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: false })
+      .format(Number(n)) + ' %';
+  }
+
+  function fmtNum(n) {
+    if (!isNum(n)) return '—';
+    return new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 }).format(Math.round(Number(n)));
+  }
+
+  var MONTH_NAMES = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre',
+    'octobre', 'novembre', 'décembre'];
+  /** '2026-05' -> 'mai 2026' (falls back to the input). */
+  function fmtMonth(m) {
+    var r = /^(\d{4})-(\d{2})$/.exec(String(m || ''));
+    if (!r) return String(m || '');
+    return MONTH_NAMES[Number(r[2]) - 1] + ' ' + r[1];
+  }
+
+  // ------------------------------------------------------------------------------ small components
+
+  function badge(text, tone) {
+    return el('span', { class: 'badge badge-' + (tone || 'neutral') }, text);
+  }
+
+  function scoreBadge(score) {
+    var tone = !isNum(score) ? 'neutral' : (Number(score) >= Core.THRESHOLD ? 'ok' : 'ko');
+    return badge(fmtPct(score), tone);
+  }
+
+  function riskBadge(level) {
+    var lvl = Core.str(level);
+    if (!lvl) return badge('—', 'neutral');
+    var color = Object.prototype.hasOwnProperty.call(Core.RISK_COLORS, lvl) ? Core.RISK_COLORS[lvl] : null;
+    if (!color) return badge(lvl, 'neutral');
+    return el('span', { class: 'badge badge-risk', style: { '--risk-color': color } },
+      el('span', { class: 'badge-dot', 'aria-hidden': 'true' }), lvl);
+  }
+
+  function card(o) {
+    var opts = o || {};
+    return el('div', { class: 'card metric-card' + (opts.tone ? ' tone-' + opts.tone : '') },
+      el('div', { class: 'metric-title' }, opts.title),
+      el('div', { class: 'metric-value' }, opts.value === null || opts.value === undefined ? '—' : opts.value),
+      opts.sub !== undefined && opts.sub !== null && opts.sub !== '' ? el('div', { class: 'metric-sub' }, opts.sub) : null);
+  }
+
+  function section(title) {
+    var children = Array.prototype.slice.call(arguments, 1);
+    return el('section', { class: 'section' }, title ? el('h2', { class: 'section-title' }, title) : null, children);
+  }
+
+  function empty(text) {
+    return el('div', { class: 'empty-state', role: 'note' },
+      el('span', { class: 'empty-icon', 'aria-hidden': 'true' }, 'ℹ️'),
+      el('p', null, text || 'Aucune donnée.'));
+  }
+
+  function spinner() {
+    return el('span', { class: 'spinner', role: 'status', 'aria-label': 'Chargement' });
+  }
+
+  // ------------------------------------------------------------------------------ toast
+
+  function toast(message, type) {
+    var kind = type === 'success' || type === 'error' ? type : 'info';
+    var root = document.getElementById('toast-root');
+    if (!root) {
+      root = el('div', { id: 'toast-root', class: 'toast-root', 'aria-live': 'polite' });
+      document.body.appendChild(root);
+    }
+    var node;
+    function dismiss() {
+      if (node && node.parentNode) node.parentNode.removeChild(node);
+    }
+    node = el('div', { class: 'toast toast-' + kind, role: kind === 'error' ? 'alert' : 'status' },
+      el('span', { class: 'toast-msg' }, String(message === undefined ? '' : message)),
+      el('button', { type: 'button', class: 'toast-close', 'aria-label': 'Fermer la notification', onClick: dismiss }, '×'));
+    root.appendChild(node);
+    setTimeout(dismiss, kind === 'error' ? 8000 : 4500);
+    return { close: dismiss };
+  }
+
+  // ------------------------------------------------------------------------------ overlays (modal, drawer)
+
+  var FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+    'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+  function modalRoot() {
+    var root = document.getElementById('modal-root');
+    if (!root) {
+      root = el('div', { id: 'modal-root' });
+      document.body.appendChild(root);
+    }
+    return root;
+  }
+
+  /**
+   * Shared overlay behaviour: Escape closes, Tab is trapped inside `panel`, focus is restored on close.
+   * Returns a close() function; `onClose` runs exactly once.
+   */
+  function openOverlay(overlay, panel, onClose) {
+    var previous = document.activeElement;
+    var closed = false;
+    function onKey(e) {
+      if (e.key === 'Escape') {
+        // Only the top-most overlay reacts.
+        var root = modalRoot();
+        if (root.lastElementChild === overlay) { e.stopPropagation(); close(); }
+      } else if (e.key === 'Tab') {
+        var items = Array.prototype.filter.call(panel.querySelectorAll(FOCUSABLE), function (n) {
+          return n.offsetParent !== null || n === document.activeElement;
+        });
+        if (!items.length) return;
+        var first = items[0];
+        var last = items[items.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    }
+    function close() {
+      if (closed) return;
+      closed = true;
+      document.removeEventListener('keydown', onKey, true);
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      if (!modalRoot().firstElementChild) document.body.classList.remove('has-overlay');
+      if (previous && typeof previous.focus === 'function' && previous.isConnected) {
+        try { previous.focus(); } catch (e) { /* ignore */ }
+      }
+      if (onClose) onClose();
+    }
+    overlay.addEventListener('mousedown', function (e) { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', onKey, true);
+    modalRoot().appendChild(overlay);
+    document.body.classList.add('has-overlay');
+    return close;
+  }
+
+  function focusFirst(container, fallback) {
+    var target = container.querySelector('input:not([type=hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled])') || fallback;
+    if (target) setTimeout(function () { try { target.focus(); } catch (e) { /* ignore */ } }, 0);
+  }
+
+  /**
+   * UI.modal({title, body, actions:[{label, primary?, danger?, onClick(close)}], wide?, onClose?}) -> {close, node}
+   * onClick may return a Promise: buttons are disabled until it settles.
+   */
+  function modal(o) {
+    var opts = o || {};
+    var titleId = nextId('modal-title');
+    var close;
+    var buttons = [];
+    var actions = opts.actions && opts.actions.length ? opts.actions : [{ label: 'Fermer', primary: true }];
+    var footer = el('div', { class: 'modal-footer' });
+    actions.forEach(function (a) {
+      var btn = el('button', {
+        type: 'button',
+        class: 'btn' + (a.danger ? ' btn-danger' : a.primary ? ' btn-primary' : ' btn-secondary'),
+        onClick: function () {
+          var r = a.onClick ? a.onClick(close) : close();
+          if (r && typeof r.then === 'function') {
+            buttons.forEach(function (b) { b.disabled = true; });
+            r.then(function () {}, function () {}).then(function () {
+              buttons.forEach(function (b) { b.disabled = false; });
+            });
+          }
+        }
+      }, a.label);
+      buttons.push(btn);
+      footer.appendChild(btn);
+    });
+    var closeBtn = el('button', { type: 'button', class: 'icon-btn modal-close', 'aria-label': 'Fermer',
+      onClick: function () { close(); } }, '×');
+    var dialog = el('div', { class: 'modal' + (opts.wide ? ' modal-wide' : ''), role: 'dialog', 'aria-modal': 'true',
+      'aria-labelledby': titleId },
+      el('div', { class: 'modal-header' }, el('h2', { id: titleId, class: 'modal-title' }, opts.title || ''), closeBtn),
+      el('div', { class: 'modal-body' }, opts.body || null),
+      footer);
+    var overlay = el('div', { class: 'modal-overlay' }, dialog);
+    close = openOverlay(overlay, dialog, opts.onClose);
+    var primary = buttons.filter(function (b, i) { return actions[i].primary || actions[i].danger; })[0];
+    focusFirst(dialog.querySelector('.modal-body'), primary || closeBtn);
+    return { close: close, node: dialog };
+  }
+
+  /** UI.confirm(message, {title?, okLabel?, cancelLabel?, danger?}) -> Promise<boolean> */
+  function confirm(message, o) {
+    var opts = o || {};
+    return new Promise(function (resolve) {
+      var result = false;
+      modal({
+        title: opts.title || 'Confirmation',
+        body: el('p', { class: 'confirm-message' }, message),
+        actions: [
+          { label: opts.cancelLabel || 'Annuler', onClick: function (close) { close(); } },
+          { label: opts.okLabel || 'Confirmer', primary: !opts.danger, danger: !!opts.danger,
+            onClick: function (close) { result = true; close(); } }
+        ],
+        onClose: function () { resolve(result); }
+      });
+    });
+  }
+
+  function normOptions(options) {
+    return (options || []).map(function (o) {
+      if (o !== null && typeof o === 'object') return { value: Core.str(o.value), label: Core.str(o.label !== undefined ? o.label : o.value) };
+      return { value: Core.str(o), label: Core.str(o) };
+    });
+  }
+
+  /**
+   * UI.formModal({title, fields, submitLabel?}) -> Promise<values|null>
+   * fields: [{name, label, type:'text'|'textarea'|'select'|'date'|'month', options?, value?, required?,
+   *           placeholder?, allowCustom?}]
+   * 'date' fields take and return 'DD/MM/YYYY'. Values are trimmed strings ('' when empty).
+   */
+  function formModal(o) {
+    var opts = o || {};
+    var fields = opts.fields || [];
+    return new Promise(function (resolve) {
+      var result = null;
+      var controls = {};
+      var errors = {};
+      var form = el('form', { class: 'form', novalidate: true, onSubmit: function (e) { e.preventDefault(); submit(); } });
+
+      fields.forEach(function (f) {
+        var id = nextId('field');
+        var type = f.type || 'text';
+        var value = f.value === null || f.value === undefined ? '' : String(f.value);
+        var control;
+        var extra = null;
+        var common = { id: id, name: f.name, class: 'input', required: !!f.required, placeholder: f.placeholder || null };
+        if (type === 'textarea') {
+          control = el('textarea', Object.assign(common, { rows: 3, value: value }));
+        } else if (type === 'select' && f.allowCustom) {
+          var listId = nextId('list');
+          control = el('input', Object.assign(common, { type: 'text', list: listId, value: value, autocomplete: 'off' }));
+          extra = el('datalist', { id: listId }, normOptions(f.options).map(function (op) {
+            return el('option', { value: op.value }, op.label !== op.value ? op.label : null);
+          }));
+        } else if (type === 'select') {
+          var ops = normOptions(f.options);
+          if (value && !ops.some(function (op) { return op.value === value; })) ops.push({ value: value, label: value });
+          control = el('select', Object.assign(common, { value: value }),
+            el('option', { value: '' }, f.required ? '— Choisir —' : '—'),
+            ops.map(function (op) { return el('option', { value: op.value }, op.label); }));
+        } else if (type === 'date') {
+          control = el('input', Object.assign(common, { type: 'date', value: Core.frToIso(value) }));
+        } else if (type === 'month') {
+          control = el('input', Object.assign(common, { type: 'month', value: value, placeholder: f.placeholder || 'AAAA-MM' }));
+        } else {
+          control = el('input', Object.assign(common, { type: 'text', value: value }));
+        }
+        var err = el('p', { class: 'field-error', id: id + '-err', hidden: true });
+        control.setAttribute('aria-describedby', id + '-err');
+        controls[f.name] = { field: f, control: control, type: type };
+        errors[f.name] = err;
+        form.appendChild(el('div', { class: 'form-field' + (type === 'textarea' ? ' form-field-wide' : '') },
+          el('label', { for: id, class: 'field-label' }, f.label || f.name,
+            f.required ? el('span', { class: 'required', 'aria-hidden': 'true' }, ' *') : null),
+          control, extra, err));
+      });
+      // Hidden submit button so that Enter in a text input submits the form.
+      form.appendChild(el('button', { type: 'submit', hidden: true, tabindex: '-1', 'aria-hidden': 'true' }));
+
+      function collect() {
+        var values = {};
+        var ok = true;
+        Object.keys(controls).forEach(function (name) {
+          var c = controls[name];
+          var raw = String(c.control.value || '').trim();
+          var v = c.type === 'date' ? (raw ? Core.isoToFr(raw) : '') : raw;
+          var msg = '';
+          if (c.field.required && !v) msg = 'Ce champ est obligatoire.';
+          else if (c.type === 'month' && v && !Core.validateMonth(v)) msg = 'Format attendu : AAAA-MM.';
+          else if (c.type === 'date' && raw && !v) msg = 'Date invalide.';
+          errors[name].textContent = msg;
+          errors[name].hidden = !msg;
+          c.control.setAttribute('aria-invalid', msg ? 'true' : 'false');
+          if (msg) ok = false;
+          values[name] = v;
+        });
+        return ok ? values : null;
+      }
+
+      var m;
+      function submit() {
+        var values = collect();
+        if (!values) {
+          var bad = form.querySelector('[aria-invalid="true"]');
+          if (bad) bad.focus();
+          return;
+        }
+        result = values;
+        m.close();
+      }
+
+      m = modal({
+        title: opts.title || 'Formulaire',
+        body: form,
+        wide: fields.length > 6,
+        actions: [
+          { label: 'Annuler', onClick: function (close) { close(); } },
+          { label: opts.submitLabel || 'Enregistrer', primary: true, onClick: function () { submit(); } }
+        ],
+        onClose: function () { resolve(result); }
+      });
+    });
+  }
+
+  var openDrawers = [];
+  /** UI.drawer({title, body, onClose?}) -> {close, node}. Opening a drawer closes the previous one. */
+  function drawer(o) {
+    var opts = o || {};
+    openDrawers.slice().forEach(function (c) { c(); });
+    var titleId = nextId('drawer-title');
+    var close;
+    var panel = el('aside', { class: 'drawer', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId },
+      el('div', { class: 'drawer-header' },
+        el('h2', { id: titleId, class: 'drawer-title' }, opts.title || ''),
+        el('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Fermer le panneau', onClick: function () { close(); } }, '×')),
+      el('div', { class: 'drawer-body' }, opts.body || null));
+    var overlay = el('div', { class: 'drawer-overlay' }, panel);
+    close = openOverlay(overlay, panel, function () {
+      var i = openDrawers.indexOf(close);
+      if (i >= 0) openDrawers.splice(i, 1);
+      if (opts.onClose) opts.onClose();
+    });
+    openDrawers.push(close);
+    setTimeout(function () { panel.classList.add('open'); var b = panel.querySelector('.icon-btn'); if (b) b.focus(); }, 0);
+    return { close: close, node: panel };
+  }
+
+  // ------------------------------------------------------------------------------ tabs / selects
+
+  /** UI.tabs([{id, label, render(root)}], activeId?) -> Element. The panel is re-rendered on activation. */
+  function tabs(items, activeId) {
+    var list = items || [];
+    var baseId = nextId('tabs');
+    var tablist = el('div', { class: 'tablist', role: 'tablist' });
+    var panel = el('div', { class: 'tabpanel', role: 'tabpanel', id: baseId + '-panel', tabindex: '0' });
+    var buttons = {};
+    var current = null;
+    function activate(id, focus) {
+      if (!list.some(function (it) { return it.id === id; })) id = list.length ? list[0].id : null;
+      current = id;
+      list.forEach(function (it) {
+        var b = buttons[it.id];
+        var on = it.id === id;
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+        b.tabIndex = on ? 0 : -1;
+        b.classList.toggle('active', on);
+        if (on) {
+          panel.setAttribute('aria-labelledby', b.id);
+          if (focus) b.focus();
+        }
+      });
+      clear(panel);
+      var item = list.filter(function (it) { return it.id === id; })[0];
+      if (item && item.render) {
+        try { item.render(panel); } catch (e) { console.error(e); panel.appendChild(empty('Erreur d’affichage : ' + e.message)); }
+      }
+      root.dataset.active = id || '';
+    }
+    list.forEach(function (it, i) {
+      buttons[it.id] = el('button', {
+        type: 'button', role: 'tab', class: 'tab', id: baseId + '-' + i, 'aria-controls': baseId + '-panel',
+        dataset: { tab: it.id },
+        onClick: function () { activate(it.id); },
+        onKeydown: function (e) {
+          var idx = list.indexOf(it);
+          if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+            e.preventDefault();
+            var n = (idx + (e.key === 'ArrowRight' ? 1 : -1) + list.length) % list.length;
+            activate(list[n].id, true);
+          }
+        }
+      }, it.label);
+      tablist.appendChild(buttons[it.id]);
+    });
+    var root = el('div', { class: 'tabs' }, tablist, panel);
+    root.activate = function (id) { activate(id); };
+    root.getActive = function () { return current; };
+    activate(activeId || (list[0] && list[0].id));
+    return root;
+  }
+
+  /** UI.select({label?, options:[string|{value,label}], value, onChange}) -> Element (label wrapper). */
+  function select(o) {
+    var opts = o || {};
+    var ops = normOptions(opts.options);
+    var value = opts.value === null || opts.value === undefined ? '' : String(opts.value);
+    var sel = el('select', {
+      class: 'input',
+      'aria-label': opts.label ? null : (opts.ariaLabel || 'Sélection'),
+      value: value,
+      onChange: function () { if (opts.onChange) opts.onChange(sel.value); }
+    }, ops.map(function (op) { return el('option', { value: op.value }, op.label); }));
+    sel.value = value;
+    return el('label', { class: 'field select-field' }, opts.label ? el('span', { class: 'field-label' }, opts.label) : null, sel);
+  }
+
+  /**
+   * UI.multiSelect({label, options, value, onChange}) -> Element
+   * Inline disclosure: a summary button toggles a checkbox list (works inside the scrolling sidebar).
+   */
+  function multiSelect(o) {
+    var opts = o || {};
+    var selected = (opts.value || []).map(String);
+    var options = (opts.options || []).map(String);
+    selected.forEach(function (v) { if (options.indexOf(v) < 0) options.push(v); });
+    var listId = nextId('ms');
+    var labelId = listId + '-label';
+    var summary = el('span', { class: 'ms-summary' });
+    var count = el('span', { class: 'ms-count', 'aria-hidden': 'true' });
+    var toggle = el('button', { type: 'button', class: 'ms-toggle input', 'aria-expanded': 'false',
+      'aria-controls': listId, 'aria-labelledby': labelId + ' ' + listId + '-sum' },
+      summary, count, el('span', { class: 'ms-caret', 'aria-hidden': 'true' }, '▾'));
+    summary.id = listId + '-sum';
+    var listBox = el('div', { class: 'ms-panel', id: listId, role: 'group', 'aria-labelledby': labelId, hidden: true });
+    var root = el('div', { class: 'multiselect' + (selected.length ? ' has-value' : '') },
+      el('span', { class: 'field-label', id: labelId }, opts.label || ''), toggle, listBox);
+
+    function updateSummary() {
+      summary.textContent = selected.length === 0 ? 'Toutes' :
+        selected.length <= 2 ? selected.join(', ') : selected.length + ' sélectionnées';
+      count.textContent = selected.length ? String(selected.length) : '';
+      root.classList.toggle('has-value', selected.length > 0);
+    }
+    function emit() {
+      // keep options order
+      selected = options.filter(function (v) { return selected.indexOf(v) >= 0; });
+      updateSummary();
+      if (opts.onChange) opts.onChange(selected.slice());
+    }
+    function renderList() {
+      clear(listBox);
+      if (!options.length) {
+        listBox.appendChild(el('p', { class: 'muted small' }, 'Aucune valeur disponible.'));
+        return;
+      }
+      options.forEach(function (v) {
+        var cb = el('input', { type: 'checkbox', value: v, checked: selected.indexOf(v) >= 0,
+          onChange: function () {
+            if (cb.checked) { if (selected.indexOf(v) < 0) selected.push(v); }
+            else selected = selected.filter(function (x) { return x !== v; });
+            emit();
+          } });
+        listBox.appendChild(el('label', { class: 'ms-option' }, cb, el('span', null, v)));
+      });
+      listBox.appendChild(el('button', { type: 'button', class: 'btn btn-link btn-small ms-clear',
+        onClick: function () {
+          selected = [];
+          Array.prototype.forEach.call(listBox.querySelectorAll('input[type=checkbox]'), function (c) { c.checked = false; });
+          emit();
+        } }, 'Effacer la sélection'));
+    }
+    function setOpen(open) {
+      listBox.hidden = !open;
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      root.classList.toggle('open', open);
+    }
+    toggle.addEventListener('click', function () { setOpen(listBox.hidden); });
+    root.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !listBox.hidden) { e.stopPropagation(); setOpen(false); toggle.focus(); }
+    });
+    renderList();
+    updateSummary();
+    return root;
+  }
+
+  // ------------------------------------------------------------------------------ editable table
+
+  function foldText(v) {
+    return Core.str(v).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  }
+
+  function compareValues(a, b) {
+    var ea = a === null || a === undefined || a === '';
+    var eb = b === null || b === undefined || b === '';
+    if (ea || eb) return ea === eb ? 0 : (ea ? 1 : -1); // blanks last (in both directions, see caller)
+    if (typeof a === 'number' && typeof b === 'number') return a - b;
+    if (typeof a === 'boolean' || typeof b === 'boolean') return (a ? 1 : 0) - (b ? 1 : 0);
+    return String(a).localeCompare(String(b), 'fr', { numeric: true, sensitivity: 'base' });
+  }
+
+  /**
+   * UI.editableTable({columns, rows, rowKey='_id', search=true, pageSize=50, onSave?, onRowClick?,
+   *                   emptyText?, toolbar?}) -> {node, setRows(rows), getDirty()}
+   */
+  function editableTable(o) {
+    var opts = o || {};
+    var columns = opts.columns || [];
+    var rowKey = opts.rowKey || '_id';
+    var pageSize = opts.pageSize || 50;
+    var rows = (opts.rows || []).slice();
+    var dirty = {};          // id -> {colKey: newValue}
+    var sortKey = null;
+    var sortDir = 1;
+    var query = '';
+    var page = 0;
+    var saving = false;
+    var rowsReplaced = false;
+
+    function idOf(row) { return row ? String(row[rowKey]) : ''; }
+    function view(row) {
+      var d = dirty[idOf(row)];
+      return d ? Object.assign({}, row, d) : row;
+    }
+    function isDirty(row, key) {
+      var d = dirty[idOf(row)];
+      return !!d && Object.prototype.hasOwnProperty.call(d, key);
+    }
+    function dirtyCount() {
+      return Object.keys(dirty).reduce(function (n, id) { return n + Object.keys(dirty[id]).length; }, 0);
+    }
+    function getDirty() {
+      return Object.keys(dirty).map(function (id) {
+        var original = rows.filter(function (r) { return idOf(r) === id; })[0];
+        return { id: original ? original[rowKey] : id, updates: Object.assign({}, dirty[id]) };
+      });
+    }
+
+    // --- structure
+    var searchInput = opts.search === false ? null : el('input', {
+      type: 'search', class: 'input etable-search', placeholder: 'Rechercher…', 'aria-label': 'Rechercher dans le tableau',
+      onInput: function () { query = searchInput.value; page = 0; renderBody(); }
+    });
+    var countEl = el('span', { class: 'etable-count muted' });
+    var saveBtn = el('button', { type: 'button', class: 'btn btn-primary btn-small etable-save', onClick: save });
+    var cancelBtn = el('button', { type: 'button', class: 'btn btn-secondary btn-small etable-cancel', onClick: cancel }, 'Annuler');
+    var dirtyLabel = el('span', { class: 'etable-dirty-label' });
+    var dirtyBar = el('div', { class: 'etable-dirtybar', role: 'region', 'aria-label': 'Modifications non enregistrées', hidden: true },
+      dirtyLabel, el('span', { class: 'spacer' }), cancelBtn, saveBtn);
+    var toolbar = el('div', { class: 'etable-toolbar' },
+      el('div', { class: 'etable-tools' }, opts.toolbar || null),
+      el('div', { class: 'etable-right' }, searchInput, countEl));
+    var thead = el('thead');
+    var tbody = el('tbody');
+    var table = el('table', { class: 'table etable-table' }, thead, tbody);
+    var pager = el('div', { class: 'etable-pager' });
+    var node = el('div', { class: 'etable' }, toolbar, dirtyBar, el('div', { class: 'table-scroll' }, table), pager);
+
+    function renderHead() {
+      clear(thead);
+      var tr = el('tr');
+      columns.forEach(function (col) {
+        var label = col.label !== undefined ? col.label : col.key;
+        var sortable = col.sortable !== false;
+        var ariaSort = sortKey === col.key ? (sortDir === 1 ? 'ascending' : 'descending') : 'none';
+        var style = col.width ? { minWidth: typeof col.width === 'number' ? col.width + 'px' : col.width } : null;
+        var content = sortable ? el('button', { type: 'button', class: 'th-sort', onClick: function () {
+          if (sortKey === col.key) {
+            if (sortDir === 1) sortDir = -1; else { sortKey = null; sortDir = 1; }
+          } else { sortKey = col.key; sortDir = 1; }
+          renderHead();
+          renderBody();
+        } }, label, el('span', { class: 'sort-ind', 'aria-hidden': 'true' },
+          sortKey === col.key ? (sortDir === 1 ? ' ▲' : ' ▼') : '')) : label;
+        tr.appendChild(el('th', { scope: 'col', 'aria-sort': sortable ? ariaSort : null, style: style,
+          class: col.editable ? 'th-editable' : null }, content));
+      });
+      thead.appendChild(tr);
+    }
+
+    function sortValueOf(row, col) {
+      var v = view(row);
+      return col.sortValue ? col.sortValue(v) : v[col.key];
+    }
+
+    function visibleRows() {
+      var list = rows;
+      var q = foldText(query);
+      if (q) {
+        list = list.filter(function (row) {
+          return columns.some(function (col) {
+            var v = view(row);
+            if (foldText(v[col.key]).indexOf(q) >= 0) return true;
+            return col.sortValue ? foldText(col.sortValue(v)).indexOf(q) >= 0 : false;
+          });
+        });
+      }
+      if (sortKey !== null) {
+        var col = columns.filter(function (c) { return c.key === sortKey; })[0];
+        if (col) {
+          list = list.map(function (r, i) { return { r: r, i: i, v: sortValueOf(r, col) }; });
+          list.sort(function (a, b) {
+            var ea = a.v === null || a.v === undefined || a.v === '';
+            var eb = b.v === null || b.v === undefined || b.v === '';
+            if (ea !== eb) return ea ? 1 : -1;   // blanks always last
+            return (compareValues(a.v, b.v) * sortDir) || (a.i - b.i);
+          });
+          list = list.map(function (x) { return x.r; });
+        }
+      }
+      return list;
+    }
+
+    function cellContent(row, col) {
+      var v = view(row);
+      if (col.render) {
+        var out = col.render(v);
+        return out === null || out === undefined ? '' : out;
+      }
+      return Core.str(v[col.key]);
+    }
+
+    function renderCell(td, row, col) {
+      clear(td);
+      var content = cellContent(row, col);
+      td.appendChild(content instanceof Node ? content : document.createTextNode(String(content)));
+      td.classList.toggle('cell-dirty', isDirty(row, col.key));
+    }
+
+    function setDirty(row, key, value) {
+      var id = idOf(row);
+      var normalized = value === '' || value === undefined ? null : value;
+      var original = row[key];
+      if (!dirty[id]) dirty[id] = {};
+      if (Core.str(normalized) === Core.str(original)) delete dirty[id][key];
+      else dirty[id][key] = normalized;
+      if (!Object.keys(dirty[id]).length) delete dirty[id];
+      updateDirtyBar();
+    }
+
+    function startEdit(td, row, col) {
+      if (td.classList.contains('cell-editing') || saving) return;
+      var current = view(row)[col.key];
+      var curStr = Core.str(current);
+      var editor;
+      var done = false;
+      if (Array.isArray(col.options)) {
+        var values = [''].concat(col.options.map(String));
+        if (values.indexOf(curStr) < 0) values.push(curStr);
+        editor = el('select', { class: 'input cell-editor', 'aria-label': (col.label || col.key) + ' — modifier' },
+          values.map(function (v) { return el('option', { value: v }, v === '' ? '—' : v); }));
+        editor.value = curStr;
+        editor.addEventListener('change', function () { commit(); });
+      } else {
+        editor = el('input', { type: 'text', class: 'input cell-editor', value: curStr, 'aria-label': (col.label || col.key) + ' — modifier' });
+      }
+      function finish(apply) {
+        if (done) return;
+        done = true;
+        if (apply) setDirty(row, col.key, editor.value);
+        td.classList.remove('cell-editing');
+        renderCell(td, row, col);
+        td.focus();
+      }
+      function commit() { finish(true); }
+      editor.addEventListener('blur', function () { finish(true); });
+      editor.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+      });
+      editor.addEventListener('click', function (e) { e.stopPropagation(); });
+      td.classList.add('cell-editing');
+      clear(td);
+      td.appendChild(editor);
+      editor.focus();
+    }
+
+    function renderBody() {
+      clear(tbody);
+      var list = visibleRows();
+      var pages = Math.max(1, Math.ceil(list.length / pageSize));
+      if (page >= pages) page = pages - 1;
+      var slice = list.slice(page * pageSize, (page + 1) * pageSize);
+      if (!slice.length) {
+        tbody.appendChild(el('tr', { class: 'etable-empty' }, el('td', { colspan: String(Math.max(1, columns.length)) },
+          query ? 'Aucun résultat pour cette recherche.' : (opts.emptyText || 'Aucune donnée.'))));
+      }
+      slice.forEach(function (row) {
+        var tr = el('tr', { dataset: { id: idOf(row) } });
+        if (opts.onRowClick) {
+          tr.classList.add('row-clickable');
+          tr.tabIndex = 0;
+          tr.addEventListener('click', function (e) {
+            if (e.target.closest && e.target.closest('.cell-editable, .cell-editing, a, button, input, select, textarea')) return;
+            opts.onRowClick(row);
+          });
+          tr.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && e.target === tr) { e.preventDefault(); opts.onRowClick(row); }
+          });
+        }
+        columns.forEach(function (col) {
+          var td = el('td', { dataset: { col: col.key } });
+          if (col.editable) {
+            td.classList.add('cell-editable');
+            td.tabIndex = 0;
+            td.title = 'Cliquer pour modifier';
+            td.addEventListener('click', function (e) { e.stopPropagation(); startEdit(td, row, col); });
+            td.addEventListener('keydown', function (e) {
+              if ((e.key === 'Enter' || e.key === 'F2') && e.target === td) { e.preventDefault(); startEdit(td, row, col); }
+            });
+          }
+          renderCell(td, row, col);
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      countEl.textContent = list.length === rows.length ?
+        fmtNum(rows.length) + ' ligne' + (rows.length > 1 ? 's' : '') :
+        fmtNum(list.length) + ' / ' + fmtNum(rows.length) + ' lignes';
+      renderPager(pages, list.length);
+      updateDirtyBar();
+    }
+
+    function renderPager(pages) {
+      clear(pager);
+      pager.hidden = pages <= 1;
+      if (pages <= 1) return;
+      pager.appendChild(el('button', { type: 'button', class: 'btn btn-secondary btn-small', disabled: page === 0,
+        onClick: function () { page--; renderBody(); } }, '‹ Précédent'));
+      pager.appendChild(el('span', { class: 'muted' }, 'Page ' + (page + 1) + ' / ' + pages));
+      pager.appendChild(el('button', { type: 'button', class: 'btn btn-secondary btn-small', disabled: page >= pages - 1,
+        onClick: function () { page++; renderBody(); } }, 'Suivant ›'));
+    }
+
+    function updateDirtyBar() {
+      var n = dirtyCount();
+      dirtyBar.hidden = n === 0;
+      dirtyLabel.textContent = n + ' modification' + (n > 1 ? 's' : '') + ' non enregistrée' + (n > 1 ? 's' : '');
+      saveBtn.textContent = saving ? 'Enregistrement…' : 'Enregistrer (' + n + ')';
+      saveBtn.disabled = saving || n === 0 || !opts.onSave;
+      cancelBtn.disabled = saving;
+    }
+
+    function save() {
+      if (saving || !opts.onSave) return;
+      var changes = getDirty();
+      if (!changes.length) return;
+      saving = true;
+      rowsReplaced = false;
+      var snapshot = dirty;
+      updateDirtyBar();
+      var p;
+      try { p = Promise.resolve(opts.onSave(changes)); } catch (e) { p = Promise.reject(e); }
+      p.then(function () {
+        if (!rowsReplaced) {
+          // The page did not push fresh rows: apply the saved values locally.
+          rows = rows.map(function (r) { return snapshot[idOf(r)] ? Object.assign({}, r, snapshot[idOf(r)]) : r; });
+        }
+        dirty = {};
+      }, function (err) {
+        toast((err && err.message) || 'Échec de l’enregistrement.', 'error');
+      }).then(function () {
+        saving = false;
+        renderBody();
+      });
+    }
+
+    function cancel() {
+      dirty = {};
+      renderBody();
+    }
+
+    function setRows(newRows) {
+      rows = (newRows || []).slice();
+      rowsReplaced = true;
+      var ids = {};
+      rows.forEach(function (r) { ids[idOf(r)] = true; });
+      Object.keys(dirty).forEach(function (id) { if (!ids[id]) delete dirty[id]; });
+      renderBody();
+    }
+
+    renderHead();
+    renderBody();
+    return { node: node, setRows: setRows, getDirty: getDirty };
+  }
+
+  // ------------------------------------------------------------------------------ CSV
+
+  function csvCell(v) {
+    if (v === null || v === undefined) return '';
+    var s = typeof v === 'string' ? Core.escapeFormula(v) : String(v);
+    return /[";\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  /** UI.downloadCsv(filename, columns, rows): ';'-separated, UTF-8 BOM (Excel friendly). */
+  function downloadCsv(filename, columns, rows) {
+    var cols = columns || [];
+    var lines = [cols.map(csvCell).join(';')];
+    (rows || []).forEach(function (r) {
+      lines.push(cols.map(function (c) { return csvCell(r ? r[c] : null); }).join(';'));
+    });
+    var blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = el('a', { href: url, download: filename || 'export.csv', style: 'display:none' });
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(url); if (a.parentNode) a.parentNode.removeChild(a); }, 1000);
+  }
+
+  window.UI = {
+    el: el,
+    clear: clear,
+    extLink: extLink,
+    fmtPct: fmtPct,
+    fmtNum: fmtNum,
+    fmtMonth: fmtMonth,
+    badge: badge,
+    scoreBadge: scoreBadge,
+    riskBadge: riskBadge,
+    card: card,
+    section: section,
+    empty: empty,
+    toast: toast,
+    modal: modal,
+    confirm: confirm,
+    formModal: formModal,
+    drawer: drawer,
+    tabs: tabs,
+    multiSelect: multiSelect,
+    select: select,
+    editableTable: editableTable,
+    spinner: spinner,
+    downloadCsv: downloadCsv
+  };
+})();
+</script>
