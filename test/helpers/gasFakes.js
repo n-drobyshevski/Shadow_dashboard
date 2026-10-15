@@ -6,11 +6,20 @@
  * The fakes mimic the Sheets behaviours that matter for correctness:
  *   - range bounds are checked against the sheet's max rows/columns (GAS throws, it does not grow);
  *   - setValues() validates the data dimensions exactly like GAS;
- *   - a string starting with "'" is stored WITHOUT the apostrophe (forced text);
- *   - a string starting with "=" is a formula: it is recorded in __state.formulas (tests assert that
- *     nothing ever lands there) and stored as the literal string;
- *   - strings that look like numbers / dates / booleans / percentages are auto-converted UNLESS the
- *     cell has the plain-text number format '@' (this is how tests detect missing '@' formatting).
+ *   - a cell with the plain-text number format '@' stores a string VERBATIM: nothing is parsed, so
+ *     '=1+1' stays text and a leading apostrophe is KEPT as a literal character (real Sheets only
+ *     treats "'" as the hidden "force text" prefix in cells that are not formatted as plain text);
+ *   - in any other cell, a string starting with "'" is stored WITHOUT the apostrophe (forced text);
+ *   - in any other cell, a string starting with "=" is a formula: it is recorded in __state.formulas
+ *     (tests assert that nothing ever lands there) and stored as the literal string;
+ *   - in any other cell, strings that look like numbers / dates / booleans / percentages are
+ *     auto-converted (this is how tests detect missing '@' formatting).
+ *
+ * Fault injection (real Apps Script calls fail transiently: "Service Spreadsheets failed while
+ * accessing document…", timeouts): env.__fault({method, id?, sheet?, times?, message?}) makes the
+ * next `times` (default 1, Infinity allowed) matching calls throw. Supported methods: 'openById'
+ * (matched on `id`), 'setValues' (matched on the target `sheet` name), 'create'.
+ * env.__clearFaults() removes them. Utilities.sleep(ms) is a no-op recorded in __state.sleeps.
  *
  * Usage:
  *   const { createGasEnv } = require('./gasFakes');
@@ -123,6 +132,8 @@ function createGasEnv(options) {
     calls: {},
     flushes: 0,
     lock: { acquired: 0, released: 0, timeouts: 0, held: false },
+    faults: [],
+    sleeps: [],
     lockTimeout: !!opts.lockTimeout,
     properties: {},
     logs: [],
@@ -130,6 +141,20 @@ function createGasEnv(options) {
     evalContext: null,   // set by gasSandbox so template scriptlets evaluate in the GAS globals
   };
   const count = (name) => { state.calls[name] = (state.calls[name] || 0) + 1; };
+
+  /** Throws when an injected fault matches this call (see "Fault injection" above). */
+  function maybeFail(method, info) {
+    const i = state.faults.findIndex((f) => f.method === method && f.times > 0 &&
+      (f.id === undefined || f.id === info.id) && (f.sheet === undefined || f.sheet === info.sheet));
+    if (i < 0) return;
+    const f = state.faults[i];
+    f.times--;
+    if (f.times <= 0) state.faults.splice(i, 1);
+    throw new Error(f.message || 'Exception: Service Spreadsheets failed while accessing document with id ' + (info.id || '') + '.');
+  }
+  function addFault(def) {
+    state.faults.push(Object.assign({ times: 1 }, def));
+  }
 
   let nextSheetId = 1;
 
@@ -159,13 +184,14 @@ function createGasEnv(options) {
       if (this._disp[r]) delete this._disp[r][c];
       if (v === null || v === undefined) { this._set(this._vals, r, c, ''); return; }
       if (typeof v === 'string') {
+        if (this._format(r, c) === '@') { this._set(this._vals, r, c, v); return; } // plain text: verbatim
         if (v.charAt(0) === "'") { this._set(this._vals, r, c, v.slice(1)); return; }
         if (v.charAt(0) === '=') {
           state.formulas.push({ spreadsheetId: this._ss._id, sheet: this._name, a1: a1(r + 1, c + 1, 1, 1), formula: v });
           this._set(this._vals, r, c, v);
           return;
         }
-        this._set(this._vals, r, c, this._format(r, c) === '@' ? v : autoConvert(v));
+        this._set(this._vals, r, c, autoConvert(v));
         return;
       }
       if (isDate(v)) { this._set(this._vals, r, c, new Date(v.getTime())); return; }
@@ -341,6 +367,7 @@ function createGasEnv(options) {
     setValues(values) {
       count('setValues');
       this._checkDims(values, 'setValues');
+      maybeFail('setValues', { id: this._sheet._ss._id, sheet: this._sheet._name });
       let plainText = true;
       this._each((r, c) => { if (this._sheet._format(r, c) !== '@') plainText = false; });
       state.writes.push({ spreadsheetId: this._sheet._ss._id, sheet: this._sheet._name, a1: this.getA1Notation(), rows: this._nr, cols: this._nc, plainText });
@@ -460,6 +487,7 @@ function createGasEnv(options) {
   const SpreadsheetApp = {
     openById(id) {
       count('openById');
+      maybeFail('openById', { id: String(id) });
       const ss = state.spreadsheets.get(String(id));
       if (!ss) throw new Error('Exception: Requested entity was not found.');
       return ss;
@@ -471,6 +499,7 @@ function createGasEnv(options) {
     },
     create(name, rows, cols) {
       count('create');
+      maybeFail('create', {});
       const ss = new Spreadsheet(newId(), String(name), timeZone);
       ss._sheets.push(new Sheet(ss, 'Sheet1', rows || DEFAULT_ROWS, cols || DEFAULT_COLS));
       state.spreadsheets.set(ss._id, ss);
@@ -537,7 +566,7 @@ function createGasEnv(options) {
   const Utilities = {
     formatDate,
     getUuid() { return crypto.randomUUID(); },
-    sleep() {},
+    sleep(ms) { state.sleeps.push(ms); },
   };
 
   // ------------------------------------------------------------------------------ HtmlService
@@ -639,6 +668,8 @@ function createGasEnv(options) {
     console: fakeConsole,
     __state: state,
     __addSpreadsheet: addSpreadsheet,
+    __fault: addFault,
+    __clearFaults() { state.faults.length = 0; },
   };
 }
 

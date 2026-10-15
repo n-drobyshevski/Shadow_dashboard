@@ -131,6 +131,28 @@ test('envelope: unexpected errors -> INTERNAL, logged with the stack but never l
   fail(ctx, 'api_bootstrap', undefined, 'INTERNAL');
 });
 
+test('data spreadsheet that fails to open -> INTERNAL on every endpoint, never repointed to a new file', () => {
+  const { ctx, env } = imported();
+  const dataId = ctx.Config.get().dataId;
+  const creates = env.__state.calls.create;
+  ok(ctx, 'api_addAction', { target_type: 'poste', target_name: 'LAB-TEX-01', equipe: 'Labo Textile', action: '- Installer l\'EDR' });
+  // New execution, Sheets keeps failing to open the data spreadsheet.
+  ctx.Store.resetCache_();
+  env.__fault({ method: 'openById', id: dataId, times: Infinity });
+  for (const name of ['api_getActions', 'api_bootstrap', 'api_getTimeline']) {
+    const e = fail(ctx, name, undefined, 'INTERNAL');
+    assert.match(e.message, /Classeur de données inaccessible/);
+  }
+  fail(ctx, 'api_getMonthData', { month: '2026-04' }, 'INTERNAL');
+  assert.equal(ctx.Config.get().dataId, dataId, 'DATA_SPREADSHEET_ID unchanged');
+  assert.equal(env.__state.calls.create, creates, 'no new spreadsheet');
+  // Once Sheets recovers, everything is still there.
+  env.__clearFaults();
+  assert.deepEqual(ok(ctx, 'api_bootstrap').months, ['2026-04', '2026-05']);
+  assert.equal(ok(ctx, 'api_getActions').actions.find((a) => a.target_name === 'LAB-TEX-01' && /EDR/.test(a.action)).action,
+    '- Installer l\'EDR', 'stored without an apostrophe prefix');
+});
+
 test('NOT_CONFIGURED before setConfig; BUSY when the lock times out', () => {
   const sb = imported();
   const { ctx, env } = sb;

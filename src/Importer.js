@@ -133,9 +133,32 @@ var Importer = (function () {
   }
 
   /**
+   * Latest month strictly before `month` whose stored snapshot actually has records, as
+   * {month, records}, or null. Skipping empty snapshots (an import whose applications tab was
+   * missing, or that failed half-way) keeps the Galink/IDP carry-over chain intact.
+   */
+  function latestEarlierWithRecords_(byMonth, month) {
+    var earlier = Core.sortMonths(Object.keys(byMonth).filter(function (m) {
+      return Core.validateMonth(m) && m < month && (byMonth[m] || []).length > 0;
+    }));
+    if (!earlier.length) return null;
+    var m = earlier[earlier.length - 1];
+    return { month: m, records: byMonth[m] };
+  }
+
+  /**
    * Snapshots the live source as `month` (see api_importMonth in docs/API.md §3). Runs under the
-   * script lock. Galink/IDP are carried over from the existing snapshot of the same month when
-   * overwriting, otherwise from the latest earlier month.
+   * script lock; every read happens before the first write.
+   *
+   * Safety rules (user-entered data must never be lost silently):
+   *   - an entity / référentiel tab missing from the source does NOT replace the stored snapshot of
+   *     that month (kept as-is on overwrite, nothing written for a new month) — only a warning;
+   *   - Galink/IDP are carried over from the same month's snapshot when overwriting, otherwise from
+   *     the latest EARLIER month that has applications. When overwriting a month whose previous
+   *     import is incomplete (no ImportLog entry, e.g. it failed half-way) or has no applications,
+   *     fields still blank are then filled from that earlier month too;
+   *   - write order: Applications, Référentiel, Postes, then the ImportLog entry, which marks the
+   *     import as complete.
    * @return {{month, counts:{postes, applications, referentiel}, overwritten:boolean, carriedOver:number,
    *           warnings:string[]}}
    */
@@ -153,51 +176,74 @@ var Importer = (function () {
       }
 
       var src = readSource();
+      var prevInfo = exists ? Store.latestImportInfo(month) : null;
       var warnings = [];
-      var postes = src.postes || { headers: [], records: [], warnings: [] };
-      var apps = src.applications || { headers: [], records: [], warnings: [] };
-      if (!src.postes) warnings.push('Onglet « ' + Core.SOURCE_TABS.postes + ' » introuvable : aucun poste importé.');
+      if (!src.postes) {
+        warnings.push('Onglet « ' + Core.SOURCE_TABS.postes + ' » introuvable : ' +
+          (exists ? 'postes du mois conservés.' : 'aucun poste importé.'));
+      }
       if (!src.applications) {
-        warnings.push('Onglet « ' + Core.SOURCE_TABS.applications + ' » introuvable : aucune application importée.');
+        warnings.push('Onglet « ' + Core.SOURCE_TABS.applications + ' » introuvable : ' +
+          (exists ? 'applications du mois conservées.' : 'aucune application importée.'));
       }
-      if (!src.referentiel) warnings.push('Onglet « ' + Core.SOURCE_TABS.referentiel + ' » introuvable : référentiel vide.');
-      warnings = warnings.concat(postes.warnings || [], apps.warnings || []);
+      if (!src.referentiel) {
+        warnings.push('Onglet « ' + Core.SOURCE_TABS.referentiel + ' » introuvable : ' +
+          (exists ? 'référentiel du mois conservé.' : 'référentiel vide.'));
+      }
+      warnings = warnings.concat((src.postes && src.postes.warnings) || [],
+        (src.applications && src.applications.warnings) || []);
 
-      // Previous values for the app-only fields (and stable ids when overwriting).
-      var prevPostes = [];
-      var prevApps = [];
-      if (exists) {
-        prevPostes = Store.readEntityMonth(Config.TABS.postes, month);
-        prevApps = Store.readEntityMonth(Config.TABS.applications, month);
-      } else {
-        var prevMonth = Core.previousMonth(months, month);
-        if (prevMonth) prevApps = Store.readEntityMonth(Config.TABS.applications, prevMonth);
-      }
-      var merged = Core.mergeCarryOver(apps.records, prevApps, Core.KEY_APP, Core.APP_CUSTOM_FIELDS);
-      var posteRecords = postes.records;
-      var appRecords = merged.records;
-      if (exists) {
-        posteRecords = keepIds_(posteRecords, prevPostes, Core.KEY_POSTE);
-        appRecords = keepIds_(appRecords, prevApps, Core.KEY_APP);
+      // ---- applications (+ Galink/IDP carry-over)
+      var appsByMonth = Store.readEntityAll(Config.TABS.applications);
+      var sameApps = exists ? (appsByMonth[month] || []) : [];
+      var earlier = latestEarlierWithRecords_(appsByMonth, month);
+      var appRecords = null; // null = keep the stored snapshot
+      var carried = 0;
+      if (src.applications) {
+        var merged = Core.mergeCarryOver(src.applications.records, exists ? sameApps : (earlier ? earlier.records : []),
+          Core.KEY_APP, Core.APP_CUSTOM_FIELDS);
+        carried = merged.carried;
+        if (exists && (!prevInfo || !sameApps.length) && earlier) {
+          var fill = Core.mergeCarryOver(merged.records, earlier.records, Core.KEY_APP, Core.APP_CUSTOM_FIELDS);
+          carried += fill.carried;
+          merged = fill;
+          if (!prevInfo) {
+            warnings.push('L’import précédent du mois ' + month + ' était incomplet : Galink/IDP repris de ' +
+              earlier.month + ' pour les valeurs manquantes.');
+          }
+        }
+        appRecords = exists ? keepIds_(merged.records, sameApps, Core.KEY_APP) : merged.records;
       }
 
-      var referentiel = src.referentiel || {};
-      Store.replaceEntityMonth(Config.TABS.postes, month, posteRecords, Core.KEY_POSTE);
-      Store.replaceEntityMonth(Config.TABS.applications, month, appRecords, Core.KEY_APP);
-      Store.replaceReferentiel(month, referentiel);
+      // ---- postes
+      var posteRecords = null; // null = keep the stored snapshot
+      var storedPostes = exists ? Store.readEntityMonth(Config.TABS.postes, month) : [];
+      if (src.postes) {
+        posteRecords = exists ? keepIds_(src.postes.records, storedPostes, Core.KEY_POSTE) : src.postes.records;
+      }
+
+      // ---- référentiel
+      var referentiel = src.referentiel || null; // null = keep the stored one
+      var refCount = referentiel ? countCategories_(referentiel)
+        : (exists ? countCategories_(Store.readReferentiel(month)) : 0);
+
+      // ---- writes (Applications first, ImportLog last = completion marker)
+      if (appRecords) Store.replaceEntityMonth(Config.TABS.applications, month, appRecords, Core.KEY_APP);
+      if (referentiel) Store.replaceReferentiel(month, referentiel);
+      if (posteRecords) Store.replaceEntityMonth(Config.TABS.postes, month, posteRecords, Core.KEY_POSTE);
 
       var counts = {
-        postes: posteRecords.length,
-        applications: appRecords.length,
-        referentiel: countCategories_(referentiel)
+        postes: posteRecords ? posteRecords.length : storedPostes.length,
+        applications: appRecords ? appRecords.length : sameApps.length,
+        referentiel: refCount
       };
       Store.appendImportLog({
         month: month,
         imported_at: Config.nowStamp(),
         source_id: src.sourceId,
         counts: counts,
-        postes_headers: postes.headers,
-        apps_headers: apps.headers,
+        postes_headers: src.postes ? src.postes.headers : ((prevInfo && prevInfo.postes_headers) || []),
+        apps_headers: src.applications ? src.applications.headers : ((prevInfo && prevInfo.apps_headers) || []),
         warnings: warnings
       });
 
@@ -205,7 +251,7 @@ var Importer = (function () {
         month: month,
         counts: counts,
         overwritten: exists,
-        carriedOver: merged.carried,
+        carriedOver: carried,
         warnings: warnings
       };
     });

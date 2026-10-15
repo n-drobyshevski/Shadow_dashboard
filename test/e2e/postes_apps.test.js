@@ -90,8 +90,13 @@ describe('postes page', () => {
   test('renders the 2026-05 inventory (column order, computed columns, XSS probe as text)', async () => {
     await withApp({ page: 'postes' }, async (app) => {
       const { page } = app;
-      assert.equal((await page.textContent('#main h1')).trim(), '💻 Postes');
-      assert.equal(await page.textContent('#postes-caption'), 'Export : ' + MONTH);
+      assert.equal((await page.textContent('#main h1')).trim(), 'Postes');
+      assert.equal(await page.getAttribute('#postes-caption', 'data-month'), MONTH);
+      assert.equal(await page.textContent('#postes-caption'), 'Mai 2026 · Export ' + MONTH);
+      // No emoji anywhere in the page chrome (docs/DESIGN.md).
+      assert.doesNotMatch(await page.textContent('#main'), /\p{Extended_Pictographic}/u);
+      assert.equal((await page.textContent('#postes-add-generic')).trim(), 'Ajouter un poste générique');
+      assert.equal((await page.textContent('#postes-export-csv')).trim(), 'Exporter CSV');
 
       const ids = await rowIds(page, 'postes');
       assert.equal(ids.length, data.MONTHS[MONTH].postes.length);
@@ -143,6 +148,7 @@ describe('postes page', () => {
       assert.equal((await page.textContent(cellSel('postes', id, 'Responsable'))).trim(), 'Zoé Lefèvre');
       assert.equal((await page.textContent(cellSel('postes', id, '_score'))).trim(), '85,0 %');
       assert.ok(await page.isHidden('#postes-table .etable-dirtybar'));
+      assert.ok((await toasts(page)).includes('2 modifications enregistrées.'));
       assert.match(await page.textContent('#postes-stats'), /6 conformes/);
       // Cache patched (re-enriched).
       const cached = await page.evaluate((pid) => {
@@ -189,7 +195,7 @@ describe('postes page', () => {
     });
   });
 
-  test('➕ Poste générique creates the generic poste once', async () => {
+  test('« Ajouter un poste générique » creates the generic poste once', async () => {
     await withApp({ page: 'postes' }, async (app) => {
       const { page } = app;
       await page.click('#postes-add-generic');
@@ -215,7 +221,7 @@ describe('postes page', () => {
       const { page } = app;
       // LAB-CHA-02 hosts Notepad++ (from « Installé sur poste »).
       await openDrawerFor(app, 'postes', posteId('LAB-CHA-02'));
-      assert.equal((await page.textContent('.drawer-title')).trim(), '💻 LAB-CHA-02');
+      assert.equal((await page.textContent('.drawer-title')).trim(), 'LAB-CHA-02');
       assert.deepEqual(await page.$$eval('#poste-drawer-apps li', (lis) => lis.map((li) => li.dataset.app)), ['Notepad++']);
       await page.keyboard.press('Escape');
       await page.waitForSelector('.drawer', { state: 'detached' });
@@ -225,12 +231,15 @@ describe('postes page', () => {
       await page.click(cellSel('postes', id, '_apps'));   // row click (non-editable cell) also opens the drawer
       await page.waitForSelector('.drawer.open');
       await app.waitIdle();
-      const crit = await page.$$eval('#poste-drawer-criteria li', (lis) => lis.map((li) => li.textContent));
+      const crit = await page.$$eval('#poste-drawer-criteria li', (lis) => lis.map((li) => [li.dataset.criterion, li.dataset.state,
+        li.querySelector('.mark').textContent, li.querySelector('.mark').classList.contains('mark-ko')]));
       assert.equal(crit.length, 5);
-      assert.ok(crit[0].includes('❌') && crit[0].includes('IT Decathlon'));
+      assert.deepEqual(crit[0], ['IT Decathlon', 'ko', 'Non conforme', true]);
+      assert.doesNotMatch(await page.textContent('.drawer'), /\p{Extended_Pictographic}/u);
       assert.deepEqual(await page.$$eval('#poste-drawer-apps li', (lis) => lis.map((li) => li.dataset.app)), ['LabVIEW']);
       assert.deepEqual(await page.$$eval('#drawer-actions li', (lis) => lis.map((li) => li.dataset.actionId)), ['a-0002']);
 
+      assert.equal((await page.textContent('#drawer-add-action')).trim(), 'Nouvelle action');
       await page.click('#drawer-add-action');
       await page.waitForSelector('.modal form');
       assert.equal(await page.inputValue('.modal [name="action"]'), 'Isoler du réseau');   // prefilled
@@ -248,6 +257,7 @@ describe('postes page', () => {
       });
       const items = await page.$$eval('#drawer-actions li strong', (ns) => ns.map((n) => n.textContent));
       assert.deepEqual(items, ['Isoler du réseau', 'Migrer vers Ubuntu 24.04']);
+      assert.ok((await toasts(page)).includes('Action ajoutée pour LAB-MEC-01.'));
 
       // Navigating away closes the drawer.
       await app.goto('dashboard');
@@ -272,7 +282,11 @@ describe('applications page', () => {
   test('renders the 2026-05 applications with score, criteria and Galink/IDP summary', async () => {
     await withApp({ page: 'apps' }, async (app) => {
       const { page } = app;
-      assert.equal((await page.textContent('#main h1')).trim(), '📦 Applications');
+      assert.equal((await page.textContent('#main h1')).trim(), 'Applications');
+      assert.equal(await page.getAttribute('#apps-caption', 'data-month'), MONTH);
+      assert.doesNotMatch(await page.textContent('#main'), /\p{Extended_Pictographic}/u);
+      assert.equal((await page.textContent('#apps-add')).trim(), 'Nouvelle application');
+      assert.equal((await page.textContent('#apps-export-csv')).trim(), 'Exporter CSV');
       const ids = await rowIds(page, 'apps');
       assert.equal(ids.length, data.MONTHS[MONTH].applications.length);
 
@@ -286,11 +300,11 @@ describe('applications page', () => {
       assert.deepEqual(crit, [['contrat', true], ['sip', false], ['idp', false], ['galink', false], ['champs', true]]);
 
       // Galink / IDP: Oui (Minitab, Notepad++, Figma), Non (LabVIEW), vide (Dropbox perso).
-      const summary = await page.$$eval('#apps-migration [data-field]', (cards) => cards.map((c) => [c.dataset.field,
-        ['oui', 'non', 'vide'].map((k) => c.querySelector(`[data-count="${k}"]`).textContent)]));
+      const summary = await page.$$eval('#apps-migration [data-field]', (rows) => rows.map((r) => [r.dataset.field,
+        ['oui', 'non', 'vide', 'share'].map((k) => r.querySelector(`[data-count="${k}"]`).textContent)]));
       assert.deepEqual(summary, [
-        ['Galink', ['Oui : 3', 'Non : 1', 'Non renseigné : 1']],
-        ['IDP', ['Oui : 3', 'Non : 1', 'Non renseigné : 1']],
+        ['Galink', ['3', '1', '1', '60,0 %']],
+        ['IDP', ['3', '1', '1', '60,0 %']],
       ]);
       assert.match(await page.textContent('#apps-stats'), /3 conformes/);
 
@@ -312,14 +326,15 @@ describe('applications page', () => {
       assert.deepEqual(saves.map((c) => c.args), [{ month: MONTH, changes: [{ id, updates: { Galink: 'Oui' } }] }]);
       assert.equal((await page.textContent(cellSel('apps', id, '_score'))).trim(), '60,0 %');
       assert.equal((await page.textContent(cellSel('apps', id, 'Galink'))).trim(), 'Oui');
-      assert.equal(await page.textContent('#apps-migration [data-field="Galink"] [data-count="oui"]'), 'Oui : 4');
+      assert.equal(await page.textContent('#apps-migration [data-field="Galink"] [data-count="oui"]'), '4');
+      assert.ok((await toasts(page)).includes('1 modification enregistrée.'));
       const cached = await page.evaluate((aid) => window.State.getMonthData('2026-05').applications.find((a) => a._id === aid)._score, id);
       assert.equal(cached, 60);
       assert.deepEqual(app.errors, []);
     });
   });
 
-  test('➕ Application adds a record; duplicates are refused', async () => {
+  test('« Nouvelle application » adds a record; duplicates are refused', async () => {
     await withApp({ page: 'apps' }, async (app) => {
       const { page } = app;
       async function fillForm(name) {
@@ -354,7 +369,7 @@ describe('applications page', () => {
 
       await fillForm('slack');   // same name modulo case -> VALIDATION
       assert.equal((await rowIds(page, 'apps')).length, 6);
-      assert.ok((await toasts(page)).some((t) => /Ajout impossible/.test(t)));
+      assert.ok((await toasts(page)).some((t) => /^Erreur : .*existe déjà/.test(t)));
       assert.deepEqual(app.errors, []);
     });
   });
@@ -380,10 +395,10 @@ describe('applications page', () => {
       const renames = await callsNamed(app, 'api_renameApplication');
       assert.deepEqual(renames.map((c) => c.args), [{ month: MONTH, id, newName: 'Dropbox (perso)' }]);
       assert.equal((await page.textContent(cellSel('apps', id, KEY_APP))).trim(), 'Dropbox (perso)');
-      assert.equal((await page.textContent('.drawer-title')).trim(), '📦 Dropbox (perso)');
+      assert.equal((await page.textContent('.drawer-title')).trim(), 'Dropbox (perso)');
       // The action target was renamed server side; the drawer shows it under the new name.
       assert.deepEqual(await page.$$eval('#drawer-actions li', (lis) => lis.map((li) => li.dataset.actionId)), ['a-0003']);
-      assert.ok((await toasts(page)).some((t) => /1 action mise à jour/.test(t)));
+      assert.ok((await toasts(page)).includes('Application renommée en « Dropbox (perso) » — 1 action mise à jour.'));
       assert.deepEqual(app.errors, []);
     });
   });
@@ -410,6 +425,7 @@ describe('applications page', () => {
       assert.equal((await rowIds(page, 'apps')).includes(id), false);
       assert.equal((await rowIds(page, 'apps')).length, 4);
       assert.equal(await page.$('.drawer'), null, 'drawer closed');
+      assert.ok((await toasts(page)).includes('Application « Figma » supprimée.'));
       assert.deepEqual(app.errors, []);
     });
   });

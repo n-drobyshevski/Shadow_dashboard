@@ -11,6 +11,9 @@
  * test/fixtures/mockRun.js, and the page is loaded from a file:// URL in a temp dir. The Plotly CDN
  * request is answered with the cached real build (.artifacts/plotly.min.js) when present, else with a
  * stub. In both cases Plotly.newPlot/react calls are recorded on window.__plots = [{fn, id, data}].
+ * Google Fonts requests are answered from .artifacts/fonts/ (fonts.css for fonts.googleapis.com/css2,
+ * fonts.gstatic.com files by their path with '/' replaced by '_'), so screenshots use the real IBM Plex
+ * faces; when the cache is missing they are aborted and the system fallbacks are used.
  *
  * Run: NODE_PATH=$(npm root -g) PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node --test test/e2e/
  */
@@ -24,6 +27,7 @@ const { buildMockScript } = require('../fixtures/mockRun');
 const ROOT = path.resolve(__dirname, '..', '..');
 const PLOTLY_CACHE = path.join(ROOT, '.artifacts', 'plotly.min.js');
 const PLOTLY_URL_GLOB = 'https://cdnjs.cloudflare.com/**/plotly*.js';
+const FONTS_DIR = path.join(ROOT, '.artifacts', 'fonts');
 const FALLBACK_CHROME = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
 
 /** Appended to the real Plotly build: records calls without changing behaviour. */
@@ -55,6 +59,26 @@ window.Plotly = {
   },
   purge: function (el) { if (el) el.classList.remove('js-plotly-plot'); }
 };`;
+
+/** Serves a cached Google Fonts response, or null when it is not cached. */
+function fontResponse(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname === 'fonts.googleapis.com' && u.pathname.startsWith('/css')) {
+      const file = path.join(FONTS_DIR, 'fonts.css');
+      if (!fs.existsSync(file)) return null;
+      return { status: 200, contentType: 'text/css; charset=utf-8', body: fs.readFileSync(file),
+        headers: { 'Access-Control-Allow-Origin': '*' } };
+    }
+    if (u.hostname === 'fonts.gstatic.com') {
+      const file = path.join(FONTS_DIR, u.pathname.replace(/^\//, '').replace(/\//g, '_'));
+      if (!file.startsWith(FONTS_DIR + path.sep) || !fs.existsSync(file)) return null;
+      return { status: 200, contentType: 'font/woff2', body: fs.readFileSync(file),
+        headers: { 'Access-Control-Allow-Origin': '*' } };
+    }
+  } catch (e) { /* fall through */ }
+  return null;
+}
 
 let plotlyBody = null;
 function plotlyScript() {
@@ -96,9 +120,13 @@ async function openApp({ empty = false, configured = true, page: pageId = 'dashb
   await page.route(PLOTLY_URL_GLOB, (route) => route.fulfill({
     status: 200, contentType: 'application/javascript; charset=utf-8', body: plotlyScript(),
   }));
-  // Any other network request would hang or fail in the sandbox: block it explicitly.
+  // Fonts come from the local cache; any other network request would hang or fail in the sandbox:
+  // block it explicitly.
   await page.route(/^https?:\/\//, (route) => {
-    if (/cdnjs\.cloudflare\.com\/.*plotly/.test(route.request().url())) return route.fallback();
+    const url = route.request().url();
+    if (/cdnjs\.cloudflare\.com\/.*plotly/.test(url)) return route.fallback();
+    const font = fontResponse(url);
+    if (font) return route.fulfill(font);
     return route.abort();
   });
 

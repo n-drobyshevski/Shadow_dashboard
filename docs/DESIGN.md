@@ -70,9 +70,17 @@ with the system fallbacks above.
   tiny ▲/▼ only if comparing to the previous month (never decorative arrows).
 - **Section**: `<section>` with a small-caps label + hairline on top; content flows on paper.
   Two-column grids via CSS grid with a vertical hairline gap, not boxes.
-- **Compliance meters** (replace gauges): horizontal *bullet charts* — a 10px track in `--rule`, a bar
-  in `--ok` if ≥ 80 else `--ko`, a 2px ink tick at 80 labelled "seuil 80 %", value as a mono figure
-  at the right. Same data as the original gauges, honest and compact. (Plain HTML/CSS is fine.)
+- **Compliance meters** (the two gauges of the original Streamlit app are kept, restyled): Plotly
+  angular `indicator` gauges, 0–100 %, drawn as a *thin flat arc* — a neutral `--rule` track (a
+  `steps` band, ~22 % of the ring thickness) with the value bar on top in `--ok` if ≥ 80 else `--ko`,
+  no filled background band (`bgcolor` transparent, no border), a 2px `--ink` threshold tick at 80,
+  only the 0 / 80 / 100 tick labels in small mono `--ink-3`. The value is the gauge's number in Plex
+  Mono (tabular, `--ink`, ~30px, `71,4 %`). Transparent paper/plot backgrounds, tight margins
+  (~176px tall), no title inside the plot: the small-caps label sits above, and a one-line caption
+  below repeats the status in words (`■ Sous le seuil · 5 conformes sur 7 · seuil 80 %`) so it is
+  never colour-only. *Pending user decision:* a horizontal bullet-chart variant (10px `--rule` track,
+  ok/ko bar, 2px ink tick at 80 labelled "seuil 80 %", mono value at the right) may replace the
+  gauges later; until the user decides, the gauges stay.
 - **Risk distribution**: horizontal bars, one row per level in `RISK_ORDER`, bar coloured by the risk
   token, count as a mono figure at the bar end. No axes, no gridlines.
 - **Score histogram**: thin vertical bars on fixed 0–100 bins; bins below 80 in `--ko` at 70 % opacity,

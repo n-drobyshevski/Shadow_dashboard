@@ -253,9 +253,9 @@ var ApiImpl_ = (function () {
 
   function bootstrap() {
     var cfg = Config.get();
-    // First run: creating the data spreadsheet is a write -> under the lock.
-    if (cfg.dataId) Store.ensure();
-    else Store.withLock(function () { return Store.ensure(); });
+    // Store.ensure takes the lock itself when it has to write (first-run creation, tab repair) and
+    // never replaces a configured data spreadsheet that fails to open (INTERNAL instead).
+    Store.ensure();
 
     var months = Store.listMonths();
     var sourceUrl = '';

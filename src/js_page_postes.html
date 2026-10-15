@@ -1,42 +1,31 @@
 <style>
-/* Postes page (docs/API.md §6 "Postes"). Selectors are prefixed with the page / drawer class. */
-.page-postes .postes-stats { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin: 0 0 var(--space-3); }
-.page-postes .postes-inline-select { flex-direction: row; align-items: center; gap: var(--space-2); }
-.page-postes .postes-inline-select .input { width: auto; }
-.page-postes .postes-key { padding: 0; border: 0; background: none; font: inherit; font-weight: 600; color: var(--accent-strong);
-  cursor: pointer; text-align: left; overflow-wrap: anywhere; }
-.page-postes .postes-key:hover { text-decoration: underline; }
-.page-postes .postes-key:focus-visible { outline: none; box-shadow: var(--focus); border-radius: 3px; }
-.postes-drawer { display: flex; flex-direction: column; gap: var(--space-4); }
-.postes-drawer .drawer-section h3 { font-size: 14px; font-weight: 650; margin: 0 0 var(--space-2); }
-.postes-drawer .drawer-head { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
-.postes-drawer .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px var(--space-3); margin: 0; }
-.postes-drawer .kv dt { color: var(--text-muted); font-size: 13px; }
-.postes-drawer .kv dd { margin: 0; overflow-wrap: anywhere; }
-.postes-drawer .checklist, .postes-drawer .rel-list, .postes-drawer .action-list { list-style: none; margin: 0; padding: 0;
-  display: flex; flex-direction: column; gap: 6px; }
-.postes-drawer .checklist li, .postes-drawer .rel-list li { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
-.postes-drawer .action-list li { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3);
-  display: flex; flex-direction: column; gap: 4px; }
-.postes-drawer .action-meta { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; font-size: 12px; }
-.postes-drawer .section-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-2); }
-.postes-drawer .section-head h3 { margin: 0; }
+/* Postes page (docs/API.md §6 "Postes", docs/DESIGN.md). Everything else comes from css.html:
+   page header, stat line, ledger table, status marks, drawer sections, kv / checklist / rel-list / action-list. */
+.page-postes .postes-body { display: flex; flex-direction: column; gap: var(--s4); }
+.postes-drawer .checklist .leader, .postes-drawer .rel-list .leader { align-self: center; transform: none; }
+.postes-drawer .crit-value { color: var(--ink-2); font-size: 13px; }
+.postes-drawer .crit-label { flex: 0 1 auto; }
+.postes-drawer .rel-list .rel-note { font-family: var(--font-sans); font-size: 12px; color: var(--ink-3); }
+.postes-drawer .rel-list .rel-team { font-family: var(--font-sans); font-size: 12px; color: var(--ink-2); }
+.postes-drawer .action-title { font-weight: 500; font-size: 13px; }
+.postes-drawer .action-comment { margin: 0; font-size: 12px; color: var(--ink-2); }
+.postes-drawer { display: flex; flex-direction: column; gap: var(--s5); }
 </style>
 <script>
 /**
- * Pages.postes — workstation inventory (docs/API.md §6 "Postes").
+ * Pages.postes — workstation inventory (docs/API.md §6 "Postes"), typeset per docs/DESIGN.md.
  *
- * Editable table over the filtered postes of the selected month (column order = monthData.columns.postes,
- * key column first and read-only, computed Score + linked applications count), conformity filter,
- * generic poste creation, CSV export, and a detail drawer (criteria, installed applications, linked
- * remediation actions + "➕ Action").
+ * Page header (month kicker + "Ajouter un poste générique" / "Exporter CSV"), a one-line stat summary,
+ * the editable ledger table over the filtered postes of the selected month (column order =
+ * monthData.columns.postes, key column first and read-only, computed Score + linked applications count),
+ * conformity filter, and a detail drawer (criteria, installed applications, linked remediation actions
+ * + "Nouvelle action").
  */
 (function () {
   'use strict';
 
   var el = UI.el;
   var KEY = Core.KEY_POSTE;
-  var KEY_APP = Core.KEY_APP;
 
   var token = 0;              // bumped on every mount/unmount: stale async renders are dropped
   var conformity = 'all';     // 'all' | 'ok' | 'ko' — kept across re-mounts (month / filter changes)
@@ -48,15 +37,20 @@
     { value: 'ko', label: 'Non conformes' }
   ];
 
+  /** Source columns shown as identifiers / dates (mono). */
+  var MONO_COLUMNS = { 'N° Visite': 1, 'Date visite': 1, 'Prochaine revue': 1, "Date d'achat": 1, 'Deadline': 1,
+    'Version OS': 1 };
+
   // ------------------------------------------------------------------------------ helpers
 
   function plural(n, one, many) { return UI.fmtNum(n) + ' ' + (n > 1 ? many : one); }
+  function capitalize(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+  function errorToast(err) { UI.toast('Erreur : ' + ((err && err.message) || 'erreur inconnue.'), 'error'); }
 
   /**
    * Keeps the computed (non-editable) columns in sync with unsaved edits.
-   * UI.editableTable only re-renders the edited cell, so a computed cell of the same row would keep
-   * showing the saved value until "Enregistrer". After every edit interaction we re-render the
-   * computed cells of the visible rows from (record + dirty updates).
+   * After every edit interaction we re-render the computed cells of the visible rows from
+   * (record + dirty updates), so they never show a stale saved value.
    */
   function liveComputedColumns(table, computed, recordById) {
     function sync() {
@@ -79,14 +73,22 @@
     });
   }
 
+  function header(s, actions) {
+    var kicker = s.month ? [capitalize(UI.fmtMonth(s.month)) + ' · ', el('span', { class: 'mono' }, 'Export ' + s.month)] :
+      'Aucun export importé';
+    var h = UI.pageHeader({ title: 'Postes', kicker: kicker, kickerId: s.month ? 'postes-caption' : null, actions: actions });
+    var k = h.querySelector('.page-kicker');
+    if (k && s.month) k.dataset.month = s.month;
+    return h;
+  }
+
   function filterNote(s) {
     var f = s.filters || {};
     var parts = [];
     if ((f.equipes || []).length) parts.push('Équipe : ' + f.equipes.join(', '));
     if ((f.batiments || []).length) parts.push('Bâtiment / Labo : ' + f.batiments.join(', '));
     if (!parts.length) return null;
-    return el('p', { class: 'filter-note', role: 'status' }, el('span', { 'aria-hidden': 'true' }, '🔎 '),
-      'Filtres actifs — ' + parts.join(' · '));
+    return el('p', { class: 'filter-note', role: 'status' }, 'Filtres actifs — ' + parts.join(' · '));
   }
 
   function hasFilters(s) {
@@ -141,38 +143,39 @@
     var due = Core.frToIso(a.deadline);
     var overdue = open && due && due < todayIso();
     return el('li', { dataset: { actionId: a.id } },
-      el('strong', null, a.action || '(sans libellé)'),
+      el('strong', { class: 'action-title' }, a.action || '(sans libellé)'),
       el('div', { class: 'action-meta' },
-        UI.badge(a.status || '—', STATUS_TONES[a.status] || 'neutral'),
-        a.priorite ? UI.badge('Priorité : ' + a.priorite, a.priorite === 'Haute' ? 'ko' : 'neutral') : null,
-        a.deadline ? UI.badge('Échéance : ' + a.deadline + (overdue ? ' (en retard)' : ''), overdue ? 'ko' : 'neutral') : null,
-        a.responsable ? el('span', { class: 'muted' }, '👤 ' + a.responsable) : null,
-        a.source_month ? el('span', { class: 'muted' }, 'Export ' + a.source_month) : null),
-      a.comment ? el('p', { class: 'muted small', style: 'margin:0' }, a.comment) : null);
+        UI.statusMark(a.status || '—', STATUS_TONES[a.status] || 'neutral'),
+        a.priorite ? el('span', null, 'Priorité ' + a.priorite.toLowerCase()) : null,
+        a.deadline ? el('span', null, 'Échéance ', el('span', { class: 'mono' }, a.deadline)) : null,
+        overdue ? UI.statusMark('En retard', 'ko') : null,
+        a.responsable ? el('span', null, a.responsable) : null,
+        a.source_month ? el('span', { class: 'faint' }, 'Export ', el('span', { class: 'mono' }, a.source_month)) : null),
+      a.comment ? el('p', { class: 'action-comment' }, a.comment) : null);
   }
 
   /**
-   * "Actions liées" block for a target; reloads itself after "➕ Action".
+   * "Actions liées" block for a target; reloads itself after "Nouvelle action".
    * isOpen() tells whether the drawer is still displayed (async guard).
    */
   function actionsBlock(targetName, rec, month, isOpen) {
     var list = el('div', { class: 'drawer-actions-list', id: 'drawer-actions', 'aria-live': 'polite' });
     var addBtn = el('button', { type: 'button', class: 'btn btn-secondary btn-small', id: 'drawer-add-action',
-      onClick: function () { addAction(); } }, '➕ Action');
+      onClick: function () { addAction(); } }, 'Nouvelle action');
 
     function render(opts) {
-      UI.clear(list).appendChild(el('p', { class: 'muted small' }, UI.spinner(), ' Chargement des actions…'));
+      UI.clear(list).appendChild(el('p', { class: 'muted small' }, UI.spinner(), 'Chargement des actions…'));
       State.loadActions(opts).then(function (res) {
         if (!isOpen()) return;
         var mine = (res.actions || []).filter(function (a) {
           return a.target_type === 'poste' && a.target_name === targetName;
         });
         UI.clear(list);
-        if (!mine.length) { list.appendChild(el('p', { class: 'muted small' }, 'Aucune action liée à ce poste.')); return; }
+        if (!mine.length) { list.appendChild(UI.empty('Aucune action liée à ce poste.')); return; }
         list.appendChild(el('ul', { class: 'action-list' }, mine.map(actionItem)));
       }, function (err) {
         if (!isOpen()) return;
-        UI.clear(list).appendChild(el('p', { class: 'muted small' }, 'Actions indisponibles : ' + err.message));
+        UI.clear(list).appendChild(UI.empty('Actions indisponibles : ' + err.message));
       });
     }
 
@@ -196,30 +199,29 @@
           action: values.action, responsable: values.responsable, deadline: values.deadline,
           priorite: values.priorite, status: values.status, comment: values.comment, source_month: month
         }).then(function () {
-          UI.toast('✅ Action ajoutée pour ' + targetName, 'success');
+          UI.toast('Action ajoutée pour ' + targetName + '.', 'success');
           render({ force: true });
-        }, function (err) {
-          UI.toast('❌ Impossible d’ajouter l’action : ' + err.message, 'error');
-        }).then(function () { addBtn.disabled = false; });
+        }, errorToast).then(function () { addBtn.disabled = false; });
       });
     }
 
     render();
     return el('section', { class: 'drawer-section' },
-      el('div', { class: 'section-head' }, el('h3', null, '📋 Actions liées'), addBtn), list);
+      el('div', { class: 'section-head' }, el('h3', null, 'Actions liées'), addBtn), list);
   }
 
   // ------------------------------------------------------------------------------ drawer
 
-  /** Yes/No criterion: ✅ for the compliant value, ❌ otherwise, ➖ when not filled in. */
+  /** Yes/No criterion row: label ……… value ■ Conforme | ■ Non conforme | Non renseigné. */
   function criterion(label, value, okValue) {
     var v = Core.str(value);
-    var icon = !v ? '➖' : (v === okValue ? '✅' : '❌');
-    var tone = !v ? 'neutral' : (v === okValue ? 'ok' : 'ko');
-    return el('li', { dataset: { criterion: label } },
-      el('span', { role: 'img', 'aria-label': !v ? 'Non renseigné' : (v === okValue ? 'Conforme' : 'Non conforme') }, icon),
-      el('span', null, label),
-      UI.badge(v || 'Non renseigné', tone));
+    var state = !v ? 'empty' : (v === okValue ? 'ok' : 'ko');
+    return el('li', { dataset: { criterion: label, state: state } },
+      el('span', { class: 'crit-label' }, label),
+      el('span', { class: 'leader', 'aria-hidden': 'true' }),
+      v ? el('span', { class: 'crit-value' }, v) : null,
+      UI.statusMark(state === 'empty' ? 'Non renseigné' : (state === 'ok' ? 'Conforme' : 'Non conforme'),
+        state === 'empty' ? 'neutral' : state));
   }
 
   function openDrawer(id, month) {
@@ -238,14 +240,15 @@
 
     var body = el('div', { class: 'postes-drawer', id: 'poste-drawer', dataset: { id: rec._id } },
       el('div', { class: 'drawer-head' },
-        UI.scoreBadge(rec._score),
-        UI.badge(rec._conforme ? 'Conforme' : 'Non conforme', rec._conforme ? 'ok' : 'ko'),
-        UI.riskBadge(rec['Niveau de risque'])),
+        el('span', { class: 'stat-line' }, el('span', { class: 'faint small' }, 'Score'), UI.scoreBadge(rec._score)),
+        UI.statusMark(rec._conforme ? 'Conforme' : 'Non conforme', rec._conforme ? 'ok' : 'ko'),
+        Core.str(rec['Niveau de risque']) ?
+          el('span', { class: 'stat-line' }, el('span', { class: 'faint small' }, 'Risque'), UI.riskBadge(rec['Niveau de risque'])) : null),
       el('dl', { class: 'kv' }, kvRows.filter(function (kv) { return Core.str(kv[1]); }).map(function (kv) {
-        return [el('dt', null, kv[0]), el('dd', null, Core.str(kv[1]))];
+        return [el('dt', null, kv[0]), el('dd', { class: kv[0] === 'Date visite' ? 'mono' : null }, Core.str(kv[1]))];
       })),
       el('section', { class: 'drawer-section', id: 'poste-drawer-criteria' },
-        el('h3', null, '🛡️ Critères de conformité'),
+        el('h3', null, 'Critères de conformité'),
         el('ul', { class: 'checklist' },
           criterion('IT Decathlon', rec['IT Decathlon'], 'Oui'),
           criterion('EDR Decathlon', rec['EDR Decathlon'], 'Oui'),
@@ -253,23 +256,24 @@
           criterion('Type de compte', rec['Type de compte'], 'Nominatif'),
           criterion('Réseau Decathlon', rec['Réseau Decathlon'], 'Oui'))),
       el('section', { class: 'drawer-section', id: 'poste-drawer-apps' },
-        el('h3', null, '📦 Applications installées (' + apps.length + ')'),
+        el('h3', null, 'Applications installées · ', el('span', { class: 'mono' }, String(apps.length))),
         apps.length ? el('ul', { class: 'rel-list' }, apps.map(function (a) {
           return el('li', { dataset: { app: a.application } },
             el('span', null, a.application),
-            a.linked ? UI.scoreBadge(a.score) : null,
-            a.equipe ? el('span', { class: 'muted small' }, a.equipe) : null,
-            !a.linked ? el('span', { class: 'muted small' }, '(déclarée sur le poste, absente de l’inventaire des applications)') : null);
-        })) : el('p', { class: 'muted small' }, 'Aucune application liée à ce poste.')),
+            a.equipe ? el('span', { class: 'rel-team' }, a.equipe) : null,
+            !a.linked ? el('span', { class: 'rel-note' }, 'déclarée sur le poste, absente de l’inventaire des applications') : null,
+            el('span', { class: 'spacer' }),
+            a.linked ? UI.scoreBadge(a.score) : null);
+        })) : UI.empty('Aucune application liée à ce poste.')),
       actionsBlock(name, rec, month, isOpen));
 
-    drawerHandle = UI.drawer({ title: '💻 ' + (name || '(sans nom)'), body: body,
+    drawerHandle = UI.drawer({ title: name || '(sans nom)', body: body,
       onClose: function () { closed = true; drawerHandle = null; } });
   }
 
   // ------------------------------------------------------------------------------ page body
 
-  function renderBody(body, s, md, myToken) {
+  function renderBody(body, s, md, myToken, actions) {
     var month = s.month;
     var cols = sourceColumns(md);
     var relation = Core.buildPosteAppsRelation(md.applications);
@@ -281,56 +285,59 @@
       return list;
     }
 
-    // Header counts (global-filtered postes, before the conformity filter).
-    var stats = el('div', { class: 'postes-stats', id: 'postes-stats', role: 'status' });
+    // Summary line (global-filtered postes, before the conformity filter):
+    // "7 postes · ■ 5 conformes 71,4 % · ■ 2 non conformes · 1 sans score".
+    var stats = el('p', { class: 'stat-line postes-stats', id: 'postes-stats', role: 'status' });
     function renderStats() {
       var all = State.filtered(State.getMonthData(month) || md).postes;
       var ok = all.filter(function (r) { return r._conforme; }).length;
+      var ko = all.length - ok;
       var unknown = all.filter(function (r) { return r._score === null || r._score === undefined; }).length;
-      UI.clear(stats).appendChild(el('span', { class: 'muted' }, plural(all.length, 'poste', 'postes')));
-      stats.appendChild(UI.badge(plural(ok, 'conforme', 'conformes') + (all.length ? ' (' + UI.fmtPct(ok / all.length * 100) + ')' : ''), 'ok'));
-      stats.appendChild(UI.badge(plural(all.length - ok, 'non conforme', 'non conformes'), all.length - ok ? 'ko' : 'neutral'));
-      if (unknown) stats.appendChild(UI.badge(plural(unknown, 'sans score', 'sans score'), 'neutral'));
+      UI.clear(stats).appendChild(el('span', { class: 'stat' }, plural(all.length, 'poste', 'postes')));
+      stats.appendChild(el('span', { class: 'stat' }, UI.statusMark(plural(ok, 'conforme', 'conformes'), 'ok'),
+        all.length ? el('span', { class: 'mono' }, ' ' + UI.fmtPct(ok / all.length * 100)) : null));
+      stats.appendChild(el('span', { class: 'stat' }, UI.statusMark(plural(ko, 'non conforme', 'non conformes'), ko ? 'ko' : 'neutral')));
+      if (unknown) stats.appendChild(el('span', { class: 'stat faint' }, plural(unknown, 'sans score', 'sans score')));
     }
 
     var columns = cols.map(function (c, i) {
       if (i === 0) {
-        return { key: c, label: c, editable: false, width: 170, render: function (row) {
+        return { key: c, label: c, editable: false, width: 150, render: function (row) {
           return el('button', { type: 'button', class: 'postes-key', title: 'Voir le détail du poste',
             onClick: function () { openDrawer(row._id, month); } }, Core.str(row[c]) || '(sans nom)');
         } };
       }
-      return { key: c, label: c, editable: true, options: Core.optionsForColumn(c, md.referentiel) };
+      return { key: c, label: c, editable: true, mono: !!MONO_COLUMNS[c], options: Core.optionsForColumn(c, md.referentiel) };
     });
     // Computed columns right after the key column (they are what the user scans first).
     columns.splice(1, 0, {
-      key: '_score', label: 'Score', editable: false,
+      key: '_score', label: 'Score', editable: false, numeric: true,
       // Live: reflects an unsaved edit of « Score conformité ».
       render: function (row) { return UI.scoreBadge(Core.parseScore(row['Score conformité'])); },
       sortValue: function (row) { return Core.parseScore(row['Score conformité']); }
     }, {
-      key: '_apps', label: 'Applis', editable: false,
-      render: function (row) { var n = installedApps(row, relation).length; return n ? UI.badge(String(n), 'info') : UI.badge('0', 'neutral'); },
+      key: '_apps', label: 'Applis', editable: false, numeric: true,
+      render: function (row) {
+        var n = installedApps(row, relation).length;
+        return el('span', { class: n ? null : 'faint' }, String(n));
+      },
       sortValue: function (row) { return installedApps(row, relation).length; }
     });
 
     var conformitySelect = UI.select({ label: 'Conformité', options: CONFORMITY_OPTIONS, value: conformity,
       onChange: function (v) { conformity = v; table.setRows(visible()); } });
-    conformitySelect.classList.add('postes-inline-select');
     conformitySelect.querySelector('select').id = 'postes-conformity';
 
-    var genericBtn = el('button', { type: 'button', class: 'btn btn-secondary btn-small', id: 'postes-add-generic',
-      title: 'Ajoute « ' + Core.GENERIC_POSTE_NAME + ' » pour rattacher les applications non liées à un poste suivi',
-      onClick: addGeneric }, '➕ Poste générique');
-    var csvBtn = el('button', { type: 'button', class: 'btn btn-secondary btn-small', id: 'postes-export-csv',
-      onClick: function () {
-        UI.downloadCsv('postes_' + month + '.csv', cols, visible());
-      } }, '⬇️ CSV');
+    var genericBtn = actions.generic;
+    genericBtn.addEventListener('click', addGeneric);
+    actions.csv.addEventListener('click', function () {
+      UI.downloadCsv('postes_' + month + '.csv', cols, visible());
+    });
 
     var table = UI.editableTable({
       columns: columns,
       rows: visible(),
-      toolbar: [conformitySelect, genericBtn, csvBtn],
+      toolbar: [conformitySelect],
       emptyText: !md.postes.length ? 'Aucun poste dans cet export.' :
         (hasFilters(s) || conformity !== 'all' ? 'Aucun poste ne correspond aux filtres.' : 'Aucun poste.'),
       onRowClick: function (row) { openDrawer(row._id, month); },
@@ -340,7 +347,8 @@
           if (myToken !== token) return;
           table.setRows(visible());
           renderStats();
-          UI.toast('✅ ' + plural(changes.length, 'poste enregistré', 'postes enregistrés'), 'success');
+          var n = changes.reduce(function (sum, c) { return sum + Object.keys(c.updates || {}).length; }, 0);
+          UI.toast(plural(n, 'modification enregistrée', 'modifications enregistrées') + '.', 'success');
         });
       }
     });
@@ -355,24 +363,26 @@
         if (res.created) {
           State.addRecord(month, 'postes', res.record);
           var hidden = hasFilters(State.get()) || conformity === 'ok';
-          UI.toast('✅ « ' + Core.GENERIC_POSTE_NAME + ' » ajouté' +
-            (hidden ? ' (masqué par les filtres actifs)' : ''), 'success');
+          UI.toast('« ' + Core.GENERIC_POSTE_NAME + ' » ajouté' +
+            (hidden ? ' (masqué par les filtres actifs).' : '.'), 'success');
         } else {
-          UI.toast('ℹ️ « ' + Core.GENERIC_POSTE_NAME + ' » existe déjà pour ' + month + '.', 'info');
+          UI.toast('« ' + Core.GENERIC_POSTE_NAME + ' » existe déjà pour ' + month + '.', 'info');
         }
         if (myToken !== token) return;
         table.setRows(visible());
         renderStats();
-      }, function (err) {
-        UI.toast('❌ Impossible d’ajouter le poste générique : ' + err.message, 'error');
-      }).then(function () { genericBtn.disabled = false; });
+      }, errorToast).then(function () { genericBtn.disabled = false; });
     }
 
     var note = filterNote(s);
     if (note) body.appendChild(note);
     renderStats();
     body.appendChild(stats);
-    body.appendChild(table.node);
+    var tableSection = UI.section('Inventaire', table.node);
+    tableSection.id = 'postes-inventory';
+    body.appendChild(tableSection);
+    genericBtn.disabled = false;
+    actions.csv.disabled = false;
   }
 
   // ------------------------------------------------------------------------------ page
@@ -380,25 +390,35 @@
   function mount(root) {
     var myToken = ++token;
     var s = State.get();
-    root.appendChild(el('header', { class: 'page-header' },
-      el('h1', { class: 'page-title' }, '💻 Postes'),
-      s.month ? el('p', { class: 'page-caption', id: 'postes-caption' }, 'Export : ' + s.month) : null));
 
     if (!s.months.length || !s.month) {
-      root.appendChild(el('div', { class: 'alert alert-warning', role: 'status', id: 'postes-empty' },
-        '⚠️ Aucune donnée importée. Importez un export mensuel depuis le Tableau de bord.'));
+      root.appendChild(header(s));
+      var empty = UI.empty('Aucune donnée importée.', el('button', { type: 'button', class: 'btn btn-link',
+        onClick: function () { App.go('dashboard'); } }, 'Importer un export depuis le tableau de bord'));
+      empty.id = 'postes-empty';
+      root.appendChild(empty);
       return;
     }
 
+    // Page-level actions live in the header; they are wired once the month is loaded.
+    var actions = {
+      generic: el('button', { type: 'button', class: 'btn btn-secondary', id: 'postes-add-generic', disabled: true,
+        title: 'Ajoute « ' + Core.GENERIC_POSTE_NAME + ' » pour rattacher les applications non liées à un poste suivi' },
+        'Ajouter un poste générique'),
+      csv: el('button', { type: 'button', class: 'btn btn-secondary', id: 'postes-export-csv', disabled: true,
+        title: 'Exporte les lignes affichées (filtres compris)' }, 'Exporter CSV')
+    };
+    root.appendChild(header(s, [actions.generic, actions.csv]));
+
     var body = el('div', { class: 'postes-body', id: 'postes-body', 'aria-busy': 'true' },
-      el('p', { class: 'muted' }, UI.spinner(), ' Chargement des postes…'));
+      el('p', { class: 'muted' }, UI.spinner(), 'Chargement des postes…'));
     root.appendChild(body);
 
     State.loadMonth(s.month).then(function (md) {
       if (myToken !== token) return;
       UI.clear(body);
       body.setAttribute('aria-busy', 'false');
-      renderBody(body, State.get(), md, myToken);
+      renderBody(body, State.get(), md, myToken, actions);
     }, function (err) {
       if (myToken !== token) return;
       UI.clear(body);
@@ -415,6 +435,6 @@
   }
 
   window.Pages = window.Pages || {};
-  window.Pages.postes = { id: 'postes', title: 'Postes', icon: '💻', mount: mount, unmount: unmount };
+  window.Pages.postes = { id: 'postes', title: 'Postes', icon: '', mount: mount, unmount: unmount };
 })();
 </script>

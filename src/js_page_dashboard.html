@@ -1,9 +1,9 @@
 <script>
 /**
- * Pages.dashboard — port of Tableau_de_bord.py (docs/API.md §6).
+ * Pages.dashboard — port of Tableau_de_bord.py (docs/API.md §6), typeset per docs/DESIGN.md.
  *
- * KPI cards, conformity gauges, risk bars, conformity details, score histograms (all on the
- * filtered data of the selected month), then the Google Sheets import panel + import history.
+ * KPI strip, compliance gauges, risk bars, "Détail conformité" leader rows, score histograms (all on
+ * the filtered data of the selected month), then the Google Sheets import section + import ledger.
  */
 (function () {
   'use strict';
@@ -11,6 +11,7 @@
   var el = UI.el;
   var KEY_POSTE = Core.KEY_POSTE;
   var KEY_APP = Core.KEY_APP;
+  var NBSP = ' ';
 
   var token = 0;            // bumped on every mount/unmount: stale async renders are dropped
   var chartEls = [];
@@ -19,10 +20,15 @@
 
   // ------------------------------------------------------------------------------ helpers
 
+  function capitalize(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+
   function header(s) {
-    return el('header', { class: 'page-header' },
-      el('h1', { class: 'page-title' }, '👻 Tableau de bord — Shadow IT'),
-      s.month ? el('p', { class: 'page-caption', id: 'dashboard-caption' }, 'Export : ' + s.month) : null);
+    var kicker = s.month ? [capitalize(UI.fmtMonth(s.month)) + ' · ', el('span', { class: 'mono' }, 'Export ' + s.month)] :
+      'Aucun export importé';
+    var h = UI.pageHeader({ title: 'Tableau de bord', kicker: kicker, kickerId: s.month ? 'dashboard-caption' : null });
+    var k = h.querySelector('.page-kicker');
+    if (k && s.month) k.dataset.month = s.month;
+    return h;
   }
 
   function filterNote(s) {
@@ -31,22 +37,16 @@
     if ((f.equipes || []).length) parts.push('Équipe : ' + f.equipes.join(', '));
     if ((f.batiments || []).length) parts.push('Bâtiment / Labo : ' + f.batiments.join(', ') + ' (postes uniquement)');
     if (!parts.length) return null;
-    return el('p', { class: 'filter-note', role: 'status' }, el('span', { 'aria-hidden': 'true' }, '🔎 '),
-      'Filtres actifs — ' + parts.join(' · '));
+    return el('p', { class: 'filter-note', role: 'status' }, 'Filtres actifs — ' + parts.join(' · '));
   }
 
-  /** Card with a title and a chart box; the draw function runs once the box is in the document. */
-  function chartCard(title, id, draws, drawFn) {
+  /** Hairline block with a small-caps label and a chart box; the draw runs once the box is in the DOM. */
+  function chartCard(title, id, draws, drawFn, caption) {
     var box = el('div', { class: 'chart-box', id: id, role: 'img', 'aria-label': title });
     chartEls.push(box);
     draws.push(function () { drawFn(box); });
-    return el('div', { class: 'card chart-card' }, el('h3', { class: 'card-title' }, title), box);
-  }
-
-  function kpiCard(key, opts) {
-    var c = UI.card(opts);
-    c.dataset.kpi = key;
-    return c;
+    return el('div', { class: 'card chart-card' }, el('h3', { class: 'card-title' }, title), box,
+      caption ? el('p', { class: 'chart-caption' }, caption) : null);
   }
 
   function toneFor(rate, total) {
@@ -54,18 +54,29 @@
     return rate >= Core.THRESHOLD ? 'ok' : 'ko';
   }
 
-  /** One conformity detail line: count badge + collapsible list of the offending items. */
+  /** "■ Sous le seuil · 5 conformes sur 7 · seuil 80 %" under a gauge (status never colour-only). */
+  function gaugeCaption(rate, ok, total, noun) {
+    if (!total) return 'Aucun ' + noun + ' dans la sélection.';
+    var above = rate >= Core.THRESHOLD;
+    return [UI.statusMark(above ? 'Seuil atteint' : 'Sous le seuil', above ? 'ok' : 'ko'), ' · ',
+      el('span', { class: 'num' }, UI.fmtNum(ok)), ' conforme' + (ok > 1 ? 's' : '') + ' sur ',
+      el('span', { class: 'num' }, UI.fmtNum(total)), ' · seuil ', el('span', { class: 'num' }, Core.THRESHOLD + NBSP + '%')];
+  }
+
+  /** One "Détail conformité" row: label ……… count (share), expandable to the affected names. */
   function detailItem(id, label, count, total, items, keyField) {
     var names = items.map(function (r) { return Core.str(r[keyField]) || '(sans nom)'; });
-    var share = total ? ' (' + UI.fmtPct(count / total * 100) + ')' : '';
+    var share = total ? '(' + UI.fmtPct(count / total * 100) + ')' : '';
     var summary = el('summary', { class: 'detail-summary' },
       el('span', { class: 'detail-label' }, label),
-      el('span', { class: 'detail-value' }, UI.badge(UI.fmtNum(count), count > 0 ? 'ko' : 'ok'),
-        el('span', { class: 'muted small' }, share)));
+      el('span', { class: 'leader', 'aria-hidden': 'true' }),
+      el('span', { class: 'detail-value' },
+        el('span', { class: 'detail-count' + (count > 0 ? ' is-ko' : '') }, UI.fmtNum(count)),
+        el('span', { class: 'detail-share' }, share)));
     var body = names.length ?
       el('ul', { class: 'detail-list' }, names.map(function (n) { return el('li', null, n); })) :
-      el('p', { class: 'muted small detail-none' }, 'Aucun élément.');
-    return el('details', { class: 'detail-item', dataset: { detail: id } }, summary, body);
+      el('p', { class: 'detail-none' }, 'Aucun élément.');
+    return el('details', { class: 'detail-item' + (count > 0 ? '' : ' is-zero'), dataset: { detail: id } }, summary, body);
   }
 
   function nonItems(list, field) {
@@ -88,19 +99,22 @@
         'Aucun poste ni application ne correspond aux filtres sélectionnés.'));
     }
 
-    // KPI cards
-    body.appendChild(el('div', { class: 'grid grid-4 kpi-grid' },
-      kpiCard('total_postes', { title: 'Postes inventoriés', value: UI.fmtNum(k.total_postes) }),
-      kpiCard('postes_conformes', { title: 'Postes conformes', value: UI.fmtNum(k.postes_conformes),
-        sub: UI.fmtPct(k.taux_postes), tone: toneFor(k.taux_postes, k.total_postes) }),
-      kpiCard('total_apps', { title: 'Applications inventoriées', value: UI.fmtNum(k.total_apps) }),
-      kpiCard('apps_conformes', { title: 'Applications conformes', value: UI.fmtNum(k.apps_conformes),
-        sub: UI.fmtPct(k.taux_apps), tone: toneFor(k.taux_apps, k.total_apps) })));
+    // KPI strip
+    body.appendChild(UI.kpiStrip([
+      { key: 'total_postes', title: 'Postes inventoriés', value: UI.fmtNum(k.total_postes) },
+      { key: 'postes_conformes', title: 'Postes conformes', value: UI.fmtNum(k.postes_conformes),
+        sub: UI.fmtPct(k.taux_postes), tone: toneFor(k.taux_postes, k.total_postes) },
+      { key: 'total_apps', title: 'Applications inventoriées', value: UI.fmtNum(k.total_apps) },
+      { key: 'apps_conformes', title: 'Applications conformes', value: UI.fmtNum(k.apps_conformes),
+        sub: UI.fmtPct(k.taux_apps), tone: toneFor(k.taux_apps, k.total_apps) }
+    ]));
 
     // Gauges
     body.appendChild(el('div', { class: 'grid grid-2' },
-      chartCard('Conformité des postes', 'chart-gauge-postes', draws, function (box) { Charts.gauge(box, k.taux_postes); }),
-      chartCard('Conformité des applications', 'chart-gauge-apps', draws, function (box) { Charts.gauge(box, k.taux_apps); })));
+      chartCard('Conformité des postes', 'chart-gauge-postes', draws, function (box) { Charts.gauge(box, k.taux_postes); },
+        gaugeCaption(k.taux_postes, k.postes_conformes, k.total_postes, 'poste')),
+      chartCard('Conformité des applications', 'chart-gauge-apps', draws, function (box) { Charts.gauge(box, k.taux_apps); },
+        gaugeCaption(k.taux_apps, k.apps_conformes, k.total_apps, 'application'))));
 
     // Risk bars
     body.appendChild(el('div', { class: 'grid grid-2' },
@@ -110,18 +124,20 @@
     // Conformity details
     body.appendChild(UI.section('Détail conformité',
       el('div', { class: 'grid grid-2' },
-        el('div', { class: 'card detail-card', id: 'detail-postes' },
-          el('h3', { class: 'card-title' }, '💻 Postes'),
-          detailItem('postes_sans_edr', 'Sans EDR', k.postes_sans_edr, k.total_postes, nonItems(postes, 'EDR Decathlon'), KEY_POSTE),
-          detailItem('postes_non_it', 'Non IT Decathlon', k.postes_non_it, k.total_postes, nonItems(postes, 'IT Decathlon'), KEY_POSTE),
-          detailItem('postes_hors_reseau', 'Hors réseau Decathlon', k.postes_hors_reseau, k.total_postes,
-            nonItems(postes, 'Réseau Decathlon'), KEY_POSTE)),
-        el('div', { class: 'card detail-card', id: 'detail-apps' },
-          el('h3', { class: 'card-title' }, '📦 Applications'),
-          detailItem('apps_sans_sip', 'Sans SIP', k.apps_sans_sip, k.total_apps, nonItems(apps, 'SIP'), KEY_APP),
-          detailItem('apps_sans_contrat', 'Sans contrat', k.apps_sans_contrat, k.total_apps, nonItems(apps, 'Contrat'), KEY_APP),
-          detailItem('apps_sans_galink', 'Sans Galink', k.apps_sans_galink, k.total_apps, nonItems(apps, 'Galink'), KEY_APP),
-          detailItem('apps_sans_idp', 'Sans IDP', k.apps_sans_idp, k.total_apps, nonItems(apps, 'IDP'), KEY_APP)))));
+        el('div', { class: 'detail-card', id: 'detail-postes' },
+          el('h3', { class: 'card-title' }, 'Postes'),
+          el('div', { class: 'detail-rows' },
+            detailItem('postes_sans_edr', 'Sans EDR', k.postes_sans_edr, k.total_postes, nonItems(postes, 'EDR Decathlon'), KEY_POSTE),
+            detailItem('postes_non_it', 'Non IT Decathlon', k.postes_non_it, k.total_postes, nonItems(postes, 'IT Decathlon'), KEY_POSTE),
+            detailItem('postes_hors_reseau', 'Hors réseau Decathlon', k.postes_hors_reseau, k.total_postes,
+              nonItems(postes, 'Réseau Decathlon'), KEY_POSTE))),
+        el('div', { class: 'detail-card', id: 'detail-apps' },
+          el('h3', { class: 'card-title' }, 'Applications'),
+          el('div', { class: 'detail-rows' },
+            detailItem('apps_sans_sip', 'Sans SIP', k.apps_sans_sip, k.total_apps, nonItems(apps, 'SIP'), KEY_APP),
+            detailItem('apps_sans_contrat', 'Sans contrat', k.apps_sans_contrat, k.total_apps, nonItems(apps, 'Contrat'), KEY_APP),
+            detailItem('apps_sans_galink', 'Sans Galink', k.apps_sans_galink, k.total_apps, nonItems(apps, 'Galink'), KEY_APP),
+            detailItem('apps_sans_idp', 'Sans IDP', k.apps_sans_idp, k.total_apps, nonItems(apps, 'IDP'), KEY_APP))))));
 
     // Histograms
     function scores(list) {
@@ -136,7 +152,7 @@
     });
   }
 
-  // ------------------------------------------------------------------------------ import panel
+  // ------------------------------------------------------------------------------ import section
 
   function confirmMessage(month) {
     return 'Le mois ' + month + ' existe déjà. Ré-importer écrase les postes, applications et le référentiel de ce mois ' +
@@ -146,17 +162,21 @@
   function importPanel(s, myToken) {
     var input = el('input', { type: 'month', id: 'import-month', class: 'input', value: s.currentMonth || '',
       required: true, placeholder: 'AAAA-MM', 'aria-describedby': 'import-status' });
-    var button = el('button', { type: 'submit', class: 'btn btn-primary', id: 'import-button' }, '📥 Importer');
+    var button = el('button', { type: 'submit', class: 'btn btn-primary', id: 'import-button' },
+      s.months.indexOf(s.currentMonth) >= 0 ? 'Ré-importer' : 'Importer');
+    input.addEventListener('input', function () {
+      button.textContent = State.get().months.indexOf(input.value) >= 0 ? 'Ré-importer' : 'Importer';
+    });
     var status = el('div', { id: 'import-status', class: 'import-status', role: 'status', 'aria-live': 'polite' });
 
     function busy(on) {
       button.disabled = on;
       input.disabled = on;
       UI.clear(status);
-      if (on) status.appendChild(el('span', { class: 'muted' }, UI.spinner(), ' Import en cours…'));
+      if (on) status.appendChild(el('p', { class: 'muted' }, UI.spinner(), 'Import en cours…'));
     }
     function showError(msg) {
-      UI.clear(status).appendChild(el('div', { class: 'alert alert-error', role: 'alert' }, '❌ ' + msg));
+      UI.clear(status).appendChild(el('div', { class: 'alert alert-error', role: 'alert' }, msg));
     }
 
     function runImport(month, overwrite) {
@@ -166,7 +186,7 @@
         importLogCache = null;
         busy(false);
         var c = res.counts || {};
-        UI.toast('✅ Import réussi : ' + c.postes + ' postes, ' + c.applications + ' applications', 'success');
+        UI.toast('Import terminé — ' + UI.fmtNum(c.postes) + ' postes, ' + UI.fmtNum(c.applications) + ' applications.', 'success');
         var before = State.get().month;
         State.invalidate();
         return State.refreshBootstrap().then(function () {
@@ -182,9 +202,9 @@
             .then(function (ok) { return ok ? runImport(month, true) : null; });
         }
         var msg = err.code === 'NOT_CONFIGURED' ?
-          'La source n’est pas configurée. Utilisez le bouton « ⚙️ Source ».' : (err.message || 'Erreur inconnue.');
+          'La source n’est pas configurée. Utilisez « Changer de source » dans la barre latérale.' : (err.message || 'Erreur inconnue.');
         if (myToken === token) showError(msg);
-        UI.toast('❌ Échec de l’import : ' + msg, 'error');
+        UI.toast('Erreur : ' + msg, 'error');
         return null;
       });
     }
@@ -207,13 +227,15 @@
       el('p', { class: 'muted small' }, 'Aucune source configurée.');
 
     var logBox = el('div', { class: 'import-log', id: 'import-log' });
-    var panel = UI.section('📥 Importer depuis Google Sheets',
-      el('div', { class: 'card import-card' },
-        el('p', { class: 'muted' }, 'Crée un instantané mensuel des onglets « Suivi des postes », « Suivi des applications » ' +
-          'et « Référentiel » du Google Sheet source.'),
-        sourceLine, form, status, lastImportBlock()),
-      el('h3', { class: 'subsection-title' }, 'Derniers imports'),
-      logBox);
+    var panel = UI.section('Importer depuis Google Sheets',
+      el('div', { class: 'grid grid-2 import-grid' },
+        el('div', { class: 'import-card' },
+          el('p', { class: 'page-lede' }, 'Crée un instantané mensuel des onglets « Suivi des postes », « Suivi des applications » ' +
+            'et « Référentiel » du Google Sheet source.'),
+          sourceLine, form, status, lastImportBlock()),
+        el('div', { class: 'import-history' },
+          el('h3', { class: 'subsection-title' }, 'Derniers imports'),
+          logBox)));
     panel.id = 'import-panel';
     loadImportLog(logBox, myToken);
     return panel;
@@ -224,15 +246,16 @@
     var c = lastImport.counts || {};
     var warnings = lastImport.warnings || [];
     return el('div', { class: 'alert ' + (warnings.length ? 'alert-warning' : 'alert-success'), id: 'import-result' },
-      el('p', null, el('strong', null, 'Dernier import : ' + lastImport.month), ' — ' + c.postes + ' postes, ' +
-        c.applications + ' applications, ' + c.referentiel + ' catégories de référentiel' +
+      el('p', null, el('strong', null, 'Dernier import : ', el('span', { class: 'mono' }, lastImport.month)), ' — ' +
+        UI.fmtNum(c.postes) + ' postes, ' + UI.fmtNum(c.applications) + ' applications, ' + UI.fmtNum(c.referentiel) +
+        ' catégories de référentiel' +
         (lastImport.overwritten ? ' (mois écrasé)' : '') +
         (lastImport.carriedOver ? ' · ' + lastImport.carriedOver + ' valeur(s) Galink/IDP reprise(s)' : '') + '.'),
-      warnings.length ? el('ul', { class: 'warning-list' }, warnings.map(function (w) { return el('li', null, '⚠️ ' + w); })) : null);
+      warnings.length ? el('ul', { class: 'warning-list' }, warnings.map(function (w) { return el('li', null, w); })) : null);
   }
 
   function loadImportLog(box, myToken) {
-    UI.clear(box).appendChild(el('p', { class: 'muted small' }, UI.spinner(), ' Chargement…'));
+    UI.clear(box).appendChild(el('p', { class: 'muted small' }, UI.spinner(), 'Chargement…'));
     var p = importLogCache ? Promise.resolve(importLogCache) : api.call('api_getImportLog', null);
     p.then(function (log) {
       importLogCache = log || [];
@@ -240,17 +263,20 @@
       UI.clear(box);
       var entries = importLogCache.slice(0, 5);
       if (!entries.length) { box.appendChild(UI.empty('Aucun import pour le moment.')); return; }
-      box.appendChild(el('div', { class: 'table-scroll' }, el('table', { class: 'table table-compact' },
-        el('thead', null, el('tr', null, ['Mois', 'Importé le', 'Postes', 'Applications', 'Référentiel', 'Avertissements']
-          .map(function (h, i) { return el('th', { scope: 'col', class: i >= 2 && i <= 4 ? 'num' : null }, h); }))),
+      var heads = [['Mois', null], ['Importé le', null], ['Postes', 'num'], ['Applications', 'num'], ['Référentiel', 'num'],
+        ['Avert.', 'num']];
+      box.appendChild(el('div', { class: 'table-scroll' }, el('table', { class: 'table table-compact import-table' },
+        el('thead', null, el('tr', null, heads.map(function (h) {
+          return el('th', { scope: 'col', class: h[1], title: h[0] === 'Avert.' ? 'Avertissements' : null }, h[0]);
+        }))),
         el('tbody', null, entries.map(function (e) {
           var c = e.counts || {};
           var w = e.warnings || [];
           return el('tr', null,
-            el('td', null, e.month), el('td', null, e.imported_at),
+            el('td', { class: 'mono' }, e.month), el('td', { class: 'mono' }, e.imported_at),
             el('td', { class: 'num' }, UI.fmtNum(c.postes)), el('td', { class: 'num' }, UI.fmtNum(c.applications)),
             el('td', { class: 'num' }, UI.fmtNum(c.referentiel)),
-            el('td', { title: w.join('\n') || null }, w.length ? UI.badge(String(w.length), 'warn') : UI.badge('0', 'neutral')));
+            el('td', { class: 'num' + (w.length ? ' import-warn' : ' faint'), title: w.join('\n') || null }, w.length ? String(w.length) : '—'));
         })))));
     }, function (err) {
       if (myToken !== token) return;
@@ -268,13 +294,13 @@
 
     if (!s.months.length) {
       root.appendChild(el('div', { class: 'alert alert-warning', role: 'status', id: 'dashboard-empty' },
-        '⚠️ Aucune donnée importée.'));
+        'Aucune donnée importée.'));
       root.appendChild(importPanel(s, myToken));
       return;
     }
 
     var body = el('div', { class: 'dashboard-body', id: 'dashboard-body', 'aria-busy': 'true' },
-      el('p', { class: 'muted' }, UI.spinner(), ' Chargement des données…'));
+      el('p', { class: 'muted' }, UI.spinner(), 'Chargement des données…'));
     root.appendChild(body);
     root.appendChild(importPanel(s, myToken));
 
@@ -299,6 +325,6 @@
   }
 
   window.Pages = window.Pages || {};
-  window.Pages.dashboard = { id: 'dashboard', title: 'Tableau de bord', icon: '👻', mount: mount, unmount: unmount };
+  window.Pages.dashboard = { id: 'dashboard', title: 'Tableau de bord', icon: '', mount: mount, unmount: unmount };
 })();
 </script>

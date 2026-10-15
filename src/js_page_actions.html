@@ -7,7 +7,7 @@
  *                                  table, add / edit (formModal) / delete (confirm).
  *   2. Remplacements de postes  — table, add / edit / delete.
  *   3. Détection des changements — two month selects -> api_getDiff -> removed / added / changed
- *                                  postes, resolved actions ("✔️ Enregistrer comme terminée" ->
+ *                                  postes, resolved actions ("Enregistrer comme terminée" ->
  *                                  api_addAction status 'Terminé'), same for applications.
  *
  * Actions and replacements come from State.loadActions() (cached); after every write the cache is
@@ -25,6 +25,7 @@
   var STATUS_TONES = { 'À faire': 'info', 'En cours': 'warn', 'Terminé': 'ok', 'Abandonné': 'neutral' };
   var PRIORITY_TONES = { 'Haute': 'ko', 'Moyenne': 'warn', 'Basse': 'neutral' };
   var TYPE_LABELS = { poste: 'Poste', application: 'Application' };
+  var NBSP = '\u202f';
 
   var token = 0;                 // bumped on every mount/unmount: stale async renders are dropped
   var activeTab = 'remediation'; // survives re-mounts
@@ -33,6 +34,8 @@
   var lastDiff = null;           // last api_getDiff result (re-rendered after "Enregistrer comme terminée")
 
   // ------------------------------------------------------------------------------ small helpers
+
+  function capitalize(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 
   function todayFr() { return Core.fmtDDMMYYYY(new Date()); }
   function todayIso() { return Core.frToIso(todayFr()); }
@@ -57,20 +60,33 @@
     return s ? UI.badge(s, PRIORITY_TONES[s] || 'neutral') : '';
   }
 
+  /** Identifier cell: poste names in mono, application names in sans (docs/DESIGN.md "Tables"). */
+  function targetCell(type, name) {
+    var n = Core.str(name);
+    return type === 'application' ? el('span', { class: 'act-app', title: n }, n) : el('span', { class: 'mono', title: n }, n);
+  }
+
+  function dateCell(v) {
+    var d = Core.str(v);
+    return d ? el('span', { class: 'mono' }, d) : '';
+  }
+
+  /** Overdue deadline: ko mark on the date + the words "en retard" (status never colour-only). */
   function deadlineCell(a) {
     var d = Core.str(a.deadline);
     if (!d) return '';
     if (isOverdue(a)) {
-      var b = UI.badge('⚠️ ' + d, 'ko');
+      var b = UI.badge(d, 'ko');
       b.title = 'Échéance dépassée';
       b.classList.add('deadline-overdue');
+      b.appendChild(el('span', { class: 'act-late' }, ' en retard'));
       return b;
     }
-    return d;
+    return dateCell(d);
   }
 
   function errorToast(err, prefix) {
-    UI.toast('❌ ' + (prefix ? prefix + ' : ' : '') + ((err && err.message) || 'Erreur inconnue.'), 'error');
+    UI.toast('Erreur : ' + (prefix ? prefix + '. ' : '') + ((err && err.message) || 'erreur inconnue.'), 'error');
   }
 
   function distinct(values) {
@@ -120,7 +136,7 @@
   }
 
   function loadingBox(text) {
-    return el('p', { class: 'muted' }, UI.spinner(), ' ' + (text || 'Chargement…'));
+    return el('p', { class: 'muted' }, UI.spinner(), text || 'Chargement…');
   }
 
   function loadError(err) {
@@ -167,7 +183,7 @@
     }).then(function (sug) {
       var s = State.get();
       return UI.formModal({
-        title: existing ? '✏️ Modifier l’action' : '➕ Nouvelle action',
+        title: existing ? 'Modifier l’action' : 'Nouvelle action',
         submitLabel: existing ? 'Enregistrer' : 'Créer l’action',
         fields: actionFields(existing, sug, { source_month: s.month, priorite: 'Moyenne', status: 'À faire',
           date_created: todayFr() })
@@ -176,7 +192,7 @@
         var v = completeActionValues(values, sug.md);
         if (!existing) {
           return api.call('api_addAction', v).then(function () {
-            UI.toast('✅ Action créée', 'success');
+            UI.toast('Action créée.', 'success');
             return refreshAfterWrite(ctx);
           });
         }
@@ -186,7 +202,7 @@
         });
         if (!Object.keys(updates).length) { UI.toast('Aucune modification.', 'info'); return null; }
         return api.call('api_updateAction', { id: existing.id, updates: updates }).then(function () {
-          UI.toast('✅ Action mise à jour', 'success');
+          UI.toast('Action mise à jour.', 'success');
           return refreshAfterWrite(ctx);
         });
       });
@@ -198,18 +214,19 @@
       { title: 'Supprimer l’action', okLabel: 'Supprimer', danger: true }).then(function (ok) {
       if (!ok) return null;
       return api.call('api_deleteAction', { id: a.id }).then(function () {
-        UI.toast('🗑️ Action supprimée', 'success');
+        UI.toast('Action supprimée.', 'success');
         return refreshAfterWrite(ctx);
       });
     }).catch(function (err) { errorToast(err, 'Suppression impossible'); });
   }
 
+  /** Text buttons (no icon-only buttons): "Modifier · Supprimer". */
   function rowButtons(onEdit, onDelete, label) {
     return el('span', { class: 'row-actions' },
-      el('button', { type: 'button', class: 'icon-btn btn-edit', title: 'Modifier', 'aria-label': 'Modifier ' + label,
-        onClick: function (e) { e.stopPropagation(); onEdit(); } }, '✏️'),
-      el('button', { type: 'button', class: 'icon-btn btn-delete', title: 'Supprimer', 'aria-label': 'Supprimer ' + label,
-        onClick: function (e) { e.stopPropagation(); onDelete(); } }, '🗑️'));
+      el('button', { type: 'button', class: 'btn btn-link btn-small btn-edit', 'aria-label': 'Modifier ' + label,
+        onClick: function (e) { e.stopPropagation(); onEdit(); } }, 'Modifier'),
+      el('button', { type: 'button', class: 'btn btn-link btn-small btn-delete', 'aria-label': 'Supprimer ' + label,
+        onClick: function (e) { e.stopPropagation(); onDelete(); } }, 'Supprimer'));
   }
 
   function filterActions(actions) {
@@ -249,17 +266,21 @@
         return Core.str(a.target_name).localeCompare(Core.str(b.target_name), 'fr');
       });
 
-      // Counts per status (on all actions, independent of the filters).
+      // Counts per status (on all actions, independent of the filters): a KPI strip.
       var c = statusCounts(actions);
+      var open = actions.length - c['Terminé'] - c['Abandonné'];
       var cards = Core.ACTION_STATUSES.map(function (s) {
-        var card = UI.card({ title: s, value: UI.fmtNum(c[s]), tone: s === 'Terminé' && c[s] ? 'ok' : null });
+        var card = UI.card({ title: s, value: UI.fmtNum(c[s]) });
         card.dataset.status = s;
         return card;
       });
-      var overdueCard = UI.card({ title: '⚠️ En retard', value: UI.fmtNum(c.overdue), sub: 'Échéance dépassée',
+      var overdueCard = UI.card({ title: 'En retard', value: UI.fmtNum(c.overdue),
+        sub: c.overdue ? 'sur ' + UI.fmtNum(open) + ' ouverte' + (open > 1 ? 's' : '') : 'Aucune échéance dépassée',
         tone: c.overdue ? 'ko' : null });
       overdueCard.dataset.status = 'overdue';
-      panel.appendChild(el('div', { class: 'grid act-counts', id: 'action-counts' }, cards, overdueCard));
+      if (c.overdue) overdueCard.querySelector('.metric-value').classList.add('is-alert');
+      panel.appendChild(el('div', { class: 'kpi-strip act-counts', id: 'action-counts', role: 'group',
+        'aria-label': 'Actions par statut' }, cards, overdueCard));
 
       // Filters (in the table toolbar) + table.
       var equipes = distinct(actions.map(function (a) { return a.equipe; }));
@@ -274,7 +295,7 @@
       }
       var toolbar = [
         el('button', { type: 'button', class: 'btn btn-primary btn-small', id: 'action-add',
-          onClick: function () { openActionForm(ctx, null); } }, '➕ Nouvelle action'),
+          onClick: function () { openActionForm(ctx, null); } }, 'Nouvelle action'),
         filterSelect('action-filter-status', 'Statut', 'status',
           [{ value: '', label: 'Tous' }].concat(Core.ACTION_STATUSES)),
         filterSelect('action-filter-type', 'Type', 'type',
@@ -288,18 +309,20 @@
         toolbar: toolbar,
         onRowClick: function (a) { openActionForm(ctx, a); },
         columns: [
-          { key: 'target_name', label: 'Cible', width: 140 },
+          { key: 'target_name', label: 'Cible', render: function (a) { return targetCell(a.target_type, a.target_name); } },
           { key: 'target_type', label: 'Type', render: function (a) { return TYPE_LABELS[a.target_type] || Core.str(a.target_type); } },
           { key: 'equipe', label: 'Équipe' },
-          { key: 'action', label: 'Action', width: 220,
+          { key: 'action', label: 'Action', width: 150,
             render: function (a) { return el('span', { title: Core.str(a.action) }, Core.str(a.action)); } },
           { key: 'responsable', label: 'Responsable' },
           { key: 'priorite', label: 'Priorité', render: function (a) { return priorityBadge(a.priorite); },
             sortValue: function (a) { var i = Core.ACTION_PRIORITIES.indexOf(Core.str(a.priorite)); return i < 0 ? null : i; } },
           { key: 'deadline', label: 'Échéance', render: deadlineCell, sortValue: function (a) { return frSortValue(a.deadline); } },
           { key: 'status', label: 'Statut', render: function (a) { return statusBadge(a.status); } },
-          { key: 'date_created', label: 'Créée le', sortValue: function (a) { return frSortValue(a.date_created); } },
-          { key: 'date_completed', label: 'Réalisée le', sortValue: function (a) { return frSortValue(a.date_completed); } },
+          { key: 'date_created', label: 'Créée le', render: function (a) { return dateCell(a.date_created); },
+            sortValue: function (a) { return frSortValue(a.date_created); } },
+          { key: 'date_completed', label: 'Réalisée le', render: function (a) { return dateCell(a.date_completed); },
+            sortValue: function (a) { return frSortValue(a.date_completed); } },
           { key: '_actions', label: '', sortable: false, render: function (a) {
             return rowButtons(function () { openActionForm(ctx, a); }, function () { deleteAction(ctx, a); },
               'l’action ' + Core.str(a.action));
@@ -336,7 +359,7 @@
       return State.loadActions().then(function (data) { return suggestions(md, data); });
     }).then(function (sug) {
       return UI.formModal({
-        title: existing ? '✏️ Modifier le remplacement' : '➕ Nouveau remplacement',
+        title: existing ? 'Modifier le remplacement' : 'Nouveau remplacement',
         submitLabel: existing ? 'Enregistrer' : 'Ajouter',
         fields: replacementFields(existing, sug)
       }).then(function (values) {
@@ -345,7 +368,7 @@
         if (!v.equipe) v.equipe = equipeOf(sug.md, 'poste', v.old_poste) || equipeOf(sug.md, 'poste', v.new_poste);
         if (!existing) {
           return api.call('api_addReplacement', v).then(function () {
-            UI.toast('✅ Remplacement enregistré', 'success');
+            UI.toast('Remplacement enregistré.', 'success');
             return refreshAfterWrite(ctx);
           });
         }
@@ -355,7 +378,7 @@
         });
         if (!Object.keys(updates).length) { UI.toast('Aucune modification.', 'info'); return null; }
         return api.call('api_updateReplacement', { id: existing.id, updates: updates }).then(function () {
-          UI.toast('✅ Remplacement mis à jour', 'success');
+          UI.toast('Remplacement mis à jour.', 'success');
           return refreshAfterWrite(ctx);
         });
       });
@@ -367,7 +390,7 @@
       { title: 'Supprimer le remplacement', okLabel: 'Supprimer', danger: true }).then(function (ok) {
       if (!ok) return null;
       return api.call('api_deleteReplacement', { id: r.id }).then(function () {
-        UI.toast('🗑️ Remplacement supprimé', 'success');
+        UI.toast('Remplacement supprimé.', 'success');
         return refreshAfterWrite(ctx);
       });
     }).catch(function (err) { errorToast(err, 'Suppression impossible'); });
@@ -388,14 +411,14 @@
         rowKey: 'id',
         emptyText: 'Aucun remplacement enregistré.',
         toolbar: [el('button', { type: 'button', class: 'btn btn-primary btn-small', id: 'replacement-add',
-          onClick: function () { openReplacementForm(ctx, null); } }, '➕ Remplacement')],
+          onClick: function () { openReplacementForm(ctx, null); } }, 'Nouveau remplacement')],
         onRowClick: function (r) { openReplacementForm(ctx, r); },
         columns: [
-          { key: 'old_poste', label: 'Ancien poste' },
-          { key: 'new_poste', label: 'Nouveau poste' },
+          { key: 'old_poste', label: 'Ancien poste', mono: true },
+          { key: 'new_poste', label: 'Nouveau poste', mono: true },
           { key: 'equipe', label: 'Équipe' },
           { key: 'responsable', label: 'Responsable' },
-          { key: 'date_replacement', label: 'Date', sortValue: function (r) { return frSortValue(r.date_replacement); } },
+          { key: 'date_replacement', label: 'Date', mono: true, sortValue: function (r) { return frSortValue(r.date_replacement); } },
           { key: 'comment', label: 'Commentaire', width: 220,
             render: function (r) { return el('span', { title: Core.str(r.comment) }, Core.str(r.comment)); } },
           { key: '_actions', label: '', sortable: false, render: function (r) {
@@ -428,20 +451,24 @@
         el('tbody', null, rows)));
   }
 
+  /** Sub-block of a diff group: small-caps label "Postes retirés (1)" on a hairline, table or one line. */
   function diffSection(id, title, count, content, emptyText) {
-    var sec = UI.section(title + ' (' + count + ')', count ? content : el('p', { class: 'muted small' }, emptyText));
-    sec.id = id;
-    sec.classList.add('diff-section');
-    sec.dataset.count = String(count);
-    return sec;
+    return el('section', { class: 'diff-section' + (count ? '' : ' is-empty'), id: id, dataset: { count: String(count) } },
+      el('h3', { class: 'section-title' }, title + ' (' + count + ')'),
+      count ? content : el('p', { class: 'empty-state diff-none' }, emptyText));
   }
 
-  function recordRows(list, keyField, cols) {
+  /** Name cell: poste names in mono, application names in sans. */
+  function nameCell(type, name) {
+    return el('td', { class: type === 'poste' ? 'mono' : 'act-app' }, name);
+  }
+
+  function recordRows(list, keyField, cols, type) {
     return list.map(function (r) {
       return el('tr', { dataset: { name: Core.str(r[keyField]) } },
-        el('td', null, el('strong', null, Core.str(r[keyField]))),
+        nameCell(type, Core.str(r[keyField])),
         cols.map(function (c) {
-          if (c === 'score') return el('td', null, UI.scoreBadge(r._score));
+          if (c === 'score') return el('td', { class: 'num' }, UI.scoreBadge(r._score));
           if (c === 'risk') return el('td', null, UI.riskBadge(r['Niveau de risque']));
           return el('td', null, Core.str(r[c]));
         }));
@@ -468,7 +495,7 @@
       var done = findIdenticalDone(actions, type, ra);
       var open = done ? null : findOpenSame(actions, type, ra);
       var btn = el('button', {
-        type: 'button', class: 'btn btn-small ' + (done ? 'btn-secondary' : 'btn-primary') + ' btn-mark-done',
+        type: 'button', class: 'btn btn-small btn-secondary btn-mark-done' + (done ? ' is-done' : ''),
         disabled: !!done,
         title: done ? 'Une action identique est déjà enregistrée comme terminée.' : null,
         onClick: function () {
@@ -484,22 +511,21 @@
             source_month: diff.newMonth,
             comment: 'Action résolue détectée entre ' + diff.oldMonth + ' et ' + diff.newMonth + '.'
           }).then(function () {
-            UI.toast('✅ Action enregistrée comme terminée : ' + ra.name, 'success');
+            UI.toast('Action enregistrée comme terminée — ' + ra.name + '.', 'success');
             return refreshAfterWrite(ctx);
           }, function (err) {
             btn.disabled = false;
             errorToast(err, 'Enregistrement impossible');
           });
         }
-      }, done ? '✔️ Déjà enregistrée' : '✔️ Enregistrer comme terminée');
+      }, done ? 'Déjà enregistrée' : 'Enregistrer comme terminée');
       return el('tr', { dataset: { name: ra.name } },
-        el('td', null, el('strong', null, ra.name)),
+        nameCell(type, ra.name),
         el('td', null, ra.equipe),
-        el('td', null, ra.action),
+        el('td', { class: 'diff-action-text' }, ra.action),
         el('td', null, ra.responsable),
-        el('td', null, btn,
-          open ? el('div', { class: 'muted small diff-open-note' },
-            'Action « ' + Core.str(open.status) + ' » existante dans le suivi.') : null));
+        el('td', { class: 'diff-done-cell' }, btn,
+          open ? el('div', { class: 'small diff-open-note' }, 'Déjà suivie : ', statusBadge(open.status)) : null));
     });
   }
 
@@ -515,9 +541,13 @@
     var aAdded = a.added || [];
     var aResolved = a.resolved_actions || [];
 
-    box.appendChild(el('p', { class: 'muted', id: 'diff-summary' },
-      'Comparaison de ' + UI.fmtMonth(diff.oldMonth) + ' (' + diff.oldMonth + ') à ' + UI.fmtMonth(diff.newMonth) +
-      ' (' + diff.newMonth + ').'));
+    box.appendChild(el('p', { class: 'stat-line', id: 'diff-summary' },
+      el('span', { class: 'diff-summary-months' }, capitalize(UI.fmtMonth(diff.oldMonth)) + ' → ' + UI.fmtMonth(diff.newMonth)),
+      el('span', null, 'Postes : ', el('span', { class: 'num' }, String(pRemoved.length)), ' retiré' + (pRemoved.length > 1 ? 's' : '') +
+        ' · ', el('span', { class: 'num' }, String(pAdded.length)), ' ajouté' + (pAdded.length > 1 ? 's' : '') +
+        ' · ', el('span', { class: 'num' }, String(pChanges.length)), ' modifié' + (pChanges.length > 1 ? 's' : '')),
+      el('span', null, 'Applications : ', el('span', { class: 'num' }, String(aRemoved.length)), ' retirée' + (aRemoved.length > 1 ? 's' : '') +
+        ' · ', el('span', { class: 'num' }, String(aAdded.length)), ' ajoutée' + (aAdded.length > 1 ? 's' : ''))));
 
     // Postes
     var changeRows = [];
@@ -525,23 +555,23 @@
       Object.keys(ch.diffs || {}).forEach(function (col) {
         var d = ch.diffs[col];
         changeRows.push(el('tr', { dataset: { name: ch.name, col: col } },
-          el('td', null, el('strong', null, ch.name)),
+          nameCell('poste', ch.name),
           el('td', null, ch.equipe),
           el('td', null, col),
-          el('td', null, el('span', { class: 'diff-old' }, d.old === '' ? '∅' : d.old), ' → ',
+          el('td', { class: 'diff-values' }, el('span', { class: 'diff-old' }, d.old === '' ? '∅' : d.old), ' → ',
             el('span', { class: 'diff-new' }, d['new'] === '' ? '∅' : d['new']))));
       });
     });
     var posteCols = ['Équipe', 'Bâtiment / Labo', 'score', 'risk'];
     var posteHeaders = ['Poste', 'Équipe', 'Bâtiment / Labo', 'Score', 'Niveau de risque'];
     var resolvedHeaders = ['Équipe', 'Action', 'Responsable', ''];
-    box.appendChild(el('div', { class: 'card diff-group', id: 'diff-postes' },
-      el('h3', { class: 'card-title' }, '💻 Postes'),
+    box.appendChild(el('section', { class: 'diff-group', id: 'diff-postes', 'aria-labelledby': 'diff-postes-title' },
+      el('h2', { class: 'diff-group-title', id: 'diff-postes-title' }, 'Postes'),
       diffSection('diff-postes-removed', 'Postes retirés', pRemoved.length,
-        simpleTable('diff-postes-removed-table', posteHeaders, recordRows(pRemoved, KEY_POSTE, posteCols)),
+        simpleTable('diff-postes-removed-table', posteHeaders, recordRows(pRemoved, KEY_POSTE, posteCols, 'poste')),
         'Aucun poste retiré.'),
       diffSection('diff-postes-added', 'Postes ajoutés', pAdded.length,
-        simpleTable('diff-postes-added-table', posteHeaders, recordRows(pAdded, KEY_POSTE, posteCols)),
+        simpleTable('diff-postes-added-table', posteHeaders, recordRows(pAdded, KEY_POSTE, posteCols, 'poste')),
         'Aucun poste ajouté.'),
       diffSection('diff-postes-changes', 'Modifications', pChanges.length,
         simpleTable('diff-postes-changes-table', ['Poste', 'Équipe', 'Champ', 'Ancien → Nouveau'], changeRows),
@@ -554,13 +584,13 @@
     // Applications
     var appCols = ['Équipe', 'Éditeur', 'score', 'risk'];
     var appHeaders = ['Application', 'Équipe', 'Éditeur', 'Score', 'Niveau de risque'];
-    box.appendChild(el('div', { class: 'card diff-group', id: 'diff-apps' },
-      el('h3', { class: 'card-title' }, '📦 Applications'),
+    box.appendChild(el('section', { class: 'diff-group', id: 'diff-apps', 'aria-labelledby': 'diff-apps-title' },
+      el('h2', { class: 'diff-group-title', id: 'diff-apps-title' }, 'Applications'),
       diffSection('diff-apps-removed', 'Applications retirées', aRemoved.length,
-        simpleTable('diff-apps-removed-table', appHeaders, recordRows(aRemoved, KEY_APP, appCols)),
+        simpleTable('diff-apps-removed-table', appHeaders, recordRows(aRemoved, KEY_APP, appCols, 'application')),
         'Aucune application retirée.'),
       diffSection('diff-apps-added', 'Applications ajoutées', aAdded.length,
-        simpleTable('diff-apps-added-table', appHeaders, recordRows(aAdded, KEY_APP, appCols)),
+        simpleTable('diff-apps-added-table', appHeaders, recordRows(aAdded, KEY_APP, appCols, 'application')),
         'Aucune application ajoutée.'),
       diffSection('diff-apps-resolved', 'Actions résolues', aResolved.length,
         simpleTable('diff-apps-resolved-table', ['Application'].concat(resolvedHeaders),
@@ -571,12 +601,12 @@
   function renderDiff(panel, ctx) {
     var s = State.get();
     var months = Core.sortMonths(s.months || []);
-    panel.appendChild(el('p', { class: 'muted' }, 'Compare deux exports mensuels : postes et applications retirés ou ' +
-      'ajoutés, champs modifiés et actions correctives disparues (considérées comme résolues).'));
+    panel.appendChild(el('p', { class: 'page-lede diff-intro' }, 'Compare deux exports mensuels : postes et applications ' +
+      'retirés ou ajoutés, champs modifiés, et actions correctives disparues (considérées comme résolues).'));
 
     if (months.length < 2) {
       panel.appendChild(el('div', { class: 'alert alert-info', role: 'status', id: 'diff-info' },
-        'ℹ️ Au moins deux exports mensuels sont nécessaires pour détecter des changements.'));
+        'Au moins deux exports mensuels sont nécessaires pour détecter des changements.'));
       var disabledSel = function (id, label) {
         var w = UI.select({ label: label, options: months.length ? months : [{ value: '', label: '—' }],
           value: months[0] || '' });
@@ -612,12 +642,12 @@
       UI.clear(result);
       if (oldMonth === newMonth) {
         result.appendChild(el('div', { class: 'alert alert-warning', role: 'status' },
-          '⚠️ Choisissez deux mois différents.'));
+          'Choisissez deux mois différents.'));
         return;
       }
       if (oldMonth > newMonth) {
         result.appendChild(el('div', { class: 'alert alert-warning', role: 'status' },
-          '⚠️ Le mois de référence est postérieur au mois comparé : les ajouts et retraits sont inversés.'));
+          'Le mois de référence est postérieur au mois comparé : les ajouts et les retraits sont inversés.'));
       }
       var loading = loadingBox('Comparaison en cours…');
       result.appendChild(loading);
@@ -660,11 +690,11 @@
 
   function mount(root) {
     var myToken = ++token;
+    var s = State.get();
     root.appendChild(el('style', null, CSS));
-    root.appendChild(el('header', { class: 'page-header' },
-      el('h1', { class: 'page-title' }, '📋 Suivi actions'),
-      el('p', { class: 'page-caption' }, 'Actions de remédiation, remplacements de postes et détection des changements ' +
-        'entre deux exports.')));
+    root.appendChild(UI.pageHeader({ title: 'Suivi des actions', kickerId: s.month ? 'actions-caption' : null,
+      kicker: s.month ? [capitalize(UI.fmtMonth(s.month)) + ' · ', el('span', { class: 'mono' }, 'Export ' + s.month)] :
+        'Aucun export importé' }));
 
     var tabs;
     /** Context shared by the tab renderers; rerender() redraws the active tab after a write. */
@@ -690,9 +720,9 @@
       };
     }
     tabs = UI.tabs([
-      { id: 'remediation', label: '🛠️ Actions de remédiation', render: tabRender('remediation', renderRemediation) },
-      { id: 'replacements', label: '🔁 Remplacements de postes', render: tabRender('replacements', renderReplacements) },
-      { id: 'diff', label: '🔍 Détection des changements', render: tabRender('diff', renderDiff) }
+      { id: 'remediation', label: 'Actions de remédiation', render: tabRender('remediation', renderRemediation) },
+      { id: 'replacements', label: 'Remplacements de postes', render: tabRender('replacements', renderReplacements) },
+      { id: 'diff', label: 'Détection des changements', render: tabRender('diff', renderDiff) }
     ], activeTab);
     tabs.id = 'actions-tabs';
     root.appendChild(tabs);
@@ -702,27 +732,51 @@
     token++;
   }
 
-  // Page-local styles (scoped to .page-actions).
+  // Page-specific styles only (scoped to .page-actions); everything else comes from css.html.
   var CSS = [
-    '.page-actions .tabpanel { display: flex; flex-direction: column; gap: 16px; padding-top: 16px; }',
-    '.page-actions .act-counts { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); }',
-    '.page-actions .act-counts .metric-card { padding: 12px 16px; }',
-    '.page-actions .etable-tools .select-field { display: flex; flex-direction: row; align-items: center; gap: 6px; }',
-    '.page-actions .etable-tools .select-field .input { width: auto; min-width: 120px; }',
-    '.page-actions .row-actions { display: inline-flex; gap: 4px; }',
-    '.page-actions .row-actions .icon-btn { font-size: 14px; }',
-    '.page-actions .diff-controls { align-items: flex-end; }',
-    '.page-actions .diff-controls .select-field { display: flex; flex-direction: column; gap: 4px; }',
-    '.page-actions .diff-arrow { font-size: 20px; padding-bottom: 6px; }',
-    '.page-actions .diff-body { display: flex; flex-direction: column; gap: 16px; }',
-    '.page-actions .diff-group { display: flex; flex-direction: column; gap: 14px; }',
-    '.page-actions .diff-section .section-title { font-size: 15px; }',
-    '.page-actions .diff-old { text-decoration: line-through; color: #c0392b; }',
-    '.page-actions .diff-new { color: #1e8449; font-weight: 600; }',
-    '.page-actions .diff-open-note { margin-top: 4px; white-space: normal; }'
+    // Actions table: the free-text column wraps so that the 11 columns fit without hiding the row buttons.
+    // Actions table: 11 columns must fit 1072px (1400px viewport): tighter cell padding, free text wraps,
+    // "en retard" goes under the overdue date.
+    '.page-actions #actions-table th, .page-actions #actions-table td { padding-left: var(--s2); padding-right: var(--s2); }',
+    '.page-actions #actions-table td[data-col="action"] { white-space: normal; min-width: 150px; max-width: 260px; line-height: 1.35; }',
+    '.page-actions #actions-table td[data-col="equipe"], .page-actions #actions-table td[data-col="responsable"] {' +
+      ' white-space: normal; line-height: 1.35; }',
+    '.page-actions #actions-table .row-actions { flex-direction: column; align-items: flex-start; gap: 0; }',
+    '.page-actions #actions-table .row-actions .btn-link { min-height: 20px; }',
+    '.page-actions .deadline-overdue { flex-wrap: wrap; row-gap: 0; line-height: 16px; }',
+    '.page-actions .deadline-overdue .act-late { flex-basis: 100%; padding-left: 12px; }',
+    '.page-actions #replacements-table td[data-col="comment"] { white-space: normal; min-width: 200px; max-width: 360px; line-height: 1.35; }',
+    '.page-actions .etable-table td[data-col="_actions"] { width: 1%; padding-right: var(--s2); }',
+    '.page-actions .row-actions { gap: var(--s3); }',
+    '.page-actions .row-actions .btn-link { min-height: 24px; color: var(--ink-2); }',
+    '.page-actions .row-actions .btn-link:hover { color: var(--accent); }',
+    '.page-actions .row-actions .btn-delete:hover { color: var(--ko); }',
+    '.page-actions .deadline-overdue { font-family: var(--font-mono); font-size: 12.5px; }',
+    '.page-actions .act-late { font-family: var(--font-sans); font-size: 12px; font-weight: 400; }',
+    // Change detection: one 16px heading per entity, small-caps sub-blocks on hairlines.
+    '.page-actions .diff-controls .select-field .input { min-width: 180px; }',
+    '.page-actions .diff-controls .diff-arrow { align-self: center; }',
+    '.page-actions .diff-body { gap: var(--s6); }',
+    '.page-actions .diff-group { display: flex; flex-direction: column; gap: var(--s5); }',
+    '.page-actions .diff-group-title { font-size: 16px; font-weight: 500; color: var(--ink); padding-bottom: var(--s2);' +
+      ' border-bottom: 1px solid var(--ink); }',
+    '.page-actions .diff-section { display: flex; flex-direction: column; gap: var(--s2); }',
+    '.page-actions .diff-section.is-empty > .section-title { color: var(--ink-3); }',
+    '.page-actions .diff-none { padding: 0; font-size: 13px; }',
+    '.page-actions .diff-summary-months { color: var(--ink); font-weight: 500; }',
+    '.page-actions .diff-values { font-family: var(--font-mono); font-size: 12.5px; }',
+    '.page-actions .diff-action-text, .page-actions .diff-done-cell { white-space: normal; }',
+    '.page-actions .diff-action-text { min-width: 160px; }',
+    '@media (max-width: 480px) { .page-actions .diff-controls .diff-arrow { display: none; } }',
+    '.page-actions .diff-done-cell { width: 1%; min-width: 220px; }',
+    '.page-actions .btn-mark-done.is-done { opacity: 1; border-color: transparent; background: none; padding: 0;' +
+      ' color: var(--ok); font-weight: 500; cursor: default; }',
+    '.page-actions .btn-mark-done.is-done::before { content: ""; width: 6px; height: 6px; background: currentColor; }',
+    '.page-actions .diff-open-note { display: flex; align-items: baseline; gap: var(--s1); margin-top: var(--s1); color: var(--ink-2); }',
+    '.page-actions .diff-open-note .badge { font-size: 12px; }'
   ].join('\n');
 
   window.Pages = window.Pages || {};
-  window.Pages.actions = { id: 'actions', title: 'Suivi actions', icon: '📋', mount: mount, unmount: unmount };
+  window.Pages.actions = { id: 'actions', title: 'Suivi actions', icon: '', mount: mount, unmount: unmount };
 })();
 </script>

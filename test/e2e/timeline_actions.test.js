@@ -83,7 +83,8 @@ describe('timeline', () => {
   test('renders 2 months: charts, heatmap and KPI table with deltas', async () => {
     await withApp({ page: 'timeline' }, async (app) => {
       const { page } = app;
-      assert.equal((await page.textContent('#main h1')).trim(), '📈 Suivi temporel');
+      assert.equal((await page.textContent('#main h1')).trim(), 'Suivi temporel');
+      assert.equal((await page.textContent('#timeline-kicker')).trim(), 'Avril 2026 – mai 2026 · 2 exports');
       assert.equal(await page.$('#timeline-info'), null, 'no "< 2 months" info with 2 months');
       assert.equal((await callsNamed(app, 'api_getTimeline')).length, 1);
 
@@ -138,6 +139,10 @@ describe('timeline', () => {
       // Fewer postes without EDR is an improvement (green), more apps without SIP would be red.
       const edr = await kpiCell(page, 'postes_sans_edr', '2026-05');
       assert.equal(edr.value, fmtNum(k5.postes_sans_edr));
+      // Ledger chrome: no emoji anywhere on the page, line series use the neutral ledger styles.
+      assert.doesNotMatch(await page.textContent('#main'), /\p{Extended_Pictographic}/u);
+      assert.deepEqual(taux.data.map((t) => t.line.dash), ['solid', 'dash'], 'postes solid ink, applications dashed');
+      assert.match(await page.textContent('#chart-timeline-taux + .chart-caption'), /seuil 80/);
       assert.deepEqual(app.errors, []);
     });
   });
@@ -176,7 +181,8 @@ describe('timeline', () => {
       await page.waitForSelector('#timeline-info');
       await app.waitIdle();
       assert.equal((await page.textContent('#timeline-info')).trim(),
-        'ℹ️ Au moins deux exports mensuels sont nécessaires pour visualiser une évolution.');
+        'Au moins deux exports mensuels sont nécessaires pour visualiser une évolution.');
+      assert.equal((await page.textContent('#timeline-kicker')).trim(), 'Mai 2026 · 1 export');
       const months = await page.$$eval('#timeline-kpi-table thead th[data-month]', (ths) => ths.map((t) => t.dataset.month));
       assert.deepEqual(months, ['2026-05']);
       assert.deepEqual(app.errors, []);
@@ -189,9 +195,11 @@ describe('actions — remediation', () => {
   test('lists the 3 fixture actions with status / deadline badges and counts', async () => {
     await withApp({ page: 'actions' }, async (app) => {
       const { page } = app;
-      assert.equal((await page.textContent('#main h1')).trim(), '📋 Suivi actions');
+      assert.equal((await page.textContent('#main h1')).trim(), 'Suivi des actions');
       const tabs = await page.$$eval('#actions-tabs .tab', (ts) => ts.map((t) => t.textContent));
-      assert.deepEqual(tabs, ['🛠️ Actions de remédiation', '🔁 Remplacements de postes', '🔍 Détection des changements']);
+      assert.deepEqual(tabs, ['Actions de remédiation', 'Remplacements de postes', 'Détection des changements']);
+      assert.doesNotMatch(await page.textContent('#main'), /\p{Extended_Pictographic}/u, 'no emoji in the page');
+      assert.equal((await page.textContent('#action-add')).trim(), 'Nouvelle action');
       assert.deepEqual((await tableIds(page, 'actions-table')).sort(), ['a-0001', 'a-0002', 'a-0003']);
 
       const rows = await page.$$eval('#actions-table tbody tr[data-id]', (trs) => Object.fromEntries(trs.map((tr) => {
@@ -216,6 +224,7 @@ describe('actions — remediation', () => {
       const today = Core.frToIso(await browserToday(page));
       const overdue = (fr) => Core.frToIso(fr) < today;
       assert.equal(rows['a-0002'].deadlineBadge !== null && /badge-ko/.test(rows['a-0002'].deadlineBadge), overdue('31/05/2026'));
+      if (overdue('31/05/2026')) assert.match(rows['a-0002'].deadline, /31\/05\/2026 en retard/, 'overdue said in words');
       assert.equal(rows['a-0003'].deadlineBadge !== null && /badge-ko/.test(rows['a-0003'].deadlineBadge), overdue('15/04/2026'));
 
       const counts = await page.$$eval('#action-counts [data-status]', (cs) => Object.fromEntries(cs.map((c) => [
@@ -255,6 +264,7 @@ describe('actions — remediation', () => {
       await page.selectOption('.modal select[name="priorite"]', 'Haute');
       await page.fill('.modal input[name="deadline"]', '2026-12-31');
       await submitModal(app);
+      assert.equal(await page.textContent('#toast-root .toast:last-child .toast-msg'), 'Action créée.');
       const adds = await callsNamed(app, 'api_addAction');
       assert.equal(adds.length, 1);
       assert.deepEqual(adds[0].args, {
@@ -372,7 +382,7 @@ describe('actions — change detection', () => {
 
       // Record the resolved poste action as done.
       const btn = '#diff-postes-resolved tr[data-name="LAB-CHA-01"] .btn-mark-done';
-      assert.equal((await page.textContent(btn)).trim(), '✔️ Enregistrer comme terminée');
+      assert.equal((await page.textContent(btn)).trim(), 'Enregistrer comme terminée');
       assert.equal(await page.isDisabled(btn), false);
       await page.click(btn);
       await app.waitIdle();
@@ -382,7 +392,7 @@ describe('actions — change detection', () => {
         comment: 'Action résolue détectée entre 2026-04 et 2026-05.',
       }]);
       await page.waitForSelector(btn + '[disabled]');
-      assert.equal((await page.textContent(btn)).trim(), '✔️ Déjà enregistrée');
+      assert.equal((await page.textContent(btn)).trim(), 'Déjà enregistrée');
       assert.equal((await callsNamed(app, 'api_getDiff')).length, 1, 'diff not recomputed after the write');
       assert.equal(await page.getAttribute('#actions-tabs', 'data-active'), 'diff');
 
@@ -405,6 +415,7 @@ describe('actions — change detection', () => {
       assert.deepEqual((await callsNamed(app, 'api_getDiff')).pop().args, { oldMonth: '2026-05', newMonth: '2026-04' });
 
       assert.equal(await page.evaluate(() => window.__xss), undefined, 'XSS probe not executed');
+      assert.doesNotMatch(await page.textContent('#main'), /\p{Extended_Pictographic}/u, 'no emoji in the diff tab');
       assert.deepEqual(app.errors, []);
     });
   });

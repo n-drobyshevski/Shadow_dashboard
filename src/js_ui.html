@@ -4,6 +4,15 @@
  *
  * Security rule: every piece of text goes through textContent (UI.el); innerHTML is never used.
  * URL-bearing attributes (href, src, action, formaction) reject javascript:/data:/vbscript: URLs.
+ *
+ * Visual language: docs/DESIGN.md ("audit ledger"). No emoji in component chrome. Additions to the
+ * API.md §5 surface (documented at the top of css.html too):
+ *   UI.statusMark(text, tone)            -> span.mark.mark-<tone>: 6px square + coloured text.
+ *                                           tone: ok|ko|warn|info|neutral or a risk level.
+ *   UI.kpiStrip([{key?, title, value, sub?, tone?}]) -> div.kpi-strip of UI.card cells (data-kpi = key).
+ *   UI.pageHeader({title, kicker?, kickerId?, actions?:[Node]}) -> header.page-header.
+ *   UI.leaderRow(label, value, attrs?)   -> div.leaders-row "label ……… value".
+ *   editableTable columns also accept {numeric?:bool, mono?:bool} (right-aligned mono / identifier cells).
  */
 (function () {
   'use strict';
@@ -119,30 +128,55 @@
 
   // ------------------------------------------------------------------------------ small components
 
+  /** Status mark "■ text" (the square is drawn by CSS, so textContent is exactly `text`). */
   function badge(text, tone) {
     return el('span', { class: 'badge badge-' + (tone || 'neutral') }, text);
   }
 
+  var RISK_CLASS = { 'Critique': 'risk-critique', 'Élevé': 'risk-eleve', 'Moyen': 'risk-moyen', 'Faible': 'risk-faible' };
+
+  /** Mono figure coloured ok/ko (no square). */
   function scoreBadge(score) {
     var tone = !isNum(score) ? 'neutral' : (Number(score) >= Core.THRESHOLD ? 'ok' : 'ko');
-    return badge(fmtPct(score), tone);
+    var b = badge(fmtPct(score), tone);
+    b.classList.add('badge-score');
+    return b;
   }
 
+  /** "■ Critique": square in the risk colour, text in ink. */
   function riskBadge(level) {
     var lvl = Core.str(level);
     if (!lvl) return badge('—', 'neutral');
-    var color = Object.prototype.hasOwnProperty.call(Core.RISK_COLORS, lvl) ? Core.RISK_COLORS[lvl] : null;
-    if (!color) return badge(lvl, 'neutral');
-    return el('span', { class: 'badge badge-risk', style: { '--risk-color': color } },
-      el('span', { class: 'badge-dot', 'aria-hidden': 'true' }), lvl);
+    if (!Object.prototype.hasOwnProperty.call(RISK_CLASS, lvl)) return badge(lvl, 'neutral');
+    return el('span', { class: 'badge badge-risk ' + RISK_CLASS[lvl], dataset: { risk: lvl } }, lvl);
   }
 
+  /**
+   * UI.statusMark(text, tone) -> span.mark.mark-<tone> ("■ Conforme")
+   * tone: 'ok'|'ko'|'warn'|'info'|'neutral' or a risk level ('Critique', 'Élevé', 'Moyen', 'Faible').
+   */
+  function statusMark(text, tone) {
+    var t = Core.str(tone) || 'neutral';
+    if (Object.prototype.hasOwnProperty.call(RISK_CLASS, t)) {
+      return el('span', { class: 'mark mark-risk ' + RISK_CLASS[t] }, text === undefined || text === null ? t : text);
+    }
+    return el('span', { class: 'mark mark-' + t }, text);
+  }
+
+  /** One KPI-strip cell (no box): small-caps label, 32px mono figure, optional coloured sub line. */
   function card(o) {
     var opts = o || {};
-    return el('div', { class: 'card metric-card' + (opts.tone ? ' tone-' + opts.tone : '') },
+    var node = el('div', { class: 'kpi metric-card' + (opts.tone ? ' tone-' + opts.tone : '') },
       el('div', { class: 'metric-title' }, opts.title),
       el('div', { class: 'metric-value' }, opts.value === null || opts.value === undefined ? '—' : opts.value),
       opts.sub !== undefined && opts.sub !== null && opts.sub !== '' ? el('div', { class: 'metric-sub' }, opts.sub) : null);
+    if (opts.key) node.dataset.kpi = opts.key;
+    return node;
+  }
+
+  /** UI.kpiStrip([{key?, title, value, sub?, tone?}]) -> one row of cells divided by vertical hairlines. */
+  function kpiStrip(items) {
+    return el('div', { class: 'kpi-strip', role: 'group' }, (items || []).map(function (it) { return card(it); }));
   }
 
   function section(title) {
@@ -150,10 +184,32 @@
     return el('section', { class: 'section' }, title ? el('h2', { class: 'section-title' }, title) : null, children);
   }
 
-  function empty(text) {
+  /**
+   * UI.pageHeader({title, kicker?, kickerId?, actions?}) -> header.page-header
+   * kicker: string | Node | array — the small-caps line shown above the title (e.g. month + export).
+   */
+  function pageHeader(o) {
+    var opts = o || {};
+    var hasKicker = opts.kicker !== undefined && opts.kicker !== null && opts.kicker !== '';
+    return el('header', { class: 'page-header' },
+      hasKicker ? el('p', { class: 'page-kicker', id: opts.kickerId || null }, opts.kicker) : null,
+      el('div', { class: 'page-header-row' },
+        el('h1', { class: 'page-title' }, opts.title || ''),
+        opts.actions && opts.actions.length ? el('div', { class: 'page-header-actions' }, opts.actions) : null));
+  }
+
+  /** UI.leaderRow(label, value, attrs?) -> "label ……… value" row (value in mono). */
+  function leaderRow(label, value, attrs) {
+    return el('div', Object.assign({ class: 'leaders-row' }, attrs || {}),
+      el('span', { class: 'leader-label' }, label),
+      el('span', { class: 'leader', 'aria-hidden': 'true' }),
+      el('span', { class: 'leader-value num' }, value));
+  }
+
+  /** One line of ink-2 text, left-aligned; optional action node after it. */
+  function empty(text, action) {
     return el('div', { class: 'empty-state', role: 'note' },
-      el('span', { class: 'empty-icon', 'aria-hidden': 'true' }, 'ℹ️'),
-      el('p', null, text || 'Aucune donnée.'));
+      el('p', null, text || 'Aucune donnée.', action ? [' ', action] : null));
   }
 
   function spinner() {
@@ -656,9 +712,10 @@
           renderHead();
           renderBody();
         } }, label, el('span', { class: 'sort-ind', 'aria-hidden': 'true' },
-          sortKey === col.key ? (sortDir === 1 ? ' ▲' : ' ▼') : '')) : label;
+          sortKey === col.key ? (sortDir === 1 ? '↑' : '↓') : '')) : label;
         tr.appendChild(el('th', { scope: 'col', 'aria-sort': sortable ? ariaSort : null, style: style,
-          class: col.editable ? 'th-editable' : null }, content));
+          class: [col.editable ? 'th-editable' : null, col.numeric ? 'num' : null],
+          title: col.editable ? 'Colonne modifiable' : null }, content));
       });
       thead.appendChild(tr);
     }
@@ -710,6 +767,20 @@
       var content = cellContent(row, col);
       td.appendChild(content instanceof Node ? content : document.createTextNode(String(content)));
       td.classList.toggle('cell-dirty', isDirty(row, col.key));
+      if (col.numeric) td.classList.add('num');
+      if (col.mono) td.classList.add('mono');
+    }
+
+    /** Re-renders all the cells of `tr` (except a cell currently being edited). */
+    function renderRow(tr, row) {
+      if (!tr) return;
+      columns.forEach(function (col) {
+        var cell = null;
+        for (var i = 0; i < tr.children.length; i++) {
+          if (tr.children[i].dataset.col === col.key) { cell = tr.children[i]; break; }
+        }
+        if (cell && !cell.classList.contains('cell-editing')) renderCell(cell, row, col);
+      });
     }
 
     function setDirty(row, key, value) {
@@ -744,8 +815,9 @@
         done = true;
         if (apply) setDirty(row, col.key, editor.value);
         td.classList.remove('cell-editing');
-        renderCell(td, row, col);
-        td.focus();
+        // Re-render every cell of the row: computed columns (score, criteria...) follow the edit at once.
+        renderRow(td.parentNode, row);
+        if (td.isConnected) td.focus();
       }
       function commit() { finish(true); }
       editor.addEventListener('blur', function () { finish(true); });
@@ -788,7 +860,7 @@
           if (col.editable) {
             td.classList.add('cell-editable');
             td.tabIndex = 0;
-            td.title = 'Cliquer pour modifier';
+            td.title = 'Modifier';
             td.addEventListener('click', function (e) { e.stopPropagation(); startEdit(td, row, col); });
             td.addEventListener('keydown', function (e) {
               if ((e.key === 'Enter' || e.key === 'F2') && e.target === td) { e.preventDefault(); startEdit(td, row, col); }
@@ -811,10 +883,10 @@
       pager.hidden = pages <= 1;
       if (pages <= 1) return;
       pager.appendChild(el('button', { type: 'button', class: 'btn btn-secondary btn-small', disabled: page === 0,
-        onClick: function () { page--; renderBody(); } }, '‹ Précédent'));
+        onClick: function () { page--; renderBody(); } }, 'Précédent'));
       pager.appendChild(el('span', { class: 'muted' }, 'Page ' + (page + 1) + ' / ' + pages));
       pager.appendChild(el('button', { type: 'button', class: 'btn btn-secondary btn-small', disabled: page >= pages - 1,
-        onClick: function () { page++; renderBody(); } }, 'Suivant ›'));
+        onClick: function () { page++; renderBody(); } }, 'Suivant'));
     }
 
     function updateDirtyBar() {
@@ -902,7 +974,11 @@
     badge: badge,
     scoreBadge: scoreBadge,
     riskBadge: riskBadge,
+    statusMark: statusMark,
     card: card,
+    kpiStrip: kpiStrip,
+    pageHeader: pageHeader,
+    leaderRow: leaderRow,
     section: section,
     empty: empty,
     toast: toast,

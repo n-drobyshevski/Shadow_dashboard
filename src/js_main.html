@@ -11,14 +11,19 @@
 
   var el = UI.el;
 
-  /** Navigation order + labels (also used when a page file failed to register). */
+  /**
+   * Navigation order + labels (also used when a page file failed to register). Text-only nav
+   * (docs/DESIGN.md): page icons registered by the pages are not rendered.
+   */
   var NAV = [
-    { id: 'dashboard', icon: '👻', title: 'Tableau de bord' },
-    { id: 'postes', icon: '💻', title: 'Postes' },
-    { id: 'apps', icon: '📦', title: 'Applications' },
-    { id: 'timeline', icon: '📈', title: 'Suivi temporel' },
-    { id: 'actions', icon: '📋', title: 'Suivi actions' }
+    { id: 'dashboard', title: 'Tableau de bord' },
+    { id: 'postes', title: 'Postes' },
+    { id: 'apps', title: 'Applications' },
+    { id: 'timeline', title: 'Suivi temporel' },
+    { id: 'actions', title: 'Suivi actions' }
   ];
+  var BRAND = 'Shadow IT';
+  var BRAND_SUB = 'Industry · conformité';
 
   var sidebar = null;
   var main = null;
@@ -73,7 +78,7 @@
     main.appendChild(root);
     updateNavActive();
     if (!page || typeof page.mount !== 'function') {
-      root.appendChild(el('h1', { class: 'page-title' }, info.icon + ' ' + info.title));
+      root.appendChild(UI.pageHeader({ title: info.title }));
       root.appendChild(UI.empty('Page indisponible.'));
       return;
     }
@@ -109,16 +114,36 @@
     });
   }
 
+  function brand() {
+    return el('div', { class: 'brand' },
+      el('span', { class: 'brand-name' }, BRAND),
+      el('span', { class: 'brand-sub' }, BRAND_SUB));
+  }
+
+  /** Right-aligned mono counts next to Postes / Applications (filtered data of the selected month). */
+  function updateNavCounts() {
+    if (!sidebar) return;
+    var s = State.get();
+    var md = s.month ? State.getMonthData(s.month) : null;
+    var f = md ? State.filtered(md) : null;
+    var counts = { postes: f ? f.postes.length : null, apps: f ? f.applications.length : null };
+    Array.prototype.forEach.call(sidebar.querySelectorAll('.nav-count'), function (n) {
+      var v = counts[n.dataset.count];
+      n.textContent = v === null || v === undefined ? '' : UI.fmtNum(v);
+    });
+  }
+
   function renderSidebar() {
     var s = State.get();
     UI.clear(sidebar);
     var nav = el('nav', { class: 'nav', 'aria-label': 'Pages' },
       el('ul', { class: 'nav-list' }, NAV.map(function (n) {
         var p = pages()[n.id];
+        var counted = n.id === 'postes' || n.id === 'apps';
         return el('li', null, el('button', { type: 'button', class: 'nav-link', dataset: { page: n.id },
           onClick: function () { go(n.id); } },
-          el('span', { class: 'nav-icon', 'aria-hidden': 'true' }, (p && p.icon) || n.icon),
-          el('span', { class: 'nav-label' }, (p && p.title) || n.title)));
+          el('span', { class: 'nav-label' }, (p && p.title) || n.title),
+          counted ? el('span', { class: 'nav-count', dataset: { count: n.id } }) : null));
       })));
 
     var monthOptions = s.months.length ?
@@ -139,15 +164,14 @@
     filterOptionsMonth = null;
 
     var footer = el('div', { class: 'sidebar-footer' },
-      s.dataUrl ? UI.extLink(s.dataUrl, '📊 Données (Google Sheet)', { class: 'side-link', id: 'link-data' }) : null,
-      s.sourceUrl ? UI.extLink(s.sourceUrl, '📄 Source', { class: 'side-link', id: 'link-source',
+      s.dataUrl ? UI.extLink(s.dataUrl, 'Données (Google Sheet)', { class: 'side-link', id: 'link-data' }) : null,
+      s.sourceUrl ? UI.extLink(s.sourceUrl, 'Source', { class: 'side-link', id: 'link-source',
         title: s.sourceTitle ? 'Source : ' + s.sourceTitle : null }) : null,
-      el('button', { type: 'button', class: 'btn btn-secondary btn-small btn-block', id: 'btn-source',
-        onClick: openSourceModal }, '⚙️ Source'));
+      el('button', { type: 'button', class: 'btn btn-link', id: 'btn-source',
+        onClick: function () { openSourceModal(); } }, 'Changer de source'));
 
     sidebar.appendChild(el('div', { class: 'sidebar-inner' },
-      el('div', { class: 'brand' }, el('span', { class: 'brand-logo', 'aria-hidden': 'true' }, '👻'),
-        el('span', { class: 'brand-name' }, 'Shadow IT')),
+      brand(),
       nav,
       el('div', { class: 'sidebar-section' }, el('h2', { class: 'sidebar-heading' }, 'Période'), monthSelect),
       el('div', { class: 'sidebar-section' }, el('h2', { class: 'sidebar-heading' }, 'Filtres'), filtersBox),
@@ -175,6 +199,7 @@
       return;
     }
     filterOptionsMonth = s.month;
+    updateNavCounts();
     var postes = md ? md.postes : [];
     var f = s.filters || { equipes: [], batiments: [] };
     UI.clear(filtersBox);
@@ -214,6 +239,7 @@
     suppressFilterRender = true;
     State.set({ filters: next });
     suppressFilterRender = false;
+    updateNavCounts();
   }
 
   // ------------------------------------------------------------------------------ configuration
@@ -234,9 +260,9 @@
 
   function applySource(source) {
     return api.call('api_setConfig', { source: source }).then(function (res) {
-      UI.toast('✅ Source configurée : ' + (res.sourceTitle || res.sourceId), 'success');
+      UI.toast('Source configurée — ' + (res.sourceTitle || res.sourceId) + '.', 'success');
       var warn = tabsWarning(res);
-      if (warn) UI.toast('⚠️ ' + warn, 'error');
+      if (warn) UI.toast(warn + '.', 'error');
       State.invalidate();
       return State.refreshBootstrap().then(function () { return res; });
     });
@@ -246,9 +272,7 @@
     unmountCurrent();
     document.body.classList.add('unconfigured');
     UI.clear(sidebar);
-    sidebar.appendChild(el('div', { class: 'sidebar-inner' },
-      el('div', { class: 'brand' }, el('span', { class: 'brand-logo', 'aria-hidden': 'true' }, '👻'),
-        el('span', { class: 'brand-name' }, 'Shadow IT'))));
+    sidebar.appendChild(el('div', { class: 'sidebar-inner' }, brand()));
     UI.clear(main);
     var input = el('input', { type: 'text', id: 'config-source', class: 'input', required: true,
       placeholder: 'https://docs.google.com/spreadsheets/d/…', autocomplete: 'off',
@@ -274,12 +298,12 @@
       input, error,
       el('div', { class: 'form-actions' }, button));
     main.appendChild(el('div', { class: 'page page-config', dataset: { page: 'config' } },
-      el('div', { class: 'card config-card' },
-        el('h1', { class: 'page-title' }, '⚙️ Configuration de la source'),
-        el('p', { id: 'config-help', class: 'muted' },
+      UI.pageHeader({ kicker: BRAND + ' · configuration', title: 'Source de données' }),
+      el('div', { class: 'config-card' },
+        el('p', { id: 'config-help', class: 'page-lede' },
           'Collez l’URL (ou l’identifiant) du Google Sheet source « ShadowIT_Industry ». Il doit contenir les onglets « ' +
           Core.SOURCE_TABS.postes + ' », « ' + Core.SOURCE_TABS.applications + ' » et « ' +
-          Core.SOURCE_TABS.referentiel + ' ».'),
+          Core.SOURCE_TABS.referentiel + ' ». Chaque import en fait un instantané mensuel dans le classeur de données.'),
         form)));
     setTimeout(function () { input.focus(); }, 0);
   }
@@ -287,7 +311,7 @@
   function openSourceModal(prefill) {
     var s = State.get();
     UI.formModal({
-      title: '⚙️ Changer la source',
+      title: 'Changer de source',
       submitLabel: 'Enregistrer',
       fields: [{ name: 'source', label: 'URL ou ID du Google Sheet source', type: 'text', required: true,
         value: typeof prefill === 'string' ? prefill : s.sourceUrl,
@@ -295,7 +319,7 @@
     }).then(function (values) {
       if (!values) return;
       applySource(values.source).catch(function (err) {
-        UI.toast('❌ ' + sourceErrorText(err), 'error');
+        UI.toast('Erreur : ' + sourceErrorText(err), 'error');
         openSourceModal(values.source);
       });
     });

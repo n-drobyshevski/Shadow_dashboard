@@ -372,3 +372,125 @@ test('carry-over matches names with normKey and skips months after the imported 
   const figma = byName(june, KEY_APP, 'FIGMA');
   assert.deepEqual(plain({ Galink: figma.Galink, IDP: figma.IDP }), { Galink: 'Oui', IDP: 'Oui' });
 });
+
+// ------------------------------------------------------------- missing tabs / partial imports
+
+const galinkIdp = (list, name) => {
+  const r = byName(list, KEY_APP, name);
+  return r ? { Galink: r.Galink, IDP: r.IDP } : undefined;
+};
+
+test('overwrite with a missing entity / Référentiel tab keeps the stored snapshot of that month', () => {
+  const { ctx, env } = configured();
+  ok(ctx, 'api_importMonth', { month: '2026-04' });
+  setCustomFields(ctx, '2026-04', data.CUSTOM_FIELDS['2026-04']);
+  const before = ok(ctx, 'api_getMonthData', { month: '2026-04' });
+
+  const noApps = source('2026-04');
+  delete noApps.sheets['Suivi des applications'];
+  swapSource(env, noApps);
+  const d = ok(ctx, 'api_importMonth', { month: '2026-04', overwrite: true });
+  assert.equal(d.counts.applications, before.applications.length, 'count of the kept snapshot');
+  assert.ok(d.warnings.some((w) => /Suivi des applications.*conservées/.test(w)), d.warnings.join(' | '));
+  let after = ok(ctx, 'api_getMonthData', { month: '2026-04' });
+  assert.deepEqual(after.applications, before.applications, 'applications + Galink/IDP untouched');
+  assert.deepEqual(after.columns.applications, before.columns.applications, 'headers kept from the previous import');
+  assert.deepEqual(galinkIdp(after.applications, 'Minitab'), { Galink: 'Oui', IDP: 'Oui' });
+
+  const noPostesNoRef = source('2026-04');
+  delete noPostesNoRef.sheets['Suivi des postes'];
+  delete noPostesNoRef.sheets['Référentiel'];
+  swapSource(env, noPostesNoRef);
+  const d2 = ok(ctx, 'api_importMonth', { month: '2026-04', overwrite: true });
+  assert.equal(d2.counts.postes, before.postes.length);
+  assert.equal(d2.counts.referentiel, Object.keys(before.referentiel).length);
+  assert.ok(d2.warnings.some((w) => /Suivi des postes.*conservés/.test(w)));
+  assert.ok(d2.warnings.some((w) => /Référentiel.*conservé/.test(w)));
+  after = ok(ctx, 'api_getMonthData', { month: '2026-04' });
+  assert.deepEqual(after.postes, before.postes);
+  assert.deepEqual(after.referentiel, before.referentiel);
+  assert.deepEqual(after.columns.postes, before.columns.postes);
+  assert.deepEqual(galinkIdp(after.applications, 'Notepad++'), { Galink: 'Oui', IDP: 'Non' });
+});
+
+test('a month imported without applications does not break the Galink/IDP carry-over chain', () => {
+  const { ctx, env } = configured();
+  ok(ctx, 'api_importMonth', { month: '2026-04' });
+  setCustomFields(ctx, '2026-04', data.CUSTOM_FIELDS['2026-04']);
+
+  const noApps = source('2026-05');
+  delete noApps.sheets['Suivi des applications'];
+  swapSource(env, noApps);
+  const may = ok(ctx, 'api_importMonth', { month: '2026-05' });
+  assert.equal(may.counts.applications, 0);
+  assert.ok(may.warnings.some((w) => /aucune application importée/.test(w)));
+
+  swapSource(env, '2026-05');
+  const june = ok(ctx, 'api_importMonth', { month: '2026-06' });
+  assert.equal(june.carriedOver, 5, 'carried from 2026-04, the latest month that has applications');
+  const apps = ok(ctx, 'api_getMonthData', { month: '2026-06' }).applications;
+  assert.deepEqual(galinkIdp(apps, 'Minitab'), { Galink: 'Oui', IDP: 'Oui' });
+  assert.deepEqual(galinkIdp(apps, 'LabVIEW'), { Galink: 'Non', IDP: null });
+
+  // Re-importing the empty month once the tab is back also recovers the values.
+  const again = ok(ctx, 'api_importMonth', { month: '2026-05', overwrite: true });
+  assert.equal(again.carriedOver, 5);
+  assert.deepEqual(galinkIdp(ok(ctx, 'api_getMonthData', { month: '2026-05' }).applications, 'Notepad++'),
+    { Galink: 'Oui', IDP: 'Non' });
+});
+
+test('import writes Applications first: a failing Applications write leaves no trace of the month', () => {
+  const { ctx, env } = configured();
+  ok(ctx, 'api_importMonth', { month: '2026-04' });
+  setCustomFields(ctx, '2026-04', data.CUSTOM_FIELDS['2026-04']);
+  swapSource(env, '2026-05');
+  env.__fault({ method: 'setValues', sheet: 'Applications' });
+  fail(ctx, 'api_importMonth', { month: '2026-05' }, 'INTERNAL');
+  assert.equal(env.__state.lock.held, false);
+  assert.deepEqual(ok(ctx, 'api_bootstrap').months, ['2026-04'], 'nothing written for 2026-05');
+  // A plain retry (no overwrite needed) carries Galink/IDP from 2026-04.
+  assert.equal(ok(ctx, 'api_importMonth', { month: '2026-05' }).carriedOver, 5);
+});
+
+test('overwrite after an import that failed half-way still carries Galink/IDP from the previous month', () => {
+  const { ctx, env } = configured();
+  ok(ctx, 'api_importMonth', { month: '2026-04' });
+  setCustomFields(ctx, '2026-04', data.CUSTOM_FIELDS['2026-04']);
+  swapSource(env, '2026-05');
+  env.__fault({ method: 'setValues', sheet: 'Postes' });
+  fail(ctx, 'api_importMonth', { month: '2026-05' }, 'INTERNAL');
+  assert.deepEqual(ok(ctx, 'api_bootstrap').months, ['2026-04', '2026-05'], 'Applications were written');
+  assert.equal(ok(ctx, 'api_getImportLog').filter((l) => l.month === '2026-05').length, 0, 'no completion marker');
+
+  fail(ctx, 'api_importMonth', { month: '2026-05' }, 'MONTH_EXISTS');
+  const d = ok(ctx, 'api_importMonth', { month: '2026-05', overwrite: true });
+  assert.equal(d.counts.postes, 7);
+  assert.ok(d.carriedOver >= 5);
+  assert.ok(d.warnings.some((w) => /incomplet.*2026-04/.test(w)), d.warnings.join(' | '));
+  const apps = ok(ctx, 'api_getMonthData', { month: '2026-05' }).applications;
+  assert.deepEqual(galinkIdp(apps, 'Minitab'), { Galink: 'Oui', IDP: 'Oui' });
+  assert.deepEqual(galinkIdp(apps, 'Notepad++'), { Galink: 'Oui', IDP: 'Non' });
+});
+
+test('overwrite of a month left with Postes only (no applications, no log) carries from the previous month', () => {
+  const { ctx, env } = configured();
+  ok(ctx, 'api_importMonth', { month: '2026-04' });
+  setCustomFields(ctx, '2026-04', data.CUSTOM_FIELDS['2026-04']);
+  // State left by an interrupted import: Postes rows for 2026-05, nothing else.
+  ctx.Store.withLock(() => ctx.Store.replaceEntityMonth('Postes', '2026-05', [{ [KEY_POSTE]: 'LAB-TEX-01' }], KEY_POSTE));
+  swapSource(env, '2026-05');
+  fail(ctx, 'api_importMonth', { month: '2026-05' }, 'MONTH_EXISTS');
+  const d = ok(ctx, 'api_importMonth', { month: '2026-05', overwrite: true });
+  assert.equal(d.carriedOver, 5);
+  assert.ok(d.warnings.some((w) => /incomplet/.test(w)));
+  const apps = ok(ctx, 'api_getMonthData', { month: '2026-05' }).applications;
+  assert.deepEqual(galinkIdp(apps, 'Minitab'), { Galink: 'Oui', IDP: 'Oui' });
+  assert.deepEqual(galinkIdp(apps, 'LabVIEW'), { Galink: 'Non', IDP: null });
+
+  // A complete month's own values still win on a later overwrite (no fallback to 2026-04).
+  setCustomFields(ctx, '2026-05', { Minitab: { Galink: 'Non', IDP: 'Non' } });
+  const again = ok(ctx, 'api_importMonth', { month: '2026-05', overwrite: true });
+  assert.ok(!again.warnings.some((w) => /incomplet/.test(w)));
+  assert.deepEqual(galinkIdp(ok(ctx, 'api_getMonthData', { month: '2026-05' }).applications, 'Minitab'),
+    { Galink: 'Non', IDP: 'Non' });
+});

@@ -32,7 +32,14 @@ describe('shell', () => {
       const nav = await page.$$eval('#sidebar .nav-link', (ns) => ns.map((n) => ({ page: n.dataset.page, text: n.textContent.trim() })));
       assert.deepEqual(nav.map((n) => n.page), PAGES.map((p) => p.id));
       PAGES.forEach((p, i) => assert.ok(nav[i].text.includes(p.title), nav[i].text));
-      assert.equal(await page.textContent('#sidebar .brand'), '👻Shadow IT');
+      assert.equal(await page.textContent('#sidebar .brand .brand-name'), 'Shadow IT');
+      assert.equal(await page.textContent('#sidebar .brand .brand-sub'), 'Industry · conformité');
+      // Text-only navigation: no emoji anywhere in the shell chrome.
+      const chrome = await page.textContent('#sidebar') + await page.textContent('.topbar');
+      assert.doesNotMatch(chrome, /\p{Extended_Pictographic}/u);
+      // Counts next to Postes / Applications (2026-05 fixture: 7 postes, 5 applications).
+      assert.equal(await page.textContent('#sidebar .nav-count[data-count="postes"]'), '7');
+      assert.equal(await page.textContent('#sidebar .nav-count[data-count="apps"]'), '5');
       assert.equal(await page.getAttribute('#sidebar .nav-link[data-page="dashboard"]', 'aria-current'), 'page');
 
       // Période: ascending months, latest selected by default.
@@ -45,8 +52,10 @@ describe('shell', () => {
         assert.match(await page.getAttribute(id, 'rel'), /noopener/);
         assert.match(await page.getAttribute(id, 'href'), /^https:\/\/docs\.google\.com\/spreadsheets\/d\//);
       }
-      assert.equal((await page.textContent('#link-data')).trim(), '📊 Données (Google Sheet)');
+      assert.equal((await page.textContent('#link-data')).trim(), 'Données (Google Sheet)');
+      assert.equal((await page.textContent('#link-source')).trim(), 'Source');
       assert.ok(await page.isVisible('#btn-source'));
+      assert.equal((await page.textContent('#btn-source')).trim(), 'Changer de source');
 
       const calls = await app.calls();
       assert.equal(calls[0].name, 'api_bootstrap');
@@ -86,6 +95,8 @@ describe('shell', () => {
       assert.ok(!(await page.isVisible('#sidebar')), 'sidebar hidden while unconfigured');
       assert.equal(await page.$('#main .page[data-page="dashboard"]'), null);
       assert.equal((await page.textContent('label[for="config-source"]')).trim(), 'URL ou ID du Google Sheet source');
+      assert.equal((await page.textContent('#main h1')).trim(), 'Source de données');
+      assert.equal(await page.$('#main .card'), null, 'configuration screen is a plain page, not a card');
 
       // Empty -> inline error, no call.
       await page.click('#config-submit');
@@ -140,7 +151,7 @@ describe('shell', () => {
 
       // Month change keeps the filters too.
       await page.selectOption('#month-select', '2026-04');
-      await page.waitForFunction(() => (document.getElementById('dashboard-caption') || {}).textContent === 'Export : 2026-04');
+      await page.waitForFunction(() => ((document.getElementById('dashboard-caption') || {}).dataset || {}).month === '2026-04');
       await app.waitIdle();
       assert.deepEqual(await page.evaluate(() => window.State.get().filters), expected);
 
@@ -181,7 +192,8 @@ describe('shell', () => {
         window.__saved = [];
         window.__table = UI.editableTable({
           columns: [{ key: 'name', label: 'Nom' }, { key: 'edr', label: 'EDR', editable: true, options: ['Oui', 'Non'] },
-            { key: 'note', label: 'Note', editable: true }],
+            { key: 'note', label: 'Note', editable: true },
+            { key: '_calc', label: 'Calcul', render: (r) => (r.edr === 'Oui' ? 'EDR présent' : 'EDR absent') }],
           rows,
           pageSize: 25,
           onSave: (changes) => { window.__saved.push(changes); return Promise.resolve(); },
@@ -192,7 +204,10 @@ describe('shell', () => {
       assert.equal(await page.$$eval(`${t} tbody tr`, (r) => r.length), 25);
       assert.match(await page.textContent(`${t} .etable-pager`), /Page 1 \/ 3/);
       await page.click(`${t} tbody tr[data-id="r0"] td[data-col="edr"]`);
+      assert.equal(await page.textContent(`${t} tbody tr[data-id="r0"] td[data-col="_calc"]`), 'EDR absent');
       await page.selectOption(`${t} tbody tr[data-id="r0"] td[data-col="edr"] select`, 'Oui');
+      // The whole row is re-rendered after an inline edit: computed columns follow immediately.
+      assert.equal(await page.textContent(`${t} tbody tr[data-id="r0"] td[data-col="_calc"]`), 'EDR présent');
       await page.click(`${t} tbody tr[data-id="r1"] td[data-col="note"]`);
       await page.fill(`${t} tbody tr[data-id="r1"] td[data-col="note"] input`, 'À vérifier');
       await page.keyboard.press('Enter');

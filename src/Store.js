@@ -7,8 +7,15 @@
  *
  * Write discipline (Sheets would otherwise silently retype user data):
  *   - the exact target range gets the '@' (plain text) number format right before each setValues,
- *     so '2026-05', '15/03/2025' or '0042' are never turned into dates / numbers;
- *   - every string goes through Core.escapeFormula, so '=HYPERLINK(...)' is stored as text.
+ *     so '2026-05', '15/03/2025' or '0042' are never turned into dates / numbers and
+ *     '=HYPERLINK(...)' is stored as text, not evaluated;
+ *   - strings are written VERBATIM (no Core.escapeFormula "'" prefix): in a plain-text cell Sheets
+ *     keeps a leading apostrophe as a literal character, so a prefix would corrupt '- x', '+33…',
+ *     '@user' on read. The '@' format is the one and only formula guard.
+ *
+ * Data spreadsheet safety: a configured DATA_SPREADSHEET_ID is never replaced automatically. An
+ * open failure (often transient in Apps Script) is retried, then reported as INTERNAL; a new
+ * spreadsheet is only created when no id is configured, under the script lock.
  *
  * Performance discipline (each Sheets call is a round trip):
  *   - a tab is read with ONE getDataRange().getValues();
@@ -20,6 +27,7 @@
  */
 var Store = (function () {
   var LOCK_TIMEOUT_MS = 20000;
+  var OPEN_RETRY_DELAYS_MS = [500, 1500]; // openById of the data spreadsheet: 3 attempts in total
   var PLAIN_TEXT_FORMAT = '@';
   var META_SCHEMA_VERSION_KEY = 'schema_version';
 
@@ -67,14 +75,6 @@ var Store = (function () {
     return String(v);
   }
 
-  /** String about to be written -> value passed to setValues (formula-safe). */
-  function encodeCell_(s) {
-    var out = Core.escapeFormula(s);
-    // Sheets strips ONE leading apostrophe on write: protect values that genuinely start with one.
-    if (out === s && s.charAt(0) === "'") out = "'" + s;
-    return out;
-  }
-
   function rowsEqual_(a, b) {
     if (a.length !== b.length) return false;
     for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
@@ -110,14 +110,19 @@ var Store = (function () {
     if (maxCols < cols) sheet.insertColumnsAfter(maxCols, cols - maxCols);
   }
 
-  /** Writes a block of string rows at startRow (1-based): '@' format on the exact range, then ONE setValues. */
+  /**
+   * Writes a block of string rows at startRow (1-based): '@' format on the exact range, then ONE
+   * setValues of the strings VERBATIM. This is the only write path. The plain-text format is the
+   * formula guard ('=…' is stored as text, not evaluated); no "'" prefix is added, because Sheets
+   * keeps a leading apostrophe literally in plain-text cells and it would become part of the value.
+   */
   function writeBlock_(sheet, startRow, rows) {
     if (!rows.length) return;
     var width = rows[0].length;
     ensureSize_(sheet, startRow + rows.length - 1, width);
     var range = sheet.getRange(startRow, 1, rows.length, width);
     range.setNumberFormat(PLAIN_TEXT_FORMAT);
-    range.setValues(rows.map(function (row) { return row.map(encodeCell_); }));
+    range.setValues(rows);
   }
 
   /**
@@ -221,22 +226,32 @@ var Store = (function () {
   }
 
   /**
-   * Makes sure every tab exists with its header. Fast path (one read of Meta) when all tabs exist
-   * and Meta already carries the current schema version.
+   * Makes sure every tab exists with its header. Fast path (one read of Meta, no write, no lock)
+   * when all tabs exist and Meta already carries the current schema version; otherwise the repair
+   * (tab creation, header and Meta writes) runs under the script lock and re-reads the tabs there.
    * @return {Object<string, Sheet>}
    */
   function ensureTabs_(ss, created) {
     var names = Object.keys(Config.SCHEMAS);
+    if (!created) {
+      var byName = {};
+      ss.getSheets().forEach(function (sh) { byName[sh.getName()] = sh; });
+      var allPresent = names.every(function (n) { return !!byName[n]; });
+      if (allPresent && metaValue_(byName[Config.TABS.meta], META_SCHEMA_VERSION_KEY) === Config.SCHEMA_VERSION) {
+        var fast = {};
+        names.forEach(function (n) { fast[n] = byName[n]; });
+        return fast;
+      }
+    }
+    return withLock(function () { return repairTabs_(ss, created); });
+  }
+
+  /** Slow path of ensureTabs_ (caller holds the lock). */
+  function repairTabs_(ss, created) {
+    var names = Object.keys(Config.SCHEMAS);
     var existing = ss.getSheets();
     var byName = {};
     existing.forEach(function (sh) { byName[sh.getName()] = sh; });
-
-    var allPresent = names.every(function (n) { return !!byName[n]; });
-    if (allPresent && !created && metaValue_(byName[Config.TABS.meta], META_SCHEMA_VERSION_KEY) === Config.SCHEMA_VERSION) {
-      var fast = {};
-      names.forEach(function (n) { fast[n] = byName[n]; });
-      return fast;
-    }
 
     // A freshly created spreadsheet comes with one default sheet: reuse it for the first tab.
     var spare = created && existing.length && names.indexOf(existing[0].getName()) < 0 ? existing[0] : null;
@@ -255,29 +270,55 @@ var Store = (function () {
   }
 
   /**
-   * Opens (or creates) the data spreadsheet and makes sure the layout is in place. Idempotent and
-   * cached for the current execution.
+   * Opens the CONFIGURED data spreadsheet, retrying transient failures with a short backoff. Never
+   * replaces the id: after the last attempt it throws INTERNAL (the property is left untouched, so
+   * the next execution tries the same spreadsheet again). Recovering from a spreadsheet that is
+   * really gone is an explicit admin step: delete the DATA_SPREADSHEET_ID script property.
+   */
+  function openData_(id) {
+    var lastError = null;
+    for (var attempt = 0; attempt <= OPEN_RETRY_DELAYS_MS.length; attempt++) {
+      if (attempt > 0) Utilities.sleep(OPEN_RETRY_DELAYS_MS[attempt - 1]);
+      try {
+        return SpreadsheetApp.openById(id);
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    console.error('Store.ensure: cannot open data spreadsheet ' + id + ' after ' +
+      (OPEN_RETRY_DELAYS_MS.length + 1) + ' attempts (' + (lastError && lastError.message) + '). ' +
+      'The script property ' + Config.PROP_DATA_ID + ' is left unchanged; check access to the file, or ' +
+      'delete the property to create a new data spreadsheet.');
+    throw Core.makeError('INTERNAL', 'Classeur de données inaccessible, réessayez dans quelques instants. ' +
+      'Si le problème persiste, vérifiez l’accès au classeur de données.');
+  }
+
+  /**
+   * Opens the data spreadsheet (creating it only when no id is configured) and makes sure the
+   * layout is in place. Idempotent and cached for the current execution. The creation runs under
+   * the script lock and re-reads the property there, so concurrent first loads create ONE file.
    */
   function ensure() {
     if (ss_) return ss_;
     var cfg = Config.get();
     var ss = null;
-    if (cfg.dataId) {
-      try {
-        ss = SpreadsheetApp.openById(cfg.dataId);
-      } catch (e) {
-        console.warn('Store.ensure: cannot open data spreadsheet ' + cfg.dataId + ' (' + (e && e.message) +
-          '); a new one is created.');
-        ss = null;
-      }
-    }
     var created = false;
-    if (!ss) {
-      ss = SpreadsheetApp.create(Config.DATA_SPREADSHEET_NAME);
-      Config.setDataId(ss.getId());
-      created = true;
+    if (cfg.dataId) {
+      ss = openData_(cfg.dataId);
+      sheets_ = ensureTabs_(ss, false);
+    } else {
+      withLock(function () {
+        var id = Config.get().dataId; // another execution may have created it while we waited
+        if (id) {
+          ss = openData_(id);
+        } else {
+          ss = SpreadsheetApp.create(Config.DATA_SPREADSHEET_NAME);
+          Config.setDataId(ss.getId());
+          created = true;
+        }
+        sheets_ = ensureTabs_(ss, created);
+      });
     }
-    sheets_ = ensureTabs_(ss, created);
     ss_ = ss;
     return ss;
   }

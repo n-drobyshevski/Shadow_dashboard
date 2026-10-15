@@ -70,15 +70,16 @@ describe('dashboard', () => {
   test('renders title, caption and KPI cards matching Core.computeKpis (2026-05)', async () => {
     await withApp({}, async (app) => {
       const { page } = app;
-      assert.equal((await page.textContent('#main h1')).trim(), '👻 Tableau de bord — Shadow IT');
-      assert.equal(await page.textContent('#dashboard-caption'), 'Export : 2026-05');
+      assert.equal((await page.textContent('#main h1')).trim(), 'Tableau de bord');
+      assert.equal(await page.getAttribute('#dashboard-caption', 'data-month'), '2026-05');
+      assert.equal(await page.textContent('#dashboard-caption'), 'Mai 2026 · Export 2026-05');
       const k = kpisFor('2026-05');
       assert.equal(k.total_postes, 7);
       assertCards(await readCards(page), k);
 
       // Détail conformité: counts per criterion.
       const details = await page.$$eval('[data-detail]', (ds) => Object.fromEntries(ds.map((d) => [
-        d.dataset.detail, d.querySelector('.detail-label').textContent + '=' + d.querySelector('.badge').textContent])));
+        d.dataset.detail, d.querySelector('.detail-label').textContent + '=' + d.querySelector('.detail-count').textContent])));
       assert.deepEqual(details, {
         postes_sans_edr: 'Sans EDR=' + k.postes_sans_edr,
         postes_non_it: 'Non IT Decathlon=' + k.postes_non_it,
@@ -92,7 +93,7 @@ describe('dashboard', () => {
       const titles = await page.$$eval('#main .chart-card .card-title', (ns) => ns.map((n) => n.textContent));
       assert.deepEqual(titles, ['Conformité des postes', 'Conformité des applications', 'Risques — Postes',
         'Risques — Applications', 'Distribution des scores — Postes', 'Distribution des scores — Applications']);
-      assert.ok((await page.textContent('#import-panel h2')).includes('📥 Importer depuis Google Sheets'));
+      assert.equal((await page.textContent('#import-panel h2')).trim(), 'Importer depuis Google Sheets');
       assert.equal(await page.inputValue('#import-month'), await page.evaluate(() => window.State.get().currentMonth));
       // Import log: newest first.
       assert.deepEqual(await page.$$eval('#import-log tbody tr td:first-child', (ns) => ns.map((n) => n.textContent)),
@@ -110,21 +111,31 @@ describe('dashboard', () => {
         assert.ok(byId[id], 'Plotly call for ' + id);
       }
       const k = kpisFor('2026-05');
+      // Colours come from the design tokens (docs/DESIGN.md), exposed by Charts.tokens().
+      const tokens = await app.page.evaluate(() => window.Charts.tokens());
+      assert.equal(tokens.ok, '#1f7a4d');
+      assert.equal(tokens.ko, '#b42318');
       const gauge = byId['chart-gauge-postes'].data[0];
       assert.equal(gauge.type, 'indicator');
       assert.ok(Math.abs(gauge.value - k.taux_postes) < 1e-9);
       assert.equal(gauge.gauge.threshold.value, 80);
-      assert.equal(gauge.gauge.bar.color, k.taux_postes >= 80 ? Core.COLOR_OK : Core.COLOR_KO);
+      assert.equal(gauge.gauge.bar.color, k.taux_postes >= 80 ? tokens.ok : tokens.ko);
+      const gaugeApps = byId['chart-gauge-apps'].data[0];
+      assert.equal(gaugeApps.gauge.bar.color, k.taux_apps >= 80 ? tokens.ok : tokens.ko);
 
+      // Risk distribution: horizontal bars, one row per level in RISK_ORDER.
       const risk = byId['chart-risk-postes'].data[0];
-      assert.deepEqual(risk.x, ['Critique', 'Élevé', 'Moyen', 'Faible']);
+      assert.equal(risk.orientation, 'h');
+      assert.deepEqual(risk.y, ['Critique', 'Élevé', 'Moyen', 'Faible']);
       const f = fixtureMonth('2026-05');
       const counts = Core.riskCounts(f.postes);
-      assert.deepEqual(risk.y, risk.x.map((r) => counts[r]));
-      assert.deepEqual(risk.marker.color, risk.x.map((r) => Core.RISK_COLORS[r]));
+      assert.deepEqual(risk.x, risk.y.map((r) => counts[r]));
+      assert.deepEqual(risk.marker.color, risk.y.map((r) => tokens.risk[r]));
 
       const hist = byId['chart-hist-postes'].data[0];
       assert.equal(hist.y.length, 10);
+      // Bins at/above the threshold in --ok, below in --ko (70 % opacity).
+      hist.x.forEach((x, i) => assert.equal(hist.marker.color[i], x >= 80 ? tokens.ok : 'rgba(180,35,24,0.7)'));
       assert.equal(hist.y.reduce((a, b) => a + b, 0), f.postes.filter((p) => p._score !== null).length);
       const nPlotlyNodes = await app.page.$$eval('#main .js-plotly-plot', (ns) => ns.length);
       assert.equal(nPlotlyNodes, 6);
@@ -165,7 +176,8 @@ describe('dashboard', () => {
   test('month select switches the snapshot', async () => {
     await withApp({}, async (app) => {
       await app.page.selectOption('#month-select', '2026-04');
-      await app.page.waitForFunction(() => document.getElementById('dashboard-caption').textContent === 'Export : 2026-04');
+      await app.page.waitForFunction(() => document.getElementById('dashboard-caption').dataset.month === '2026-04');
+      assert.equal(await app.page.textContent('#dashboard-caption'), 'Avril 2026 · Export 2026-04');
       await app.waitIdle();
       assertCards(await readCards(app.page), kpisFor('2026-04'));
       assert.deepEqual(app.errors, []);
@@ -184,7 +196,7 @@ describe('dashboard', () => {
       await page.waitForSelector('.toast-success');
       await app.waitIdle();
       await page.waitForSelector('#import-result');
-      assert.equal(await page.textContent('.toast-success .toast-msg'), '✅ Import réussi : 7 postes, 5 applications');
+      assert.equal(await page.textContent('.toast-success .toast-msg'), 'Import terminé — 7 postes, 5 applications.');
 
       const imports = (await app.calls()).filter((c) => c.name === 'api_importMonth');
       assert.deepEqual(imports.map((c) => c.args), [
@@ -196,7 +208,7 @@ describe('dashboard', () => {
       assert.ok(calls.lastIndexOf('api_getMonthData') > calls.lastIndexOf('api_importMonth'));
       assert.ok(calls.lastIndexOf('api_bootstrap') > calls.lastIndexOf('api_importMonth'));
       assert.match(await page.textContent('#import-result'), /ignorée/);
-      assert.equal(await page.textContent('#dashboard-caption'), 'Export : 2026-05');
+      assert.equal(await page.getAttribute('#dashboard-caption', 'data-month'), '2026-05');
       assert.deepEqual(app.errors, []);
     });
   });
@@ -225,7 +237,7 @@ describe('dashboard', () => {
       assert.match(await page.textContent('#import-status'), /Onglet introuvable/);
 
       await startImport(app, '2026-06');
-      await page.waitForFunction(() => (document.getElementById('dashboard-caption') || {}).textContent === 'Export : 2026-06');
+      await page.waitForFunction(() => ((document.getElementById('dashboard-caption') || {}).dataset || {}).month === '2026-06');
       await app.waitIdle();
       assert.equal(await page.inputValue('#month-select'), '2026-06');
       assert.deepEqual(await page.$$eval('#month-select option', (os) => os.map((o) => o.value)), ['2026-04', '2026-05', '2026-06']);
@@ -243,7 +255,7 @@ describe('dashboard', () => {
   test('empty state: warning + import panel only, then import', async () => {
     await withApp({ empty: true }, async (app) => {
       const { page } = app;
-      assert.equal((await page.textContent('#dashboard-empty')).trim(), '⚠️ Aucune donnée importée.');
+      assert.equal((await page.textContent('#dashboard-empty')).trim(), 'Aucune donnée importée.');
       assert.equal(await page.$('#dashboard-body'), null);
       assert.equal(await page.$$eval('[data-kpi]', (n) => n.length), 0);
       assert.ok(await page.isVisible('#import-panel'));

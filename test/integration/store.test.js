@@ -68,6 +68,19 @@ test('fakes: Sheets typing rules (apostrophe, formulas, auto-conversion unless "
   assert.throws(() => sh.getRange(1, 1, 1, 2).setValues([[1]]), /number of columns in the data does not match/);
   assert.throws(() => sh.getRange(1001, 1), /outside the dimensions/);
   assert.throws(() => env.SpreadsheetApp.openById('nope'), /not found/);
+  // '@' cells store strings verbatim: no formula, and a leading apostrophe is KEPT (real Sheets).
+  sh.getRange(3, 1, 1, 4).setNumberFormat('@').setValues([["'-x", '=1+1', "''a", '@b']]);
+  assert.deepEqual(sh.getRange(3, 1, 1, 4).getValues()[0], ["'-x", '=1+1', "''a", '@b']);
+  assert.equal(env.__state.formulas.length, 1, 'no formula recorded for a plain-text cell');
+  // fault injection: the next matching call throws, then the service recovers
+  env.__fault({ method: 'openById', id: ss.getId(), times: 2 });
+  assert.throws(() => env.SpreadsheetApp.openById(ss.getId()), /Service Spreadsheets failed/);
+  assert.throws(() => env.SpreadsheetApp.openById(ss.getId()), /Service Spreadsheets failed/);
+  assert.equal(env.SpreadsheetApp.openById(ss.getId()), ss);
+  env.__fault({ method: 'setValues', sheet: 'other' });
+  sh.getRange(4, 1).setValues([['ok']]);
+  assert.equal(env.__state.faults.length, 1, 'fault on another sheet not consumed');
+  env.__clearFaults();
   assert.equal(env.Utilities.formatDate(new Date(Date.UTC(2026, 0, 31, 23, 30)), 'Europe/Paris', 'yyyy-MM-dd HH:mm'), '2026-02-01 00:30');
 });
 
@@ -121,21 +134,76 @@ test('Store.ensure creates the data spreadsheet once, with every tab, header and
   assert.equal(sb.ctx.Store.dataUrl(), 'https://docs.google.com/spreadsheets/d/' + id + '/edit');
 });
 
-test('Store.ensure repairs a missing tab / header and recreates an unopenable spreadsheet', () => {
+test('Store.ensure repairs a missing tab / header under the lock; the fast path takes no lock', () => {
   const sb = boot();
+  const lock = sb.env.__state.lock;
+  sb.Store.resetCache_();
+  const a0 = lock.acquired;
+  sb.Store.ensure();
+  assert.equal(lock.acquired, a0, 'healthy spreadsheet: no lock, no write');
+
   sb.ss.deleteSheet(sb.ss.getSheetByName('Replacements'));
   sb.ss.getSheetByName('Actions').getRange(1, 1, 1, 2).setValues([['x', 'y']]);
   sb.Store.resetCache_();
   sb.Store.ensure();
+  assert.equal(lock.acquired, a0 + 1, 'repair ran under the script lock');
+  assert.equal(lock.held, false);
   assert.ok(sb.ss.getSheetByName('Replacements'));
   assert.deepEqual(tabValues(sb, 'Actions')[0], plain(sb.Config.SCHEMAS.Actions));
   assert.deepEqual(tabValues(sb, 'Meta'), [['key', 'value'], ['schema_version', '1']]);
+});
 
+test('Store.ensure never replaces a configured data spreadsheet that fails to open', () => {
   const stale = loadGas({ props: { DATA_SPREADSHEET_ID: 'deleted-spreadsheet-id' } });
+  assert.throws(() => stale.ctx.Store.ensure(),
+    (e) => e.code === 'INTERNAL' && /Classeur de données inaccessible/.test(e.message));
+  assert.equal(stale.ctx.Config.get().dataId, 'deleted-spreadsheet-id', 'property untouched');
+  assert.equal(stale.env.__state.calls.create || 0, 0, 'no new spreadsheet');
+  assert.equal(stale.env.__state.calls.openById, 3, 'retried');
+  assert.deepEqual(stale.env.__state.sleeps, [500, 1500], 'with backoff');
+  assert.ok(stale.env.__state.console.some((c) => c.level === 'error' && /deleted-spreadsheet-id/.test(String(c.args[0]))));
+  // Explicit recovery: the admin deletes the property, the next execution creates a new file.
+  stale.env.PropertiesService.getScriptProperties().deleteProperty('DATA_SPREADSHEET_ID');
   const ss = stale.ctx.Store.ensure();
-  assert.notEqual(ss.getId(), 'deleted-spreadsheet-id');
   assert.equal(stale.ctx.Config.get().dataId, ss.getId());
   assert.deepEqual(ss.getSheets().map((s) => s.getName()), TAB_NAMES);
+});
+
+test('Store.ensure retries a transient openById failure and keeps the same spreadsheet', () => {
+  const sb = boot();
+  sb.Store.insertRow('Actions', { id: 'keep-me' });
+  sb.Store.resetCache_();
+  sb.env.__fault({ method: 'openById', id: sb.dataId, times: 2 });
+  assert.equal(sb.Store.ensure().getId(), sb.dataId);
+  assert.equal(sb.Config.get().dataId, sb.dataId);
+  assert.equal(sb.env.__state.calls.create, 1, 'only the initial creation');
+  assert.deepEqual(sb.env.__state.sleeps, [500, 1500]);
+  assert.equal(sb.Store.listRows('Actions')[0].id, 'keep-me');
+});
+
+test('Store.ensure: first-run creation is under the lock and re-reads the id there', () => {
+  const sb = loadGas();
+  const other = sb.env.SpreadsheetApp.create('ShadowIT_AppData');
+  const lockObj = sb.env.LockService.getScriptLock();
+  const wait = lockObj.waitLock;
+  // Another execution creates the data spreadsheet while this one waits for the lock.
+  lockObj.waitLock = function (ms) {
+    sb.env.PropertiesService.getScriptProperties().setProperty('DATA_SPREADSHEET_ID', other.getId());
+    return wait.call(this, ms);
+  };
+  try {
+    assert.equal(sb.ctx.Store.ensure(), other);
+  } finally {
+    lockObj.waitLock = wait;
+  }
+  assert.equal(sb.env.__state.calls.create, 1, 'no second spreadsheet');
+  assert.equal(sb.ctx.Config.get().dataId, other.getId());
+  for (const tab of TAB_NAMES) assert.ok(other.getSheetByName(tab), 'layout created in the existing file: ' + tab);
+  assert.equal(sb.env.__state.lock.held, false);
+
+  const busy = loadGas({ lockTimeout: true });
+  assert.throws(() => busy.ctx.Store.ensure(), { code: 'BUSY' });
+  assert.equal(busy.env.__state.calls.create || 0, 0, 'nothing created without the lock');
 });
 
 // ----------------------------------------------------------------------------- entity months
@@ -393,6 +461,7 @@ test('plain-text format: date-like and numeric strings survive', () => {
 test('formula escaping: strings are stored literally, no formula ever written', () => {
   const sb = boot();
   const nasty = ['=HYPERLINK("http://evil","clic")', '+33 6 12 34 56 78', '-cmd', '@SUM(A1)', "'apostrophe", '=1+1'];
+  const w0 = sb.env.__state.writes.length;
   sb.Store.insertRow('Actions', { id: 'f1', target_type: 'poste', target_name: nasty[0], equipe: nasty[1],
     action: nasty[2], responsable: nasty[3], comment: nasty[4], priorite: nasty[5] });
   const back = sb.Store.listRows('Actions')[0];
@@ -408,6 +477,30 @@ test('formula escaping: strings are stored literally, no formula ever written', 
   assert.equal(sb.Store.listRows('Actions')[0].comment, '=IMPORTXML("x")');
 
   assert.deepEqual(sb.env.__state.formulas, []);
+  assertAllWritesPlainText(sb.env, w0);
+});
+
+test('values starting with - + @ = or an apostrophe round-trip exactly (no apostrophe added)', () => {
+  const sb = boot();
+  const values = ['- Installer l\'EDR', '-', '+ de 50', '@jdupont', '=1+1', "'a", "''b", "'-x", '+33 6 12'];
+  sb.Store.insertRow('Actions', { id: 'r1', target_type: 'application', target_name: '@Work', action: values[0],
+    responsable: values[3], comment: values[7] });
+  const raw = tabValues(sb, 'Actions')[1];
+  assert.equal(raw[2], '@Work', 'stored cell has no apostrophe prefix');
+  assert.equal(raw[4], values[0]);
+  const back = sb.Store.listRows('Actions')[0];
+  assert.deepEqual([back.target_name, back.action, back.responsable, back.comment], ['@Work', values[0], values[3], values[7]]);
+
+  // A rewrite (updateRowsWhere matching on target_name) does not accumulate apostrophes.
+  assert.equal(sb.Store.updateRowsWhere('Actions', (a) => a.target_name === '@Work', () => ({ target_name: '-Work' })), 1);
+  assert.equal(sb.Store.updateRowsWhere('Actions', (a) => a.target_name === '-Work', () => ({ status: 'x' })), 1);
+
+  sb.Store.replaceReferentiel('2026-05', { Statut: values });
+  assert.deepEqual(plain(sb.Store.readReferentiel('2026-05')), { Statut: values });
+  sb.Store.replaceEntityMonth('Applications', '2026-05', [{ [KEY_APP]: '@Work' }, { [KEY_APP]: '-' }], KEY_APP);
+  assert.deepEqual(plain(sb.Store.readEntityMonth('Applications', '2026-05').map((r) => [r[KEY_APP], r._key])),
+    [['@Work', '@Work'], ['-', '-']]);
+  assert.deepEqual(sb.env.__state.formulas, []);
 });
 
 // ------------------------------------------------------------------------------------- lock
@@ -415,26 +508,29 @@ test('formula escaping: strings are stored literally, no formula ever written', 
 test('withLock returns the result, flushes and releases', () => {
   const sb = boot();
   const lock = sb.env.__state.lock;
+  const a0 = lock.acquired; // boot created the data spreadsheet under the lock
+  assert.equal(lock.released, a0);
   const f0 = sb.env.__state.flushes;
   assert.equal(sb.Store.withLock(() => 42), 42);
-  assert.equal(lock.acquired, 1);
-  assert.equal(lock.released, 1);
+  assert.equal(lock.acquired, a0 + 1);
+  assert.equal(lock.released, a0 + 1);
   assert.equal(lock.lastTimeout, 20000);
   assert.equal(sb.env.__state.flushes, f0 + 1);
   // re-entrant: nested call does not release the outer lock
   sb.Store.withLock(() => sb.Store.withLock(() => assert.equal(lock.held, true)));
-  assert.equal(lock.acquired, 2);
-  assert.equal(lock.released, 2);
+  assert.equal(lock.acquired, a0 + 2);
+  assert.equal(lock.released, a0 + 2);
 });
 
 test('withLock releases the lock when fn throws', () => {
   const sb = boot();
+  const a0 = sb.env.__state.lock.acquired;
   assert.throws(() => sb.Store.withLock(() => {
     sb.Store.insertRow('Actions', { id: 'w' });
     throw new Error('boom');
   }), /boom/);
-  assert.equal(sb.env.__state.lock.acquired, 1);
-  assert.equal(sb.env.__state.lock.released, 1);
+  assert.equal(sb.env.__state.lock.acquired, a0 + 1);
+  assert.equal(sb.env.__state.lock.released, a0 + 1);
   assert.equal(sb.env.__state.lock.held, false);
   assert.ok(sb.env.__state.flushes >= 1);
   assert.throws(() => sb.Store.withLock(() => sb.Store.updateRow('Actions', 'nope', {})), { code: 'NOT_FOUND' });
@@ -442,11 +538,13 @@ test('withLock releases the lock when fn throws', () => {
 });
 
 test('withLock maps a lock timeout to BUSY without running fn', () => {
-  const sb = boot({ lockTimeout: true });
+  const sb = boot();
+  sb.env.__state.lockTimeout = true;
+  const r0 = sb.env.__state.lock.released;
   let ran = false;
   assert.throws(() => sb.Store.withLock(() => { ran = true; }), (e) => e.code === 'BUSY' && /opération est en cours/.test(e.message));
   assert.equal(ran, false);
-  assert.equal(sb.env.__state.lock.released, 0);
+  assert.equal(sb.env.__state.lock.released, r0);
   sb.env.__state.lockTimeout = false;
   assert.equal(sb.Store.withLock(() => 'ok'), 'ok');
 });

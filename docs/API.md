@@ -136,7 +136,7 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 
 | Function | Args | Returns `data` | Errors |
 |---|---|---|---|
-| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:''}` | – (creates the data spreadsheet if needed) |
+| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:''}` | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
 | `api_setConfig` | `{source:'url or id'}` | `{sourceId, sourceTitle, sourceUrl, tabsFound:{postes:bool, applications:bool, referentiel:bool}}` | `VALIDATION` (bad id), `SOURCE_ERROR` (cannot open / no postes+apps tab). Saved only on success. |
 | `api_getMonthData` | `{month}` | `{month, postes:[rec], applications:[rec], referentiel:{cat:[v]}, columns:{postes:[h], applications:[h]}, importInfo:{imported_at, warnings:[]}\|null}` | `VALIDATION`, `NOT_FOUND` (month not imported). `columns.applications` always ends with `Galink`, `IDP` if missing from the source headers. |
 | `api_importMonth` | `{month, overwrite:bool}` | `{month, counts:{postes, applications, referentiel}, overwritten:bool, carriedOver:n, warnings:[...]}` | `NOT_CONFIGURED`, `VALIDATION`, `MONTH_EXISTS` (month already imported and `overwrite` false), `SOURCE_ERROR` |
@@ -195,15 +195,29 @@ Config.uuid()                -> Utilities.getUuid()
 ### Store (`src/Store.js`) — the only writer to the data spreadsheet
 Data spreadsheet layout: one tab per entry of `Config.SCHEMAS`, row 1 = header (frozen), data from row 2.
 Every column is formatted as plain text (`'@'`) **on the exact range right before each write** (so
-`'2026-05'` or `'15/03/2025'` are never auto-converted to dates) and every string value written passes
-through `Core.escapeFormula`. (Sheets strips the leading `'` on read — the fake does the same.)
+`'2026-05'` or `'15/03/2025'` are never auto-converted to dates, and `'=…'` is stored as text, never
+evaluated). Strings are written **verbatim**: `Core.escapeFormula` is NOT applied by the Store, because
+in a plain-text cell Sheets keeps a leading `'` as a literal character (it is only the hidden
+"force text" prefix in non-plain-text cells), so a prefix would turn `'- x'`, `'+33…'`, `'@user'` or a
+Référentiel `'-'` into `"'- x"`… on read. The `'@'` format is the one and only formula guard; the fake
+mimics this (plain-text cells store strings verbatim, other cells strip one leading `'`).
 Reads use one `getDataRange().getValues()` per tab; whole-tab rewrites use `clearContents()` of the
 data area + one `setValues()`.
 
 ```
-Store.ensure()                          -> Spreadsheet  (open by Config dataId; if missing/unopenable
-                                           create 'ShadowIT_AppData', save id; ensure every tab+header
-                                           exists; write Meta schema_version). Idempotent. Cached per execution.
+Store.ensure()                          -> Spreadsheet. Idempotent. Cached per execution.
+                                           - no dataId configured: under Store.withLock, re-read the id (another
+                                             execution may have created it) and otherwise create 'ShadowIT_AppData'
+                                             and save its id;
+                                           - dataId configured: openById, retried with Utilities.sleep backoff
+                                             (500 ms, 1500 ms; 3 attempts). Still failing -> makeError('INTERNAL',
+                                             'Classeur de données inaccessible…'); the property is NEVER replaced
+                                             automatically (openById failures are often transient). Recovery for a
+                                             really deleted file is explicit: delete the DATA_SPREADSHEET_ID
+                                             script property, the next execution creates a new spreadsheet;
+                                           - then ensure every tab+header exists and Meta schema_version is
+                                             written. Fast path (all tabs + current schema_version) takes no
+                                             lock and writes nothing; any repair runs under Store.withLock.
 Store.dataUrl()                         -> string
 Store.withLock(fn)                      -> fn() result; LockService.getScriptLock().waitLock(20000)
                                            (timeout -> makeError('BUSY')); SpreadsheetApp.flush() and
@@ -243,9 +257,23 @@ Importer.readSource()       -> {sourceId, title, postes:{headers,records,warning
                                Per tab: one getDataRange() then getValues() + getDisplayValues();
                                Date cells formatted 'dd/MM/yyyy' in ss.getSpreadsheetTimeZone().
                                Missing postes AND applications tab -> SOURCE_ERROR.
-Importer.importMonth(month, overwrite) -> api_importMonth data (see §3). Inside Store.withLock.
+Importer.importMonth(month, overwrite) -> api_importMonth data (see §3). Inside Store.withLock; every
+                               read happens before the first write.
+                               Missing entity / Référentiel tab (the other entity tab present): the
+                               stored snapshot of that month is KEPT (overwrite) or nothing is written
+                               (new month) — never replaced by an empty one; a warning says so
+                               ('… introuvable : applications du mois conservées.' / '… aucune
+                               application importée.'), counts report the stored rows, and the
+                               ImportLog keeps the previous headers for that entity.
                                Carry-over of Galink/IDP via Core.mergeCarryOver from (a) the existing
-                               snapshot of the same month when overwriting, else (b) Core.previousMonth.
+                               snapshot of the same month when overwriting, else (b) the latest
+                               EARLIER month that has applications (empty snapshots are skipped).
+                               When overwriting a month whose previous import is incomplete (no
+                               ImportLog entry) or has no applications, a second mergeCarryOver pass
+                               fills the fields still blank from (b) (warning 'L’import précédent du
+                               mois X était incomplet : Galink/IDP repris de Y…' when incomplete).
+                               Write order: Applications, Référentiel, Postes, then the ImportLog
+                               entry (= completion marker).
 ```
 
 ### Code (`src/Code.js`)

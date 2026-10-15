@@ -1,43 +1,49 @@
 <style>
-/* Applications page (docs/API.md §6 "Applications"). Selectors are prefixed with the page / drawer class. */
-.page-apps .apps-stats { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin: 0 0 var(--space-3); }
-.page-apps .apps-inline-select { flex-direction: row; align-items: center; gap: var(--space-2); }
-.page-apps .apps-inline-select .input { width: auto; }
-.page-apps .apps-key { padding: 0; border: 0; background: none; font: inherit; font-weight: 600; color: var(--accent-strong);
-  cursor: pointer; text-align: left; overflow-wrap: anywhere; }
-.page-apps .apps-key:hover { text-decoration: underline; }
-.page-apps .apps-key:focus-visible { outline: none; box-shadow: var(--focus); border-radius: 3px; }
-.page-apps .apps-criteria { display: inline-flex; gap: 3px; flex-wrap: nowrap; }
-.page-apps .apps-criteria .badge { padding: 1px 6px; font-size: 11px; }
-.page-apps .apps-migration { display: flex; flex-wrap: wrap; gap: var(--space-3); margin: 0 0 var(--space-4); }
-.page-apps .apps-migration-item { flex: 1 1 220px; padding: var(--space-3) var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); }
-.page-apps .apps-migration-item h3 { margin: 0; font-size: 14px; font-weight: 650; }
-.page-apps .apps-migration-counts { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.apps-drawer { display: flex; flex-direction: column; gap: var(--space-4); }
-.apps-drawer .drawer-section h3 { font-size: 14px; font-weight: 650; margin: 0 0 var(--space-2); }
-.apps-drawer .drawer-head { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
-.apps-drawer .drawer-buttons { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.apps-drawer .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px var(--space-3); margin: 0; }
-.apps-drawer .kv dt { color: var(--text-muted); font-size: 13px; }
-.apps-drawer .kv dd { margin: 0; overflow-wrap: anywhere; }
-.apps-drawer .checklist, .apps-drawer .rel-list, .apps-drawer .action-list { list-style: none; margin: 0; padding: 0;
-  display: flex; flex-direction: column; gap: 6px; }
-.apps-drawer .checklist li, .apps-drawer .rel-list li { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
-.apps-drawer .action-list li { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3);
-  display: flex; flex-direction: column; gap: 4px; }
-.apps-drawer .action-meta { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; font-size: 12px; }
-.apps-drawer .section-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-2); }
-.apps-drawer .section-head h3 { margin: 0; }
+/* Applications page (docs/API.md §6 "Applications", docs/DESIGN.md). Everything else comes from css.html:
+   page header, stat line, sections, ledger tables, status marks, drawer sections and lists. */
+.page-apps .apps-body { display: flex; flex-direction: column; gap: var(--s4); }
+.page-apps .apps-body > .section { margin-top: var(--s4); }
+/* Criteria cell: five short marks. A filled square = criterion met (label ink-2), a hollow square in
+   --ko = criterion missing, so the state is carried by shape and colour, not colour alone. */
+.page-apps .apps-criteria { display: inline-flex; gap: var(--s3); flex-wrap: nowrap; }
+.page-apps .apps-criteria .badge { font-size: 12px; font-weight: 400; gap: 5px; }
+.page-apps .apps-criteria .badge-ok { color: var(--ink-2); }
+.page-apps .apps-criteria .badge-ok::before { background: var(--ok); }
+.page-apps .apps-criteria .badge-ko { color: var(--ko); font-weight: 500; }
+.page-apps .apps-criteria .badge-ko::before { background: none; box-shadow: inset 0 0 0 1.5px currentColor; width: 7px; height: 7px; }
+/* Galink / IDP migration ledger: a compact table, not full width. */
+.page-apps .apps-migration .table { width: auto; min-width: min(100%, 560px); }
+.page-apps .apps-migration .table th:not(:first-child), .page-apps .apps-migration .table td:not(:first-child) { min-width: 96px; }
+.page-apps .apps-migration .count-ko { color: var(--ko); }
+@media (max-width: 700px) {
+  .page-apps .apps-migration .table { min-width: 0; width: 100%; }
+  .page-apps .apps-migration .table th:not(:first-child), .page-apps .apps-migration .table td:not(:first-child) { min-width: 0; }
+  .page-apps .apps-migration .table thead th { white-space: normal; vertical-align: bottom; line-height: 1.25; }
+  .page-apps .apps-migration .table th, .page-apps .apps-migration .table td { padding-left: var(--s2); padding-right: var(--s2); }
+}
+.page-apps .apps-migration .count-zero { color: var(--ink-3); }
+.apps-drawer .checklist .leader { align-self: center; transform: none; }
+.apps-drawer .crit-label { flex: 0 1 auto; }
+.apps-drawer .crit-missing { flex-basis: 100%; margin: -6px 0 2px; font-size: 12px; color: var(--ink-2); }
+.apps-drawer .checklist li { flex-wrap: wrap; }
+.apps-drawer .rel-list .rel-note, .apps-drawer .rel-list .rel-team { font-family: var(--font-sans); font-size: 12px; }
+.apps-drawer .rel-list .rel-note { color: var(--ink-3); }
+.apps-drawer .rel-list .rel-team { color: var(--ink-2); }
+.apps-drawer .action-title { font-weight: 500; font-size: 13px; }
+.apps-drawer .action-comment { margin: 0; font-size: 12px; color: var(--ink-2); }
+.apps-drawer .drawer-head-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s3); }
+.apps-drawer { display: flex; flex-direction: column; gap: var(--s5); }
 </style>
 <script>
 /**
- * Pages.apps — application inventory (docs/API.md §6 "Applications").
+ * Pages.apps — application inventory (docs/API.md §6 "Applications"), typeset per docs/DESIGN.md.
  *
- * Editable table over the filtered applications of the selected month (column order =
- * monthData.columns.applications, key column first and read-only, Galink/IDP editable Oui/Non,
- * computed Score + criteria badges that follow unsaved edits), Galink/IDP migration summary,
- * conformity filter, "➕ Application", CSV export, and a detail drawer (5-criteria checklist, postes,
- * linked actions + "➕ Action", rename / delete).
+ * Page header (month kicker + "Nouvelle application" / "Exporter CSV"), a one-line stat summary, the
+ * Galink / IDP migration ledger, then the editable table over the filtered applications of the
+ * selected month (column order = monthData.columns.applications, key column first and read-only,
+ * Galink/IDP editable Oui/Non, computed Score + criteria marks that follow unsaved edits), conformity
+ * filter, and a detail drawer (5-criteria checklist, postes, linked actions + "Nouvelle action",
+ * rename / delete).
  */
 (function () {
   'use strict';
@@ -66,15 +72,19 @@
     { key: 'champs', short: 'Champs', label: 'Champs obligatoires renseignés' }
   ];
 
+  /** Source columns shown as identifiers / dates (mono). */
+  var MONO_COLUMNS = { 'Date': 1, 'Installé sur poste': 1 };
+
   // ------------------------------------------------------------------------------ helpers
 
   function plural(n, one, many) { return UI.fmtNum(n) + ' ' + (n > 1 ? many : one); }
+  function capitalize(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+  function errorToast(err) { UI.toast('Erreur : ' + ((err && err.message) || 'erreur inconnue.'), 'error'); }
 
   /**
    * Keeps the computed (non-editable) columns in sync with unsaved edits.
-   * UI.editableTable only re-renders the edited cell, so a computed cell of the same row would keep
-   * showing the saved value until "Enregistrer". After every edit interaction we re-render the
-   * computed cells of the visible rows from (record + dirty updates).
+   * After every edit interaction we re-render the computed cells of the visible rows from
+   * (record + dirty updates), so they never show a stale saved value.
    */
   function liveComputedColumns(table, computed, recordById) {
     function sync() {
@@ -97,14 +107,22 @@
     });
   }
 
+  function header(s, actions) {
+    var kicker = s.month ? [capitalize(UI.fmtMonth(s.month)) + ' · ', el('span', { class: 'mono' }, 'Export ' + s.month)] :
+      'Aucun export importé';
+    var h = UI.pageHeader({ title: 'Applications', kicker: kicker, kickerId: s.month ? 'apps-caption' : null, actions: actions });
+    var k = h.querySelector('.page-kicker');
+    if (k && s.month) k.dataset.month = s.month;
+    return h;
+  }
+
   function filterNote(s) {
     var f = s.filters || {};
     var parts = [];
     if ((f.equipes || []).length) parts.push('Équipe : ' + f.equipes.join(', '));
     if ((f.batiments || []).length) parts.push('Bâtiment / Labo : ' + f.batiments.join(', ') + ' (postes uniquement)');
     if (!parts.length) return null;
-    return el('p', { class: 'filter-note', role: 'status' }, el('span', { 'aria-hidden': 'true' }, '🔎 '),
-      'Filtres actifs — ' + parts.join(' · '));
+    return el('p', { class: 'filter-note', role: 'status' }, 'Filtres actifs — ' + parts.join(' · '));
   }
 
   function hasEquipeFilter(s) { return ((s.filters || {}).equipes || []).length > 0; }
@@ -141,35 +159,36 @@
     var due = Core.frToIso(a.deadline);
     var overdue = open && due && due < todayIso();
     return el('li', { dataset: { actionId: a.id } },
-      el('strong', null, a.action || '(sans libellé)'),
+      el('strong', { class: 'action-title' }, a.action || '(sans libellé)'),
       el('div', { class: 'action-meta' },
-        UI.badge(a.status || '—', STATUS_TONES[a.status] || 'neutral'),
-        a.priorite ? UI.badge('Priorité : ' + a.priorite, a.priorite === 'Haute' ? 'ko' : 'neutral') : null,
-        a.deadline ? UI.badge('Échéance : ' + a.deadline + (overdue ? ' (en retard)' : ''), overdue ? 'ko' : 'neutral') : null,
-        a.responsable ? el('span', { class: 'muted' }, '👤 ' + a.responsable) : null,
-        a.source_month ? el('span', { class: 'muted' }, 'Export ' + a.source_month) : null),
-      a.comment ? el('p', { class: 'muted small', style: 'margin:0' }, a.comment) : null);
+        UI.statusMark(a.status || '—', STATUS_TONES[a.status] || 'neutral'),
+        a.priorite ? el('span', null, 'Priorité ' + a.priorite.toLowerCase()) : null,
+        a.deadline ? el('span', null, 'Échéance ', el('span', { class: 'mono' }, a.deadline)) : null,
+        overdue ? UI.statusMark('En retard', 'ko') : null,
+        a.responsable ? el('span', null, a.responsable) : null,
+        a.source_month ? el('span', { class: 'faint' }, 'Export ', el('span', { class: 'mono' }, a.source_month)) : null),
+      a.comment ? el('p', { class: 'action-comment' }, a.comment) : null);
   }
 
-  /** "Actions liées" block for an application; reloads itself after "➕ Action". */
+  /** "Actions liées" block for an application; reloads itself after "Nouvelle action". */
   function actionsBlock(targetName, rec, month, isOpen) {
     var list = el('div', { class: 'drawer-actions-list', id: 'drawer-actions', 'aria-live': 'polite' });
     var addBtn = el('button', { type: 'button', class: 'btn btn-secondary btn-small', id: 'drawer-add-action',
-      onClick: function () { addAction(); } }, '➕ Action');
+      onClick: function () { addAction(); } }, 'Nouvelle action');
 
     function render(opts) {
-      UI.clear(list).appendChild(el('p', { class: 'muted small' }, UI.spinner(), ' Chargement des actions…'));
+      UI.clear(list).appendChild(el('p', { class: 'muted small' }, UI.spinner(), 'Chargement des actions…'));
       State.loadActions(opts).then(function (res) {
         if (!isOpen()) return;
         var mine = (res.actions || []).filter(function (a) {
           return a.target_type === 'application' && a.target_name === targetName;
         });
         UI.clear(list);
-        if (!mine.length) { list.appendChild(el('p', { class: 'muted small' }, 'Aucune action liée à cette application.')); return; }
+        if (!mine.length) { list.appendChild(UI.empty('Aucune action liée à cette application.')); return; }
         list.appendChild(el('ul', { class: 'action-list' }, mine.map(actionItem)));
       }, function (err) {
         if (!isOpen()) return;
-        UI.clear(list).appendChild(el('p', { class: 'muted small' }, 'Actions indisponibles : ' + err.message));
+        UI.clear(list).appendChild(UI.empty('Actions indisponibles : ' + err.message));
       });
     }
 
@@ -193,17 +212,15 @@
           action: values.action, responsable: values.responsable, deadline: values.deadline,
           priorite: values.priorite, status: values.status, comment: values.comment, source_month: month
         }).then(function () {
-          UI.toast('✅ Action ajoutée pour ' + targetName, 'success');
+          UI.toast('Action ajoutée pour ' + targetName + '.', 'success');
           render({ force: true });
-        }, function (err) {
-          UI.toast('❌ Impossible d’ajouter l’action : ' + err.message, 'error');
-        }).then(function () { addBtn.disabled = false; });
+        }, errorToast).then(function () { addBtn.disabled = false; });
       });
     }
 
     render();
     return el('section', { class: 'drawer-section' },
-      el('div', { class: 'section-head' }, el('h3', null, '📋 Actions liées'), addBtn), list);
+      el('div', { class: 'section-head' }, el('h3', null, 'Actions liées'), addBtn), list);
   }
 
   // ------------------------------------------------------------------------------ drawer
@@ -226,40 +243,45 @@
       ['Action corrective', rec['Action corrective']]];
 
     var renameBtn = el('button', { type: 'button', class: 'btn btn-secondary btn-small', id: 'app-rename',
-      onClick: function () { rename(rec, month); } }, '✏️ Renommer');
+      onClick: function () { rename(rec, month); } }, 'Renommer');
     var deleteBtn = el('button', { type: 'button', class: 'btn btn-danger btn-small', id: 'app-delete',
-      onClick: function () { remove(rec, month); } }, '🗑️ Supprimer');
+      onClick: function () { remove(rec, month); } }, 'Supprimer');
 
     var body = el('div', { class: 'apps-drawer', id: 'app-drawer', dataset: { id: rec._id } },
-      el('div', { class: 'drawer-head' },
-        UI.scoreBadge(rec._score),
-        UI.badge(rec._conforme ? 'Conforme' : 'Non conforme', rec._conforme ? 'ok' : 'ko'),
-        UI.riskBadge(rec['Niveau de risque'])),
-      el('div', { class: 'drawer-buttons' }, renameBtn, deleteBtn),
+      el('div', { class: 'drawer-head-row' },
+        el('div', { class: 'drawer-head' },
+          el('span', { class: 'stat-line' }, el('span', { class: 'faint small' }, 'Score'), UI.scoreBadge(rec._score)),
+          UI.statusMark(rec._conforme ? 'Conforme' : 'Non conforme', rec._conforme ? 'ok' : 'ko'),
+          Core.str(rec['Niveau de risque']) ?
+            el('span', { class: 'stat-line' }, el('span', { class: 'faint small' }, 'Risque'), UI.riskBadge(rec['Niveau de risque'])) : null),
+        el('div', { class: 'drawer-buttons' }, renameBtn, deleteBtn)),
       el('dl', { class: 'kv' }, kvRows.filter(function (kv) { return Core.str(kv[1]); }).map(function (kv) {
         return [el('dt', null, kv[0]), el('dd', null, Core.str(kv[1]))];
       })),
       el('section', { class: 'drawer-section', id: 'app-drawer-criteria' },
-        el('h3', null, '🛡️ Critères de conformité (20 points chacun)'),
+        el('h3', null, 'Critères de conformité · 20 points chacun'),
         el('ul', { class: 'checklist' }, CRITERIA.map(function (c) {
           var ok = !!crit[c.key];
           return el('li', { dataset: { criterion: c.key, ok: ok ? '1' : '0' } },
-            el('span', { role: 'img', 'aria-label': ok ? 'Rempli' : 'Non rempli' }, ok ? '✅' : '❌'),
-            el('span', null, c.label),
-            c.key === 'champs' && missing.length ? el('span', { class: 'muted small' }, 'Manquant : ' + missing.join(', ')) : null);
+            el('span', { class: 'crit-label' }, c.label),
+            el('span', { class: 'leader', 'aria-hidden': 'true' }),
+            UI.statusMark(ok ? 'Rempli' : 'Non rempli', ok ? 'ok' : 'ko'),
+            c.key === 'champs' && missing.length ? el('span', { class: 'crit-missing' }, 'Manquant : ' + missing.join(', ')) : null);
         }))),
       el('section', { class: 'drawer-section', id: 'app-drawer-postes' },
-        el('h3', null, '💻 Installée sur (' + postes.length + ')'),
+        el('h3', null, 'Installée sur · ', el('span', { class: 'mono' }, String(postes.length))),
         postes.length ? el('ul', { class: 'rel-list' }, postes.map(function (p) {
           var poste = posteIndex[Core.normKey(p)];
           return el('li', { dataset: { poste: p } },
             el('span', null, p),
-            poste ? UI.scoreBadge(poste._score) : el('span', { class: 'muted small' }, '(poste absent de l’inventaire)'),
-            poste && Core.str(poste['Équipe']) ? el('span', { class: 'muted small' }, Core.str(poste['Équipe'])) : null);
-        })) : el('p', { class: 'muted small' }, 'Aucun poste renseigné (« Installé sur poste »).')),
+            poste && Core.str(poste['Équipe']) ? el('span', { class: 'rel-team' }, Core.str(poste['Équipe'])) : null,
+            !poste ? el('span', { class: 'rel-note' }, 'poste absent de l’inventaire') : null,
+            el('span', { class: 'spacer' }),
+            poste ? UI.scoreBadge(poste._score) : null);
+        })) : UI.empty('Aucun poste renseigné (« Installé sur poste »).')),
       actionsBlock(name, rec, month, isOpen));
 
-    drawerHandle = UI.drawer({ title: '📦 ' + (name || '(sans nom)'), body: body,
+    drawerHandle = UI.drawer({ title: name || '(sans nom)', body: body,
       onClose: function () { closed = true; drawerHandle = null; } });
   }
 
@@ -274,16 +296,14 @@
       return api.call('api_renameApplication', { month: month, id: rec._id, newName: values.newName }).then(function (res) {
         State.patchRecords(month, 'applications', [res.record]);
         var n = res.actionsUpdated || 0;
-        UI.toast('✅ Application renommée en « ' + values.newName + ' »' +
-          (n ? ' — ' + plural(n, 'action mise à jour', 'actions mises à jour') : ''), 'success');
+        UI.toast('Application renommée en « ' + values.newName + ' »' +
+          (n ? ' — ' + plural(n, 'action mise à jour', 'actions mises à jour') : '') + '.', 'success');
         // Action targets changed server side: reload them before the drawer re-renders.
         return State.loadActions({ force: true }).catch(function () { return null; }).then(function () {
           refreshPage();
           if (drawerHandle) openDrawer(rec._id, month);
         });
-      }, function (err) {
-        UI.toast('❌ Renommage impossible : ' + err.message, 'error');
-      });
+      }, errorToast);
     });
   }
 
@@ -297,10 +317,8 @@
           State.removeRecord(month, 'applications', rec._id);
           if (drawerHandle) drawerHandle.close();
           refreshPage();
-          UI.toast('🗑️ Application « ' + name + ' » supprimée', 'success');
-        }, function (err) {
-          UI.toast('❌ Suppression impossible : ' + err.message, 'error');
-        });
+          UI.toast('Application « ' + name + ' » supprimée.', 'success');
+        }, errorToast);
       });
   }
 
@@ -338,21 +356,22 @@
       return api.call('api_addApplication', { month: month, record: record }).then(function (rec) {
         State.addRecord(month, 'applications', rec);
         var hidden = hasEquipeFilter(State.get()) && (State.get().filters.equipes || []).indexOf(Core.str(rec['Équipe'])) < 0;
-        UI.toast('✅ Application « ' + Core.str(rec[KEY]) + ' » ajoutée' + (hidden ? ' (masquée par les filtres actifs)' : ''),
+        UI.toast('Application « ' + Core.str(rec[KEY]) + ' » ajoutée' + (hidden ? ' (masquée par les filtres actifs).' : '.'),
           'success');
         onAdded(rec);
-      }, function (err) {
-        UI.toast('❌ Ajout impossible : ' + err.message, 'error');
-      });
+      }, errorToast);
     });
   }
 
   // ------------------------------------------------------------------------------ page body
 
-  /** Migration readiness: Galink / IDP Oui / Non / vide counts. */
+  /** Migration readiness ledger: Galink / IDP Oui / Non / Non renseigné counts + share migrated. */
   function migrationSummary(box, apps) {
     UI.clear(box);
-    Core.APP_CUSTOM_FIELDS.forEach(function (f) {
+    function count(n, tone) {
+      return el('td', { class: 'num' + (n === 0 ? ' count-zero' : (tone ? ' count-' + tone : '')) }, UI.fmtNum(n));
+    }
+    var rows = Core.APP_CUSTOM_FIELDS.map(function (f) {
       var oui = 0;
       var non = 0;
       var vide = 0;
@@ -360,27 +379,39 @@
         var v = Core.str(a[f]);
         if (v === 'Oui') oui++; else if (v === 'Non') non++; else vide++;
       });
-      box.appendChild(el('div', { class: 'card apps-migration-item', dataset: { field: f } },
-        el('h3', null, (f === 'Galink' ? '🔗 ' : '🔑 ') + f),
-        el('div', { class: 'apps-migration-counts' },
-          el('span', { class: 'badge badge-ok', dataset: { count: 'oui' } }, 'Oui : ' + oui),
-          el('span', { class: 'badge badge-ko', dataset: { count: 'non' } }, 'Non : ' + non),
-          el('span', { class: 'badge badge-neutral', dataset: { count: 'vide' } }, 'Non renseigné : ' + vide)),
-        el('p', { class: 'muted small', style: 'margin:0' },
-          apps.length ? UI.fmtPct(oui / apps.length * 100) + ' des applications migrées' : 'Aucune application.')));
+      var share = apps.length ? oui / apps.length * 100 : null;
+      var cOui = count(oui);
+      cOui.dataset.count = 'oui';
+      var cNon = count(non, 'ko');
+      cNon.dataset.count = 'non';
+      var cVide = count(vide);
+      cVide.dataset.count = 'vide';
+      return el('tr', { dataset: { field: f } },
+        el('th', { scope: 'row' }, f), cOui, cNon, cVide,
+        el('td', { class: 'num', dataset: { count: 'share' } }, share === null ? '—' : UI.fmtPct(share)));
     });
+    box.appendChild(el('div', { class: 'table-scroll' }, el('table', { class: 'table table-compact' },
+      el('thead', null, el('tr', null,
+        el('th', { scope: 'col' }, 'Champ'), el('th', { scope: 'col', class: 'num' }, 'Oui'),
+        el('th', { scope: 'col', class: 'num' }, 'Non'), el('th', { scope: 'col', class: 'num' }, 'Non renseigné'),
+        el('th', { scope: 'col', class: 'num', title: 'Part des applications à « Oui »' }, 'Migrées'))),
+      el('tbody', null, rows))));
   }
 
   function criteriaBadges(row) {
     var crit = Core.scoreApplication(row).criteria;
-    return el('span', { class: 'apps-criteria' }, CRITERIA.map(function (c) {
+    var met = CRITERIA.filter(function (c) { return !!crit[c.key]; }).length;
+    return el('span', { class: 'apps-criteria', role: 'img',
+      'aria-label': met + ' critères remplis sur 5 — ' + CRITERIA.map(function (c) {
+        return c.label + (crit[c.key] ? ' : rempli' : ' : non rempli');
+      }).join(', ') }, CRITERIA.map(function (c) {
       var ok = !!crit[c.key];
-      return el('span', { class: 'badge ' + (ok ? 'badge-ok' : 'badge-ko'), title: c.label + (ok ? ' : ✅' : ' : ❌'),
+      return el('span', { class: 'badge ' + (ok ? 'badge-ok' : 'badge-ko'), title: c.label + (ok ? ' : rempli' : ' : non rempli'),
         dataset: { criterion: c.key } }, c.short);
     }));
   }
 
-  function renderBody(body, s, md, myToken) {
+  function renderBody(body, s, md, myToken, actions) {
     var month = s.month;
     var cols = sourceColumns(md);
 
@@ -393,31 +424,33 @@
       return list;
     }
 
-    var stats = el('div', { class: 'apps-stats', id: 'apps-stats', role: 'status' });
+    var stats = el('p', { class: 'stat-line apps-stats', id: 'apps-stats', role: 'status' });
     var migration = el('div', { class: 'apps-migration', id: 'apps-migration', role: 'region',
       'aria-label': 'Migration Galink / IDP' });
     function renderStats() {
       var all = filteredApps();
       var ok = all.filter(function (r) { return r._conforme; }).length;
-      UI.clear(stats).appendChild(el('span', { class: 'muted' }, plural(all.length, 'application', 'applications')));
-      stats.appendChild(UI.badge(plural(ok, 'conforme', 'conformes') + (all.length ? ' (' + UI.fmtPct(ok / all.length * 100) + ')' : ''), 'ok'));
-      stats.appendChild(UI.badge(plural(all.length - ok, 'non conforme', 'non conformes'), all.length - ok ? 'ko' : 'neutral'));
+      var ko = all.length - ok;
+      UI.clear(stats).appendChild(el('span', { class: 'stat' }, plural(all.length, 'application', 'applications')));
+      stats.appendChild(el('span', { class: 'stat' }, UI.statusMark(plural(ok, 'conforme', 'conformes'), 'ok'),
+        all.length ? el('span', { class: 'mono' }, ' ' + UI.fmtPct(ok / all.length * 100)) : null));
+      stats.appendChild(el('span', { class: 'stat' }, UI.statusMark(plural(ko, 'non conforme', 'non conformes'), ko ? 'ko' : 'neutral')));
       migrationSummary(migration, all);
     }
 
     var columns = cols.map(function (c, i) {
       if (i === 0) {
-        return { key: c, label: c, editable: false, width: 170, render: function (row) {
+        return { key: c, label: c, editable: false, width: 150, render: function (row) {
           return el('button', { type: 'button', class: 'apps-key', title: 'Voir le détail de l’application',
             onClick: function () { openDrawer(row._id, month); } }, Core.str(row[c]) || '(sans nom)');
         } };
       }
-      return { key: c, label: c, editable: true, options: Core.optionsForColumn(c, md.referentiel) };
+      return { key: c, label: c, editable: true, mono: !!MONO_COLUMNS[c], options: Core.optionsForColumn(c, md.referentiel) };
     });
     // Computed columns right after the key column; computed from the displayed row so that they
     // follow unsaved edits (e.g. Galink Non -> Oui shows +20 immediately).
     columns.splice(1, 0, {
-      key: '_score', label: 'Score', editable: false,
+      key: '_score', label: 'Score', editable: false, numeric: true,
       render: function (row) { return UI.scoreBadge(Core.scoreApplication(row).score); },
       sortValue: function (row) { return Core.scoreApplication(row).score; }
     }, {
@@ -427,25 +460,23 @@
 
     var conformitySelect = UI.select({ label: 'Conformité', options: CONFORMITY_OPTIONS, value: conformity,
       onChange: function (v) { conformity = v; table.setRows(visible()); } });
-    conformitySelect.classList.add('apps-inline-select');
     conformitySelect.querySelector('select').id = 'apps-conformity';
 
-    var addBtn = el('button', { type: 'button', class: 'btn btn-primary btn-small', id: 'apps-add',
-      onClick: function () {
-        addBtn.disabled = true;
-        addApplication(current(), month, function () { refreshPage(); })
-          .then(function () { addBtn.disabled = false; }, function () { addBtn.disabled = false; });
-      } }, '➕ Application');
-    var csvBtn = el('button', { type: 'button', class: 'btn btn-secondary btn-small', id: 'apps-export-csv',
-      onClick: function () {
-        var rows = visible().map(function (r) { var o = Object.assign({}, r); o['Score calculé (%)'] = r._score; return o; });
-        UI.downloadCsv('applications_' + month + '.csv', cols.concat(['Score calculé (%)']), rows);
-      } }, '⬇️ CSV');
+    var addBtn = actions.add;
+    addBtn.addEventListener('click', function () {
+      addBtn.disabled = true;
+      addApplication(current(), month, function () { refreshPage(); })
+        .then(function () { addBtn.disabled = false; }, function () { addBtn.disabled = false; });
+    });
+    actions.csv.addEventListener('click', function () {
+      var rows = visible().map(function (r) { var o = Object.assign({}, r); o['Score calculé (%)'] = r._score; return o; });
+      UI.downloadCsv('applications_' + month + '.csv', cols.concat(['Score calculé (%)']), rows);
+    });
 
     var table = UI.editableTable({
       columns: columns,
       rows: visible(),
-      toolbar: [conformitySelect, addBtn, csvBtn],
+      toolbar: [conformitySelect],
       emptyText: !md.applications.length ? 'Aucune application dans cet export.' :
         (hasEquipeFilter(s) || conformity !== 'all' ? 'Aucune application ne correspond aux filtres.' : 'Aucune application.'),
       onRowClick: function (row) { openDrawer(row._id, month); },
@@ -454,7 +485,8 @@
           State.patchRecords(month, 'applications', (res && res.updated) || []);
           if (myToken !== token) return;
           refresh();
-          UI.toast('✅ ' + plural(changes.length, 'application enregistrée', 'applications enregistrées'), 'success');
+          var n = changes.reduce(function (sum, c) { return sum + Object.keys(c.updates || {}).length; }, 0);
+          UI.toast(plural(n, 'modification enregistrée', 'modifications enregistrées') + '.', 'success');
         });
       }
     });
@@ -473,9 +505,14 @@
     if (note) body.appendChild(note);
     renderStats();
     body.appendChild(stats);
-    body.appendChild(el('h2', { class: 'section-title' }, 'Migration Galink / IDP'));
-    body.appendChild(migration);
-    body.appendChild(table.node);
+    var migrationSection = UI.section('Migration Galink / IDP', migration);
+    migrationSection.id = 'apps-migration-section';
+    body.appendChild(migrationSection);
+    var tableSection = UI.section('Inventaire', table.node);
+    tableSection.id = 'apps-inventory';
+    body.appendChild(tableSection);
+    addBtn.disabled = false;
+    actions.csv.disabled = false;
   }
 
   // ------------------------------------------------------------------------------ page
@@ -484,25 +521,33 @@
     var myToken = ++token;
     pageCtx = null;
     var s = State.get();
-    root.appendChild(el('header', { class: 'page-header' },
-      el('h1', { class: 'page-title' }, '📦 Applications'),
-      s.month ? el('p', { class: 'page-caption', id: 'apps-caption' }, 'Export : ' + s.month) : null));
 
     if (!s.months.length || !s.month) {
-      root.appendChild(el('div', { class: 'alert alert-warning', role: 'status', id: 'apps-empty' },
-        '⚠️ Aucune donnée importée. Importez un export mensuel depuis le Tableau de bord.'));
+      root.appendChild(header(s));
+      var empty = UI.empty('Aucune donnée importée.', el('button', { type: 'button', class: 'btn btn-link',
+        onClick: function () { App.go('dashboard'); } }, 'Importer un export depuis le tableau de bord'));
+      empty.id = 'apps-empty';
+      root.appendChild(empty);
       return;
     }
 
+    // Page-level actions live in the header; they are wired once the month is loaded.
+    var actions = {
+      add: el('button', { type: 'button', class: 'btn btn-primary', id: 'apps-add', disabled: true }, 'Nouvelle application'),
+      csv: el('button', { type: 'button', class: 'btn btn-secondary', id: 'apps-export-csv', disabled: true,
+        title: 'Exporte les lignes affichées (filtres compris), avec le score calculé' }, 'Exporter CSV')
+    };
+    root.appendChild(header(s, [actions.csv, actions.add]));
+
     var body = el('div', { class: 'apps-body', id: 'apps-body', 'aria-busy': 'true' },
-      el('p', { class: 'muted' }, UI.spinner(), ' Chargement des applications…'));
+      el('p', { class: 'muted' }, UI.spinner(), 'Chargement des applications…'));
     root.appendChild(body);
 
     State.loadMonth(s.month).then(function (md) {
       if (myToken !== token) return;
       UI.clear(body);
       body.setAttribute('aria-busy', 'false');
-      renderBody(body, State.get(), md, myToken);
+      renderBody(body, State.get(), md, myToken, actions);
     }, function (err) {
       if (myToken !== token) return;
       UI.clear(body);
@@ -520,6 +565,6 @@
   }
 
   window.Pages = window.Pages || {};
-  window.Pages.apps = { id: 'apps', title: 'Applications', icon: '📦', mount: mount, unmount: unmount };
+  window.Pages.apps = { id: 'apps', title: 'Applications', icon: '', mount: mount, unmount: unmount };
 })();
 </script>

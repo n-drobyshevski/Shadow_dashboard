@@ -1,28 +1,85 @@
 <script>
 /**
- * window.Charts — thin Plotly wrappers with French labels (docs/API.md §5).
+ * window.Charts — Plotly wrappers with one shared "audit ledger" theme (docs/API.md §5, docs/DESIGN.md).
  *
  * Every function draws into `el` with Plotly.react (idempotent: redraws reuse the same element),
  * config {responsive:true, displayModeBar:false}, and falls back to UI.empty('Graphique indisponible')
  * when Plotly could not be loaded (CDN blocked, offline...).
+ *
+ * Theme: IBM Plex Sans (figures in Plex Mono), transparent backgrounds, ink/neutral axes, no
+ * gridlines unless they carry reading value, tight margins, French separators, no titles inside
+ * plots (the page puts a small-caps label above each chart). Colours come from the CSS tokens
+ * (css.html :root) through Charts.tokens(); colour is used for status only.
+ *
+ * Page authors: series without `color` get the ledger defaults (ink solid, ink-3 dashed, accent, ...);
+ * series accept `dash` ('solid'|'dash'|'dot'). Charts.tokens() returns the palette.
  */
 (function () {
   'use strict';
 
   var CONFIG = { responsive: true, displayModeBar: false };
-  var FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
-  var ACCENT = '#0082c3';
-  var PALETTE = ['#0082c3', '#f39c12', '#2ecc71', '#8e44ad', '#e74c3c', '#16a085', '#7f8c8d'];
-  var GRID = '#e5e9f0';
+  var FALLBACK = {
+    ink: '#16181b', ink2: '#4a4f57', ink3: '#6b7079', rule: '#e3e4e6', rule2: '#c9cbcf',
+    paper: '#ffffff', paper2: '#f6f6f4', accent: '#0b63ce', ok: '#1f7a4d', ko: '#b42318', warn: '#a15c07',
+    riskCritique: '#b42318', riskEleve: '#d4621b', riskMoyen: '#c99a06', riskFaible: '#1f7a4d',
+    sans: '"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif',
+    mono: '"IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace'
+  };
+  var VARS = {
+    ink: '--ink', ink2: '--ink-2', ink3: '--ink-3', rule: '--rule', rule2: '--rule-2', paper: '--paper',
+    paper2: '--paper-2', accent: '--accent', ok: '--ok', ko: '--ko', warn: '--warn',
+    riskCritique: '--risk-critique', riskEleve: '--risk-eleve', riskMoyen: '--risk-moyen',
+    riskFaible: '--risk-faible', sans: '--font-sans', mono: '--font-mono'
+  };
+  var NBSP = ' '; // narrow no-break space (fr-FR before %)
 
-  function baseLayout(extra) {
+  /** Design tokens read from the stylesheet (fallbacks when the CSS variables are missing). */
+  function tokens() {
+    var out = {};
+    var cs = null;
+    try { cs = window.getComputedStyle(document.documentElement); } catch (e) { cs = null; }
+    Object.keys(VARS).forEach(function (k) {
+      var v = cs ? String(cs.getPropertyValue(VARS[k]) || '').trim() : '';
+      out[k] = v || FALLBACK[k];
+    });
+    out.risk = { 'Critique': out.riskCritique, 'Élevé': out.riskEleve, 'Moyen': out.riskMoyen, 'Faible': out.riskFaible };
+    return out;
+  }
+
+  function rgba(hex, alpha) {
+    var m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex || ''));
+    if (!m) return hex;
+    return 'rgba(' + parseInt(m[1], 16) + ',' + parseInt(m[2], 16) + ',' + parseInt(m[3], 16) + ',' + alpha + ')';
+  }
+
+  function axis(t, extra) {
+    return Object.assign({
+      showgrid: false,
+      zeroline: false,
+      showline: false,
+      linecolor: t.rule2,
+      linewidth: 1,
+      ticks: '',
+      tickcolor: t.rule2,
+      ticklen: 4,
+      tickfont: { family: t.mono, size: 11, color: t.ink3 },
+      title: { text: '' },
+      fixedrange: true,
+      automargin: true
+    }, extra || {});
+  }
+
+  function baseLayout(t, extra) {
     var layout = {
-      font: { family: FONT, size: 12, color: '#334155' },
+      font: { family: t.sans, size: 12, color: t.ink2 },
       paper_bgcolor: 'rgba(0,0,0,0)',
       plot_bgcolor: 'rgba(0,0,0,0)',
-      margin: { l: 52, r: 16, t: 24, b: 44 },
+      margin: { l: 8, r: 8, t: 8, b: 8, pad: 0 },
       separators: ', ',            // French: decimal comma, space as thousands separator
-      hoverlabel: { font: { family: FONT } }
+      showlegend: false,
+      hovermode: 'closest',
+      hoverlabel: { bgcolor: t.ink, bordercolor: t.ink, font: { family: t.mono, size: 12, color: '#ffffff' }, align: 'left' },
+      dragmode: false
     };
     return Object.assign(layout, extra || {});
   }
@@ -49,156 +106,237 @@
     }
   }
 
-  function thresholdShape(axis, value) {
-    var line = { color: Core.COLOR_THRESHOLD, width: 2, dash: 'dash' };
-    return axis === 'x' ?
-      { type: 'line', xref: 'x', yref: 'paper', x0: value, x1: value, y0: 0, y1: 1, line: line } :
-      { type: 'line', xref: 'paper', yref: 'y', x0: 0, x1: 1, y0: value, y1: value, line: line };
-  }
+  function thresholdLabel(value) { return 'seuil ' + value + NBSP + '%'; }
 
-  function thresholdAnnotation(axis, value) {
-    return axis === 'x' ?
-      { x: value, xref: 'x', y: 1, yref: 'paper', text: 'Seuil ' + value + '%', showarrow: false,
-        xanchor: 'left', yanchor: 'top', xshift: 4, font: { color: Core.COLOR_THRESHOLD, size: 11 } } :
-      { x: 1, xref: 'paper', y: value, yref: 'y', text: 'Seuil ' + value + '%', showarrow: false,
-        xanchor: 'right', yanchor: 'bottom', font: { color: Core.COLOR_THRESHOLD, size: 11 } };
-  }
-
-  /** Indicator gauge 0–100 %, green when >= threshold, red otherwise, threshold marker at 80. */
+  /**
+   * Compliance gauge 0–100 % (kept from the Streamlit original), restyled: thin flat arc on a neutral
+   * track, bar --ok when >= threshold else --ko, 2px ink tick at the threshold, value as a mono figure.
+   */
   function gauge(el, value, opts) {
     var o = opts || {};
+    var t = tokens();
     var v = value === null || value === undefined || !isFinite(Number(value)) ? 0 : Number(value);
     var ok = v >= Core.THRESHOLD;
+    var band = 0.22;     // thickness of the arc, as a fraction of the gauge ring
     return draw(el, [{
       type: 'indicator',
       mode: 'gauge+number',
       value: v,
-      number: { suffix: ' %', valueformat: '.1f', font: { size: 34, color: ok ? '#1e8449' : '#c0392b' } },
+      number: { suffix: NBSP + '%', valueformat: '.1f', font: { family: t.mono, size: 30, color: t.ink } },
       gauge: {
         shape: 'angular',
-        axis: { range: [0, 100], ticksuffix: '%', tickwidth: 1, tickcolor: '#94a3b8' },
-        bar: { color: ok ? Core.COLOR_OK : Core.COLOR_KO, thickness: 0.7 },
-        bgcolor: '#f1f5f9',
+        axis: {
+          range: [0, 100], tickmode: 'array', tickvals: [0, Core.THRESHOLD, 100],
+          ticktext: ['0', String(Core.THRESHOLD), '100'], ticks: '', ticklen: 0, tickwidth: 0,
+          tickcolor: t.rule2, tickfont: { family: t.mono, size: 10, color: t.ink3 }, showticklabels: true
+        },
+        bar: { color: ok ? t.ok : t.ko, thickness: band, line: { width: 0 } },
+        bgcolor: 'rgba(0,0,0,0)',
         borderwidth: 0,
-        threshold: { line: { color: Core.COLOR_THRESHOLD, width: 4 }, thickness: 0.9, value: Core.THRESHOLD }
-      }
-    }], baseLayout({ height: o.height || 250, margin: { l: 28, r: 28, t: 24, b: 8 } }));
+        steps: [{ range: [0, 100], color: t.rule, thickness: band, line: { width: 0 } }],
+        threshold: { line: { color: t.ink, width: 2 }, thickness: 0.5, value: Core.THRESHOLD }
+      },
+      domain: { x: [0, 1], y: [0, 1] }
+    }], baseLayout(t, { height: o.height || 176, margin: { l: 24, r: 24, t: 14, b: 12 } }));
   }
 
-  /** One bar per risk level (Core.RISK_ORDER) with Core.RISK_COLORS, no legend. */
+  /** One horizontal bar per risk level (Core.RISK_ORDER, top to bottom), risk colours, count at the bar end. */
   function riskBars(el, counts) {
     var c = counts || {};
-    var x = Core.RISK_ORDER.slice();
-    var y = x.map(function (k) { return Number(c[k]) || 0; });
+    var t = tokens();
+    var levels = Core.RISK_ORDER.slice();
+    var values = levels.map(function (k) { return Number(c[k]) || 0; });
+    var max = Math.max(1, Math.max.apply(null, values));
     return draw(el, [{
       type: 'bar',
-      x: x,
-      y: y,
-      text: y.map(String),
+      orientation: 'h',
+      y: levels,
+      x: values,
+      text: values.map(String),
       textposition: 'outside',
+      textfont: { family: t.mono, size: 12, color: t.ink },
       cliponaxis: false,
-      marker: { color: x.map(function (k) { return Core.RISK_COLORS[k]; }) },
-      hovertemplate: '%{x} : %{y}<extra></extra>'
-    }], baseLayout({
-      height: 280,
-      showlegend: false,
-      bargap: 0.35,
-      xaxis: { title: { text: 'Niveau de risque' }, fixedrange: true },
-      yaxis: { title: { text: 'Nombre' }, rangemode: 'tozero', fixedrange: true, gridcolor: GRID,
-        range: [0, Math.max(1, Math.max.apply(null, y)) * 1.25] }
+      width: 0.5,
+      marker: { color: levels.map(function (k) { return t.risk[k]; }), line: { width: 0 } },
+      hovertemplate: '%{y} : %{x}<extra></extra>'
+    }], baseLayout(t, {
+      height: levels.length * 32 + 12,
+      margin: { l: 4, r: 28, t: 4, b: 4 },
+      bargap: 0.5,
+      xaxis: axis(t, { visible: false, range: [0, max * 1.12] }),
+      yaxis: axis(t, { autorange: 'reversed', type: 'category', ticksuffix: '  ',
+        tickfont: { family: t.sans, size: 13, color: t.ink } })
     }));
   }
 
-  /** 10 equal bins on 0–100 (Core.histogramBins), dashed vertical line at 80 + 'Seuil 80%'. */
+  /**
+   * 10 equal bins on 0–100 (Core.histogramBins). Bins below the threshold in --ko at 70 % opacity,
+   * at/above in --ok; dashed ink line at 80 labelled "seuil 80 %"; counts printed above non-empty bins.
+   */
   function histogram(el, scores) {
+    var t = tokens();
     var bins = Core.histogramBins((scores || []).filter(function (s) { return s !== null && s !== undefined; }), 10);
+    var counts = bins.map(function (b) { return b.count; });
+    var max = Math.max(1, Math.max.apply(null, counts));
     return draw(el, [{
       type: 'bar',
       x: bins.map(function (b) { return (b.x0 + b.x1) / 2; }),
-      y: bins.map(function (b) { return b.count; }),
-      width: bins.map(function (b) { return (b.x1 - b.x0) * 0.92; }),
-      customdata: bins.map(function (b) { return b.x0 + '–' + b.x1 + ' %'; }),
-      marker: { color: bins.map(function (b) { return b.x0 >= Core.THRESHOLD ? Core.COLOR_OK : ACCENT; }) },
+      y: counts,
+      width: bins.map(function (b) { return (b.x1 - b.x0) * 0.72; }),
+      customdata: bins.map(function (b) { return b.x0 + '–' + b.x1 + NBSP + '%'; }),
+      text: counts.map(function (n) { return n ? String(n) : ''; }),
+      textposition: 'outside',
+      textfont: { family: t.mono, size: 11, color: t.ink2 },
+      cliponaxis: false,
+      marker: {
+        color: bins.map(function (b) { return b.x0 >= Core.THRESHOLD ? t.ok : rgba(t.ko, 0.7); }),
+        line: { width: 0 }
+      },
       hovertemplate: 'Score %{customdata} : %{y}<extra></extra>'
-    }], baseLayout({
-      height: 280,
-      showlegend: false,
-      xaxis: { title: { text: 'Score de conformité (%)' }, range: [0, 100], dtick: 10, fixedrange: true },
-      yaxis: { title: { text: 'Nombre' }, rangemode: 'tozero', fixedrange: true, gridcolor: GRID },
-      shapes: [thresholdShape('x', Core.THRESHOLD)],
-      annotations: [thresholdAnnotation('x', Core.THRESHOLD)]
+    }], baseLayout(t, {
+      height: 200,
+      margin: { l: 4, r: 4, t: 30, b: 4 },
+      bargap: 0,
+      xaxis: axis(t, { range: [0, 100], tickmode: 'array', tickvals: [0, 20, 40, 60, 80, 100],
+        ticktext: ['0', '20', '40', '60', '80', '100' + NBSP + '%'], showline: true, ticks: 'outside' }),
+      yaxis: axis(t, { visible: false, rangemode: 'tozero', range: [0, max * 1.18] }),
+      shapes: [{ type: 'line', xref: 'x', yref: 'paper', x0: Core.THRESHOLD, x1: Core.THRESHOLD, y0: 0, y1: 1.08,
+        line: { color: t.ink, width: 1, dash: 'dash' } }],
+      annotations: [{ x: Core.THRESHOLD, xref: 'x', y: 1.08, yref: 'paper', text: thresholdLabel(Core.THRESHOLD),
+        showarrow: false, xanchor: 'right', yanchor: 'bottom', xshift: -4,
+        font: { family: t.sans, size: 11, color: t.ink2 } }]
     }));
   }
 
-  /** Line chart: {x, series:[{name, y, color?}], threshold?, yTitle?, yRange?} */
+  function defaultSeriesStyle(t, i) {
+    var styles = [
+      { color: t.ink, dash: 'solid' },
+      { color: t.ink3, dash: 'dash' },
+      { color: t.accent, dash: 'solid' },
+      { color: t.rule2, dash: 'dot' }
+    ];
+    return styles[i % styles.length];
+  }
+
+  function lastIndex(ys) {
+    for (var i = (ys || []).length - 1; i >= 0; i--) {
+      if (ys[i] !== null && ys[i] !== undefined && isFinite(Number(ys[i]))) return i;
+    }
+    return -1;
+  }
+
+  /**
+   * Line chart: {x, series:[{name, y, color?, dash?}], threshold?, yTitle?, yRange?}.
+   * Series are labelled directly at their last point (no legend); the threshold is a dotted rule
+   * labelled at the right edge.
+   */
   function line(el, opts) {
     var o = opts || {};
-    var data = (o.series || []).map(function (s, i) {
+    var t = tokens();
+    var x = o.x || [];
+    var series = o.series || [];
+    var annotations = [];
+    var data = series.map(function (s, i) {
+      var st = defaultSeriesStyle(t, i);
+      var color = s.color || st.color;
+      var li = lastIndex(s.y);
+      if (li >= 0) {
+        annotations.push({ x: x[li], y: s.y[li], xref: 'x', yref: 'y', text: String(s.name || ''), showarrow: false,
+          xanchor: 'left', yanchor: 'middle', xshift: 8, font: { family: t.sans, size: 12, color: t.ink } });
+      }
       return {
         type: 'scatter',
-        mode: 'lines+markers',
+        mode: x.length > 1 ? 'lines+markers' : 'markers',
         name: s.name,
-        x: o.x || [],
+        x: x,
         y: s.y || [],
         connectgaps: false,
-        line: { color: s.color || PALETTE[i % PALETTE.length], width: 3 },
-        marker: { size: 8 },
+        line: { color: color, width: 2, dash: s.dash || (s.color ? 'solid' : st.dash) },
+        marker: { size: 6, color: color, line: { width: 0 } },
         hovertemplate: '%{x} — ' + String(s.name || '').replace(/[<>%{}]/g, '') + ' : %{y}<extra></extra>'
       };
     });
+    // Nudge direct labels apart when two series end on (almost) the same value.
+    if (annotations.length === 2 && Math.abs(Number(annotations[0].y) - Number(annotations[1].y)) < 6) {
+      var up = Number(annotations[0].y) >= Number(annotations[1].y) ? 0 : 1;
+      annotations[up].yshift = 8;
+      annotations[1 - up].yshift = -8;
+    }
     var hasThreshold = o.threshold !== undefined && o.threshold !== null;
-    return draw(el, data, baseLayout({
-      height: o.height || 320,
-      xaxis: { type: 'category', fixedrange: true },
-      yaxis: { title: { text: o.yTitle || '' }, range: o.yRange || undefined, rangemode: 'tozero',
-        fixedrange: true, gridcolor: GRID },
-      legend: { orientation: 'h', x: 0, y: 1.12 },
-      shapes: hasThreshold ? [thresholdShape('y', o.threshold)] : [],
-      annotations: hasThreshold ? [thresholdAnnotation('y', o.threshold)] : []
+    if (hasThreshold) {
+      annotations.push({ x: 1, xref: 'paper', y: o.threshold, yref: 'y', text: thresholdLabel(o.threshold),
+        showarrow: false, xanchor: 'right', yanchor: 'bottom', font: { family: t.sans, size: 11, color: t.ink2 } });
+    }
+    var labelRoom = series.reduce(function (m, s) { return Math.max(m, String(s.name || '').length); }, 0) * 7 + 16;
+    return draw(el, data, baseLayout(t, {
+      height: o.height || 280,
+      margin: { l: 4, r: Math.min(140, labelRoom), t: 12, b: 4 },
+      hovermode: 'x',
+      xaxis: axis(t, { type: 'category', showline: true, ticks: 'outside' }),
+      // yTitle is accepted for compatibility but not drawn: the label above the chart names the measure.
+      yaxis: axis(t, { range: o.yRange || undefined, rangemode: 'tozero', showgrid: true, gridcolor: t.rule,
+        gridwidth: 1, nticks: 5 }),
+      shapes: hasThreshold ? [{ type: 'line', xref: 'paper', yref: 'y', x0: 0, x1: 1, y0: o.threshold, y1: o.threshold,
+        line: { color: t.ink, width: 1, dash: 'dot' } }] : [],
+      annotations: annotations
     }));
   }
 
   /**
    * Bar chart: {x, y, colors?, yTitle?, horizontal?}. Extension: {x, series:[{name, y, color?}]}
-   * draws grouped bars with a legend.
+   * draws grouped bars with a legend placed above the plot area (never over the bars).
    */
   function bars(el, opts) {
     var o = opts || {};
+    var t = tokens();
     var horizontal = !!o.horizontal;
+    var palette = [t.rule2, t.ink, t.ink3, t.accent];
     function trace(name, y, color, i) {
-      var t = {
+      var tr = {
         type: 'bar',
         name: name,
         orientation: horizontal ? 'h' : 'v',
-        marker: { color: color || PALETTE[i % PALETTE.length] },
-        hovertemplate: (horizontal ? '%{y} : %{x}' : '%{x} : %{y}') + '<extra></extra>'
+        marker: { color: color || palette[i % palette.length], line: { width: 0 } },
+        hovertemplate: (horizontal ? '%{y} : %{x}' : '%{x} : %{y}') + (name ? ' — ' + String(name).replace(/[<>%{}]/g, '') : '') +
+          '<extra></extra>'
       };
-      if (horizontal) { t.x = y; t.y = o.x || []; } else { t.x = o.x || []; t.y = y; }
-      return t;
+      if (horizontal) { tr.x = y; tr.y = o.x || []; } else { tr.x = o.x || []; tr.y = y; }
+      return tr;
     }
+    var multi = !!(o.series && o.series.length > 1);
     var data = o.series && o.series.length ?
       o.series.map(function (s, i) { return trace(s.name, s.y || [], s.color, i); }) :
-      [trace('', o.y || [], o.colors || ACCENT, 0)];
-    var valueAxis = { title: { text: o.yTitle || '' }, rangemode: 'tozero', fixedrange: true, gridcolor: GRID };
-    var catAxis = { type: 'category', fixedrange: true, automargin: true };
-    return draw(el, data, baseLayout({
-      height: o.height || (horizontal ? Math.max(240, 32 * (o.x || []).length + 80) : 300),
+      [trace('', o.y || [], o.colors || t.ink, 0)];
+    var valueAxis = axis(t, { rangemode: 'tozero', showgrid: true, gridcolor: t.rule, nticks: 5 });
+    var catAxis = axis(t, { type: 'category', showline: true, ticks: 'outside',
+      tickfont: { family: horizontal ? t.sans : t.mono, size: horizontal ? 12 : 11, color: horizontal ? t.ink : t.ink3 } });
+    if (horizontal) catAxis.autorange = 'reversed';
+    return draw(el, data, baseLayout(t, {
+      height: o.height || (horizontal ? Math.max(160, 30 * (o.x || []).length + 40) : 280),
+      margin: { l: 4, r: 8, t: 8, b: 4 },
       barmode: 'group',
-      showlegend: !!(o.series && o.series.length > 1),
-      legend: { orientation: 'h', x: 0, y: 1.12 },
+      bargap: 0.35,
+      bargroupgap: 0.08,
+      showlegend: multi,
+      legend: { orientation: 'h', x: 0, xanchor: 'left', y: 1.02, yanchor: 'bottom', traceorder: 'normal',
+        font: { family: t.sans, size: 12, color: t.ink2 }, itemwidth: 30, itemclick: false, itemdoubleclick: false },
       xaxis: horizontal ? valueAxis : catAxis,
       yaxis: horizontal ? catAxis : valueAxis
     }));
   }
 
-  /** Heatmap: {x, y, z:[[number|null]], zmin=0, zmax=100, title?}; red -> green around the 80 threshold. */
+  /**
+   * Heatmap: {x, y, z:[[number|null]], zmin=0, zmax=100, title?}: sequential single hue (paper -> --ok),
+   * % printed in each cell in mono, no colour bar. `title` is ignored inside the plot (label it above).
+   */
   function heatmap(el, opts) {
     var o = opts || {};
+    var t = tokens();
     var zmin = o.zmin === undefined ? 0 : o.zmin;
     var zmax = o.zmax === undefined ? 100 : o.zmax;
     var z = o.z || [];
     var text = z.map(function (row) {
-      return (row || []).map(function (v) { return v === null || v === undefined ? '' : UI.fmtPct(v, 0); });
+      return (row || []).map(function (v) { return v === null || v === undefined ? '' : UI.fmtPct(v, 0).replace(' %', NBSP + '%'); });
     });
     var yLabels = o.y || [];
     return draw(el, [{
@@ -210,17 +348,18 @@
       zmax: zmax,
       text: text,
       texttemplate: '%{text}',
+      textfont: { family: t.mono, size: 12 },
       hovertemplate: '%{y} — %{x} : %{text}<extra></extra>',
       xgap: 2,
       ygap: 2,
-      colorscale: [[0, '#e74c3c'], [0.5, '#f39c12'], [0.79, '#f7dc6f'], [0.8, '#a9dfbf'], [1, '#2ecc71']],
-      colorbar: { ticksuffix: '%', thickness: 12, outlinewidth: 0 }
-    }], baseLayout({
-      height: Math.max(260, 36 * yLabels.length + 110),
-      title: o.title ? { text: o.title, x: 0, xanchor: 'left', font: { size: 14 } } : undefined,
-      margin: { l: 140, r: 16, t: o.title ? 44 : 20, b: 44 },
-      xaxis: { type: 'category', fixedrange: true },
-      yaxis: { type: 'category', fixedrange: true, automargin: true, autorange: 'reversed' }
+      showscale: false,
+      colorscale: [[0, t.paper2], [0.5, rgba(t.ok, 0.35)], [1, t.ok]]
+    }], baseLayout(t, {
+      height: Math.max(140, 34 * yLabels.length + 40),
+      margin: { l: 4, r: 4, t: 4, b: 4 },
+      xaxis: axis(t, { type: 'category', side: 'top' }),
+      yaxis: axis(t, { type: 'category', autorange: 'reversed', ticksuffix: '  ',
+        tickfont: { family: t.sans, size: 12, color: t.ink } })
     }));
   }
 
@@ -237,7 +376,8 @@
     line: line,
     bars: bars,
     heatmap: heatmap,
-    purge: purge
+    purge: purge,
+    tokens: tokens
   };
 })();
 </script>
