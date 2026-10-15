@@ -228,6 +228,11 @@ var Importer = (function () {
    * (Config.sourceStamp, moved by Store.withLock after every write-back has been flushed) is noted
    * BEFORE the outside read; when it moved by the time the lock is held (or the configured source
    * changed), the source is read again, under the lock.
+   * Out-of-order guard: two runs can overlap (hourly trigger, api_syncNow, api_enableSync) and the lock
+   * is not granted in arrival order, so an older outside read could be committed after a newer one and
+   * revert it (records removed, snapshot-only Galink/IDP set in between lost). Every run that writes
+   * therefore moves the same stamp, under the lock and before its first write: a run whose read
+   * predates that commit reads the source again.
    *
    * Safety rules (user-entered data must never be lost silently):
    *   - an entity / référentiel tab missing from the source does NOT replace the stored snapshot of
@@ -352,7 +357,9 @@ var Importer = (function () {
       t.lap('compare');
       if (!changed && o.skipUnchanged) return result;
 
-      // ---- writes (Applications first, ImportLog last = completion marker)
+      // ---- writes (Applications first, ImportLog last = completion marker). Moving the stamp first
+      // (out-of-order guard) also covers a run that fails half-way through its writes.
+      Config.bumpSourceStamp();
       if (appRecords) Store.replaceEntityMonth(Config.TABS.applications, month, appRecords, Core.KEY_APP);
       if (referentiel) Store.replaceReferentiel(month, referentiel);
       if (posteRecords) Store.replaceEntityMonth(Config.TABS.postes, month, posteRecords, Core.KEY_POSTE);

@@ -26,9 +26,11 @@ var Config = (function () {
   var PROP_SOURCE_INFO = 'SOURCE_INFO';
   /**
    * Source write stamp: moved forward (Store.withLock, after its flush, still holding the lock) by every
-   * execution that wrote into the source spreadsheet (write-back of a live-month edit). The sync reads the
-   * source outside the lock: it notes the stamp before that read and reads the source again under the
-   * lock when the stamp moved, so a write-back that landed in between is never reverted.
+   * execution that wrote into the source spreadsheet (write-back of a live-month edit), and by every
+   * import that writes a snapshot (Importer.importMonth, under the lock, before its writes). The sync
+   * reads the source outside the lock: it notes the stamp before that read and reads the source again
+   * under the lock when the stamp moved, so neither a write-back nor a newer import that landed in
+   * between is ever reverted.
    */
   var PROP_SOURCE_STAMP = 'SOURCE_WRITE_STAMP';
   /**
@@ -183,8 +185,9 @@ var Config = (function () {
 
   /**
    * Moves the source write stamp forward to max(now, previous + 1) (never a value seen before, even
-   * after the property was deleted). Called by Store.withLock only, still holding the lock: the memo
-   * it starts from was then read under the lock, and only lock holders write the stamp.
+   * after the property was deleted). Called under the lock only (Store.withLock after a write-back,
+   * Importer.importMonth before writing a snapshot): the memo it starts from was then read under the
+   * lock, and only lock holders write the stamp.
    */
   function bumpSourceStamp() {
     var next = Math.max(Date.now(), (Number(all_(false)[PROP_SOURCE_STAMP]) || 0) + 1);

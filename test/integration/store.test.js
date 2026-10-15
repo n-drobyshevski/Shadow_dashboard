@@ -281,13 +281,13 @@ test('replaceEntityMonth does one read and one write per tab', () => {
   assert.equal(sb.env.__state.calls.getValues - c0.getValues, 1);
   assert.equal(sb.env.__state.writes.length - w0, 1);
   // reading a month = column A (one narrow getValues, shared with listMonths) + one getValues of
-  // that month's rows only
+  // that month's rows and the row on each side of them (April's last row, the blank row below)
   const c1 = sb.env.__state.calls.getValues;
   const k1 = sb.env.__state.cells.getValues;
   sb.Store.readEntityMonth('Applications', '2026-05');
   assert.equal(sb.env.__state.calls.getValues - c1, 2);
   const rows = data.MONTHS['2026-04'].applications.length + data.MONTHS['2026-05'].applications.length;
-  assert.equal(sb.env.__state.cells.getValues - k1, rows + data.MONTHS['2026-05'].applications.length * 6);
+  assert.equal(sb.env.__state.cells.getValues - k1, rows + (data.MONTHS['2026-05'].applications.length + 2) * 6);
   sb.Store.clearMemo_();
   sb.Store.listMonths();
   const c2 = sb.env.__state.calls.getValues;
@@ -366,12 +366,12 @@ test('month span: rows appended out of order stay in their month, other months a
   assert.deepEqual(months(), [...aprilApps.map(() => '2026-04'), ...mayApps.map(() => '2026-05'), '2026-04', '2026-05']);
   const total = aprilApps.length + mayApps.length + 2;
 
-  // A new call: column A, then May's block only (first May row .. last May row).
+  // A new call: column A, then May's block only (first May row .. last May row, and one row on each side).
   sb.Store.clearMemo_();
   const c0 = getValuesCells(sb);
   const may = sb.Store.readEntityMonth('Applications', '2026-05');
   assert.deepEqual(plain(may.map((r) => r[KEY_APP])), mayApps.map((r) => r[KEY_APP]).concat(['Tard mai']));
-  assert.equal(getValuesCells(sb) - c0, total + (mayApps.length + 2) * 6, 'column A + the May block, not April');
+  assert.equal(getValuesCells(sb) - c0, total + (mayApps.length + 2 + 2) * 6, 'column A + the May block, not April');
   const april = sb.Store.readEntityMonth('Applications', '2026-04');
   assert.deepEqual(plain(april.map((r) => r[KEY_APP])), aprilApps.map((r) => r[KEY_APP]).concat(['Tard avril']));
   assert.equal(april[april.length - 1]._order, aprilApps.length);
@@ -420,6 +420,77 @@ test('month span: rows moved by another execution after column A was read -> who
   assert.deepEqual(timingLines(sb.env).slice(l0).map((l) => [l.stage, l.tab]),
     [['span', 'Applications'], ['sheet', 'Applications']]);
   assert.equal(sb.Store.readEntityMonth('Applications', '2026-04').length, apps('2026-04').length + 2);
+});
+
+/** Applications with April and May; column A memoized (a read-only call, outside the lock). */
+function spanRace(opts) {
+  const sb = boot();
+  sb.Store.replaceEntityMonth('Applications', '2026-04', apps('2026-04'), KEY_APP);
+  sb.Store.replaceEntityMonth('Applications', '2026-05', apps('2026-05'), KEY_APP);
+  const sheet = sb.ss.getSheetByName('Applications');
+  if (opts && opts.exact) sheet.deleteRows(sheet.getLastRow() + 1, sheet.getMaxRows() - sheet.getLastRow()); // no blank rows
+  sb.Store.clearMemo_();
+  sb.Store.listMonths();
+  return { sb, sheet, other: loadGas({ env: sb.env }).ctx.Store };
+}
+const spanLines = (sb, l0) => timingLines(sb.env).slice(l0).filter((l) => l.stage === 'span' || l.stage === 'sheet')
+  .map((l) => [l.stage, l.tab]);
+
+test('month span: the last month grown by another execution after column A was read -> whole tab read', () => {
+  const { sb, other } = spanRace();
+  // The sync rewrites May with one more record, in source order: the last record moves one row down.
+  const grown = apps('2026-05');
+  grown.splice(1, 0, { [KEY_APP]: 'Nouveau' });
+  other.replaceEntityMonth('Applications', '2026-05', grown, KEY_APP);
+  const l0 = timingLines(sb.env).length;
+  const may = sb.Store.readEntityMonth('Applications', '2026-05');
+  assert.deepEqual(plain(may.map((r) => r[KEY_APP])), grown.map((r) => r[KEY_APP]), 'no record left out');
+  assert.deepEqual(spanLines(sb, l0), [['span', 'Applications'], ['sheet', 'Applications']]);
+});
+
+test('month span: a month moved up past the start of its block -> whole tab read', () => {
+  const { sb, other } = spanRace();
+  // April loses a record and May gains one: May's rows still fill the old block, its first record is above it.
+  other.replaceEntityMonth('Applications', '2026-04', apps('2026-04').slice(1), KEY_APP);
+  const grown = apps('2026-05').concat([{ [KEY_APP]: 'Nouveau' }]);
+  other.replaceEntityMonth('Applications', '2026-05', grown, KEY_APP);
+  const l0 = timingLines(sb.env).length;
+  const may = sb.Store.readEntityMonth('Applications', '2026-05');
+  assert.deepEqual(plain(may.map((r) => r[KEY_APP])), grown.map((r) => r[KEY_APP]));
+  assert.deepEqual(spanLines(sb, l0), [['span', 'Applications'], ['sheet', 'Applications']]);
+});
+
+test('month span: a sheet without blank rows that lost one meanwhile -> whole tab read, no range error', () => {
+  const { sb, sheet, other } = spanRace({ exact: true });
+  assert.equal(sheet.getMaxRows(), sheet.getLastRow());
+  // Unchanged: the block ends on the last row of the sheet, nothing to read below it.
+  const l0 = timingLines(sb.env).length;
+  assert.equal(sb.Store.readEntityMonth('Applications', '2026-05').length, apps('2026-05').length);
+  assert.deepEqual(spanLines(sb, l0), [['span', 'Applications']]);
+  // Another execution deletes a May record (deleteRow: the sheet loses its last row).
+  sb.Store.clearMemo_();
+  sb.Store.listMonths();
+  const victim = other.readEntityMonth('Applications', '2026-05')[0];
+  assert.equal(other.deleteEntityRow('Applications', '2026-05', victim._id), true);
+  const l1 = timingLines(sb.env).length;
+  const may = sb.Store.readEntityMonth('Applications', '2026-05');
+  assert.deepEqual(plain(may.map((r) => r[KEY_APP])), apps('2026-05').slice(1).map((r) => r[KEY_APP]));
+  assert.deepEqual(spanLines(sb, l1), [['sheet', 'Applications']]);
+});
+
+test('ImportLog: the last row deleted by hand after column A was read -> whole tab read, no range error', () => {
+  const sb = boot();
+  const entry = (month, k) => ({ month, imported_at: '2026-05-01 0' + k + ':00', source_id: 'SRC',
+    counts: { postes: k, applications: 1, referentiel: 1 }, postes_headers: [], apps_headers: [], warnings: [] });
+  sb.Store.appendImportLog(entry('2026-05', 1));
+  sb.Store.appendImportLog(entry('2026-04', 2));
+  sb.Store.appendImportLog(entry('2026-05', 3));
+  const sheet = sb.ss.getSheetByName('ImportLog');
+  sheet.deleteRows(sheet.getLastRow() + 1, sheet.getMaxRows() - sheet.getLastRow());
+  sb.Store.clearMemo_();
+  sb.Store.listMonths(); // column A memoized
+  sheet.deleteRow(sheet.getLastRow()); // the latest 2026-05 entry
+  assert.equal(sb.Store.latestImportInfo('2026-05').counts.postes, 1);
 });
 
 test('ImportLog: latestImportInfo parses one row (tail, then column A); recentImportLog reads from the bottom', () => {

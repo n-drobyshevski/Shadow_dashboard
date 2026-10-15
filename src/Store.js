@@ -576,10 +576,13 @@ var Store = (function () {
   /**
    * The rows of `month` in a tab whose column A is the month (entities, Référentiel), read without
    * the other months: column A (firstColumn_, usually already read by listMonths in the same call)
-   * gives the first and the last row of the month, and ONE getValues reads that block. Rows of other
-   * months inside the block (a record appended by appendEntityRow after a later month) are skipped
-   * by the row[0] === month filter. When the block no longer matches column A (another execution
-   * moved rows in between: reads outside the lock), the whole tab is read instead. Memoized; shared.
+   * gives the first and the last row of the month, and ONE getValues reads that block plus one row on
+   * each side of it (when the sheet has that row). Rows of other months inside the block (a record
+   * appended by appendEntityRow after a later month) are skipped by the row[0] === month filter.
+   * Reads happen outside the lock, so another execution may have moved rows since column A was read:
+   * when the block no longer matches column A, when a row on either side of it is now `month` (the
+   * month grew, or moved, past the block: its records are no longer all inside it), or when the sheet
+   * lost rows (the block would run past its end), the whole tab is read instead. Memoized; shared.
    * @return {{sheet, schema, base:number, raw:string[][], items:{index:number, row:string[]}[], partial?:true}}
    *   raw = the rows of the block (raw[i] is data row base + i, i.e. sheet row base + i + 2);
    *   items = the rows of `month`, index = data row index (as in readSheet_).
@@ -592,17 +595,30 @@ var Store = (function () {
     var col = firstColumn_(tab);
     var first = col.indexOf(month);
     var span = { sheet: sheet, schema: schema_(tab), base: 0, raw: [], items: [], partial: true };
+    function wholeTab() {
+      delete memo_[tab];
+      var table = readTable_(tab);
+      return (memoOf_(tab).spans[month] = spanOfTable_(table, month));
+    }
     if (first >= 0 && month !== '') {
       var last = col.lastIndexOf(month);
+      var lo = first > 0 ? first - 1 : first;
+      // Below the last row column A had, the sheet itself tells whether a row exists now (data row
+      // index = sheet row - 2); fewer rows than the block means rows were deleted meanwhile.
+      var hi = last + 1 < col.length ? last + 1 : Math.min(last + 1, sheet.getMaxRows() - 2);
+      if (hi < last) return wholeTab();
+      var rows;
+      try {
+        rows = readRows_(tab, lo, hi - lo + 1);
+      } catch (e) {
+        return wholeTab(); // the sheet shrank between getMaxRows and the read: same as above
+      }
+      if ((lo < first && rows[0][0] === month) || (hi > last && rows[rows.length - 1][0] === month)) return wholeTab();
       span.base = first;
-      span.raw = readRows_(tab, first, last - first + 1);
+      span.raw = rows.slice(first - lo, first - lo + last - first + 1);
       for (var i = 0; i < span.raw.length; i++) {
         var isMonth = span.raw[i][0] === month;
-        if (isMonth !== (col[first + i] === month)) {
-          delete memo_[tab];
-          var table = readTable_(tab);
-          return (memoOf_(tab).spans[month] = spanOfTable_(table, month));
-        }
+        if (isMonth !== (col[first + i] === month)) return wholeTab();
         if (isMonth) span.items.push({ index: first + i, row: span.raw[i] });
       }
     }
@@ -896,7 +912,8 @@ var Store = (function () {
    *   memoized column A: the last IMPORT_LOG_TAIL rows first (the latest entry of the current month is
    *   normally there). Otherwise, or when the tail does not have it: column A (memoized, usually read
    *   by listMonths in the same call) scanned from the bottom, then that one row. A row that no longer
-   *   matches column A (rows deleted by hand in between) falls back to reading the whole tab.
+   *   matches column A, or is no longer in the sheet (rows deleted by hand in between), falls back to
+   *   reading the whole tab.
    */
   function latestImportInfo(month) {
     var tab = Config.TABS.importLog;
@@ -912,8 +929,13 @@ var Store = (function () {
     }
     var j = firstColumn_(tab).lastIndexOf(month);
     if (j < 0 || month === '') return null;
-    var row = readRows_(tab, j, 1)[0];
-    if (row[0] === month) return importLogEntry_(row);
+    var row = null;
+    try {
+      row = readRows_(tab, j, 1)[0];
+    } catch (e) {
+      row = null; // past the end of a sheet that lost rows meanwhile: read in full below
+    }
+    if (row && row[0] === month) return importLogEntry_(row);
     delete memo_[tab];
     return lastEntryIn_(readTable_(tab).raw, month);
   }

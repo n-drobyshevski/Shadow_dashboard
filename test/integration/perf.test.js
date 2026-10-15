@@ -38,12 +38,16 @@ const GROUP_ADMIN = 'chef@decathlon.com';
  * tail, the per-execution read memo and the schema-version property brought them to the numbers below.
  * The live-month save then read the whole source tab twice (display values + formulas: 15100 source
  * cells); it now reads the header block, the key column and the edited row's formulas (700 cells),
- * which costs one more, narrow, getDisplayValues (the only bound ever raised, 1 -> 2). The hourly sync
+ * which costs one more, narrow, getDisplayValues (1 -> 2). The hourly sync
  * read the source while holding the script lock; it now reads it before (sourceReadsLocked: 0). The admin
  * bootstrap opened the source for its title and URL (openById 2); it now uses the title stored in the Script
  * Properties and builds the URLs from the ids (1). Cache reads count get and getAll calls: the group
  * memberships a call may need are read in one getAll. doGet renders the admin bootstrap into the page: it
  * costs exactly bootstrapAdmin plus the FAVICON_URL property read, so it gets the slim bootstrap too.
+ * A month span also reads the row on each side of the month's block (same getValues), so that a month
+ * that grew or moved past the block while it was read outside the lock is detected: cellsRead of the
+ * flows that read spans went up by those rows (getMonthData +16, savePostesLive +6, syncNoChange +16).
+ * These are the only bounds ever raised, both for correctness.
  */
 const BASELINE = {
   bootstrapAdmin: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 12801, getDataRange: 0,
@@ -62,16 +66,16 @@ const BASELINE = {
   // Paramètres opens the source (the live check), not the data spreadsheet (its URL is built from the id).
   getSettings: { openById: 1, getValues: 0, getDisplayValues: 0, getFormulas: 0, cellsRead: 0, getDataRange: 0,
     propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
-  getMonthData: { openById: 1, getValues: 8, getDisplayValues: 0, getFormulas: 0, cellsRead: 16265, getDataRange: 0,
+  getMonthData: { openById: 1, getValues: 8, getDisplayValues: 0, getFormulas: 0, cellsRead: 16281, getDataRange: 0,
     propertiesReads: 1, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   getTimeline: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 66813, getDataRange: 2,
     propertiesReads: 1, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   getImportLog: { openById: 1, getValues: 1, getDisplayValues: 0, getFormulas: 0, cellsRead: 96, getDataRange: 0,
     propertiesReads: 1, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   // The write-back reads the source under the lock by design (it writes there next).
-  savePostesLive: { openById: 2, getValues: 4, getDisplayValues: 2, getFormulas: 1, cellsRead: 15301, getDataRange: 1,
+  savePostesLive: { openById: 2, getValues: 4, getDisplayValues: 2, getFormulas: 1, cellsRead: 15307, getDataRange: 1,
     propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 700, sourceReadsLocked: 3 },
-  syncNoChange: { openById: 2, getValues: 10, getDisplayValues: 3, getFormulas: 0, cellsRead: 35965, getDataRange: 3,
+  syncNoChange: { openById: 2, getValues: 10, getDisplayValues: 3, getFormulas: 0, cellsRead: 35981, getDataRange: 3,
     propertiesReads: 4, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 19700, sourceReadsLocked: 0 },
 };
 

@@ -100,8 +100,9 @@ test('Store: ensure, listMonths and sheet lines of a cold execution', () => {
     assert.deepEqual(Object.keys(l), ['stage', 'tab', 'rows', 'ms']);
     assert.ok(isMs(l.rows) && isMs(l.ms));
   }
+  // The month's rows + the (blank) row below them, read to detect a month that grew meanwhile.
   assert.equal(spans.find((l) => l.tab === 'Postes').rows, buildSourceSpreadsheet('2026-05').sheets['Suivi des postes']
-    .values.filter((r, i) => i >= 2 && r[6]).length);
+    .values.filter((r, i) => i >= 2 && r[6]).length + 1);
   assert.equal(spans.find((l) => l.tab === 'ImportLog').rows, 1);
 
   // A full tab read logs a sheet line.

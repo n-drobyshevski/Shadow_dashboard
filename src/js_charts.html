@@ -146,14 +146,21 @@
   var PLOTLY_URL = 'https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.3/plotly.min.js';
   var PLOTLY_TIMEOUT_MS = 30000;
   var plotlyReady = null;
+  var lateDraws = []; // draws that fell back on the timeout (whenLate); null once Plotly can no longer come
 
   function hasPlotly() { return !!(window.Plotly && typeof window.Plotly.react === 'function'); }
+
+  /** Keeps fn to run if the Plotly script still arrives after the timeout (never called once it has). */
+  function whenLate(fn) {
+    if (lateDraws && !hasPlotly()) lateDraws.push(fn);
+  }
 
   /**
    * Charts.ready() -> Promise<Plotly>: adds the Plotly script (async) once and resolves when it has run.
    * Memoized, failures included: a load error, or no load within 30 s, rejects for every caller (the charts
-   * show « Graphique indisponible », nothing retries); a build that still arrives after the timeout serves
-   * the charts drawn from then on. App.boot starts it first, so the download overlaps the data requests.
+   * show « Graphique indisponible »; the script is never requested again). A build that still arrives after
+   * the timeout serves the charts drawn from then on, and redraws the ones that fell back meanwhile and are
+   * still in the page (whenLate). App.boot starts it first, so the download overlaps the data requests.
    */
   function ready() {
     if (plotlyReady) return plotlyReady;
@@ -173,12 +180,20 @@
       }
       script.onload = function () {
         clearTimeout(timer);
-        if (!hasPlotly()) { fail('the script did not define Plotly'); return; }
-        if (settled) { plotlyReady = Promise.resolve(window.Plotly); return; } // late, after the timeout
+        if (!hasPlotly()) { lateDraws = null; fail('the script did not define Plotly'); return; }
+        if (settled) { // late, after the timeout
+          plotlyReady = Promise.resolve(window.Plotly);
+          var late = lateDraws || [];
+          lateDraws = null;
+          late.forEach(function (fn) {
+            try { fn(); } catch (e) { console.error(e); }
+          });
+          return;
+        }
         settled = true;
         resolve(window.Plotly);
       };
-      script.onerror = function () { fail('the script could not be loaded'); };
+      script.onerror = function () { lateDraws = null; fail('the script could not be loaded'); };
       script.async = true;
       script.src = PLOTLY_URL;
       (document.head || document.documentElement).appendChild(script);
@@ -189,7 +204,8 @@
 
   /**
    * Draws now when Plotly is there, else once Charts.ready() settles: then only into an element still in
-   * the page (a page left meanwhile is not drawn), « Graphique indisponible » when Plotly failed.
+   * the page (a page left meanwhile is not drawn), « Graphique indisponible » when Plotly failed (drawn
+   * after all if the script still arrives late and the element is still in the page).
    */
   function draw(el, data, layout) {
     if (!el) return null;
@@ -197,7 +213,13 @@
     return ready().then(function () {
       return el.isConnected ? plot(el, data, layout) : null;
     }, function () {
-      return el.isConnected ? unavailable(el) : null;
+      if (!el.isConnected) return null;
+      whenLate(function () {
+        if (!el.isConnected) return;
+        UI.clear(el); // Plotly draws next to the children it finds: the placeholder goes first
+        plot(el, data, layout);
+      });
+      return unavailable(el);
     });
   }
 
@@ -656,13 +678,22 @@
         return UI.el('section', { class: ['section', opts.sectionClass || 'chart-section'], dataset: { chart: id } },
           UI.el('h2', { class: 'section-title' }, title), box, caption || null);
       },
-      /** Runs the queued draws: at once when Plotly is loaded, else when Charts.ready() settles. */
+      /**
+       * Runs the queued draws: at once when Plotly is loaded, else when Charts.ready() settles (on failure
+       * « Graphique indisponible », then the queue again if the script still arrives late).
+       */
       draw: function () {
         var queue = draws.splice(0);
         if (!queue.length) return;
         if (hasPlotly()) { run(queue); return; }
         ready().then(function () { run(queue); }, function () {
-          queue.forEach(function (d) { if (!purged && d.box.isConnected) unavailable(d.box); });
+          if (purged) return;
+          queue.forEach(function (d) { if (d.box.isConnected) unavailable(d.box); });
+          whenLate(function () {
+            if (purged) return;
+            queue.forEach(function (d) { if (d.box.isConnected) UI.clear(d.box); }); // the placeholders
+            run(queue);
+          });
         });
       },
       purge: function () {

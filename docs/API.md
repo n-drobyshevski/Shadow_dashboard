@@ -271,12 +271,14 @@ Config.rememberSourceTitle(id, title) -> bool  (Importer.importMonth, under the 
                                 writes only when `id` is the configured source and the title changed)
 Config.spreadsheetUrl(id)    -> 'https://docs.google.com/spreadsheets/d/<id>/edit' (links without opening files)
 Config.PROP_SOURCE_STAMP = 'SOURCE_WRITE_STAMP'  (source write stamp: a number moved forward by every
-                        execution that wrote into the source spreadsheet; see Store.withLock and
-                        Importer.importMonth. Deleting it is harmless: at worst one extra source read.)
+                        execution that wrote into the source spreadsheet, and by every import that writes
+                        a snapshot; see Store.withLock and Importer.importMonth. Deleting it is harmless:
+                        at worst one extra source read.)
 Config.sourceStamp()         -> '' | stamp, from the memo (under the lock: the stored value, since withLock
                                 drops the memo; outside it: possibly older, which only causes an extra read)
 Config.bumpSourceStamp()     -> new stamp = max(Date.now(), previous + 1), never a value seen before. Called
-                                by Store.withLock only, still holding the lock.
+                                under the lock only: by Store.withLock (after a write-back) and by
+                                Importer.importMonth (before writing a snapshot).
 Config.setSchemaVersion(dataId, version)   (Store.ensure, once Meta is known to carry `version`)
 Config.PROP_PREFS_PREFIX = 'PREFS_'  (+ lower-cased email: JSON of that account's interface preferences)
 Config.PREF_VALUES    = {sidebar:['open','collapsed']}
@@ -328,10 +330,12 @@ Référentiel `'-'` into `"'- x"`… on read. The `'@'` format is the one and on
 mimics this (plain-text cells store strings verbatim, other cells strip one leading `'`).
 Reads: a whole tab with one `getDataRange().getValues()`; one month of `Postes` / `Applications` /
 `Referentiel` with column A (one narrow read, shared with `listMonths`) + one `getValues()` of the rows
-from the month's first to its last row (rows of other months inside that block — a record appended
-after a later month — are filtered out by `row[0] === month`; when the block no longer matches column A,
-because another execution moved rows in between, the whole tab is read instead); `ImportLog` from the
-bottom. Writes: the smallest contiguous changed block with one `setValues()` (+ one `clearContent()` when
+from the month's first to its last row, plus the row on each side of them when the sheet has it (rows of
+other months inside that block — a record appended after a later month — are filtered out by
+`row[0] === month`). These reads run outside the lock: when the block no longer matches column A, when a
+row on either side of it is now that month (the month grew or moved past the block), or when the sheet
+no longer has the block's last row (rows deleted meanwhile; `getMaxRows()` is asked only when the block
+ends on the last row column A had), the whole tab is read instead; `ImportLog` from the bottom. Writes: the smallest contiguous changed block with one `setValues()` (+ one `clearContent()` when
 a tab shrinks).
 
 **Read memo (per execution).** Whole-tab reads, column A and month blocks are memoized per tab for the
@@ -399,7 +403,8 @@ Store.appendImportLog(entry)            -> void
 Store.latestImportInfo(month)           -> last ImportLog entry for month or null, parsing that row only: the
                                            last 30 rows first unless column A is already memoized, then column
                                            A from the bottom and that one row (a row that no longer matches
-                                           column A -> whole tab). ImportLog is append-only and never pruned:
+                                           column A, or is past the end of the sheet -> whole tab). ImportLog
+                                           is append-only and never pruned:
                                            the latest row of every month is what listMonths and the
                                            incomplete-import repair rely on.
 Store.listRows(tab)                     -> [object] (Actions / Replacements)
@@ -426,7 +431,11 @@ Importer.importMonth(month, overwrite, {skipUnchanged?}) -> SyncResult (see §3)
                                Lost-edit guard: under the lock, when the stamp moved (a write-back was
                                flushed since the outside read began) or the configured source changed,
                                the source is read again under the lock, so a live-month save that landed
-                               in between is never reverted. MONTH_EXISTS when the month
+                               in between is never reverted. Out-of-order guard: an import that writes
+                               moves the same stamp (Config.bumpSourceStamp, under the lock, before its
+                               first write), so of two overlapping runs (hourly trigger, api_syncNow,
+                               api_enableSync) the one whose outside read is older reads the source again
+                               instead of reverting the newer import. MONTH_EXISTS when the month
                                exists and !overwrite. With skipUnchanged, an overwrite that changes nothing
                                (records, headers, référentiel) writes nothing, not even the ImportLog.
                                « Poste générique Decathlon » is added to the postes when an application
@@ -650,11 +659,16 @@ UI.downloadCsv(filename, columns:[string], rows:[object])   (client-side CSV exp
 ### `window.Charts` (`js_charts.html`)
 All draw into a container element, use `{responsive:true, displayModeBar:false}` and French labels. Plotly
 is not in `<head>`: a draw asked before it is loaded waits for `Charts.ready()` (only into an element still in
-the page) and falls back to `UI.empty('Graphique indisponible')` when it could not be loaded.
+the page) and falls back to `UI.empty('Graphique indisponible')` when it could not be loaded. A build that
+still arrives after the 30 s timeout redraws the charts that fell back and are still in the page.
 ```
 Charts.ready()                                        -> Promise<Plotly>: adds the async plotly.min.js 2.35.3 script
-                                                         once (memoized); rejects on a load error or after 30 s,
-                                                         and keeps that failure (no retry). Started by App.boot.
+                                                         once (memoized); a load error or no load within 30 s
+                                                         rejects for the charts waiting then, and the script is
+                                                         never requested again. If that script still runs after
+                                                         the timeout, every later call resolves (later draws are
+                                                         real charts) and the draws that fell back are run again
+                                                         into the elements still in the page. Started by App.boot.
 Charts.gauge(el, value, {height=250})                 -> indicator gauge, bar Core.COLOR_OK if value>=80 else
                                                          COLOR_KO, threshold line at 80 (COLOR_THRESHOLD)
 Charts.riskBars(el, counts /* Core.riskCounts */)     -> bar per RISK_ORDER, colors RISK_COLORS, no legend
@@ -664,7 +678,8 @@ Charts.heatmap(el, {x:[labels], y:[labels], z:[[number|null]], zmin=0, zmax=100,
 Charts.purge(el)
 Charts.board({sectionClass?}) -> {section(title, id, drawFn, caption?), draw(), purge()}  (charts of a page body;
                                  draw() runs the queue at once when Plotly is there, else after Charts.ready(),
-                                 skipping boxes no longer in the page or purged; « Graphique indisponible » on failure)
+                                 skipping boxes no longer in the page or purged; « Graphique indisponible » on failure,
+                                 then the queue again if Plotly still arrives late)
 ```
 
 ### Pages

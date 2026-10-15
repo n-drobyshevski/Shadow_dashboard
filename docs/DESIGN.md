@@ -210,7 +210,8 @@ with the system fallbacks above. The stylesheet must not block the first paint (
   page is `aria-busy`.
 - **Charts last**: Plotly loads on its own, so figures, tables and captions appear with the data; a
   chart box stays empty (120px minimum height, under its label) until Plotly is there, and shows
-  « Graphique indisponible » if it never comes.
+  « Graphique indisponible » if it does not come within 30 s; if it still comes later, the charts
+  of the page shown are drawn then, without any action from the user.
 - **Month change**: the page and the filters stay readable at 45 % opacity (not interactive) until
   the new month is in; no blank page between two months.
 - **Timings are invisible**: boot and server-call durations go to `console.debug` and the Apps Script

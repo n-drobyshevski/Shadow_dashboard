@@ -231,7 +231,8 @@ d'accès compris, ligne `{"stage":"inlineBoot","ok":true,"bytes":…}`) et la pa
 Le navigateur n'appelle donc pas `api_bootstrap` à l'ouverture : il demande aussitôt le mois affiché,
 et en même temps, si une période est mémorisée, son premier mois et l'historique. Plotly (4,5 Mo) et
 les polices se chargent sans bloquer : l'écran de démarrage et les chiffres s'affichent d'abord, les
-graphiques dès que Plotly est là (« Graphique indisponible » s'il ne se charge pas).
+graphiques dès que Plotly est là (« Graphique indisponible » s'il n'est pas là au bout de 30 secondes ;
+s'il arrive plus tard, les graphiques de la page affichée apparaissent alors, sans action de l'utilisateur).
 
 Pour décider d'une optimisation : relever une ouverture à froid admin, une ouverture lecteur, un
 changement de mois, le Suivi temporel, une modification du mois en cours et une synchronisation
@@ -263,9 +264,22 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
       plus la lecture de la source. Une fois la synchronisation terminée, recharger : la modification
       est toujours là, dans l'application et dans la source (jamais annulée). Dans Exécutions, la ligne
       `importMonth` montre `readSource` avant `lockWait`, et `reread: true` (avec `rereadSource`) quand
-      une écriture dans la source est arrivée pendant la lecture. Propriétés du script contient
+      une écriture dans la source (ou une autre synchronisation) est arrivée pendant la lecture. Propriétés du script contient
       `SOURCE_WRITE_STAMP` après une modification du mois en cours (ce garde-fou suppose qu'après
       `SpreadsheetApp.flush()` une autre exécution qui ouvre la source voit l'écriture).
+- [ ] Synchronisations qui se chevauchent : lancer « Synchroniser maintenant » depuis deux sessions
+      presque en même temps (ou juste avant l'heure du déclencheur) en changeant une valeur directement
+      dans la source entre les deux clics : à la fin, l'application montre la valeur la plus récente et
+      le journal n'a pas de changement qui l'annule. La ligne `importMonth` de la synchronisation qui a
+      pris le verrou en second montre `reread: true` ; `SOURCE_WRITE_STAMP` change après chaque
+      synchronisation qui a écrit (ce garde-fou suppose que `LockService` et les Propriétés du script
+      se comportent comme les faux : un verrou acquis voit la propriété écrite par le détenteur précédent).
+- [ ] Lectures d'un mois pendant une écriture : sur un classeur de données dont l'onglet Applications a
+      plus de 1000 lignes (aucune ligne vide en bas), supprimer une application du mois en cours dans
+      une session pendant qu'une autre ouvre ce mois ou change de mois en boucle : jamais d'erreur
+      « coordinates of the range are outside the dimensions of the sheet » (Exécutions), et après
+      « Actualiser » les nombres sont justes (un mois relu pendant une synchronisation qui l'agrandit
+      ne perd pas sa dernière application).
 - [ ] Le déclencheur `syncHourly` apparaît dans l'éditeur (Déclencheurs) et s'exécute toutes les
       heures (Exécutions) ; une synchronisation sans changement n'ajoute rien au journal.
 - [ ] Mesures : dans Exécutions, un appel (par exemple l'ouverture de l'application) montre ses lignes
@@ -322,6 +336,10 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
       script, même URL).
 - [ ] Plotly bloqué (DevTools → Réseau → bloquer `cdnjs.cloudflare.com`) : l'application démarre, les
       chiffres s'affichent et chaque graphique indique « Graphique indisponible ».
+- [ ] Plotly très lent (DevTools → Réseau → limitation personnalisée, par exemple 100 kbit/s, pour que
+      `plotly.min.js` mette plus de 30 secondes) : « Graphique indisponible » s'affiche au bout de
+      30 secondes, puis les graphiques du tableau de bord apparaissent d'eux-mêmes à la fin du
+      téléchargement, sans clic ; Plotly n'est demandé qu'une fois.
 
 ## Tests
 

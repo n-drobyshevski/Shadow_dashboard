@@ -432,6 +432,52 @@ test('control: without the stamp moving, the same race reverts the edit (the gua
   assert.equal(importLine(sb.env).reread, false);
 });
 
+/**
+ * Two overlapping syncs committing out of order: sync A reads the source, then (state.onWaitLock)
+ * Statut of LAB-TEX-01 is changed directly in the source and sync B, from another execution, reads
+ * and commits it before A gets the lock. `forgetStamp` puts the stamp back as it was before B.
+ */
+function syncsOutOfOrder(forgetStamp) {
+  const sb = synced();
+  const ctx = execution(sb.env);
+  sb.env.__state.onWaitLock = () => {
+    const before = stamp(sb.env);
+    const grid = sourceGrid(sb.env, POSTES_TAB);
+    const statut = grid[1].findIndex((h) => h.trim() === 'Statut');
+    sourceSheet(sb.env, POSTES_TAB).getRange(grid.findIndex((r) => r.includes('LAB-TEX-01')) + 1, statut + 1)
+      .setValue('À revoir');
+    const b = ok(execution(sb.env), 'api_syncNow');
+    assert.deepEqual(plain(b.result.changes.postes), { added: 0, removed: 0, changed: 1, values: 1 });
+    assert.notEqual(stamp(sb.env), before, 'the import moved the stamp');
+    if (forgetStamp) sb.env.PropertiesService.getScriptProperties().setProperty(STAMP, before);
+  };
+  const res = ok(ctx, 'api_syncNow');
+  return { sb, res, statut: byName(monthData(sb.ctx, '2026-05').postes, KEY_POSTE, 'LAB-TEX-01').Statut };
+}
+
+test('two syncs committing out of order: the older source read is read again, not committed', () => {
+  const { sb, res, statut } = syncsOutOfOrder(false);
+  assert.equal(statut, 'À revoir', 'the newer import survives the older one');
+  assert.equal(res.result.changed, false, 'no spurious change logged');
+  assert.deepEqual(plain(res.result.changes.postes), { added: 0, removed: 0, changed: 0, values: 0 });
+  assert.equal(importLine(sb.env).reread, true);
+});
+
+test('control: without the stamp moving, the older read reverts the newer import', () => {
+  const { sb, res, statut } = syncsOutOfOrder(true);
+  assert.notEqual(statut, 'À revoir', 'the stale source read wins');
+  assert.deepEqual(plain(res.result.changes.postes), { added: 0, removed: 0, changed: 1, values: 1 });
+  assert.equal(importLine(sb.env).reread, false);
+});
+
+test('a sync that writes nothing does not move the stamp', () => {
+  const sb = synced();
+  const before = stamp(sb.env);
+  const res = ok(execution(sb.env), 'api_syncNow');
+  assert.equal(res.result.changed, false);
+  assert.equal(stamp(sb.env), before);
+});
+
 test('a source configured anew while the sync read the old one: read again under the lock', () => {
   const sb = synced();
   const otherDef = source('2026-05');
@@ -514,7 +560,7 @@ test('Paramètres checks the source live; when it is not accessible the stored t
   assert.deepEqual(st.opened.slice(opened).filter((id) => id === SOURCE_ID), []);
 });
 
-test('the source write stamp moves after the flush, under the lock, only when the source may have changed', () => {
+test('the source write stamp moves under the lock: after the flush of a write-back, before an import\'s writes', () => {
   const sb = synced();
   const env = sb.env;
   const props = env.PropertiesService.getScriptProperties();
@@ -535,7 +581,7 @@ test('the source write stamp moves after the flush, under the lock, only when th
   assert.ok(bumps[0].flushes > flushes, 'flushed before the stamp moved');
   const first = Number(bumps[0].v);
 
-  // No source write: Galink / IDP only, a refused formula cell, a sync, a past-month edit.
+  // No source write: Galink / IDP only, a refused formula cell, a sync that changes nothing.
   const apps = monthData(sb.ctx, '2026-05').applications;
   ok(sb.ctx, 'api_saveApplications', { month: '2026-05', changes: [
     { id: byName(apps, KEY_APP, 'Figma')._id, updates: { Galink: 'Oui' } }] });
@@ -543,15 +589,20 @@ test('the source write stamp moves after the flush, under the lock, only when th
   const score = grid[1].indexOf('Score conformité');
   sourceSheet(env, POSTES_TAB).getRange(grid.findIndex((r) => r.includes('LAB-TEX-01')) + 1, score + 1).setValue('=AVERAGE(J3:N3)');
   fail(sb.ctx, 'api_savePostes', { month: '2026-05', changes: [{ id: id('LAB-TEX-01'), updates: { 'Score conformité': '90%' } }] }, 'VALIDATION');
-  ok(sb.ctx, 'api_syncNow');
   assert.equal(bumps.length, 1);
+  // A sync that writes a snapshot (the formula typed in the source above changed the score) moves it
+  // too, under the lock, before its writes (out-of-order guard); the next one, unchanged, does not.
+  assert.equal(ok(sb.ctx, 'api_syncNow').result.changed, true);
+  assert.equal(bumps.length, 2);
+  assert.equal(ok(sb.ctx, 'api_syncNow').result.changed, false);
+  assert.equal(bumps.length, 2);
 
   // Add, rename, delete, generic poste: one bump each, always moving forward.
   const added = ok(sb.ctx, 'api_addApplication', { month: '2026-05', record: { [KEY_APP]: 'Canva' } });
   ok(sb.ctx, 'api_renameApplication', { month: '2026-05', id: added._id, newName: 'Canva Pro' });
   ok(sb.ctx, 'api_deleteApplication', { month: '2026-05', id: added._id });
   ok(sb.ctx, 'api_addGenericPoste', { month: '2026-05' });
-  assert.equal(bumps.length, 5);
+  assert.equal(bumps.length, 6);
   assert.ok(bumps.every((b) => b.lockHeld));
   const values = bumps.map((b) => Number(b.v));
   assert.ok(values.every((v, i) => i === 0 || v > values[i - 1]), 'strictly increasing: ' + values);
@@ -560,7 +611,7 @@ test('the source write stamp moves after the flush, under the lock, only when th
   // A value refused by data validation: the stamp moves anyway (an earlier cell may have been written).
   sb.env.__fault({ method: 'setValue', id: SOURCE_ID, sheet: POSTES_TAB, message: 'Exception: The data you entered violates the data validation rules set on this cell.' });
   fail(sb.ctx, 'api_savePostes', { month: '2026-05', changes: [{ id: id('LAB-CHA-01'), updates: { Statut: 'n/a' } }] }, 'VALIDATION');
-  assert.equal(bumps.length, 6);
+  assert.equal(bumps.length, 7);
 
   // The same clock reading twice still moves the stamp.
   const now = Date.now;
@@ -571,7 +622,7 @@ test('the source write stamp moves after the flush, under the lock, only when th
   } finally {
     Date.now = now;
   }
-  assert.equal(Number(bumps[7].v), Number(bumps[6].v) + 1);
+  assert.equal(Number(bumps[8].v), Number(bumps[7].v) + 1);
   props.setProperty = setProperty;
 
   // Writing into the source outside the lock is a bug, refused.

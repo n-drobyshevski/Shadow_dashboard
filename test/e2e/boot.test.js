@@ -224,6 +224,46 @@ describe('Plotly without blocking', () => {
     });
   });
 
+  test('Plotly after the 30 s timeout: the charts that fell back are drawn when it arrives, without user action', async () => {
+    // Fake clock: the 30 s timeout is run at once, while the CDN answer is held back 4 s (real time).
+    await withApp({ boot: true, plotly: { delayMs: 4000 }, idle: false, beforeGoto: (page) => page.clock.install() },
+      async (app) => {
+        const { page } = app;
+        await page.waitForSelector('#main .chart-box');
+        await page.clock.runFor(30100);
+        await page.waitForFunction((n) => {
+          const boxes = document.querySelectorAll('#main .chart-box');
+          return boxes.length === n && [...boxes].every((b) => b.textContent.trim() === 'Graphique indisponible');
+        }, CHARTS.length);
+        assert.equal(await page.evaluate(() => typeof window.Plotly), 'undefined', 'Plotly still on its way');
+
+        await page.waitForFunction(() => typeof window.Plotly !== 'undefined');
+        await page.waitForFunction((ids) => ids.every((id) => (window.__plots || []).some((p) => p.id === id)), CHARTS);
+        assert.deepEqual(await page.$$eval('#main .chart-box', (bs) => bs.filter((b) => /Graphique indisponible/.test(b.textContent))
+          .map((b) => b.id)), [], 'every placeholder replaced by its chart');
+        // Only the boxes of the page still shown are redrawn, once each, and the script is not requested again.
+        assert.deepEqual((await app.plots()).map((p) => p.id).sort(), [...CHARTS].sort());
+        assert.equal(await page.$$eval('script[src*="plotly"]', (n) => n.length), 1);
+        assert.deepEqual(app.errors, []);
+      });
+  });
+
+  test('Plotly after the timeout, the page left meanwhile: nothing is drawn into the old page', async () => {
+    await withApp({ boot: true, plotly: { delayMs: 4000 }, idle: false, beforeGoto: (page) => page.clock.install() },
+      async (app) => {
+        const { page } = app;
+        await page.waitForSelector('#main .chart-box');
+        await page.clock.runFor(30100);
+        await page.waitForFunction(() => /Graphique indisponible/.test(document.querySelector('#main').textContent));
+        await page.evaluate(() => window.App.go('postes'));
+        await page.waitForSelector('#main .page[data-page="postes"]');
+        await page.waitForFunction(() => typeof window.Plotly !== 'undefined');
+        await page.clock.runFor(100);
+        assert.deepEqual((await app.plots()).map((p) => p.id), []);
+        assert.deepEqual(app.errors, []);
+      });
+  });
+
   test('Plotly failing: « Graphique indisponible » in every chart, the rest of the page works, no retry', async () => {
     await withApp({ boot: true, plotly: { fail: true } }, async (app) => {
       const { page } = app;
