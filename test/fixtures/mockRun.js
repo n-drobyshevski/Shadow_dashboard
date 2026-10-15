@@ -12,10 +12,12 @@
  *                                   one method per api_*; argument = JSON string, success value = JSON
  *                                   envelope string {ok, data|error}, exactly like the real server.
  *   - window.google.script.history  push / replace / setChangeHandler stub (recorded on window.__history)
- *   - window.google.script.url      getLocation(cb) stub
+ *   - window.google.script.url      getLocation(cb) stub: parameters from window.__mockLocation ({} by
+ *                                   default), calls counted in window.__locationCalls
  *   - window.__calls                [{name, args}] every call, args already JSON-parsed
  *   - window.__pending              number of calls whose handler has not run yet
- *   - window.__mock                 {db, failNext:{api_name: {code, message} | {transport:true}}}
+ *   - window.__mock                 {db, failNext:{api_name: {code, message} | {transport:true}}}; a key
+ *                                   'api_name:YYYY-MM' fails only the next call for that month (args.month)
  *
  * Records are enriched at call time with window.Core (served by coreScript()), so the mock always
  * agrees with the real Core implementation. Nothing here references Node globals at runtime.
@@ -676,8 +678,11 @@ function mockMain(FIX, OPTS) {
     window.__pending++;
     setTimeout(function () {
       window.__pending--;
-      var forced = window.__mock.failNext[name];
-      if (forced) delete window.__mock.failNext[name];
+      // failNext['api_x:2026-04'] only fails the call for that month; failNext['api_x'] the next call.
+      var failKey = args && typeof args === 'object' && window.__mock.failNext[name + ':' + args.month] ?
+        name + ':' + args.month : name;
+      var forced = window.__mock.failNext[failKey];
+      if (forced) delete window.__mock.failNext[failKey];
       if (forced && forced.transport) {
         if (onFailure) onFailure(new Error('ScriptError: transport simulé'), userObject);
         return;
@@ -719,7 +724,14 @@ function mockMain(FIX, OPTS) {
       setChangeHandler: function (fn) { changeHandler = fn; }
     },
     url: {
-      getLocation: function (cb) { setTimeout(function () { cb({ hash: '', parameter: {}, parameters: {} }); }, 0); }
+      // URL parameters of the outer page: window.__mockLocation (e.g. {page:'apps'}, set by an init script).
+      getLocation: function (cb) {
+        var p = window.__mockLocation || {};
+        var all = {};
+        Object.keys(p).forEach(function (k) { all[k] = [p[k]]; });
+        window.__locationCalls = (window.__locationCalls || 0) + 1;
+        setTimeout(function () { cb({ hash: '', parameter: p, parameters: all }); }, 0);
+      }
     },
     host: { close: function () {}, setHeight: function () {}, setWidth: function () {} }
   };
@@ -757,4 +769,30 @@ function buildMockScript({ empty = false, configured = true, delayMs = 0, email,
     currentMonth: currentMonth || null, sync: sync || null }) + ');';
 }
 
-module.exports = { buildMockScript };
+/**
+ * The JSON envelope string api_bootstrap returns for these mock options, computed in Node by running the
+ * same mock script over the real Core in a vm: what doGet would inline into the page for that visitor
+ * (see test/helpers/render.js, option `boot`). The browser mock starts from the same fixtures, so the
+ * inline data and the later google.script.run answers agree.
+ * @param {object} [options] same as buildMockScript
+ * @returns {string} '{"ok":true,"data":{...}}' or '{"ok":false,"error":{...}}'
+ */
+function bootstrapEnvelope(options = {}) {
+  const vm = require('node:vm');
+  const { coreScript } = require('../helpers/render');
+  const quiet = () => {};
+  const ctx = vm.createContext({ console: { log: quiet, info: quiet, debug: quiet, warn: quiet, error: quiet } });
+  ctx.window = ctx;
+  ctx.setTimeout = (fn) => { fn(); return 0; };   // answers synchronously
+  vm.runInContext(coreScript(), ctx);
+  vm.runInContext(buildMockScript({ ...options, delayMs: 0 }), ctx);
+  let out = null;
+  ctx.google.script.run
+    .withSuccessHandler((s) => { out = s; })
+    .withFailureHandler((err) => { out = JSON.stringify({ ok: false, error: { code: 'TRANSPORT', message: String(err && err.message) } }); })
+    .api_bootstrap('null');
+  if (typeof out !== 'string') throw new Error('bootstrapEnvelope: the mock did not answer');
+  return out;
+}
+
+module.exports = { buildMockScript, bootstrapEnvelope };

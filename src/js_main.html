@@ -1045,8 +1045,18 @@
     State.loadMonth(month).then(finish, finish);
   }
 
-  /** Initial page from the Apps Script URL (?page=xxx), with a short timeout outside Apps Script. */
+  /** A page id of NAV, else null (the user, and so the admin-only pages, may not be known yet: mountPage falls back). */
+  function knownPage(p) {
+    return p && NAV.some(function (n) { return n.id === p; }) ? p : null;
+  }
+
+  /**
+   * Initial page from the Apps Script URL (?page=xxx): the one doGet rendered into the page (#boot-page,
+   * read once), else google.script.url.getLocation with a short timeout outside Apps Script.
+   */
   function initialPage() {
+    var inline = State.takeInline('boot-page');
+    if (inline !== undefined) return Promise.resolve(knownPage(inline));
     return new Promise(function (resolve) {
       var done = false;
       function finish(p) { if (!done) { done = true; resolve(p); } }
@@ -1055,9 +1065,7 @@
       setTimeout(function () { finish(null); }, 1500);
       try {
         url.getLocation(function (loc) {
-          var p = loc && loc.parameter && loc.parameter.page;
-          // The user (and so the admin-only pages) is not known yet: mountPage falls back later.
-          finish(p && NAV.some(function (n) { return n.id === p; }) ? p : null);
+          finish(knownPage(loc && loc.parameter && loc.parameter.page));
         });
       } catch (e) { finish(null); }
     });
@@ -1143,7 +1151,26 @@
     };
   })();
 
+  /** Pages that compare the period's last month with its first one: they load both months. */
+  var FROM_MONTH_PAGES = ['dashboard', 'postes', 'apps'];
+
+  /**
+   * Boot, once the bootstrap is in: the other data the first page will ask for, requested together with
+   * the selected month instead of after the splash (latest month first). Not awaited: the page picks up
+   * the same requests (State shares pending requests) and shows their errors itself.
+   */
+  function prefetchLanding() {
+    var info = navInfo(State.get().page) || visibleNav()[0];
+    var per = State.period();
+    function ignore() { return null; }
+    if (!per.single && FROM_MONTH_PAGES.indexOf(info.id) >= 0) State.loadMonth(per.from).catch(ignore);
+    // The dashboard draws the period's sparklines from the history; the timeline page is the history.
+    if ((info.id === 'dashboard' && !per.single) || info.id === 'timeline') State.loadTimeline().catch(ignore);
+  }
+
   function boot() {
+    // Plotly downloads while the bootstrap and the first month load (charts wait for it, nothing else does).
+    Charts.ready();
     sidebar = document.getElementById('sidebar');
     appbar = document.getElementById('appbar');
     main = document.getElementById('main');
@@ -1165,14 +1192,17 @@
     bootTiming.start();
     splash.show();
     splash.step('Vérification de l’accès…');
-    Promise.all([State.refreshBootstrap(), initialPage()]).then(function (res) {
+    // The first boot answers from the bootstrap doGet put into the page when there is one (no server call).
+    Promise.all([State.refreshBootstrap({ useInline: true }), initialPage()]).then(function (res) {
       if (res[1]) State.set({ page: res[1] });
       applySavedPeriod();
       var s = State.get();
       if (!s.configured || !s.month) return null;
       // Warm the month cache behind the splash: the first page then mounts with its data, no skeleton.
       splash.step('Chargement de ' + Fmt.monthLong(s.month) + '…');
-      return State.loadMonth(s.month).catch(function () { return null; }); // the page shows its own error
+      var first = State.loadMonth(s.month).catch(function () { return null; }); // the page shows its own error
+      prefetchLanding();
+      return first;
     }).then(function () {
       booted = true;
       syncSidebarPref();
@@ -1199,7 +1229,9 @@
     ROLE_LABELS: ROLE_LABELS
   };
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
-  else boot();
+  // The scripts close <body>: everything boot() touches is already parsed, so it need not wait for
+  // DOMContentLoaded (kept as a fallback should the shell ever come after the scripts).
+  if (document.getElementById('main') || document.readyState !== 'loading') boot();
+  else document.addEventListener('DOMContentLoaded', boot);
 })();
 </script>

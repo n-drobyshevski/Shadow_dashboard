@@ -226,6 +226,13 @@ Côté navigateur, la console (niveau « Verbose » / « Commentaires », dans l
 affiche `[rpc] api_getMonthData 1350ms` pour chaque appel et `[boot] ready …` à la fin du démarrage ;
 l'écart avec le `ms` du serveur est le coût de `google.script.run` lui-même.
 
+Ouverture à froid : `doGet` met déjà dans la page le démarrage du visiteur (`api_bootstrap`, contrôle
+d'accès compris, ligne `{"stage":"inlineBoot","ok":true,"bytes":…}`) et la page demandée (`?page=`).
+Le navigateur n'appelle donc pas `api_bootstrap` à l'ouverture : il demande aussitôt le mois affiché,
+et en même temps, si une période est mémorisée, son premier mois et l'historique. Plotly (4,5 Mo) et
+les polices se chargent sans bloquer : l'écran de démarrage et les chiffres s'affichent d'abord, les
+graphiques dès que Plotly est là (« Graphique indisponible » s'il ne se charge pas).
+
 Pour décider d'une optimisation : relever une ouverture à froid admin, une ouverture lecteur, un
 changement de mois, le Suivi temporel, une modification du mois en cours et une synchronisation
 horaire, puis comparer ouverture du classeur, lectures d'onglets et aller-retour. Les nombres d'appels
@@ -281,8 +288,9 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
 - [ ] Paramètres → Journal des synchronisations : les 12 dernières synchronisations, la plus récente en
       haut, avec leurs alertes ; l'appel `api_getImportLog` ne lit que le bas de l'onglet `ImportLog`
       (ligne `span`, `rows` = 12).
-- [ ] Titre de la source sans ouverture : dans Exécutions, l'appel `api_bootstrap` d'un admin ne montre
-      plus qu'une ouverture (le classeur de données ; ligne `ensure`) ; les liens « Données » et
+- [ ] Titre de la source sans ouverture : dans Exécutions, l'appel `api_bootstrap` d'un admin (dans
+      l'exécution `doGet` à l'ouverture, seul après « Actualiser ») ne montre plus qu'une ouverture (le
+      classeur de données ; ligne `ensure`) ; les liens « Données » et
       « Source » de la barre latérale ouvrent les bons classeurs (URL construites à partir des ids).
       Renommer le classeur source dans Drive : le nouveau nom apparaît après la synchronisation horaire
       suivante (ou « Synchroniser maintenant ») ; Propriétés du script contient `SOURCE_INFO`
@@ -298,6 +306,22 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
 - [ ] Deux sessions admin : ajouter un compte différent dans Paramètres → Accès depuis chacune, à
       quelques instants d'intervalle (la seconde attend le verrou) ; après rechargement, la liste
       contient les deux comptes.
+- [ ] Démarrage intégré à la page : à l'ouverture, Exécutions montre pour `doGet` les lignes
+      `api_bootstrap` puis `{"stage":"inlineBoot","ok":true,…}`, et la console n'a **pas** de ligne
+      `[rpc] api_bootstrap` (la première est `api_getMonthData`). Comparer la durée de l'exécution
+      `doGet` et le temps d'apparition de l'écran de démarrage avant / après cette version.
+- [ ] Un compte sans accès : `inlineBoot` avec `"ok":false`, puis l'écran « Accès refusé » (le
+      navigateur a appelé `api_bootstrap` lui-même) ; un lecteur voit sa vue lecteur sans appel
+      `api_bootstrap`.
+- [ ] `…/exec?page=postes` ouvre directement Postes (et `?page=settings` pour un lecteur, le tableau de
+      bord) ; « Actualiser » après une nouvelle synchronisation recharge bien les données (appel
+      `api_bootstrap` dans la console).
+- [ ] Le bac à sable HtmlService garde les `<script type="application/json">` et l'attribut
+      `onload` de la feuille de polices : les polices IBM Plex s'appliquent (onglet Réseau : la feuille
+      Google Fonts ne bloque plus le rendu) et Plotly n'est téléchargé qu'une fois (préchargement puis
+      script, même URL).
+- [ ] Plotly bloqué (DevTools → Réseau → bloquer `cdnjs.cloudflare.com`) : l'application démarre, les
+      chiffres s'affichent et chaque graphique indique « Graphique indisponible ».
 
 ## Tests
 
@@ -337,7 +361,9 @@ polices ; sans eux, le harnais utilise des substituts.
 - **Comptes du domaine uniquement** : l'adresse des visiteurs d'un autre domaine n'est pas transmise
   par Google, ils ne peuvent donc pas être autorisés. Les écritures passent par un verrou (attente 20 s, sinon « Une autre opération est en cours. Réessayez dans quelques instants. »).
 - Les modifications de code ne sont visibles sur l'URL publiée qu'après `npm run deploy`.
-- Le navigateur doit pouvoir charger Plotly (cdnjs.cloudflare.com) et Google Fonts.
+- Le navigateur doit pouvoir charger Plotly (cdnjs.cloudflare.com) et Google Fonts ; sans eux,
+  l'application fonctionne avec « Graphique indisponible » à la place des graphiques et les polices
+  système.
 - Chaque mois ajoute une ligne par poste et par application au classeur de données (le mois en cours
   est réécrit, pas dupliqué) ; Google Sheets plafonne à 10 millions de cellules par classeur.
 
@@ -384,7 +410,10 @@ stays stable (without `DEPLOYMENT_ID` a new deployment and URL are created). If 
 spreadsheet is really gone, delete the `DATA_SPREADSHEET_ID` script property. Verify once on real
 Sheets that values starting with `= + - @ '` round-trip unchanged. Timing: every server call logs
 one-line JSON timings (`{api, ms, authMs, ok}` plus per-stage lines, see `docs/API.md` §4 Perf) to the
-Executions log, and the browser console logs `[rpc] <name> <ms>ms` at the Verbose level;
+Executions log, and the browser console logs `[rpc] <name> <ms>ms` at the Verbose level. Cold open:
+doGet renders the visitor's bootstrap envelope (role check included; nothing when refused) and the
+`?page=` into the page, so the client issues the month (and, with a saved period, its first month and the
+history) at once; Plotly and the fonts load without blocking;
 `test/integration/perf.test.js` pins the Sheets call counts of the main flows on a large data
 spreadsheet. Server reads are scoped: one month's rows are located through column A and read as one
 block (never every month), ImportLog is read from the bottom, reads are memoized per execution (dropped

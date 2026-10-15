@@ -10,8 +10,9 @@
  *
  * The app is rendered with test/helpers/render.js, google.script.run is mocked with
  * test/fixtures/mockRun.js, and the page is loaded from a file:// URL in a temp dir. The Plotly CDN
- * request is answered with the cached real build (.artifacts/plotly.min.js) when present, else with a
- * stub. In both cases Plotly.newPlot/react calls are recorded on window.__plots = [{fn, id, data}].
+ * request (the preload, then the script Charts.ready() adds at boot: same URL, matched by glob) is
+ * answered with the cached real build (.artifacts/plotly.min.js) when present, else with a stub; option
+ * `plotly` delays it or makes it fail. waitIdle also waits for Charts.ready() to settle. In both cases Plotly.newPlot/react calls are recorded on window.__plots = [{fn, id, data}].
  * Google Fonts requests are answered from .artifacts/fonts/ (fonts.css for fonts.googleapis.com/css2,
  * fonts.gstatic.com files by their path with '/' replaced by '_'), so screenshots use the real IBM Plex
  * faces; when the cache is missing they are aborted and the system fallbacks are used.
@@ -30,7 +31,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { chromium } = require('playwright');
 const { renderIndex } = require('../helpers/render');
-const { buildMockScript } = require('../fixtures/mockRun');
+const { buildMockScript, bootstrapEnvelope } = require('../fixtures/mockRun');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const PLOTLY_CACHE = path.join(ROOT, '.artifacts', 'plotly.min.js');
@@ -108,6 +109,9 @@ async function launchBrowser() {
 /** Waits until every mocked server call has been answered and the DOM had a chance to settle. */
 async function waitIdle(page, timeout = 10000) {
   await page.waitForFunction(() => window.__pending === 0, null, { timeout });
+  // Plotly loads on its own (Charts.ready, started at boot): the queued chart draws run once it settles.
+  await page.evaluate(() => (window.Charts && typeof window.Charts.ready === 'function' ?
+    window.Charts.ready().then(() => null, () => null) : null));
   await page.evaluate(() => new Promise((r) => setTimeout(r, 30)));
   await page.waitForFunction(() => window.__pending === 0, null, { timeout });
 }
@@ -122,10 +126,15 @@ async function waitIdle(page, timeout = 10000) {
  *   currentMonth / sync: see buildMockScript (the month the sync follows, sync status overrides).
  *   beforeGoto(page): runs before the page loads (e.g. page.clock.install()). idle:false skips the final
  *   waitIdle (needed with a fake clock).
+ *   boot: what doGet inlines into the page (#boot-data): true = the envelope the mock's api_bootstrap
+ *   returns for these same options (bootstrapEnvelope), a string = that envelope; left out = nothing
+ *   inline (the client calls api_bootstrap). inlinePage: doGet's ?page= (#boot-page); defaults to ''
+ *   (no parameter) with `boot`, else nothing inline (the client asks google.script.url.getLocation).
+ *   plotly: {delayMs} answers the Plotly CDN request late, {fail:true} makes it fail.
  */
 async function openApp({ empty = false, configured = true, page: pageId = 'dashboard',
   viewport = { width: 1400, height: 900 }, delayMs = 0, email, readySelector, failNext, beforeGoto, currentMonth, sync,
-  idle = true, prefs } = {}) {
+  idle = true, prefs, boot, inlinePage, plotly = {} } = {}) {
   const browser = await launchBrowser();
   const context = await browser.newContext({ viewport, locale: 'fr-FR', timezoneId: 'Europe/Paris' });
   const page = await context.newPage();
@@ -137,9 +146,13 @@ async function openApp({ empty = false, configured = true, page: pageId = 'dashb
   });
   page.on('pageerror', (err) => errors.push('pageerror: ' + (err && err.stack ? err.stack : String(err))));
 
-  await page.route(PLOTLY_URL_GLOB, (route) => route.fulfill({
-    status: 200, contentType: 'application/javascript; charset=utf-8', body: plotlyScript(),
-  }));
+  const plotlyRequests = [];
+  await page.route(PLOTLY_URL_GLOB, async (route) => {
+    plotlyRequests.push(route.request().url());
+    if (plotly.delayMs) await new Promise((r) => setTimeout(r, plotly.delayMs));
+    if (plotly.fail) return route.abort('failed');
+    return route.fulfill({ status: 200, contentType: 'application/javascript; charset=utf-8', body: plotlyScript() });
+  });
   // Fonts come from the local cache; any other network request would hang or fail in the sandbox:
   // block it explicitly.
   await page.route(/^https?:\/\//, (route) => {
@@ -150,12 +163,19 @@ async function openApp({ empty = false, configured = true, page: pageId = 'dashb
     return route.abort();
   });
 
-  const html = renderIndex({ inject: '<script>' + buildMockScript({ empty, configured, delayMs, email, failNext, prefs, currentMonth, sync }) + '</script>' });
+  const mockOptions = { empty, configured, delayMs, email, failNext, prefs, currentMonth, sync };
+  const html = renderIndex({
+    inject: '<script>' + buildMockScript(mockOptions) + '</script>',
+    boot: boot === true ? bootstrapEnvelope(mockOptions) : boot,
+    page: inlinePage !== undefined ? inlinePage : boot !== undefined ? '' : undefined,
+  });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shadow-e2e-'));
   const file = path.join(dir, 'index.html');
   fs.writeFileSync(file, html);
   if (beforeGoto) await beforeGoto(page);
-  await page.goto('file://' + file);
+  // Not 'load': the Plotly script the app adds at boot holds the load event back while it downloads, and
+  // what follows waits for the app itself (selectors, then idle).
+  await page.goto('file://' + file, { waitUntil: 'domcontentloaded' });
 
   if (readySelector) {
     await page.waitForSelector(readySelector, { timeout: 15000 });
@@ -175,6 +195,7 @@ async function openApp({ empty = false, configured = true, page: pageId = 'dashb
     file,
     calls: () => page.evaluate(() => window.__calls),
     plots: () => page.evaluate(() => window.__plots || []),
+    plotlyRequests: () => plotlyRequests.slice(),
     waitIdle: () => waitIdle(page),
     async goto(id) {
       await page.evaluate((p) => window.App.go(p), id);

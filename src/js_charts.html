@@ -3,8 +3,9 @@
  * window.Charts — Plotly wrappers with one shared "audit ledger" theme (docs/API.md §5, docs/DESIGN.md).
  *
  * Every function draws into `el` with Plotly.react (idempotent: redraws reuse the same element),
- * config {responsive:true, displayModeBar:false}, and falls back to UI.empty('Graphique indisponible')
- * when Plotly could not be loaded (CDN blocked, offline...).
+ * config {responsive:true, displayModeBar:false}. Plotly is loaded by Charts.ready() (async, never blocking
+ * the page): a draw asked before it is there waits for it, and falls back to UI.empty('Graphique
+ * indisponible') when Plotly could not be loaded (CDN blocked, offline...).
  *
  * Theme: IBM Plex Sans, transparent backgrounds, no gridlines unless they carry reading value, tight
  * margins, French separators, no titles inside plots (the page puts a small-caps label above each chart).
@@ -139,9 +140,68 @@
     return null;
   }
 
+  // ------------------------------------------------------------------------------ Plotly loading
+
+  // Same build as the <link rel="preload"> of index.html; never a blocking <script> in <head>.
+  var PLOTLY_URL = 'https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.3/plotly.min.js';
+  var PLOTLY_TIMEOUT_MS = 30000;
+  var plotlyReady = null;
+
+  function hasPlotly() { return !!(window.Plotly && typeof window.Plotly.react === 'function'); }
+
+  /**
+   * Charts.ready() -> Promise<Plotly>: adds the Plotly script (async) once and resolves when it has run.
+   * Memoized, failures included: a load error, or no load within 30 s, rejects for every caller (the charts
+   * show « Graphique indisponible », nothing retries); a build that still arrives after the timeout serves
+   * the charts drawn from then on. App.boot starts it first, so the download overlaps the data requests.
+   */
+  function ready() {
+    if (plotlyReady) return plotlyReady;
+    if (hasPlotly()) {
+      plotlyReady = Promise.resolve(window.Plotly);
+      return plotlyReady;
+    }
+    var settled = false;
+    plotlyReady = new Promise(function (resolve, reject) {
+      var script = document.createElement('script');
+      var timer = setTimeout(function () { fail('no load after ' + PLOTLY_TIMEOUT_MS + ' ms'); }, PLOTLY_TIMEOUT_MS);
+      function fail(why) {
+        clearTimeout(timer);
+        if (settled) return;
+        settled = true;
+        reject(new Error('Plotly unavailable: ' + why));
+      }
+      script.onload = function () {
+        clearTimeout(timer);
+        if (!hasPlotly()) { fail('the script did not define Plotly'); return; }
+        if (settled) { plotlyReady = Promise.resolve(window.Plotly); return; } // late, after the timeout
+        settled = true;
+        resolve(window.Plotly);
+      };
+      script.onerror = function () { fail('the script could not be loaded'); };
+      script.async = true;
+      script.src = PLOTLY_URL;
+      (document.head || document.documentElement).appendChild(script);
+    });
+    plotlyReady.catch(function (e) { console.warn(e.message); });
+    return plotlyReady;
+  }
+
+  /**
+   * Draws now when Plotly is there, else once Charts.ready() settles: then only into an element still in
+   * the page (a page left meanwhile is not drawn), « Graphique indisponible » when Plotly failed.
+   */
   function draw(el, data, layout) {
     if (!el) return null;
-    if (!window.Plotly || typeof window.Plotly.react !== 'function') return unavailable(el);
+    if (hasPlotly()) return plot(el, data, layout);
+    return ready().then(function () {
+      return el.isConnected ? plot(el, data, layout) : null;
+    }, function () {
+      return el.isConnected ? unavailable(el) : null;
+    });
+  }
+
+  function plot(el, data, layout) {
     el.classList.add('chart');
     try {
       var p = window.Plotly.react(el, data, layout, CONFIG);
@@ -580,20 +640,36 @@
     var opts = o || {};
     var boxes = [];
     var draws = [];
+    var purged = false;
+    function run(queue) {
+      queue.forEach(function (d) {
+        // A board purged (re-render, page left) or a box taken out of the page meanwhile is not drawn.
+        if (purged || !d.box.isConnected) return;
+        try { d.fn(d.box); } catch (e) { console.error(e); }
+      });
+    }
     return {
       section: function (title, id, drawFn, caption) {
         var box = UI.el('div', { class: 'chart-box', id: id, role: 'img', 'aria-label': title });
         boxes.push(box);
-        draws.push(function () { drawFn(box); });
+        draws.push({ box: box, fn: drawFn });
         return UI.el('section', { class: ['section', opts.sectionClass || 'chart-section'], dataset: { chart: id } },
           UI.el('h2', { class: 'section-title' }, title), box, caption || null);
       },
+      /** Runs the queued draws: at once when Plotly is loaded, else when Charts.ready() settles. */
       draw: function () {
-        draws.splice(0).forEach(function (d) {
-          try { d(); } catch (e) { console.error(e); }
+        var queue = draws.splice(0);
+        if (!queue.length) return;
+        if (hasPlotly()) { run(queue); return; }
+        ready().then(function () { run(queue); }, function () {
+          queue.forEach(function (d) { if (!purged && d.box.isConnected) unavailable(d.box); });
         });
       },
-      purge: function () { boxes.splice(0).forEach(purge); }
+      purge: function () {
+        purged = true;
+        draws.splice(0);
+        boxes.splice(0).forEach(purge);
+      }
     };
   }
 
@@ -605,6 +681,7 @@
     partBars: partBars,
     heatmap: heatmap,
     purge: purge,
+    ready: ready,
     board: board,
     tokens: tokens,
     thresholdCaption: thresholdCaption

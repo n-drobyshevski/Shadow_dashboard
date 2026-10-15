@@ -55,7 +55,8 @@ font-variant-numeric: tabular-nums on everything numeric.
 ```
 Load the fonts from Google Fonts in `index.html`
 (`https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap`)
-with the system fallbacks above.
+with the system fallbacks above. The stylesheet must not block the first paint (`media="print"` switched to
+`all` on load): text shows in the fallbacks for the first moments, then in Plex.
 
 ## Components
 - **Logo**: the ghost (the Streamlit app's 👻, redrawn): inline SVG on a 24px grid, 1.75px ink
@@ -207,6 +208,9 @@ with the system fallbacks above.
   Spinners + text stay only for small waits the user started (busy buttons, drawers, history panels).
 - **Progress line**: 2px indeterminate ink line on the app bar's bottom edge while anything in the
   page is `aria-busy`.
+- **Charts last**: Plotly loads on its own, so figures, tables and captions appear with the data; a
+  chart box stays empty (120px minimum height, under its label) until Plotly is there, and shows
+  « Graphique indisponible » if it never comes.
 - **Month change**: the page and the filters stay readable at 45 % opacity (not interactive) until
   the new month is in; no blank page between two months.
 - **Timings are invisible**: boot and server-call durations go to `console.debug` and the Apps Script

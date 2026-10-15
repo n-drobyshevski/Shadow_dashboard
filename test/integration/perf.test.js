@@ -42,7 +42,8 @@ const GROUP_ADMIN = 'chef@decathlon.com';
  * read the source while holding the script lock; it now reads it before (sourceReadsLocked: 0). The admin
  * bootstrap opened the source for its title and URL (openById 2); it now uses the title stored in the Script
  * Properties and builds the URLs from the ids (1). Cache reads count get and getAll calls: the group
- * memberships a call may need are read in one getAll.
+ * memberships a call may need are read in one getAll. doGet renders the admin bootstrap into the page: it
+ * costs exactly bootstrapAdmin plus the FAVICON_URL property read, so it gets the slim bootstrap too.
  */
 const BASELINE = {
   bootstrapAdmin: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 12801, getDataRange: 0,
@@ -55,6 +56,9 @@ const BASELINE = {
   // Warm: one getAll, no GroupsApp call, one put (the sliding renewal).
   bootstrapGroupWarm: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 12801, getDataRange: 0,
     propertiesReads: 2, cacheReads: 1, cacheWrites: 1, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  // doGet with the bootstrap inline: the admin bootstrap + the FAVICON_URL property, nothing else.
+  doGetAdmin: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, cellsRead: 12801, getDataRange: 0,
+    propertiesReads: 3, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   // Paramètres opens the source (the live check), not the data spreadsheet (its URL is built from the id).
   getSettings: { openById: 1, getValues: 0, getDisplayValues: 0, getFormulas: 0, cellsRead: 0, getDataRange: 0,
     propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
@@ -292,6 +296,13 @@ test('call counts of the main flows on a large data spreadsheet stay within the 
   m = measure(env, () => call(ctx, 'api_getSettings'));
   assert.deepEqual(Object.values(m.value.source.tabsFound), [true, true, true]);
   results.getSettings = m;
+
+  // The cold open: doGet renders the page with the bootstrap inline (no other data read).
+  ctx = execution(env);
+  m = measure(env, () => ctx.doGet({ parameter: { page: 'dashboard' } }).getContent());
+  const inline = /<script type="application\/json" id="boot-data">([^<]*)<\/script>/.exec(m.value);
+  assert.equal(JSON.parse(inline[1]).data.months.length, MONTH_COUNT);
+  results.doGetAdmin = m;
 
   ctx = execution(env);
   m = measure(env, () => call(ctx, 'api_getMonthData', { month: LIVE_MONTH }));

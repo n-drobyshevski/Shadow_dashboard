@@ -37,7 +37,7 @@ identifiers and comments are **English**.
 | `src/Sync.js` | `var Sync` | Hourly synchronisation of the current month (trigger, status). Only module that uses `ScriptApp`. |
 | `src/Perf.js` | `var Perf` | One-line JSON timing logs (`console.log`), see §4 Perf. |
 | `src/Api.js` | global `api_*` functions + `apiWrap_` | `google.script.run` entry points. |
-| `src/Code.js` | `doGet`, `include`, `coreScript`, `setup` | Web app entry + template helpers. |
+| `src/Code.js` | `doGet`, `include`, `coreScript`, `setup` (+ private `inlineBoot_`, `inlinePage_`, `inlineJson_`) | Web app entry + template helpers. |
 | `src/index.html` | template | Shell; includes css + scripts. |
 | `src/css.html` | `<style>` | All styles. |
 | `src/js_api.html` | `window.api` | Promise wrapper around `google.script.run`. |
@@ -504,6 +504,7 @@ Perf.start(stage, fields?)       -> timer {lap(name), end(extra?)}: lap adds the
 | `{stage:'importMonth', ms, readSource, lockWait, rereadSource?, dataReads, compare, writes?, flush, month, changed, reread}` | `Importer.importMonth` when it completes (`readSource` = the read outside the lock; `rereadSource` and `reread: true` when the source was read again under the lock; `writes` absent when nothing was written) |
 | `{stage:'writeBack', ms, sourceOpen, sourceRead, cellWrites, op, entity}` | `Importer.writeEdits` (`op:'edit'`), `appendRecord` (`'append'`), `deleteRecord` (`'delete'`), when they complete |
 | `{stage:'sync', ms, import, state, month, changed, ok:true}` / `{stage:'sync', ms, month, ok:false, code}` | `Sync.run` (hourly trigger and `api_syncNow` / `api_enableSync`) |
+| `{stage:'inlineBoot', ms, ok, bytes}` | `inlineBoot_` (doGet: the bootstrap rendered into the page, after its own `{api:'api_bootstrap', …}` line; `ok:false, bytes:0` when nothing was inlined) |
 
 Client side, `api.call` logs `[rpc] <name> <ms>ms` (plus the error code on failure) and `App.boot` logs
 `[boot] ready <ms>ms (boot <ms>ms, first paint <ms>ms)` with `console.debug` (shown at the browser
@@ -512,11 +513,18 @@ console's « Verbose » level); the difference between `[rpc]` and the server's 
 
 ### Code (`src/Code.js`)
 ```
-doGet(e)        -> HtmlService.createTemplateFromFile('index').evaluate()
-                   .setTitle('Shadow IT — Tableau de bord')
+doGet(e)        -> HtmlService.createTemplateFromFile('index') with template.page = e.parameter.page || '',
+                   .evaluate().setTitle('Shadow IT — Tableau de bord')
                    .addMetaTag('viewport','width=device-width, initial-scale=1')
 include(name)   -> HtmlService.createHtmlOutputFromFile(name).getContent()
 coreScript()    -> 'var Core = (' + CoreFactory_.toString() + ')();'   (output must not contain '</script')
+inlineBoot_()   -> (template, #boot-data) inlineJson_(api_bootstrap('null')) when that envelope is ok, else ''
+                   (refused visitor, failure, exception: never throws). Goes through the WRAPPED api_bootstrap,
+                   so the role check and its {api} timing line apply; then logs {stage:'inlineBoot', ms, ok, bytes}.
+inlinePage_(p)  -> (template, #boot-page) JSON.stringify(p) for a NAV page id (dashboard, postes, apps, timeline,
+                   actions, settings), else 'null'. Admin-only pages are filtered by the client.
+inlineJson_(s)  -> JSON text safe inside <script>: < > & ' ` U+2028 U+2029 -> \uXXXX, / -> \/ (same value
+                   for JSON.parse; neither '</script' nor '<!--' can appear)
 setup()         -> Store.ensure(); Sync.enable(); logs data spreadsheet URL. Run once from the editor to authorize.
 syncHourly()    -> Store.clearMemo_(); Config.clearMemo_(); Sync.runFromTrigger() (time-driven trigger, every hour)
 ```
@@ -525,14 +533,21 @@ syncHourly()    -> Store.clearMemo_(); Config.clearMemo_(); Sync.runFromTrigger(
 ## 5. Client
 
 ### Template (`src/index.html`)
-Only the scriptlet form `<?!= fn('arg') ?>` is used (so the Node renderer stays trivial). Order:
+Only printing function scriptlets are used, `<?!= fn() ?>`, `<?!= fn('arg') ?>` or `<?!= fn(templateVar) ?>`
+(so the Node renderer stays trivial). Nothing in `<head>` blocks the scripts: the Google Fonts stylesheet
+is `media="print" onload="this.media='all'"` (+ a `<noscript>` copy) and Plotly is only
+`<link rel="preload" as="script">`ed — `Charts.ready()` runs it. Order:
 ```html
 <!DOCTYPE html><html lang="fr"><head><base target="_top"><meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?…" media="print" onload="this.media='all'"> + <noscript>
+<link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.3/plotly.min.js" as="script">
 <?!= include('css') ?>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.3/plotly.min.js"></script>
 </head><body>
+<div id="splash"> … </div>
 <div id="app"> … sidebar (#sidebar) + .workspace (app bar #appbar + main #main) … </div>
 <div id="toast-root"></div><div id="modal-root"></div>
+<script type="application/json" id="boot-data"><?!= inlineBoot_() ?></script>      bootstrap envelope or ''
+<script type="application/json" id="boot-page"><?!= inlinePage_(page) ?></script>  "postes" | null
 <script><?!= coreScript() ?></script>
 <?!= include('js_api') ?>  <?!= include('js_state') ?>  <?!= include('js_ui') ?>  <?!= include('js_charts') ?>
 <?!= include('js_page_dashboard') ?> <?!= include('js_page_inventory') ?> <?!= include('js_page_postes') ?> <?!= include('js_page_apps') ?>
@@ -579,10 +594,15 @@ State.invalidate(month?)         -> drop one/all cached months (also the timelin
 State.filtered(monthData)        -> Core.filterData({postes, applications}, state.filters)
 State.loadMonth(month)           -> cached / shared pending request; a failure is handed once more to the next
                                     caller within 2 s (the page mounted after a month swap shows it, no 2nd call);
-                                    State.invalidate(month) clears it.
+                                    any State.invalidate() clears every kept failure (« Réessayer » asks again).
 State.loadTimeline({force}?)     -> Promise<timeline> (cached)
 State.loadActions({force}?)      -> Promise<{actions, replacements}> (cached)
-State.refreshBootstrap()         -> Promise (api_bootstrap -> sets configured/months/... ; keeps month if still valid else latest)
+State.refreshBootstrap({useInline}?) -> Promise<state> (api_bootstrap -> sets configured/months/... ; keeps month if
+                                    still valid else latest). The FIRST call of the page consumes #boot-data; with
+                                    useInline (App.boot only) it answers from it when it holds an ok envelope, with
+                                    no server call. Every other call asks the server (reload, retry, new source…).
+State.takeInline(id)             -> JSON.parse of <script type="application/json" id=…> rendered by doGet, removing
+                                    the element (read once); undefined when missing, empty or unreadable.
 ```
 
 ### `window.UI` (`js_ui.html`)
@@ -628,9 +648,13 @@ UI.downloadCsv(filename, columns:[string], rows:[object])   (client-side CSV exp
 ```
 
 ### `window.Charts` (`js_charts.html`)
-All draw into a container element, use `{responsive:true, displayModeBar:false}`, French labels, and
-fall back to `UI.empty('Graphique indisponible')` when `window.Plotly` is missing.
+All draw into a container element, use `{responsive:true, displayModeBar:false}` and French labels. Plotly
+is not in `<head>`: a draw asked before it is loaded waits for `Charts.ready()` (only into an element still in
+the page) and falls back to `UI.empty('Graphique indisponible')` when it could not be loaded.
 ```
+Charts.ready()                                        -> Promise<Plotly>: adds the async plotly.min.js 2.35.3 script
+                                                         once (memoized); rejects on a load error or after 30 s,
+                                                         and keeps that failure (no retry). Started by App.boot.
 Charts.gauge(el, value, {height=250})                 -> indicator gauge, bar Core.COLOR_OK if value>=80 else
                                                          COLOR_KO, threshold line at 80 (COLOR_THRESHOLD)
 Charts.riskBars(el, counts /* Core.riskCounts */)     -> bar per RISK_ORDER, colors RISK_COLORS, no legend
@@ -638,7 +662,9 @@ Charts.histogram(el, scores:[number])                 -> 10 bins on 0–100, vli
 Charts.line(el, {x:[labels], series:[{name, y:[number|null], color?}], threshold?:80, yTitle?, yRange?})
 Charts.heatmap(el, {x:[labels], y:[labels], z:[[number|null]], zmin=0, zmax=100, title?})
 Charts.purge(el)
-Charts.board({sectionClass?}) -> {section(title, id, drawFn, caption?), draw(), purge()}  (charts of a page body)
+Charts.board({sectionClass?}) -> {section(title, id, drawFn, caption?), draw(), purge()}  (charts of a page body;
+                                 draw() runs the queue at once when Plotly is there, else after Charts.ready(),
+                                 skipping boxes no longer in the page or purged; « Graphique indisponible » on failure)
 ```
 
 ### Pages
@@ -671,10 +697,15 @@ only declares its spec (columns, nouns, CSV, create button, drawer).
 ```
 App.go(pageId)        -> navigate (also google.script.history.push({page}) when available)
 App.refresh()         -> re-mount current page
-App.boot()            -> called on DOMContentLoaded, behind the #splash (static in index.html: team logo,
-                         indeterminate bar, step line): « Vérification de l’accès… » State.refreshBootstrap();
-                         « Chargement de mai 2026… » State.loadMonth(month) (warms the cache); then renders and
-                         fades the splash out. After 8 s a note explains the Apps Script cold start; a failure
+App.boot()            -> runs as soon as js_main.html is parsed (the scripts close <body>), behind the #splash
+                         (static in index.html: team logo, indeterminate bar, step line). First Charts.ready()
+                         (Plotly downloads meanwhile); « Vérification de l’accès… »
+                         State.refreshBootstrap({useInline:true}) with the initial page (#boot-page, else
+                         google.script.url.getLocation, 1.5 s timeout); « Chargement de mai 2026… »
+                         State.loadMonth(month) (warms the cache) and, not awaited, what the first page will ask:
+                         the period's first month (dashboard / postes / apps, saved period) and the timeline
+                         (dashboard with a period, timeline page) — the page joins these pending requests.
+                         The splash waits on the month only; then renders and fades out. After 8 s a note explains the Apps Script cold start; a failure
                          shows the error + « Réessayer » on the splash; FORBIDDEN → « Accès refusé ».
                          If !configured: configuration screen (paste source sheet URL -> App.applySource:
                          api_setConfig, then a first App.syncNow()).
@@ -810,8 +841,11 @@ compares the first and last months by default.
   writes, GroupsApp calls, source cells read, source reads made under the lock)
   of the main flows on a large generated data spreadsheet, bounded by today's numbers (`BASELINE`);
   `PERF_OUT=<file>` writes the measurement as JSON.
-- `test/helpers/render.js` — renders `src/index.html` (scriptlets `include`/`coreScript`) to static
-  HTML; optional injection of `test/fixtures/mockRun.js` + data for the browser.
+- `test/helpers/render.js` — renders `src/index.html` (scriptlets `include`/`coreScript`, and
+  `inlineBoot_`/`inlinePage_` run from the real `Code.js` over the `boot` envelope / `page` options, '' when
+  left out) to static HTML; optional injection of `test/fixtures/mockRun.js` + data for the browser.
+  `bootstrapEnvelope(options)` (mockRun.js) computes in Node the envelope the mock's api_bootstrap returns;
+  the e2e harness takes `boot` / `inlinePage` (inline data) and `plotly: {delayMs}|{fail:true}`.
 - `test/fixtures/mockRun.js` — browser `google.script.run` mock implementing every `api_*` from §3
   over in-memory data from `data.js` (records enriched with `Core`), recording calls in
   `window.__calls`.
