@@ -7,22 +7,43 @@
 <title>Shadow IT — Tableau de bord</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Inter:wght@400;700&display=swap">
 <?!= include('css') ?>
 <?!= include('css_controls') ?>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.3/plotly.min.js"></script>
 </head>
 <body>
+<div id="splash" class="splash" role="status" aria-live="polite">
+  <div class="team-logo" role="img" aria-label="Value Chain Information Security">
+    <svg class="team-mark" viewBox="0 0 48 48" width="52" height="52" aria-hidden="true" focusable="false">
+      <path class="arc" d="M23.05 10.26A17 17 0 0 0 16.25 40.93"/>
+      <circle class="halo" cx="10.03" cy="21.19" r="4.4"/><circle class="solid" cx="10.03" cy="21.19" r="2.6"/>
+      <circle class="halo" cx="31.8" cy="11" r="5.6"/><circle class="solid" cx="31.8" cy="11" r="3.9"/>
+      <path class="solid" d="M26.5 17.5l9.5 3.6v7.4c0 6.3-4.1 10.8-9.5 12.9-5.4-2.1-9.5-6.6-9.5-12.9v-7.4z"/>
+      <path class="cut" d="M22.2 29.2l3.2 3.1 5.8-6.4"/>
+    </svg>
+    <p class="team-logo-text" aria-hidden="true"><span>Value Chain</span><b>Information Security</b></p>
+  </div>
+  <div class="splash-track" role="progressbar" aria-label="Chargement de l’application"></div>
+  <p class="splash-status" id="splash-status">Chargement…</p>
+  <p class="splash-note" id="splash-note" hidden></p>
+  <div class="splash-error" id="splash-error" hidden>
+    <p class="alert alert-error" role="alert" id="splash-error-text"></p>
+    <button type="button" class="btn btn-primary" id="splash-retry">Réessayer</button>
+  </div>
+  <p class="splash-foot"><svg class="brand-logo" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5 19.5V11a7 7 0 0 1 14 0v8.5c-1.17 1.6-2.33 1.6-3.5 0s-2.33-1.6-3.5 0-2.33 1.6-3.5 0-2.33-1.6-3.5 0z"/><circle class="icon-fill" cx="9.75" cy="11" r="1.25"/><circle class="icon-fill" cx="14.25" cy="11" r="1.25"/></svg>Shadow IT</p>
+</div>
 <div id="app" class="app">
   <header class="topbar" role="banner">
-    <span class="topbar-brand">Shadow IT</span>
+    <span class="topbar-brand"><svg class="brand-logo" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false"><path d="M5 19.5V11a7 7 0 0 1 14 0v8.5c-1.17 1.6-2.33 1.6-3.5 0s-2.33-1.6-3.5 0-2.33 1.6-3.5 0-2.33-1.6-3.5 0z"/><circle class="icon-fill" cx="9.75" cy="11" r="1.25"/><circle class="icon-fill" cx="14.25" cy="11" r="1.25"/></svg>Shadow IT</span>
     <button type="button" id="nav-toggle" class="topbar-toggle" aria-controls="sidebar" aria-expanded="false"
             aria-label="Afficher le menu">Menu</button>
   </header>
   <aside id="sidebar" class="sidebar" aria-label="Navigation principale"></aside>
-  <main id="main" class="main" tabindex="-1">
-    <div class="boot-loading" role="status"><span class="spinner" aria-hidden="true"></span>Chargement…</div>
-  </main>
+  <div class="workspace">
+    <div id="appbar" class="appbar" role="region" aria-label="Période et filtres"></div>
+    <main id="main" class="main" tabindex="-1"></main>
+  </div>
 </div>
 <div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="false"></div>
 <div id="modal-root"></div>
@@ -33,6 +54,7 @@
 <?!= include('js_controls') ?>
 <?!= include('js_charts') ?>
 <?!= include('js_page_dashboard') ?>
+<?!= include('js_page_inventory') ?>
 <?!= include('js_page_postes') ?>
 <?!= include('js_page_apps') ?>
 <?!= include('js_page_timeline') ?>

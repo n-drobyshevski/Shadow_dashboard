@@ -239,7 +239,7 @@ describe('timeline', () => {
       await holdCalls(page, 'api_getTimeline');
       await page.click('#timeline-refresh');
       await page.waitForSelector('#timeline-refresh[aria-busy="true"]');
-      assert.ok(await page.$('#timeline-body .loading-state'), 'loading line while the reload runs');
+      assert.ok(await page.$('#timeline-body .skeleton[aria-busy="true"]'), 'skeleton while the reload runs');
       await page.evaluate(() => window.__release());
       await page.waitForSelector('#timeline-refresh:not([aria-busy])');
       await app.waitIdle();

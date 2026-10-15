@@ -113,13 +113,17 @@ async function waitIdle(page, timeout = 10000) {
 
 /**
  * @param {{empty?:boolean, configured?:boolean, page?:string, viewport?:{width:number,height:number},
- *          delayMs?:number, email?:string, readySelector?:string}} [options]
+ *          delayMs?:number, email?:string, readySelector?:string, failNext?:object,
+ *          beforeGoto?:(page)=>Promise, idle?:boolean, prefs?:object}} [options]
  *   email: visitor seen by the mock (default the owner, admin; LECTEUR / ADMIN2 below; any other
  *   address has no access; '' = identity not passed). readySelector overrides what openApp waits for
- *   (e.g. '.page-denied').
+ *   (e.g. '.page-denied'). failNext: forced failures armed before boot ({api_bootstrap: {transport:true}}).
+ *   beforeGoto(page): runs before the page loads (e.g. page.clock.install()). idle:false skips the final
+ *   waitIdle (needed with a fake clock).
  */
 async function openApp({ empty = false, configured = true, page: pageId = 'dashboard',
-  viewport = { width: 1400, height: 900 }, delayMs = 0, email, readySelector } = {}) {
+  viewport = { width: 1400, height: 900 }, delayMs = 0, email, readySelector, failNext, beforeGoto,
+  idle = true, prefs } = {}) {
   const browser = await launchBrowser();
   const context = await browser.newContext({ viewport, locale: 'fr-FR', timezoneId: 'Europe/Paris' });
   const page = await context.newPage();
@@ -140,10 +144,11 @@ async function openApp({ empty = false, configured = true, page: pageId = 'dashb
     return route.abort();
   });
 
-  const html = renderIndex({ inject: '<script>' + buildMockScript({ empty, configured, delayMs, email }) + '</script>' });
+  const html = renderIndex({ inject: '<script>' + buildMockScript({ empty, configured, delayMs, email, failNext, prefs }) + '</script>' });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shadow-e2e-'));
   const file = path.join(dir, 'index.html');
   fs.writeFileSync(file, html);
+  if (beforeGoto) await beforeGoto(page);
   await page.goto('file://' + file);
 
   if (readySelector) {
@@ -153,7 +158,7 @@ async function openApp({ empty = false, configured = true, page: pageId = 'dashb
   } else {
     await page.waitForSelector('#config-source', { timeout: 15000 });
   }
-  await waitIdle(page);
+  if (idle) await waitIdle(page);
 
   const app = {
     browser,

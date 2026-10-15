@@ -134,6 +134,11 @@ Workspace que le déployeur. Avec un compte Gmail personnel, seul le déployeur 
   propriété est limitée à 9 Ko) et le seuil dans `COMPLIANCE_THRESHOLD` : Éditeur Apps Script →
   Paramètres du projet → Propriétés du script. Supprimer `ACCESS_JSON_N` remet l'accès au seul
   propriétaire.
+- **Icône d'onglet** (le fantôme) : `assets/favicon.png`, intégrée au code (URI `data:`), rien à
+  héberger, le dépôt peut rester privé. Si l'onglet garde l'icône par défaut après le déploiement (Apps
+  Script refuse alors l'URI `data:`, le journal d'exécution le dit), héberger le PNG (Google Sites, page
+  publique, bucket…) et mettre son adresse dans la propriété du script `FAVICON_URL` (URL https se
+  terminant par `.png` ou `.ico`) ; `-` pour n'en mettre aucune.
 - **Tester avec un compte Gmail personnel** : le type d'accès « domaine » n'existe pas pour ces
   comptes. Dans `src/appsscript.json`, mettre provisoirement `"access": "MYSELF"` avant de déployer.
 

@@ -11,7 +11,6 @@
  *                                           tone: ok|ko|warn|info|neutral or a risk level.
  *   UI.kpiStrip([{key?, title, value, sub?, tone?}]) -> div.kpi-strip of UI.card cells (data-kpi = key).
  *   UI.pageHeader({title, kicker?, kickerId?, actions?:[Node]}) -> header.page-header.
- *   UI.leaderRow(label, value, attrs?)   -> div.leaders-row "label ……… value".
  *   editableTable columns also accept {numeric?:bool, mono?:bool} (right-aligned mono / identifier cells);
  *   editableTable options also accept toolbarEnd:[Node] (placed at the right end, after search + count)
  *     and readOnly:bool (lecteurs: `editable` columns render as plain cells — no inline editor, no dotted
@@ -23,7 +22,17 @@
  *   UI.NNBSP                            -> '\u202f' (narrow no-break space: before %, inside « »).
  *   UI.el(tag, {tooltip: text|Node})    -> custom tooltip (UI.tooltip, js_controls.html); never use title=.
  *   UI.empty(text, action? | {action?, small?})  -> one line of ink-2 text ("no data" only).
- *   UI.loading(text='Chargement…', {small?})     -> spinner + text (role=status).
+ *   UI.loading(text='Chargement…', {small?})     -> spinner + text (role=status). Small, user-triggered waits.
+ *   UI.asyncBlock(box, {load, render, placeholder?, error?, small?, errorId?, live?}) -> Promise: placeholder +
+ *                                           aria-busy, then render(data) or an error line with « Réessayer »;
+ *                                           stale results (page left, block reloaded) are dropped. Replaces the
+ *                                           hand-written « token » checks. UI.monthError(month) = its month error.
+ *   UI.monthHeader({title, month, kickerId, actions?}) -> page header with the « Mai 2026 · Export » kicker.
+ *   UI.noData(id) / UI.filterNote(scope) / UI.plural(n, one, many) / UI.errorToast(err, context?).
+ *   UI.skeleton(kind, {label, columns?, rows?}) -> div.skeleton (role=status, aria-busy, sr-only label): the
+ *                                           grey silhouette of a page body while its data loads.
+ *     kind 'dashboard' (KPI strip + two gauges), 'table' (columns: [labels] or a count; rows=6),
+ *     'chart' (one plot block), 'lines' (rows text bars). Sizes match the real blocks: nothing jumps.
  *   UI.errorState(err|text, {retry?, prefix='Erreur', small?}) -> alert-error line « Erreur : message »
  *                                           (role=alert) + optional « Réessayer » text button.
  *   UI.errorText(err)                   -> err.message || 'Erreur inconnue.' (one fallback spelling).
@@ -173,16 +182,8 @@
 
   function fmtNum(n) {
     if (!isNum(n)) return '—';
-    return new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 }).format(Math.round(Number(n)));
-  }
-
-  var MONTH_NAMES = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre',
-    'octobre', 'novembre', 'décembre'];
-  /** '2026-05' -> 'mai 2026' (falls back to the input). */
-  function fmtMonth(m) {
-    var r = /^(\d{4})-(\d{2})$/.exec(String(m || ''));
-    if (!r) return String(m || '');
-    return MONTH_NAMES[Number(r[2]) - 1] + ' ' + r[1];
+    return new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 }).format(Math.round(Number(n)))
+      .replace(/[\u0020\u00a0\u2009]/g, NNBSP);
   }
 
   // ------------------------------------------------------------------------------ small components
@@ -280,14 +281,6 @@
         opts.actions && opts.actions.length ? el('div', { class: 'page-header-actions' }, opts.actions) : null));
   }
 
-  /** UI.leaderRow(label, value, attrs?) -> "label ……… value" row (value in mono). */
-  function leaderRow(label, value, attrs) {
-    return el('div', Object.assign({ class: 'leaders-row' }, attrs || {}),
-      el('span', { class: 'leader-label' }, label),
-      el('span', { class: 'leader', 'aria-hidden': 'true' }),
-      el('span', { class: 'leader-value num' }, value));
-  }
-
   /**
    * UI.empty(text, action? | {action?, small?}) -> one line of ink-2 text, left-aligned ("no data" only);
    * optional action node (text button / link) after it.
@@ -298,11 +291,127 @@
       el('p', null, text || 'Aucune donnée.', opts.action ? [' ', opts.action] : null));
   }
 
+  /**
+   * UI.noData(id) -> the empty state of a page when no month is imported: admins get a link to the import
+   * form of the dashboard, lecteurs are told an administrator has to import.
+   */
+  function noData(id) {
+    var node = State.canEdit() ?
+      empty('Aucune donnée importée.', el('button', { type: 'button', class: 'btn btn-link',
+        onClick: function () { App.go('dashboard'); } }, 'Importer un export depuis le tableau de bord')) :
+      empty('Aucun mois importé. Un administrateur doit importer les données.');
+    node.id = id;
+    return node;
+  }
+
+  /** UI.filterNote(scope) -> p.filter-note (State.filterSummary(scope)) or null when no filter is active. */
+  function filterNote(scope) {
+    var text = State.filterSummary(scope);
+    return text ? el('p', { class: 'filter-note', role: 'status' }, text) : null;
+  }
+
+  /** UI.plural(n, one, many) -> '3 postes' (figure formatted, noun agreed). */
+  function plural(n, one, many) { return fmtNum(n) + ' ' + (n > 1 ? many : one); }
+
+  /** UI.errorToast(err, context?) -> error toast « Erreur : message » / « Erreur : context. message ». */
+  function errorToast(err, context) { toast('Erreur : ' + (context ? context + '. ' : '') + errorText(err), 'error'); }
+
+  /**
+   * UI.monthHeader({title, month, kickerId, actions?}) -> UI.pageHeader with the month kicker
+   * « Mai 2026 · Export 2026-05 » (kicker carries data-month and kickerId), « Aucun export importé » when
+   * there is no month.
+   */
+  function monthHeader(o) {
+    var m = o.month;
+    var h = pageHeader({ title: o.title, actions: o.actions, kickerId: m ? o.kickerId : null,
+      kicker: m ? [Fmt.monthTitle(m) + ' · ', el('span', { class: 'mono' }, 'Export ' + m)] : 'Aucun export importé' });
+    var k = h.querySelector('.page-kicker');
+    if (k && m) k.dataset.month = m;
+    return h;
+  }
+
+  /**
+   * UI.asyncBlock(box, {load, render, placeholder?, error?, small?, errorId?, live?}) -> Promise
+   * The one way a block shows async data: placeholder (a node, or a function returning one) + aria-busy
+   * while `load()` runs, then render(data, box) — or an error line with « Réessayer » (error: {prefix,
+   * retry?} or a function err -> that object; retry defaults to running the block again). A result is
+   * dropped when the box was detached (page left), reloaded since (each call supersedes the previous one
+   * for that box), or live() returns false.
+   */
+  function asyncBlock(box, o) {
+    var seq = (box.__asyncSeq || 0) + 1;
+    box.__asyncSeq = seq;
+    function current() { return box.__asyncSeq === seq && box.isConnected && (!o.live || o.live()); }
+    if (o.placeholder) clear(box).appendChild(typeof o.placeholder === 'function' ? o.placeholder() : o.placeholder);
+    box.setAttribute('aria-busy', 'true');
+    var p;
+    try { p = Promise.resolve(o.load()); } catch (e) { p = Promise.reject(e); }
+    return p.then(function (data) {
+      if (!current()) return;
+      clear(box);
+      box.setAttribute('aria-busy', 'false');
+      o.render(data, box);
+    }, function (err) {
+      if (!current()) return;
+      clear(box);
+      box.setAttribute('aria-busy', 'false');
+      var e = (typeof o.error === 'function' ? o.error(err) : o.error) || {};
+      var node = errorState(err, { prefix: e.prefix, small: o.small,
+        retry: e.retry || function () { asyncBlock(box, o); } });
+      if (o.errorId) node.id = o.errorId;
+      box.appendChild(node);
+    });
+  }
+
+  /** UI.monthError(month) -> asyncBlock error for month data: « Impossible de charger mai 2026 », retry reloads. */
+  function monthError(month) {
+    return { prefix: 'Impossible de charger ' + Fmt.monthLong(month),
+      retry: function () { State.invalidate(month); App.refresh(); } };
+  }
+
   /** UI.loading(text='Chargement…', {small?}) -> spinner + one line of ink-2 text. */
   function loading(text, o) {
     var opts = o || {};
     return el('div', { class: ['loading-state', opts.small ? 'is-small' : null], role: 'status' },
       el('span', { class: 'spinner', 'aria-hidden': 'true' }), el('span', null, text || 'Chargement…'));
+  }
+
+  /** UI.skeleton(kind, {label, columns?, rows?}) -> div.skeleton (see the header). */
+  var SKEL_WIDTHS = [72, 54, 86, 40, 64, 78, 48, 60];
+  function skeleton(kind, o) {
+    var opts = o || {};
+    function bar(cls, w) { return el('span', { class: ['skel', cls], style: w ? 'width:' + w + '%' : null }); }
+    var root = el('div', { class: ['skeleton', 'skeleton-' + kind], role: 'status', 'aria-busy': 'true' },
+      el('span', { class: 'sr-only' }, opts.label || 'Chargement…'));
+    var shown = el('div', { 'aria-hidden': 'true', class: 'skeleton-body' });
+    root.appendChild(shown);
+    var rows = opts.rows || 6;
+    if (kind === 'dashboard') {
+      shown.appendChild(el('div', { class: 'kpi-strip' }, [0, 1, 2, 3].map(function (i) {
+        return el('div', { class: 'kpi' }, bar('skel-label', 60 + (i % 2) * 15), bar('skel-figure', 30 + (i % 3) * 8));
+      })));
+      shown.appendChild(el('div', { class: 'grid grid-2' }, [0, 1].map(function (i) {
+        return el('div', { class: 'section' }, bar('skel-label', 45), el('span', { class: 'skel-gauge' }), bar('skel-text', 55 + i * 10));
+      })));
+    } else if (kind === 'table') {
+      var cols = Array.isArray(opts.columns) ? opts.columns : new Array(opts.columns || 5).fill('');
+      var head = el('tr', null, cols.map(function (c, i) {
+        return el('th', { scope: 'col' }, c ? c : bar('skel-label', 50 + (i % 3) * 15));
+      }));
+      var body = [];
+      for (var r = 0; r < rows; r++) {
+        body.push(el('tr', null, cols.map(function (c, i) {
+          return el('td', null, bar('skel-text', SKEL_WIDTHS[(r + i * 3) % SKEL_WIDTHS.length]));
+        })));
+      }
+      shown.appendChild(el('div', { class: 'table-scroll' },
+        el('table', { class: 'table skeleton-table' }, el('thead', null, head), el('tbody', null, body))));
+    } else if (kind === 'chart') {
+      shown.appendChild(el('div', { class: 'section' }, bar('skel-label', 30), el('span', { class: 'skel-chart' })));
+    } else {
+      for (var j = 0; j < rows; j++) shown.appendChild(bar('skel-text', SKEL_WIDTHS[j % SKEL_WIDTHS.length]));
+    }
+    return root;
   }
 
   /** UI.errorText(err) -> the message of an Error / string, 'Erreur inconnue.' when there is none. */
@@ -1285,7 +1394,6 @@
     fmtPctNode: fmtPctNode,
     cellMark: cellMark,
     fmtNum: fmtNum,
-    fmtMonth: fmtMonth,
     badge: badge,
     scoreBadge: scoreBadge,
     riskBadge: riskBadge,
@@ -1295,10 +1403,17 @@
     pageHeader: pageHeader,
     quote: quote,
     frSpacing: frSpacing,
-    leaderRow: leaderRow,
     section: section,
     empty: empty,
+    noData: noData,
+    filterNote: filterNote,
+    plural: plural,
+    errorToast: errorToast,
+    monthHeader: monthHeader,
+    asyncBlock: asyncBlock,
+    monthError: monthError,
     loading: loading,
+    skeleton: skeleton,
     errorState: errorState,
     errorText: errorText,
     NNBSP: NNBSP,

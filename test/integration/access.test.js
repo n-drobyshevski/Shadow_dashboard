@@ -14,8 +14,8 @@ const OWNER = 'owner@decathlon.com';
 const READER = 'lea.reader@decathlon.com';
 const ADMIN2 = 'sam.admin@decathlon.com';
 
-const LECTEUR_APIS = ['api_bootstrap', 'api_getMonthData', 'api_getImportLog', 'api_getTimeline', 'api_getActions',
-  'api_getDiff'];
+const LECTEUR_APIS = ['api_bootstrap', 'api_savePrefs', 'api_getMonthData', 'api_getImportLog', 'api_getTimeline',
+  'api_getActions', 'api_getDiff'];
 
 function call(ctx, name, args) {
   const out = ctx[name](args === undefined ? 'null' : JSON.stringify(args));
@@ -390,4 +390,34 @@ test('groups: an admin cannot remove or demote the group that makes them admin',
   ok(sb.ctx, 'api_saveGroup', { email: ADMINS, role: 'lecteur' });
   as(sb, ADMIN2);
   assert.equal(ok(sb.ctx, 'api_bootstrap').user.role, 'lecteur');
+});
+
+// ------------------------------------------------------------------------------------ preferences
+
+test('interface preferences: stored per account, allowed to every role, validated', () => {
+  const sb = imported();
+  const props = sb.ctx.PropertiesService.getScriptProperties();
+  assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), {});
+  assert.deepEqual(plain(ok(sb.ctx, 'api_savePrefs', { sidebar: 'collapsed' })), { prefs: { sidebar: 'collapsed' } });
+  assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), { sidebar: 'collapsed' });
+  assert.equal(props.getProperty('PREFS_' + OWNER), '{"sidebar":"collapsed"}');
+  fail(sb.ctx, 'api_savePrefs', { sidebar: 'wide' }, 'VALIDATION');
+  fail(sb.ctx, 'api_savePrefs', { theme: 'dark' }, 'VALIDATION');
+  fail(sb.ctx, 'api_savePrefs', {}, 'VALIDATION');
+  assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), { sidebar: 'collapsed' }, 'refused saves changed nothing');
+
+  // A lecteur saves their own, separate preferences.
+  ok(sb.ctx, 'api_saveUser', { email: READER, role: 'lecteur' });
+  as(sb, READER);
+  assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), {}, 'not shared between accounts');
+  ok(sb.ctx, 'api_savePrefs', { sidebar: 'open' });
+  assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), { sidebar: 'open' });
+  as(sb, undefined);
+  assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), { sidebar: 'collapsed' });
+
+  // Unreadable or unknown stored values are ignored.
+  props.setProperty('PREFS_' + OWNER, '{oops');
+  assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), {});
+  props.setProperty('PREFS_' + OWNER, '{"sidebar":"huge","x":1}');
+  assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), {});
 });

@@ -33,8 +33,9 @@ function mockMain(FIX, OPTS) {
   var KEY_APP = 'Nom du logiciel / service';
   var ERROR_CODES = ['NOT_CONFIGURED', 'MONTH_EXISTS', 'NOT_FOUND', 'BUSY', 'VALIDATION', 'SOURCE_ERROR',
     'FORBIDDEN', 'INTERNAL'];
-  var LECTEUR_APIS = ['api_bootstrap', 'api_getMonthData', 'api_getImportLog', 'api_getTimeline', 'api_getActions',
-    'api_getDiff'];
+  var LECTEUR_APIS = ['api_bootstrap', 'api_savePrefs', 'api_getMonthData', 'api_getImportLog', 'api_getTimeline',
+    'api_getActions', 'api_getDiff'];
+  var PREF_VALUES = { sidebar: ['open', 'collapsed'] };
   var OWNER = 'owner@decathlon.com';
   var seq = 0;
 
@@ -90,6 +91,7 @@ function mockMain(FIX, OPTS) {
     threshold: 80,
     // Visitor: OPTS.email ('' = identity not passed); default = the owner (deployer).
     email: OPTS.email === undefined ? OWNER : OPTS.email,
+    prefs: {},           // email -> {sidebar}
     access: {
       users: [
         { email: 'lea.reader@decathlon.com', role: 'lecteur', added_at: '2026-04-02', added_by: OWNER },
@@ -223,8 +225,23 @@ function mockMain(FIX, OPTS) {
         sourceUrl: db.configured && admin ? sheetUrl(db.sourceId) : '',
         sourceTitle: db.configured && admin ? db.sourceTitle : '',
         threshold: db.threshold,
-        user: user
+        user: user,
+        prefs: clone(db.prefs[user.email] || {})
       };
+    },
+
+    api_savePrefs: function (args) {
+      var user = checkAccess('api_savePrefs');
+      var a = obj(args);
+      var keys = Object.keys(a);
+      if (!keys.length) fail('VALIDATION', 'Aucune préférence à enregistrer.');
+      var next = clone(db.prefs[user.email] || {});
+      keys.forEach(function (k) {
+        if (!PREF_VALUES[k] || PREF_VALUES[k].indexOf(a[k]) < 0) fail('VALIDATION', 'Préférence invalide : ' + k + '.');
+        next[k] = a[k];
+      });
+      db.prefs[user.email] = next;
+      return { prefs: clone(next) };
     },
 
     api_setConfig: function (args) {
@@ -592,7 +609,8 @@ function mockMain(FIX, OPTS) {
   window.__calls = [];
   window.__pending = 0;
   window.__history = [];
-  window.__mock = { db: db, failNext: {} };
+  if (OPTS.prefs) db.prefs[normEmail(db.email)] = clone(OPTS.prefs);
+  window.__mock = { db: db, failNext: OPTS.failNext || {} };
 
   function dispatch(name, argsJson, onSuccess, onFailure, userObject) {
     var args;
@@ -656,12 +674,13 @@ function mockMain(FIX, OPTS) {
 }
 
 /**
- * @param {{empty?:boolean, configured?:boolean, delayMs?:number, email?:string}} [options]
+ * @param {{empty?:boolean, configured?:boolean, delayMs?:number, email?:string, failNext?:object,
+ *          prefs?:object}} [options]  prefs: the visitor's stored preferences ({sidebar:'collapsed'}).
  *   email: the visitor (default the owner, admin). 'lea.reader@decathlon.com' is a lecteur,
  *   'sam.admin@decathlon.com' a second admin, any other address has no access, '' = identity not passed.
  * @returns {string} browser JavaScript (no surrounding <script> tag)
  */
-function buildMockScript({ empty = false, configured = true, delayMs = 0, email } = {}) {
+function buildMockScript({ empty = false, configured = true, delayMs = 0, email, failNext, prefs } = {}) {
   const fixtures = {
     POSTES_HEADERS: data.POSTES_HEADERS,
     APPS_HEADERS: data.APPS_HEADERS,
@@ -676,7 +695,7 @@ function buildMockScript({ empty = false, configured = true, delayMs = 0, email 
   // Escape '<' so that fixture strings such as '</script>' cannot terminate the inline script.
   const json = (v) => JSON.stringify(v).replace(/</g, '\\u003c')
     .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
-  return '(' + mockMain.toString() + ')(' + json(fixtures) + ', ' + json({ empty, configured, delayMs, email }) + ');';
+  return '(' + mockMain.toString() + ')(' + json(fixtures) + ', ' + json({ empty, configured, delayMs, email, failNext: failNext || {}, prefs: prefs || null }) + ');';
 }
 
 module.exports = { buildMockScript };

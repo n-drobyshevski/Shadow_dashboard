@@ -41,7 +41,7 @@ identifiers and comments are **English**.
 | `src/js_ui.html` | `window.UI` | DOM builder + components. |
 | `src/js_charts.html` | `window.Charts` | Plotly wrappers. |
 | `src/js_page_*.html` | `window.Pages.<id>` | One page each (incl. `settings`, admin only). |
-| `src/js_main.html` | `window.App` | Router, sidebar, boot. **Included last.** |
+| `src/js_main.html` | `window.App` | Router, sidebar, app bar (période + filtres), boot. **Included last.** |
 
 ---------------------------------------------------------------------------------------------------
 ## 1. Domain constants (exposed by `Core`)
@@ -151,7 +151,8 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 
 | Function | Args | Returns `data` | Errors |
 |---|---|---|---|
-| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:'', threshold:int, user:{email, role:'admin'|'lecteur', isOwner:bool}}` (`dataUrl` / `sourceUrl` / `sourceTitle` are `''` for lecteurs: the spreadsheets are private to the deployer) | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
+| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:'', threshold:int, user:{email, role:'admin'|'lecteur', isOwner:bool}, prefs:{sidebar?:'open'|'collapsed'}}` (`dataUrl` / `sourceUrl` / `sourceTitle` are `''` for lecteurs: the spreadsheets are private to the deployer) | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
+| `api_savePrefs` | `{sidebar:'open'\|'collapsed'}` (any subset of the known keys) | `{prefs}` = the caller's stored preferences. Every role (lecteurs included): interface state only, per account (`PREFS_<email>` Script Property). | `VALIDATION` (unknown key or value, nothing to save, no identity) |
 | `api_setConfig` | `{source:'url or id'}` | `{sourceId, sourceTitle, sourceUrl, tabsFound:{postes:bool, applications:bool, referentiel:bool}}` | `VALIDATION` (bad id), `SOURCE_ERROR` (cannot open / no postes+apps tab). Saved only on success. |
 | `api_getMonthData` | `{month}` | `{month, postes:[rec], applications:[rec], referentiel:{cat:[v]}, columns:{postes:[h], applications:[h]}, importInfo:{imported_at, warnings:[]}\|null}` | `VALIDATION`, `NOT_FOUND` (month not imported). `columns.applications` always ends with `Galink`, `IDP` if missing from the source headers. |
 | `api_importMonth` | `{month, overwrite:bool}` | `{month, counts:{postes, applications, referentiel}, overwritten:bool, carriedOver:n, warnings:[...]}` | `NOT_CONFIGURED`, `VALIDATION`, `MONTH_EXISTS` (month already imported and `overwrite` false), `SOURCE_ERROR` |
@@ -184,7 +185,7 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 (owner excluded), groups:[same shape] sorted by email, domainRole:'none'|'lecteur'}`. Emails are trimmed and lower-cased.
 
 The **complete list** of public API functions (used by the contract test) is exactly:
-`api_bootstrap, api_setConfig, api_getMonthData, api_importMonth, api_getImportLog, api_savePostes,
+`api_bootstrap, api_savePrefs, api_setConfig, api_getMonthData, api_importMonth, api_getImportLog, api_savePostes,
 api_addGenericPoste, api_saveApplications, api_addApplication, api_deleteApplication,
 api_renameApplication, api_getTimeline, api_getActions, api_addAction, api_updateAction,
 api_deleteAction, api_addReplacement, api_updateReplacement, api_deleteReplacement, api_getDiff,
@@ -218,6 +219,13 @@ Config.PROP_ACCESS    = 'ACCESS_JSON'  ({users:[{email, role, added_at, added_by
 Config.get()                 -> {dataId:''|id, sourceId:''|id, threshold:int (Core.THRESHOLD when unset),
                                  access:{users:[...], domainRole:'none'|'lecteur'}} (unreadable JSON -> empty list)
 Config.setDataId(id), Config.setSourceId(id), Config.setThreshold(n), Config.setAccess(access)
+Config.PROP_PREFS_PREFIX = 'PREFS_'  (+ lower-cased email: JSON of that account's interface preferences)
+Config.PREF_VALUES    = {sidebar:['open','collapsed']}
+Config.getPrefs(email) -> {} | {sidebar}   Config.setPrefs(email, patch) -> merged, stored, returned
+Config.PROP_FAVICON   = 'FAVICON_URL'  (optional https URL of the tab icon; '-' = none)
+Config.faviconUrl()          -> FAVICON_URL when it is an https URL, '' for '-', else DEFAULT_FAVICON_URL
+                                (assets/favicon.png embedded as a data:image/png;base64 URI).
+                                doGet calls HtmlOutput.setFaviconUrl with it (errors logged, never thrown).
 Config.today()               -> 'YYYY-MM-DD'        (Utilities.formatDate, script time zone)
 Config.todayFr()             -> 'DD/MM/YYYY'
 Config.nowStamp()            -> 'YYYY-MM-DD HH:mm'
@@ -344,11 +352,11 @@ Only the scriptlet form `<?!= fn('arg') ?>` is used (so the Node renderer stays 
 <?!= include('css') ?>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.3/plotly.min.js"></script>
 </head><body>
-<div id="app"> … sidebar (#sidebar) + main (#main) … </div>
+<div id="app"> … sidebar (#sidebar) + .workspace (app bar #appbar + main #main) … </div>
 <div id="toast-root"></div><div id="modal-root"></div>
 <script><?!= coreScript() ?></script>
 <?!= include('js_api') ?>  <?!= include('js_state') ?>  <?!= include('js_ui') ?>  <?!= include('js_charts') ?>
-<?!= include('js_page_dashboard') ?> <?!= include('js_page_postes') ?> <?!= include('js_page_apps') ?>
+<?!= include('js_page_dashboard') ?> <?!= include('js_page_inventory') ?> <?!= include('js_page_postes') ?> <?!= include('js_page_apps') ?>
 <?!= include('js_page_timeline') ?> <?!= include('js_page_actions') ?>
 <?!= include('js_main') ?>
 </body></html>
@@ -380,6 +388,9 @@ State.removeRecord(month, entity, id)
 State.addRecord(month, entity, record)
 State.invalidate(month?)         -> drop one/all cached months (also the timeline/actions caches)
 State.filtered(monthData)        -> Core.filterData({postes, applications}, state.filters)
+State.loadMonth(month)           -> cached / shared pending request; a failure is handed once more to the next
+                                    caller within 2 s (the page mounted after a month swap shows it, no 2nd call);
+                                    State.invalidate(month) clears it.
 State.loadTimeline({force}?)     -> Promise<timeline> (cached)
 State.loadActions({force}?)      -> Promise<{actions, replacements}> (cached)
 State.refreshBootstrap()         -> Promise (api_bootstrap -> sets configured/months/... ; keeps month if still valid else latest)
@@ -399,6 +410,11 @@ UI.scoreBadge(score)      -> badge with fmtPct, tone ok if >= 80 else ko, neutra
 UI.riskBadge(level)       -> badge colored with Core.RISK_COLORS
 UI.card({title, value, sub?, tone?})       -> metric card
 UI.section(title, ...children)             -> section with h2
+UI.asyncBlock(box, {load, render, placeholder?, error?, small?, errorId?, live?}) -> Promise (see js_ui.html)
+UI.monthError(month)      -> {prefix:'Impossible de charger mai 2026', retry} for asyncBlock
+UI.monthHeader({title, month, kickerId, actions?}) -> page header with the « Mai 2026 · Export 2026-05 » kicker
+UI.noData(id)             -> empty state when no month is imported (admins: link to the import form)
+UI.filterNote(scope) / UI.plural(n, one, many) / UI.errorToast(err, context?)
 UI.empty(text)                             -> empty-state block
 UI.toast(message, type='info'|'success'|'error')
 UI.modal({title, body:Node, actions:[{label, primary?, danger?, onClick:(close)=>any}], wide?}) -> {close}
@@ -431,14 +447,14 @@ Charts.gauge(el, value, {height=250})                 -> indicator gauge, bar Co
 Charts.riskBars(el, counts /* Core.riskCounts */)     -> bar per RISK_ORDER, colors RISK_COLORS, no legend
 Charts.histogram(el, scores:[number])                 -> 10 bins on 0–100, vline at 80 dashed, annotation 'Seuil 80%'
 Charts.line(el, {x:[labels], series:[{name, y:[number|null], color?}], threshold?:80, yTitle?, yRange?})
-Charts.bars(el, {x:[labels], y:[numbers], colors?, yTitle?, horizontal?})
 Charts.heatmap(el, {x:[labels], y:[labels], z:[[number|null]], zmin=0, zmax=100, title?})
 Charts.purge(el)
+Charts.board({sectionClass?}) -> {section(title, id, drawFn, caption?), draw(), purge()}  (charts of a page body)
 ```
 
 ### Pages
 `window.Pages = window.Pages || {}`; each page file registers
-`Pages.<id> = { id, title, icon, mount(root), unmount?() }` with ids and titles:
+`Pages.<id> = { id, title, mount(root), unmount?(), update?(changed) }` with ids and titles:
 
 | id | icon | title |
 |---|---|---|
@@ -449,22 +465,46 @@ Charts.purge(el)
 | `actions` | 📋 | Suivi actions |
 | `settings` | – | Paramètres (admin only; also reachable before a source is configured) |
 
-`mount(root)` receives the cleared `#main` element. Pages read `State.get()` (month, filters), call
-`State.loadMonth(...)`/`api.call(...)`, and render with `UI`/`Charts`. `App` re-mounts the current page
-(after calling `unmount`) whenever `month`, `filters` or `page` change, and after `App.refresh()`.
+`mount(root)` receives the cleared `#main` element. Pages read `State.get()` (month, filters), load with
+`UI.asyncBlock(box, {load, render, …})` (placeholder, error + « Réessayer », stale results dropped: no
+hand-written tokens), and render with `UI`/`Charts`. `App` re-mounts the current page (after calling
+`unmount`) when `page` changes and after `App.refresh()`; a month change keeps the page dimmed until the
+month is cached, then re-mounts it. A filter change calls `update(['filters'])` first: a page that returns
+true re-rendered its data in place from the cache (dashboard, postes, apps, timeline: header, scroll and
+an open drawer stay, no server call); otherwise it is re-mounted.
+
+Postes and Applications are built by `InventoryPage.create(spec)` (`js_page_inventory.html`, with
+`EntityDrawer`): header + CSV / create buttons, filter note, stat line, optional sections, the « Inventaire »
+editable table (key column → drawer, computed columns, « Conformité » filter, inline saves). Each page file
+only declares its spec (columns, nouns, CSV, create button, drawer).
 
 ### `window.App` (`js_main.html`)
 ```
 App.go(pageId)        -> navigate (also google.script.history.push({page}) when available)
 App.refresh()         -> re-mount current page
-App.boot()            -> called on DOMContentLoaded: State.refreshBootstrap(); if !configured show the
-                         configuration screen (paste source sheet URL -> api_setConfig); render sidebar.
+App.boot()            -> called on DOMContentLoaded, behind the #splash (static in index.html: team logo,
+                         indeterminate bar, step line): « Vérification de l’accès… » State.refreshBootstrap();
+                         « Chargement de mai 2026… » State.loadMonth(month) (warms the cache); then renders and
+                         fades the splash out. After 8 s a note explains the Apps Script cold start; a failure
+                         shows the error + « Réessayer » on the splash; FORBIDDEN → « Accès refusé ».
+                         If !configured: configuration screen (paste source sheet URL -> api_setConfig).
+Loading:               page bodies show UI.skeleton(...) (aria-busy) while their data loads; any
+                         [aria-busy] in #main draws the app bar progress line. Month change on the same page:
+                         the page and the filters stay, dimmed (.is-stale), until the new month is cached,
+                         then the page re-mounts.
 ```
-Sidebar: app title `👻 Shadow IT`, nav links (5 pages), `Période` month select (asc list, default latest),
-`Filtres` with `Équipe` and `Bâtiment / Labo` multiselects (options from current month postes via
-`Core.uniqueSorted`), footer links "Données (Google Sheet)" → `dataUrl`, "Source" → `sourceUrl`
-(target `_blank`, admins only), then the signed-in account (`#side-user`: email + role). The source is
-changed in Paramètres (`App.applySource`). « Paramètres » is in the nav for admins only.
+Sidebar: ghost logo (inline SVG, `svg.brand-logo`) + app title `Shadow IT`, nav links (one line icon + label each), footer links "Données (Google
+Sheet)" → `dataUrl`, "Source" → `sourceUrl` (target `_blank`, admins only), then the signed-in account
+(`#side-user`: email + role) and `#nav-collapse` (« Réduire le menu »: 56px icon rail, wide screens
+only). The state is kept in `localStorage['shadowit.sidebar']` (applied before the server answers) and
+per account through `api_savePrefs` / `bootstrap.prefs.sidebar`, which wins at boot: the Apps Script
+frame loses localStorage when the browser blocks third-party storage. A browser-only value is uploaded
+once. The source is changed in Paramètres
+(`App.applySource`). « Paramètres » is in the nav for admins only.
+App bar (`#appbar`, sticky): `Période` = `#month-prev` ‹ `#month-select` (asc list, default latest) ›
+`#month-next`; `Équipe` (`#filter-equipe`) and `Bâtiment / Labo` (`#filter-batiment`) multiselects
+(options from current month postes via `Core.uniqueSorted`), `#filters-reset`, `#appbar-count`
+(« 2 postes sur 7 » while a filter is active). Below 900px the filters fold behind `#filters-toggle`.
 Boot: `FORBIDDEN` from `api_bootstrap` → « Accès refusé » screen (`.page-denied`, server message,
 « Réessayer »); a lecteur on an unconfigured app gets a waiting screen (`data-page="unconfigured"`)
 instead of the configuration form.

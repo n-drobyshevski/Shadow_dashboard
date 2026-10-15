@@ -63,8 +63,8 @@
 
   window.Pages = window.Pages || {};
   var el = UI.el;
-  var token = 0;          // bumped on unmount: late responses do not touch a detached page
-  var settings = null;    // last api_getSettings result
+  var page = null;        // root of the mounted page: late responses do not touch a page that was left
+  function alive() { return !!page && page.isConnected; }
 
   function roleLabel(role) { return (App.ROLE_LABELS || {})[role] || role; }
   function pct(n) { return n + UI.NNBSP + '%'; }
@@ -104,14 +104,13 @@
       var value = input.value.trim();
       UI.fieldError(input, '');
       if (!value) { UI.fieldError(input, 'Collez l’URL ou l’identifiant du Google Sheet source.'); input.focus(); return; }
-      var t = token;
       UI.busy(button, App.applySource(value)).then(function () {
         // A first source re-renders the whole shell (and re-mounts this page): nothing left to do then.
-        if (t !== token) return;
+        if (!alive()) return;
         input.value = '';
         reload();
       }, function (err) {
-        if (t !== token) return;
+        if (!alive()) return;
         UI.fieldError(input, App.sourceErrorText(err));
         input.focus();
       });
@@ -143,19 +142,18 @@
       UI.fieldError(input, '');
       if (n === null) { UI.fieldError(input, 'Entrez un nombre entier entre 1 et 100.'); input.focus(); return; }
       if (n === s.threshold) { UI.toast('Seuil inchangé — ' + pct(n) + '.'); return; }
-      var t = token;
       UI.busy(button, api.call('api_setThreshold', { threshold: n }).then(function (res) {
         // Every cached score depends on the threshold: drop them and reload the bootstrap.
         State.invalidate();
         return State.refreshBootstrap().then(function () { return res; });
       })).then(function (res) {
-        if (t !== token) return;
+        if (!alive()) return;
         s.threshold = res.threshold;
         input.value = String(res.threshold);
         reset.hidden = res.threshold === s.defaultThreshold;
         UI.toast('Seuil enregistré — ' + pct(res.threshold) + '.', 'success');
       }, function (err) {
-        if (t !== token) return;
+        if (!alive()) return;
         UI.fieldError(input, UI.errorText(err));
       });
     }
@@ -175,8 +173,6 @@
   }
 
   // ------------------------------------------------------------------------------ access
-
-  function plural(n, one, many) { return UI.fmtNum(n) + ' ' + (n > 1 ? many : one); }
 
   /**
    * What a bulk add would do, computed client-side from the current list (the server decides; this is
@@ -222,13 +218,13 @@
         if (parts.length) preview.appendChild(document.createTextNode(' · '));
         var shown = plan.invalid.slice(0, 5).join(', ') + (plan.invalid.length > 5 ? '…' : '');
         preview.appendChild(el('span', { class: 'access-bulk-invalid', id: 'bulk-invalid' },
-          plural(plan.invalid.length, 'adresse invalide', 'adresses invalides') + ' : ' + shown));
+          UI.plural(plan.invalid.length, 'adresse invalide', 'adresses invalides') + ' : ' + shown));
       }
       var n = plan.add.length + plan.change.length;
       if (dlg) {
         var btn = dlg.buttons[1];
-        btn.textContent = n ? (plan.add.length && !plan.change.length ? 'Ajouter ' + plural(n, 'compte', 'comptes') :
-          'Enregistrer ' + plural(n, 'compte', 'comptes')) : 'Ajouter';
+        btn.textContent = n ? (plan.add.length && !plan.change.length ? 'Ajouter ' + UI.plural(n, 'compte', 'comptes') :
+          'Enregistrer ' + UI.plural(n, 'compte', 'comptes')) : 'Ajouter';
         btn.disabled = !n;
       }
       UI.fieldError(text, '');
@@ -256,9 +252,9 @@
           return api.call('api_addUsers', { emails: emails, role: r }).then(function (res) {
             close();
             var bits = [];
-            if (res.added.length) bits.push(plural(res.added.length, 'compte ajouté', 'comptes ajoutés'));
-            if (res.updated.length) bits.push(plural(res.updated.length, 'rôle modifié', 'rôles modifiés'));
-            if (res.skipped.length) bits.push(plural(res.skipped.length, 'ignoré', 'ignorés'));
+            if (res.added.length) bits.push(UI.plural(res.added.length, 'compte ajouté', 'comptes ajoutés'));
+            if (res.updated.length) bits.push(UI.plural(res.updated.length, 'rôle modifié', 'rôles modifiés'));
+            if (res.skipped.length) bits.push(UI.plural(res.skipped.length, 'ignoré', 'ignorés'));
             UI.toast((bits.join(' · ') || 'Aucun changement') + ' — ' + roleLabel(r) + '.', 'success');
             onDone(res.access);
           }, function (err) {
@@ -281,43 +277,82 @@
       render();
     }
 
-    function roleCell(u) {
-      var dd = UI.select({ ariaLabel: 'Rôle de ' + u.email, options: ROLE_OPTIONS, value: u.role, size: 'sm',
-        onChange: function (role) {
-          if (role === u.role) return;
-          var t = token;
-          dd.setDisabled(true);
-          api.call('api_saveUser', { email: u.email, role: role }).then(function (next) {
-            if (t !== token) return;
-            UI.toast('Rôle modifié — ' + u.email + ' : ' + roleLabel(role) + '.', 'success');
-            apply(next);
-          }, function (err) {
-            if (t !== token) return;
-            dd.setDisabled(false);
-            dd.setValue(u.role);
-            UI.toast('Erreur : ' + UI.errorText(err), 'error');
-          });
-        } });
+    /**
+     * Dropdown saved on change: disabled while saving, reverted with an error toast on failure.
+     * o: {options, value, save(value) -> Promise<AccessView>, done(value), + UI.select options (label, id, ariaLabel, size)}
+     */
+    function savingSelect(o) {
+      var dd = UI.select(Object.assign({}, o, { onChange: function (value) {
+        if (value === o.value) return;
+        dd.setDisabled(true);
+        o.save(value).then(function (next) {
+          if (!alive()) return;
+          o.done(value);
+          apply(next);
+        }, function (err) {
+          if (!alive()) return;
+          dd.setDisabled(false);
+          dd.setValue(o.value);
+          UI.errorToast(err);
+        });
+      } }));
       return dd;
     }
 
-    function removeButton(u) {
-      return el('button', { type: 'button', class: 'btn btn-quiet is-danger btn-sm', dataset: { email: u.email },
-        'aria-label': 'Retirer l’accès de ' + u.email,
+    /** Inline role dropdown of a user or group row. */
+    function entryRole(entry, apiName, aria) {
+      return savingSelect({ ariaLabel: aria, options: ROLE_OPTIONS, value: entry.role, size: 'sm',
+        save: function (role) { return api.call(apiName, { email: entry.email, role: role }); },
+        done: function (role) { UI.toast('Rôle modifié — ' + entry.email + ' : ' + roleLabel(role) + '.', 'success'); } });
+    }
+
+    /** « Retirer » of a user or group row: confirmation, then apiName({email}). */
+    function removeEntry(o) {
+      return el('button', { type: 'button', class: 'btn btn-quiet is-danger btn-sm', dataset: o.dataset || null,
+        'aria-label': o.aria,
         onClick: function () {
-          var t = token;
-          UI.confirm(u.email + ' ne pourra plus ouvrir l’application' +
-            (view.domainRole === 'lecteur' ? ', sauf en lecture comme tout compte du domaine' : '') + '.', {
-            title: 'Retirer l’accès', okLabel: 'Retirer', danger: true,
+          UI.confirm(o.message, { title: o.title, okLabel: 'Retirer', danger: true,
             onConfirm: function () {
-              return api.call('api_removeUser', { email: u.email }).then(function (next) {
-                if (t !== token) return;
-                UI.toast('Accès retiré — ' + u.email + '.', 'success');
+              return api.call(o.apiName, { email: o.email }).then(function (next) {
+                if (!alive()) return;
+                UI.toast(o.done, 'success');
                 apply(next);
               });
-            }
-          });
+            } });
         } }, 'Retirer');
+    }
+
+    /**
+     * « Ajouter un compte » / « Ajouter un groupe » form: e-mail + role + submit (ids `${id}-email`,
+     * `${id}-role`, `${id}-add`, `${id}-form`), apiName({email, role}), error under the field.
+     */
+    function addEntryForm(o) {
+      var email = el('input', { type: 'email', class: 'input', id: o.id + '-email', autocomplete: 'off',
+        placeholder: o.placeholder, spellcheck: 'false' });
+      var role = UI.select({ label: 'Rôle', id: o.id + '-role', options: ROLE_OPTIONS, value: 'lecteur' });
+      var add = el('button', { type: 'submit', class: 'btn btn-secondary', id: o.id + '-add' }, o.button);
+      return el('form', { class: 'settings-form', id: o.id + '-form', novalidate: true, onSubmit: function (e) {
+        e.preventDefault();
+        var value = email.value.trim();
+        UI.fieldError(email, '');
+        if (!value) { UI.fieldError(email, o.emptyMessage); email.focus(); return; }
+        var r = role.getValue();
+        UI.busy(add, api.call(o.apiName, { email: value, role: r }), o.busyLabel).then(function (next) {
+          if (!alive()) return;
+          UI.toast(o.added + ' — ' + value.toLowerCase() + ' (' + roleLabel(r) + ').', 'success');
+          apply(next);
+          var again = document.getElementById(o.id + '-email');
+          if (again) again.focus();
+        }, function (err) {
+          if (!alive()) return;
+          UI.fieldError(email, UI.errorText(err));
+          email.focus();
+        });
+      } },
+        el('div', { class: 'form-field form-field-grow' },
+          el('label', { for: o.id + '-email', class: 'field-label' }, o.label), email),
+        role,
+        el('div', { class: 'form-actions' }, add));
     }
 
     function render() {
@@ -341,58 +376,27 @@
           var note = u.owner ? 'propriétaire' : (u.email === me ? 'vous' : '');
           return [
             u.email,
-            fixed ? [roleLabel(u.role), note ? el('span', { class: 'access-note' }, note) : null] : roleCell(u),
-            u.owner ? '—' : [Fmt.date(u.added_at), u.added_by ? el('span', { class: 'access-note' }, 'par ' + u.added_by) : null],
-            fixed ? null : removeButton(u)
+            fixed ? [roleLabel(u.role), note ? el('span', { class: 'access-note' }, note) : null] :
+              entryRole(u, 'api_saveUser', 'Rôle de ' + u.email),
+            u.owner ? '—' : addedCell(u),
+            fixed ? null : removeEntry({ email: u.email, apiName: 'api_removeUser', dataset: { email: u.email },
+              aria: 'Retirer l’accès de ' + u.email, title: 'Retirer l’accès', done: 'Accès retiré — ' + u.email + '.',
+              message: u.email + ' ne pourra plus ouvrir l’application' +
+                (view.domainRole === 'lecteur' ? ', sauf en lecture comme tout compte du domaine' : '') + '.' })
           ];
         }
       });
 
-      var domain = UI.select({ label: 'Autres comptes du domaine', id: 'settings-domain-role', options: DOMAIN_OPTIONS,
-        value: view.domainRole, onChange: function (role) {
-          if (role === view.domainRole) return;
-          var t = token;
-          domain.setDisabled(true);
-          api.call('api_setDomainRole', { role: role }).then(function (next) {
-            if (t !== token) return;
-            UI.toast(role === 'lecteur' ? 'Tout compte du domaine peut désormais consulter l’application.' :
-              'Seuls les comptes listés peuvent ouvrir l’application.', 'success');
-            apply(next);
-          }, function (err) {
-            if (t !== token) return;
-            domain.setDisabled(false);
-            domain.setValue(view.domainRole);
-            UI.toast('Erreur : ' + UI.errorText(err), 'error');
-          });
+      var domain = savingSelect({ label: 'Autres comptes du domaine', id: 'settings-domain-role', options: DOMAIN_OPTIONS,
+        value: view.domainRole,
+        save: function (role) { return api.call('api_setDomainRole', { role: role }); },
+        done: function (role) {
+          UI.toast(role === 'lecteur' ? 'Tout compte du domaine peut désormais consulter l’application.' :
+            'Seuls les comptes listés peuvent ouvrir l’application.', 'success');
         } });
 
-      var email = el('input', { type: 'email', class: 'input', id: 'access-email', autocomplete: 'off',
-        placeholder: 'prenom.nom@decathlon.com', spellcheck: 'false' });
-      var role = UI.select({ label: 'Rôle', id: 'access-role', options: ROLE_OPTIONS, value: 'lecteur' });
-      var add = el('button', { type: 'submit', class: 'btn btn-secondary', id: 'access-add' }, 'Ajouter');
-      var form = el('form', { class: 'settings-form', id: 'access-form', novalidate: true, onSubmit: function (e) {
-        e.preventDefault();
-        var value = email.value.trim();
-        UI.fieldError(email, '');
-        if (!value) { UI.fieldError(email, 'Saisissez une adresse e-mail.'); email.focus(); return; }
-        var r = role.getValue();
-        var t = token;
-        UI.busy(add, api.call('api_saveUser', { email: value, role: r })).then(function (next) {
-          if (t !== token) return;
-          UI.toast('Accès ajouté — ' + value.toLowerCase() + ' (' + roleLabel(r) + ').', 'success');
-          apply(next);
-          var again = document.getElementById('access-email');
-          if (again) again.focus();
-        }, function (err) {
-          if (t !== token) return;
-          UI.fieldError(email, UI.errorText(err));
-          email.focus();
-        });
-      } },
-        el('div', { class: 'form-field form-field-grow' },
-          el('label', { for: 'access-email', class: 'field-label' }, 'Ajouter un compte'), email),
-        role,
-        el('div', { class: 'form-actions' }, add));
+      var form = addEntryForm({ id: 'access', label: 'Ajouter un compte', placeholder: 'prenom.nom@decathlon.com',
+        button: 'Ajouter', apiName: 'api_saveUser', emptyMessage: 'Saisissez une adresse e-mail.', added: 'Accès ajouté' });
 
       var count = el('span', { class: 'access-count', id: 'access-count', role: 'status' });
       var nomatch = el('p', { class: 'access-nomatch', id: 'access-nomatch', hidden: true }, 'Aucun compte ne correspond.');
@@ -413,7 +417,7 @@
           if (ok) shown++;
         });
         var total = rows.length;
-        count.textContent = q ? UI.fmtNum(shown) + ' sur ' + plural(total, 'compte', 'comptes') : plural(total, 'compte', 'comptes');
+        count.textContent = q ? UI.fmtNum(shown) + ' sur ' + UI.plural(total, 'compte', 'comptes') : UI.plural(total, 'compte', 'comptes');
         nomatch.hidden = shown > 0;
       }
 
@@ -453,22 +457,10 @@
             return [
               g.email,
               entryRole(g, 'api_saveGroup', 'Rôle du groupe ' + g.email),
-              [Fmt.date(g.added_at), g.added_by ? el('span', { class: 'access-note' }, 'par ' + g.added_by) : null],
-              el('button', { type: 'button', class: 'btn btn-quiet is-danger btn-sm',
-                'aria-label': 'Retirer le groupe ' + g.email,
-                onClick: function () {
-                  var t = token;
-                  UI.confirm('Les membres de ' + g.email + ' perdront le rôle donné par ce groupe.', {
-                    title: 'Retirer le groupe', okLabel: 'Retirer', danger: true,
-                    onConfirm: function () {
-                      return api.call('api_removeGroup', { email: g.email }).then(function (next) {
-                        if (t !== token) return;
-                        UI.toast('Groupe retiré — ' + g.email + '.', 'success');
-                        apply(next);
-                      });
-                    }
-                  });
-                } }, 'Retirer')
+              addedCell(g),
+              removeEntry({ email: g.email, apiName: 'api_removeGroup', aria: 'Retirer le groupe ' + g.email,
+                title: 'Retirer le groupe', done: 'Groupe retiré — ' + g.email + '.',
+                message: 'Les membres de ' + g.email + ' perdront le rôle donné par ce groupe.' })
             ];
           }
         }));
@@ -476,53 +468,14 @@
         block.appendChild(UI.empty('Aucun groupe.', { small: true }));
       }
 
-      var gEmail = el('input', { type: 'email', class: 'input', id: 'group-email', autocomplete: 'off',
-        placeholder: 'equipe-labo@decathlon.com', spellcheck: 'false' });
-      var gRole = UI.select({ label: 'Rôle', id: 'group-role', options: ROLE_OPTIONS, value: 'lecteur' });
-      var gAdd = el('button', { type: 'submit', class: 'btn btn-secondary', id: 'group-add' }, 'Ajouter le groupe');
-      block.appendChild(el('form', { class: 'settings-form', id: 'group-form', novalidate: true, onSubmit: function (e) {
-        e.preventDefault();
-        var value = gEmail.value.trim();
-        UI.fieldError(gEmail, '');
-        if (!value) { UI.fieldError(gEmail, 'Saisissez l’adresse du groupe.'); gEmail.focus(); return; }
-        var r = gRole.getValue();
-        var t = token;
-        UI.busy(gAdd, api.call('api_saveGroup', { email: value, role: r }), 'Vérification…').then(function (next) {
-          if (t !== token) return;
-          UI.toast('Groupe ajouté — ' + value.toLowerCase() + ' (' + roleLabel(r) + ').', 'success');
-          apply(next);
-        }, function (err) {
-          if (t !== token) return;
-          UI.fieldError(gEmail, UI.errorText(err));
-          gEmail.focus();
-        });
-      } },
-        el('div', { class: 'form-field form-field-grow' },
-          el('label', { for: 'group-email', class: 'field-label' }, 'Ajouter un groupe'), gEmail),
-        gRole,
-        el('div', { class: 'form-actions' }, gAdd)));
+      block.appendChild(addEntryForm({ id: 'group', label: 'Ajouter un groupe', placeholder: 'equipe-labo@decathlon.com',
+        button: 'Ajouter le groupe', busyLabel: 'Vérification…', apiName: 'api_saveGroup',
+        emptyMessage: 'Saisissez l’adresse du groupe.', added: 'Groupe ajouté' }));
       return block;
     }
 
-    /** Inline role dropdown of a group row, saved on change (reverted on error). */
-    function entryRole(entry, apiName, aria) {
-      var dd = UI.select({ ariaLabel: aria, options: ROLE_OPTIONS, value: entry.role, size: 'sm',
-        onChange: function (role) {
-          if (role === entry.role) return;
-          var t = token;
-          dd.setDisabled(true);
-          api.call(apiName, { email: entry.email, role: role }).then(function (next) {
-            if (t !== token) return;
-            UI.toast('Rôle modifié — ' + entry.email + ' : ' + roleLabel(role) + '.', 'success');
-            apply(next);
-          }, function (err) {
-            if (t !== token) return;
-            dd.setDisabled(false);
-            dd.setValue(entry.role);
-            UI.toast('Erreur : ' + UI.errorText(err), 'error');
-          });
-        } });
-      return dd;
+    function addedCell(entry) {
+      return [Fmt.date(entry.added_at), entry.added_by ? el('span', { class: 'access-note' }, 'par ' + entry.added_by) : null];
     }
 
     render();
@@ -538,36 +491,27 @@
   // ------------------------------------------------------------------------------ page
 
   function load(body) {
-    var t = ++token;
-    UI.clear(body).appendChild(UI.loading('Chargement des paramètres…'));
-    body.setAttribute('aria-busy', 'true');
-    api.call('api_getSettings', null).then(function (s) {
-      if (t !== token) return;
-      settings = s;
-      body.removeAttribute('aria-busy');
-      UI.clear(body);
-      body.appendChild(sourceSection(s, function () { load(body); }));
-      body.appendChild(thresholdSection(s));
-      body.appendChild(accessSection(s));
-    }, function (err) {
-      if (t !== token) return;
-      body.removeAttribute('aria-busy');
-      UI.clear(body).appendChild(UI.errorState(err, { retry: function () { load(body); } }));
+    UI.asyncBlock(body, {
+      load: function () { return api.call('api_getSettings', null); },
+      placeholder: function () { return UI.skeleton('lines', { label: 'Chargement des paramètres…', rows: 8 }); },
+      render: function (s) {
+        body.appendChild(sourceSection(s, function () { load(body); }));
+        body.appendChild(thresholdSection(s));
+        body.appendChild(accessSection(s));
+      }
     });
   }
 
   function mount(root) {
+    page = root;
     var body = el('div', { class: 'settings-body', id: 'settings-body' });
     root.appendChild(UI.pageHeader({ title: 'Paramètres', kicker: 'Shadow IT · administration' }));
     root.appendChild(body);
     load(body);
   }
 
-  function unmount() {
-    token++;
-    settings = null;
-  }
+  function unmount() { page = null; }
 
-  window.Pages.settings = { id: 'settings', title: 'Paramètres', icon: '', mount: mount, unmount: unmount };
+  window.Pages.settings = { id: 'settings', title: 'Paramètres', mount: mount, unmount: unmount };
 })();
 </script>

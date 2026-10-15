@@ -18,9 +18,8 @@
  *
  * Page authors: series without `color` get the ledger defaults (ink solid, ink-3 dashed, accent, ...);
  * series accept `dash` ('solid'|'dash'|'dot'). Charts.tokens() returns the palette.
- * Helpers: Charts.fmtPct(v, digits=1) / Charts.fmtNum(v) (chart-side fr-FR formatters),
- * Charts.hoverTemplate(head, series, value) -> '<head> · <series> <value><extra></extra>' (head and value
- * may be Plotly placeholders such as '%{x}' / '%{customdata}'; series is escaped),
+ * Values are formatted with UI.fmtPct / UI.fmtNum. Charts.board() groups the chart blocks of a page body
+ * (queue the draws, run them once in the DOM, purge them on leave).
  * Charts.thresholdCaption({prefix?, items:[{label?, rate, ok?, total?}], threshold?}) -> p.chart-caption
  * .threshold-caption « ■ Sous le seuil · 5 conformes sur 7 · seuil 80 % » (status always in words).
  */
@@ -407,69 +406,6 @@
   }
 
   /**
-   * Bar chart: {x, y, colors?, yTitle?, horizontal?}. Extension: {x, series:[{name, y, color?, outline?:bool|fill}]}
-   * draws grouped bars with a legend placed above the plot area (never over the bars).
-   * Options: labels:true prints each count above its bar (mono 12px ink-2) and drops the value axis;
-   * legend:false hides the legend (the page then puts a key in the caption). outline:true draws a series
-   * as a 1px outline in its colour on paper instead of a solid bar. Prefer partBars for "x sur y" counts.
-   */
-  function bars(el, opts) {
-    var o = opts || {};
-    var t = tokens();
-    var horizontal = !!o.horizontal;
-    var palette = [t.ink, t.ink3, t.rule2, t.accent];
-    var labels = !!o.labels;
-    function trace(name, y, color, i, outline) {
-      var c = color || palette[i % palette.length];
-      // outline: true -> paper fill; a colour string -> that fill (e.g. --paper-2 to tell two outlines apart).
-      var tr = {
-        type: 'bar',
-        name: name,
-        orientation: horizontal ? 'h' : 'v',
-        marker: outline ? { color: typeof outline === 'string' ? outline : t.paper, line: { width: 1, color: c } } :
-          { color: c, line: { width: 0 } },
-        customdata: (y || []).map(fmtNum),
-        hovertemplate: hoverTemplate(horizontal ? '%{y}' : '%{x}', name, '%{customdata}')
-      };
-      if (horizontal) { tr.x = y; tr.y = o.x || []; } else { tr.x = o.x || []; tr.y = y; }
-      if (labels) {
-        tr.texttemplate = '%{customdata}';
-        tr.textposition = 'outside';
-        tr.textfont = { family: t.mono, size: 12, color: t.ink2 };
-        tr.cliponaxis = false;
-      }
-      return tr;
-    }
-    var multi = !!(o.series && o.series.length > 1);
-    var data = o.series && o.series.length ?
-      o.series.map(function (s, i) { return trace(s.name, s.y || [], s.color, i, s.outline || false); }) :
-      [trace('', o.y || [], o.colors || t.ink, 0, false)];
-    var maxValue = 1;
-    data.forEach(function (d) {
-      (horizontal ? d.x : d.y).forEach(function (v) { if (isFinite(Number(v))) maxValue = Math.max(maxValue, Number(v)); });
-    });
-    // With printed counts the value axis is redundant: no ticks, no gridlines, headroom for the labels.
-    var valueAxis = labels ? axis(t, { visible: false, rangemode: 'tozero', range: [0, maxValue * 1.15] }) :
-      axis(t, { rangemode: 'tozero', showgrid: true, gridcolor: t.rule, nticks: 5 });
-    var showLegend = multi && o.legend !== false;
-    var catAxis = axis(t, { type: 'category', showline: true, ticks: 'outside',
-      tickfont: horizontal ? catFont(t) : tickFont(t) });
-    if (horizontal) { catAxis.autorange = 'reversed'; catAxis.ticklabelstandoff = 8; catAxis.ticks = ''; }
-    return draw(el, data, baseLayout(t, {
-      height: o.height || (horizontal ? Math.max(160, 30 * (o.x || []).length + 40) : 280),
-      margin: { l: 4, r: 8, t: labels ? 16 : 8, b: 4 },
-      barmode: 'group',
-      bargap: 0.45,
-      bargroupgap: 0.2,
-      showlegend: showLegend,
-      legend: { orientation: 'h', x: 0, xanchor: 'left', y: 1.02, yanchor: 'bottom', traceorder: 'normal',
-        font: { family: t.sans, size: 12, color: t.ink2 }, itemwidth: 30, itemclick: false, itemdoubleclick: false },
-      xaxis: horizontal ? valueAxis : catAxis,
-      yaxis: horizontal ? catAxis : valueAxis
-    }));
-  }
-
-  /**
    * Part-of-whole bars, labelled directly (no legend):
    *   {x:[category], groups:[{label, total:{name, y}, part:{name, y}, color?}], height?}.
    * Per category and group, one outline bar (total = inventoriés, 1px in the group colour on paper) with
@@ -634,19 +570,43 @@
     }
   }
 
+  /**
+   * Charts.board({sectionClass?}) -> {section(title, id, drawFn, caption?), draw(), purge()}: the charts of
+   * one page body. section() returns a block (hairline + small-caps label) around a chart box and queues
+   * drawFn(box); draw() runs the queue once the blocks are in the DOM (one failing chart does not stop the
+   * others); purge() releases every Plotly instance of the board.
+   */
+  function board(o) {
+    var opts = o || {};
+    var boxes = [];
+    var draws = [];
+    return {
+      section: function (title, id, drawFn, caption) {
+        var box = UI.el('div', { class: 'chart-box', id: id, role: 'img', 'aria-label': title });
+        boxes.push(box);
+        draws.push(function () { drawFn(box); });
+        return UI.el('section', { class: ['section', opts.sectionClass || 'chart-section'], dataset: { chart: id } },
+          UI.el('h2', { class: 'section-title' }, title), box, caption || null);
+      },
+      draw: function () {
+        draws.splice(0).forEach(function (d) {
+          try { d(); } catch (e) { console.error(e); }
+        });
+      },
+      purge: function () { boxes.splice(0).forEach(purge); }
+    };
+  }
+
   window.Charts = {
     gauge: gauge,
     riskBars: riskBars,
     histogram: histogram,
     line: line,
-    bars: bars,
     partBars: partBars,
     heatmap: heatmap,
     purge: purge,
+    board: board,
     tokens: tokens,
-    fmtPct: fmtPct,
-    fmtNum: fmtNum,
-    hoverTemplate: hoverTemplate,
     thresholdCaption: thresholdCaption
   };
 })();

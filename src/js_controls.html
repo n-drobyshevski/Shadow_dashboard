@@ -63,8 +63,9 @@
  *   Custom-drawn checkbox (ink square, 2px radius) over a real visually-hidden <input type=checkbox>.
  *   Methods: getValue(), setValue(bool), setDisabled(bool); property .input.
  *
- * UI.tooltip(target, text | Node, {focusable?}?) -> target
- *   Ink tooltip (white Plex 12px, 3px radius). Shows after 300 ms of hover and at once on keyboard focus;
+ * UI.tooltip(target, text | Node, {focusable?, placement?}?) -> target
+ *   Ink tooltip (white Plex 12px, 3px radius), above the target (below when there is no room), or beside it
+ *   with placement:'right' (collapsed sidebar rail). Shows after 300 ms of hover and at once on keyboard focus;
  *   Esc dismisses; touch: tap toggles. Wires aria-describedby to a hidden description node. Calling it again
  *   on the same target replaces the text; UI.tooltip(target, null) removes it. focusable:true adds
  *   tabindex=0 to a non-focusable target. UI.el(tag, {tooltip: '…'}) calls it for you (never use title=).
@@ -239,9 +240,11 @@
       tipStore = el('div', { class: 'tooltip-store', id: 'tooltip-store', hidden: true });
       document.body.appendChild(tipStore);
     }
-    // Drop the descriptions of targets that left the document.
+    // Drop the descriptions of targets that left the document (not of targets built but not inserted yet).
     Array.prototype.slice.call(tipStore.children).forEach(function (d) {
-      if (d.__target && !d.__target.isConnected) tipStore.removeChild(d);
+      if (!d.__target) return;
+      if (d.__target.isConnected) d.__seen = true;
+      else if (d.__seen) tipStore.removeChild(d);
     });
     return tipStore;
   }
@@ -269,10 +272,18 @@
     tipBubble.style.top = '0px';
     var w = tipBubble.offsetWidth;
     var h = tipBubble.offsetHeight;
-    var top = r.top - h - 6;
-    var place = 'top';
-    if (top < EDGE) { top = r.bottom + 6; place = 'bottom'; }
-    var left = clamp(r.left + r.width / 2 - w / 2, EDGE, Math.max(EDGE, vw - w - EDGE));
+    var top, left, place;
+    if (info.placement === 'right' && r.right + 8 + w <= vw - EDGE) {
+      var vh = document.documentElement.clientHeight || window.innerHeight;
+      place = 'right';
+      left = r.right + 8;
+      top = clamp(r.top + r.height / 2 - h / 2, EDGE, Math.max(EDGE, vh - h - EDGE));
+    } else {
+      top = r.top - h - 6;
+      place = 'top';
+      if (top < EDGE) { top = r.bottom + 6; place = 'bottom'; }
+      left = clamp(r.left + r.width / 2 - w / 2, EDGE, Math.max(EDGE, vw - w - EDGE));
+    }
     tipBubble.style.left = Math.round(left) + 'px';
     tipBubble.style.top = Math.round(top) + 'px';
     tipBubble.dataset.placement = place;
@@ -287,7 +298,7 @@
   }, true);
   window.addEventListener('scroll', function () { if (tipTarget) hideTip(); }, true);
 
-  /** UI.tooltip(target, text|Node|null, {focusable?}?) -> target */
+  /** UI.tooltip(target, text|Node|null, {focusable?, placement?}?) -> target */
   function tooltip(target, content, o) {
     if (!target) return target;
     var opts = o || {};
@@ -334,6 +345,7 @@
     } else if (!info.desc.isConnected) {
       store.appendChild(info.desc);
     }
+    info.placement = opts.placement === 'right' ? 'right' : 'top';
     clear(info.desc);
     info.desc.appendChild(content instanceof Node ? content : document.createTextNode(String(content)));
     if (opts.focusable && !target.hasAttribute('tabindex') &&
@@ -868,8 +880,7 @@
 
   // ============================================================================== dates
 
-  var MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre',
-    'novembre', 'décembre'];
+  var MONTHS = Fmt.MONTHS;
   var MONTHS_SHORT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
   var DAYS = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'];
   function pad2(n) { return (n < 10 ? '0' : '') + n; }

@@ -21,12 +21,17 @@
     filters: { equipes: [], batiments: [] },
     loading: false,
     threshold: 80,
-    user: { email: '', role: '', isOwner: false }
+    user: { email: '', role: '', isOwner: false },
+    prefs: {}                  // the account's interface preferences (api_bootstrap.prefs)
   };
   var subscribers = [];
 
   var monthCache = {};     // month -> monthData
   var monthPending = {};   // month -> Promise<monthData>
+  // month -> {err, at}: a failure handed once to the next caller within FAILURE_REUSE_MS (the page mounted
+  // right after a month swap shows the error the swap just got, instead of requesting the month again).
+  var monthFailed = {};
+  var FAILURE_REUSE_MS = 2000;
   var timelineCache = null;
   var timelinePending = null;
   var actionsCache = null;
@@ -78,6 +83,9 @@
     if (!month) return Promise.reject(Object.assign(new Error('Aucun mois sélectionné.'), { code: 'VALIDATION' }));
     if (!force && monthCache[month]) return Promise.resolve(monthCache[month]);
     if (!force && monthPending[month]) return monthPending[month];
+    var failed = monthFailed[month];
+    delete monthFailed[month];
+    if (!force && failed && Date.now() - failed.at < FAILURE_REUSE_MS) return Promise.reject(failed.err);
     var gen = generation;
     var p = api.call('api_getMonthData', { month: month }).then(function (md) {
       md = normalizeMonthData(md);
@@ -85,7 +93,10 @@
       if (monthPending[month] === p) delete monthPending[month];
       return md;
     }, function (err) {
-      if (monthPending[month] === p) delete monthPending[month];
+      if (monthPending[month] === p) {
+        delete monthPending[month];
+        if (gen === generation) monthFailed[month] = { err: err, at: Date.now() };
+      }
       throw err;
     });
     monthPending[month] = p;
@@ -130,9 +141,11 @@
     if (month) {
       delete monthCache[month];
       delete monthPending[month];
+      delete monthFailed[month];
     } else {
       monthCache = {};
       monthPending = {};
+      monthFailed = {};
     }
     timelineCache = null;
     timelinePending = null;
@@ -164,6 +177,12 @@
    * scope: 'all' (postes + applications: the Bâtiment filter is marked "postes uniquement"), 'postes'
    * (Bâtiment applies fully), 'actions' (Bâtiment not applicable: marked "non applicable ici").
    */
+  /** State.hasFilters() -> true when an Équipe or Bâtiment filter is active. */
+  function hasFilters() {
+    var f = state.filters || {};
+    return ((f.equipes || []).length + (f.batiments || []).length) > 0;
+  }
+
   function filterSummary(scope) {
     var f = state.filters || {};
     var parts = [];
@@ -231,6 +250,7 @@
         sourceTitle: b.sourceTitle || '',
         threshold: threshold,
         user: prev.email === user.email && prev.role === user.role && prev.isOwner === user.isOwner ? prev : user,
+        prefs: b.prefs && typeof b.prefs === 'object' ? b.prefs : {},
         loading: false
       });
       return state;
@@ -259,6 +279,7 @@
     filtered: filtered,
     filterByEquipe: filterByEquipe,
     filterSummary: filterSummary,
+    hasFilters: hasFilters,
     loadTimeline: loadTimeline,
     loadActions: loadActions,
     refreshBootstrap: refreshBootstrap
@@ -269,8 +290,8 @@
  * window.Fmt — month / date notation, one per role, independent of the DOM (usable before UI loads).
  *   Fmt.monthLong('2026-05')   -> 'mai 2026'          inside a sentence, chart axes, table headers, options
  *   Fmt.monthTitle('2026-05')  -> 'Mai 2026'          start of a sentence or caption, select labels
- *   Fmt.monthKicker('2026-05') -> 'Mai 2026 · Export 2026-05'   page kicker (CSS sets the small caps:
- *                                 MAI 2026 · EXPORT 2026-05). The ISO export id appears ONLY here.
+ *   Fmt.MONTHS                 -> ['janvier', …, 'décembre'] (the one list of month names)
+ *   (page kicker « Mai 2026 · Export 2026-05 »: UI.monthHeader; the ISO export id appears ONLY there.)
  *   Fmt.monthRange(a, b)       -> 'Avril 2026 – mai 2026' (one month -> 'Mai 2026')
  *   Fmt.date('2026-05-04')     -> '04/05/2026'        (DD/MM/YYYY input is returned unchanged)
  *   Fmt.dateTime('2026-05-04 10:30') / ('2026-05-04T10:30:00') -> '04/05/2026 10:30'
@@ -290,7 +311,6 @@
     return MONTHS[Number(r[2]) - 1] + ' ' + r[1];
   }
   function monthTitle(m) { return cap(monthLong(m)); }
-  function monthKicker(m) { return parseMonth(m) ? monthTitle(m) + ' · Export ' + s(m).trim() : s(m); }
   function monthRange(a, b) {
     if (!b || a === b) return monthTitle(a);
     if (!a) return monthTitle(b);
@@ -308,7 +328,7 @@
   window.Fmt = {
     monthLong: monthLong,
     monthTitle: monthTitle,
-    monthKicker: monthKicker,
+    MONTHS: MONTHS,
     monthRange: monthRange,
     date: date,
     dateTime: dateTime

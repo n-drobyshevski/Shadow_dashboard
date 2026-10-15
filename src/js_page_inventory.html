@@ -1,0 +1,298 @@
+<script>
+/**
+ * Shared machinery of the two inventory pages (Postes, Applications), loaded before them.
+ *
+ * window.EntityDrawer — blocks of the poste / application drawers:
+ *     EntityDrawer.head(rec, extra?) -> div.drawer-head « Score 86 % · ■ Conforme · Risque ■ Élevé » (+ extra)
+ *     EntityDrawer.kv(rows:[[label, value]], monoLabels?:{label:1}) -> dl.kv of the non-empty rows
+ *     EntityDrawer.actionsBlock({target_type, target_name, equipe, month, values?, isOpen, emptyText})
+ *         -> section « Actions liées » + « Nouvelle action ». The form is window.ActionForm.open (defined by
+ *         js_page_actions.html: one form, copy and toast for the drawers and Suivi des actions) with the
+ *         target prefilled and locked; the list re-renders from the refreshed actions cache. Lecteurs
+ *         (!State.canEdit()) get the list alone, without « Nouvelle action ».
+ *     EntityDrawer.statLine(items:[Node|string]) -> p.stat-line ; EntityDrawer.count(n, one, many) -> [num, ' noun'].
+ *
+ * window.InventoryPage.create(spec) -> {id, title, mount, unmount, update}: header (month kicker,
+ * « Exporter CSV » + the page's create button), filter note, one-line stat summary, optional sections,
+ * then the « Inventaire » editable table over the filtered records of the month (key column first and
+ * read-only, opening the drawer; computed columns right after it), the « Conformité » filter, inline
+ * saves. update(['filters']) re-renders the body from the cache without re-mounting the page.
+ *   spec: {id ('postes'|'apps': element ids and classes), title, entity ('postes'|'applications'),
+ *     keyField, filterScope (State.filterSummary scope), filtered(s) (the global filters apply here),
+ *     nouns: {one, many, loading, inExport, noMatch, none}, monoColumns, numericColumns?, extraColumns?:[name],
+ *     computedColumns(ctx) -> [column], statsExtra?(all) -> [stat item], sections?(ctx) -> [section],
+ *     onStats?(all, ctx), csv(ctx) -> {file, columns, rows}, csvTooltip, saveApi,
+ *     primary?: {id, label, tooltip?, run(ctx, button)} (admins), openDrawer(id, ctx)}
+ *   ctx: {month, columns, md() (current cached month), all() (globally filtered), visible() (+ conformity),
+ *     refresh(), refreshPage(), live(), table, openDrawer(id), drawer(UI.drawer opts), drawerOpen(), closeDrawer()}
+ */
+(function () {
+  'use strict';
+
+  var el = UI.el;
+
+  // ============================================================================== EntityDrawer
+
+  function AF() { return window.ActionForm; }
+
+  /** [figure in mono, ' noun'] for a stat line. */
+  function count(n, one, many) { return [el('span', { class: 'num' }, UI.fmtNum(n)), ' ' + (n > 1 ? many : one)]; }
+  function statLine(items, attrs) {
+    return el('p', Object.assign({ class: 'stat-line' }, attrs || {}),
+      items.filter(Boolean).map(function (it) { return el('span', { class: 'stat' }, it); }));
+  }
+
+  function head(rec, extra) {
+    return el('div', { class: 'drawer-head' },
+      el('span', { class: 'stat-line' }, el('span', { class: 'faint small' }, 'Score'), UI.scoreBadge(rec._score)),
+      UI.statusMark(rec._conforme ? 'Conforme' : 'Non conforme', rec._conforme ? 'ok' : 'ko'),
+      Core.str(rec['Niveau de risque']) ?
+        el('span', { class: 'stat-line' }, el('span', { class: 'faint small' }, 'Risque'), UI.riskBadge(rec['Niveau de risque'])) : null,
+      extra || null);
+  }
+
+  function kv(rows, monoLabels) {
+    return el('dl', { class: 'kv' }, rows.filter(function (r) { return Core.str(r[1]); }).map(function (r) {
+      return [el('dt', null, r[0]), el('dd', { class: monoLabels && monoLabels[r[0]] ? 'mono' : null }, Core.str(r[1]))];
+    }));
+  }
+
+  function actionItem(a) {
+    return el('li', { dataset: { actionId: a.id } },
+      el('span', { class: 'action-title' }, a.action || '(sans libellé)'),
+      el('div', { class: 'action-meta' },
+        AF().statusMark(a.status),
+        AF().priorityMark(a.priorite, { long: true }) || null,
+        a.deadline ? el('span', null, 'Échéance ', el('span', { class: 'mono' }, a.deadline)) : null,
+        AF().isOverdue(a) ? UI.statusMark('En retard', 'ko') : null,
+        a.responsable ? el('span', null, a.responsable) : null,
+        a.source_month ? el('span', { class: 'faint' }, 'Export de ' + Fmt.monthLong(a.source_month)) : null),
+      a.comment ? el('p', { class: 'action-comment' }, a.comment) : null);
+  }
+
+  /**
+   * « Actions liées » block of a drawer; reloads itself after « Nouvelle action ».
+   * o: {target_type, target_name, equipe, month, values?, isOpen(), emptyText}
+   */
+  function actionsBlock(o) {
+    var list = el('div', { class: 'drawer-actions-list', id: 'drawer-actions', 'aria-live': 'polite' });
+    // Lecteurs read the linked actions; creating one is an admin write (api_addAction).
+    var addBtn = !State.canEdit() ? null : el('button', { type: 'button', class: 'btn btn-secondary btn-sm', id: 'drawer-add-action',
+      onClick: function () {
+        AF().open({ target: { type: o.target_type, name: o.target_name, equipe: o.equipe }, defaults: o.values || {},
+          trigger: addBtn, onSaved: function () { if (o.isOpen()) render(); } });
+      } }, 'Nouvelle action');
+
+    function render(opts) {
+      UI.asyncBlock(list, {
+        load: function () { return State.loadActions(opts); },
+        live: o.isOpen,
+        placeholder: function () { return UI.loading('Chargement des actions…', { small: true }); },
+        small: true,
+        error: { prefix: 'Actions indisponibles', retry: function () { render({ force: true }); } },
+        render: function (res) {
+          var mine = (res.actions || []).filter(function (a) {
+            return a.target_type === o.target_type && a.target_name === o.target_name;
+          });
+          list.appendChild(mine.length ? el('ul', { class: 'action-list' }, mine.map(actionItem)) :
+            UI.empty(o.emptyText, { small: true }));
+        }
+      });
+    }
+
+    render();
+    return el('section', { class: 'drawer-section', id: 'drawer-actions-section' },
+      el('div', { class: 'section-head' }, el('h3', { class: 'section-title' }, 'Actions liées'), addBtn), list);
+  }
+
+  window.EntityDrawer = { head: head, kv: kv, actionsBlock: actionsBlock, statLine: statLine, count: count };
+
+  // ============================================================================== InventoryPage
+
+  var CONFORMITY_OPTIONS = [
+    { value: 'all', label: 'Toutes' },
+    { value: 'ok', label: 'Conformes' },
+    { value: 'ko', label: 'Non conformes' }
+  ];
+
+  function create(spec) {
+    var p = spec.id;
+    var conformity = 'all';   // kept across re-mounts (month / filter changes)
+    var view = null;          // {root, body, month, buttons, ctx}
+    var drawerHandle = null;
+
+    /** Column order from the month's headers, key column first (falls back to the record keys). */
+    function sourceColumns(md) {
+      var declared = md.columns && md.columns[spec.entity];
+      var cols = declared && declared.length ? declared.slice() :
+        Object.keys(md[spec.entity][0] || {}).filter(function (k) { return k.charAt(0) !== '_'; });
+      (spec.extraColumns || []).forEach(function (c) { if (cols.indexOf(c) < 0) cols.push(c); });
+      return [spec.keyField].concat(cols.filter(function (c) { return c !== spec.keyField; }));
+    }
+
+    function mount(root) {
+      var s = State.get();
+      view = null;
+      if (!s.months.length || !s.month) {
+        root.appendChild(UI.monthHeader({ title: spec.title, month: '', kickerId: p + '-caption' }));
+        root.appendChild(UI.noData(p + '-empty'));
+        return;
+      }
+      var v = { root: root, month: s.month, ctx: null, buttons: {} };
+      // Page-level actions live in the header, enabled once the month is loaded. Lecteurs: CSV only.
+      // One rule on every page: [Exporter CSV (secondary)] then [create action (primary)].
+      v.buttons.csv = el('button', { type: 'button', class: 'btn btn-secondary', id: p + '-export-csv', disabled: true,
+        tooltip: spec.csvTooltip, onClick: function () {
+          if (!v.ctx) return;
+          var out = spec.csv(v.ctx);
+          UI.downloadCsv(out.file, out.columns, out.rows);
+        } }, 'Exporter CSV');
+      if (spec.primary && State.canEdit()) {
+        v.buttons.primary = el('button', { type: 'button', class: 'btn btn-primary', id: spec.primary.id, disabled: true,
+          tooltip: spec.primary.tooltip || null,
+          onClick: function () { if (v.ctx) spec.primary.run(v.ctx, v.buttons.primary); } }, spec.primary.label);
+      }
+      root.appendChild(UI.monthHeader({ title: spec.title, month: s.month, kickerId: p + '-caption',
+        actions: [v.buttons.csv, v.buttons.primary].filter(Boolean) }));
+      v.body = el('div', { class: 'block-stack ' + p + '-body', id: p + '-body' });
+      root.appendChild(v.body);
+      view = v;
+      UI.asyncBlock(v.body, {
+        load: function () { return State.loadMonth(v.month); },
+        placeholder: function () { return UI.skeleton('table', { label: spec.nouns.loading, columns: 7 }); },
+        error: UI.monthError(v.month),
+        render: function (md) { renderBody(v, md); }
+      });
+    }
+
+    /** Filter change: the body re-renders from the cache; header, buttons and scroll position stay. */
+    function update(changed) {
+      var v = view;
+      if (!v || !v.ctx || changed.length !== 1 || changed[0] !== 'filters') return false;
+      var md = State.getMonthData(v.month);
+      if (!md) return false;
+      UI.clear(v.body);
+      renderBody(v, md);
+      return true;
+    }
+
+    function renderBody(v, md) {
+      var month = v.month;
+      var cols = sourceColumns(md);
+      var ctx = { month: month, columns: cols, table: null };
+      ctx.live = function () { return view === v && v.ctx === ctx && v.body.isConnected; };
+      ctx.md = function () { return State.getMonthData(month) || md; };
+      ctx.conformity = function () { return conformity; };
+      ctx.all = function () { return State.filtered(ctx.md())[spec.entity]; };
+      ctx.visible = function () {
+        var list = ctx.all();
+        if (conformity === 'ok') return list.filter(function (r) { return r._conforme; });
+        if (conformity === 'ko') return list.filter(function (r) { return !r._conforme; });
+        return list;
+      };
+      ctx.refresh = function () {
+        if (!ctx.live()) return;
+        ctx.table.setRows(ctx.visible());
+        renderStats();
+      };
+      ctx.openDrawer = function (id) { spec.openDrawer(id, ctx); };
+      /** UI.drawer whose lifetime the page tracks (closed on unmount). */
+      ctx.drawer = function (o) {
+        var onClose = o.onClose;
+        drawerHandle = UI.drawer(Object.assign({}, o, { onClose: function () {
+          drawerHandle = null;
+          if (onClose) onClose();
+        } }));
+        return drawerHandle;
+      };
+      ctx.drawerOpen = function () { return !!drawerHandle; };
+      ctx.closeDrawer = function () { if (drawerHandle) drawerHandle.close(); };
+      /** Refreshes the table of the page as it is now (the body may have been re-rendered since). */
+      ctx.refreshPage = function () { if (view && view.ctx) view.ctx.refresh(); };
+      v.ctx = ctx;
+
+      // Summary line (globally filtered records, before the conformity filter):
+      // "7 postes   ■ 5 conformes 71,4 %   ■ 2 non conformes" (figures in mono) + the page's extras.
+      var stats = el('div', { id: p + '-stats', class: p + '-stats-wrap', role: 'status' });
+      function renderStats() {
+        var all = ctx.all();
+        var ok = all.filter(function (r) { return r._conforme; }).length;
+        var ko = all.length - ok;
+        UI.clear(stats).appendChild(statLine([
+          count(all.length, spec.nouns.one, spec.nouns.many),
+          [UI.statusMark(count(ok, 'conforme', 'conformes'), 'ok'),
+            all.length ? [' ', el('span', { class: 'num' }, UI.fmtPctNode(ok / all.length * 100))] : null],
+          UI.statusMark(count(ko, 'non conforme', 'non conformes'), ko ? 'ko' : 'neutral')
+        ].concat(spec.statsExtra ? spec.statsExtra(all) : [])));
+        if (spec.onStats) spec.onStats(all, ctx);
+      }
+
+      var mono = spec.monoColumns || {};
+      var numeric = spec.numericColumns || {};
+      var columns = cols.map(function (c, i) {
+        if (i === 0) {
+          return { key: c, label: c, editable: false, width: 150, render: function (row) {
+            return el('button', { type: 'button', class: p + '-key', 'aria-haspopup': 'dialog',
+              onClick: function () { ctx.openDrawer(row._id); } }, Core.str(row[c]) || '(sans nom)');
+          } };
+        }
+        // Read view: Statut / Niveau de risque as status marks, « Non » criteria in --ko (the editor is unchanged).
+        return { key: c, label: c, editable: true, mono: !!mono[c], numeric: !!numeric[c],
+          options: Core.optionsForColumn(c, md.referentiel),
+          render: numeric[c] ? function (row) {
+            var n = Core.parseScore(row[c]);
+            return n === null || n === undefined ? Core.str(row[c]) : UI.fmtPctNode(n);
+          } : function (row) { return UI.cellMark(c, row[c]) || Core.str(row[c]); } };
+      });
+      // Computed columns right after the key column (what the user scans first); they are computed from
+      // the displayed row (re-rendered after every edit), so they follow unsaved edits.
+      Array.prototype.splice.apply(columns, [1, 0].concat(spec.computedColumns(ctx)));
+
+      var conformitySelect = UI.select({ id: p + '-conformity', label: 'Conformité', options: CONFORMITY_OPTIONS,
+        value: conformity, onChange: function (val) { conformity = val; ctx.table.setRows(ctx.visible()); } });
+
+      var canEdit = State.canEdit();
+      var n = spec.nouns;
+      ctx.table = UI.editableTable({
+        columns: columns,
+        rows: ctx.visible(),
+        readOnly: !canEdit,
+        toolbar: [conformitySelect],
+        emptyText: !md[spec.entity].length ? n.inExport :
+          (spec.filtered(State.get()) || conformity !== 'all' ? n.noMatch : n.none),
+        onRowClick: function (row) { ctx.openDrawer(row._id); },
+        onSave: !canEdit ? null : function (changes) {
+          return api.call(spec.saveApi, { month: month, changes: changes }).then(function (res) {
+            State.patchRecords(month, spec.entity, (res && res.updated) || []);
+            ctx.refresh();
+            var edits = changes.reduce(function (sum, c) { return sum + Object.keys(c.updates || {}).length; }, 0);
+            UI.toast(UI.plural(edits, 'modification enregistrée', 'modifications enregistrées') + '.', 'success');
+          });
+        }
+      });
+      ctx.table.node.id = p + '-table';
+
+      var note = UI.filterNote(spec.filterScope);
+      if (note) v.body.appendChild(note);
+      v.body.appendChild(stats);
+      (spec.sections ? spec.sections(ctx) : []).forEach(function (section) { v.body.appendChild(section); });
+      renderStats();
+      var tableSection = UI.section('Inventaire', ctx.table.node);
+      tableSection.id = p + '-inventory';
+      v.body.appendChild(tableSection);
+      if (v.buttons.primary) v.buttons.primary.disabled = false;
+      v.buttons.csv.disabled = false;
+    }
+
+    function unmount() {
+      view = null;
+      if (drawerHandle) drawerHandle.close();
+      drawerHandle = null;
+    }
+
+    return { id: spec.id, title: spec.title, mount: mount, unmount: unmount, update: update };
+  }
+
+  window.InventoryPage = { create: create };
+})();
+</script>

@@ -102,7 +102,10 @@ var ApiImpl_ = (function () {
     if (!Store.hasMonth(month)) {
       throw Core.makeError('NOT_FOUND', 'Le mois ' + month + ' n’a pas été importé.');
     }
+    return month;
   }
+
+  function requireImportedMonth_(month, label) { return requireImported_(requireMonth_(month, label)); }
 
   function requireId_(id) {
     var s = typeof id === 'string' || typeof id === 'number' ? Core.str(id) : '';
@@ -140,19 +143,24 @@ var ApiImpl_ = (function () {
       if (!isPlainObject_(c)) throw invalid_('Modification invalide.');
       var id = requireId_(c.id);
       if (!isPlainObject_(c.updates)) throw invalid_('« updates » doit être un objet.');
-      var updates = {};
-      Object.keys(c.updates).forEach(function (k) {
-        if (k.charAt(0) === '_') throw invalid_('Champ non modifiable : « ' + k + ' ».');
-        if (Core.normKey(k) === Core.normKey(keyField)) {
-          throw invalid_('La colonne « ' + keyField + ' » ne peut pas être modifiée ici.');
-        }
-        if (Core.str(k) === '') throw invalid_('Nom de colonne vide.');
-        var v = cellValue_(c.updates[k], k);
-        checkCustomField_(k, v);
-        updates[k] = v;
-      });
-      return { id: id, updates: updates };
+      return { id: id, updates: normalizeFields_(c.updates, keyField) };
     });
+  }
+
+  /** Source-column values from the client: `_` keys refused, the key column too when `lockedKey` is given. */
+  function normalizeFields_(fields, lockedKey) {
+    var out = {};
+    Object.keys(fields).forEach(function (k) {
+      if (k.charAt(0) === '_') throw invalid_('Champ non modifiable : « ' + k + ' ».');
+      if (lockedKey && Core.normKey(k) === Core.normKey(lockedKey)) {
+        throw invalid_('La colonne « ' + lockedKey + ' » ne peut pas être modifiée ici.');
+      }
+      if (Core.str(k) === '') throw invalid_('Nom de colonne vide.');
+      var v = cellValue_(fields[k], k);
+      checkCustomField_(k, v);
+      out[k] = v;
+    });
+    return out;
   }
 
   /** 'DD/MM/YYYY' | '' — also accepts ISO 'YYYY-MM-DD' (converted). */
@@ -191,16 +199,12 @@ var ApiImpl_ = (function () {
     return out;
   }
 
-  function enrichPostes_(list) {
-    return Core.enrichPostes(list);
-  }
-
   function enrichApps_(list) {
     return Core.enrichApplications((list || []).map(withCustomFields_));
   }
 
   function readPostes_(month) {
-    return enrichPostes_(Store.readEntityMonth(Config.TABS.postes, month));
+    return Core.enrichPostes(Store.readEntityMonth(Config.TABS.postes, month));
   }
 
   function readApps_(month) {
@@ -256,6 +260,24 @@ var ApiImpl_ = (function () {
     return 'https://docs.google.com/spreadsheets/d/' + id + '/edit';
   }
 
+  /**
+   * The configured source spreadsheet: {id, url, title, tabsFound|null}. When it cannot be opened, the url
+   * is built from the id and title / tabsFound stay empty (logged, never thrown).
+   */
+  function sourceInfo_(id, caller) {
+    var info = { id: id, url: id ? sourceUrl_(id) : '', title: '', tabsFound: null };
+    if (!id) return info;
+    try {
+      var ss = SpreadsheetApp.openById(id);
+      info.url = ss.getUrl();
+      info.title = ss.getName();
+      info.tabsFound = Importer.tabsFound_(ss);
+    } catch (e) {
+      console.warn(caller + ': source ' + id + ' not accessible (' + (e && e.message) + ')');
+    }
+    return info;
+  }
+
   // -------------------------------------------------------------------------------- bootstrap
 
   function bootstrap(args, user) {
@@ -266,30 +288,34 @@ var ApiImpl_ = (function () {
     Store.ensure();
 
     var months = Store.listMonths();
-    var sourceUrl = '';
-    var sourceTitle = '';
     // The spreadsheets are private to the deployer: links are only useful to admins.
-    if (cfg.sourceId && admin) {
-      sourceUrl = sourceUrl_(cfg.sourceId);
-      try {
-        var src = SpreadsheetApp.openById(cfg.sourceId);
-        sourceUrl = src.getUrl();
-        sourceTitle = src.getName();
-      } catch (e) {
-        console.warn('api_bootstrap: source ' + cfg.sourceId + ' not accessible (' + (e && e.message) + ')');
-      }
-    }
+    var src = admin ? sourceInfo_(cfg.sourceId, 'api_bootstrap') : sourceInfo_('', '');
     return {
       configured: !!cfg.sourceId,
       months: months,
       latestMonth: months.length ? months[months.length - 1] : '',
       currentMonth: Config.today().slice(0, 7),
       dataUrl: admin ? Store.dataUrl() : '',
-      sourceUrl: sourceUrl,
-      sourceTitle: sourceTitle,
+      sourceUrl: src.url,
+      sourceTitle: src.title,
       threshold: cfg.threshold,
-      user: { email: user.email, role: user.role, isOwner: user.isOwner }
+      user: { email: user.email, role: user.role, isOwner: user.isOwner },
+      prefs: Config.getPrefs(user.email)
     };
+  }
+
+  /** Interface preferences of the calling account (every role): {sidebar:'open'|'collapsed'}. */
+  function savePrefs(args, user) {
+    if (!user.email) throw Core.makeError('VALIDATION', 'Identité Google non transmise : préférence non enregistrée.');
+    var keys = Object.keys(args || {});
+    if (!keys.length) throw Core.makeError('VALIDATION', 'Aucune préférence à enregistrer.');
+    var patch = {};
+    keys.forEach(function (k) {
+      var allowed = Config.PREF_VALUES[k];
+      if (!allowed || allowed.indexOf(args[k]) < 0) throw Core.makeError('VALIDATION', 'Préférence invalide : ' + k + '.');
+      patch[k] = args[k];
+    });
+    return { prefs: Config.setPrefs(user.email, patch) };
   }
 
   function setConfig(args) {
@@ -311,8 +337,7 @@ var ApiImpl_ = (function () {
   // ---------------------------------------------------------------------------- month data
 
   function getMonthData(args) {
-    var month = requireMonth_(args.month);
-    requireImported_(month);
+    var month = requireImportedMonth_(args.month);
     var postes = readPostes_(month);
     var apps = readApps_(month);
     var info = Store.latestImportInfo(month);
@@ -351,7 +376,7 @@ var ApiImpl_ = (function () {
   }
 
   function savePostes(args) {
-    return saveEntities_(Config.TABS.postes, Core.KEY_POSTE, enrichPostes_, args);
+    return saveEntities_(Config.TABS.postes, Core.KEY_POSTE, Core.enrichPostes, args);
   }
 
   function saveApplications(args) {
@@ -370,16 +395,19 @@ var ApiImpl_ = (function () {
       if (!rec) {
         var target = Core.normKey(Core.GENERIC_POSTE_NAME);
         var found = existing.filter(function (r) { return Core.normKey(r[Core.KEY_POSTE]) === target; })[0];
-        return { created: false, record: enrichPostes_([found])[0] };
+        return { created: false, record: Core.enrichPostes([found])[0] };
       }
       var stored = Store.appendEntityRow(Config.TABS.postes, month, rec, Core.KEY_POSTE);
-      return { created: true, record: enrichPostes_([stored])[0] };
+      return { created: true, record: Core.enrichPostes([stored])[0] };
     });
   }
 
-  function appNameTaken_(apps, name, exceptId) {
+  /** VALIDATION when another application of the month already has `name` (compared with normKey). */
+  function requireFreeAppName_(apps, name, exceptId, month) {
     var target = Core.normKey(name);
-    return apps.some(function (a) { return a._id !== exceptId && Core.normKey(a[Core.KEY_APP]) === target; });
+    if (apps.some(function (a) { return a._id !== exceptId && Core.normKey(a[Core.KEY_APP]) === target; })) {
+      throw invalid_('L’application « ' + name + ' » existe déjà pour ' + month + '.');
+    }
   }
 
   function addApplication(args) {
@@ -387,21 +415,12 @@ var ApiImpl_ = (function () {
     if (!isPlainObject_(args.record)) throw invalid_('« record » doit être un objet.');
     var name = stringField_(args.record[Core.KEY_APP], Core.KEY_APP);
     if (!name) throw invalid_('Le nom de l’application est obligatoire.');
-    var fields = {};
-    Object.keys(args.record).forEach(function (k) {
-      if (k.charAt(0) === '_') throw invalid_('Champ non modifiable : « ' + k + ' ».');
-      if (Core.str(k) === '') throw invalid_('Nom de colonne vide.');
-      var v = cellValue_(args.record[k], k);
-      checkCustomField_(k, v);
-      fields[k] = v;
-    });
+    var fields = normalizeFields_(args.record);
 
     return Store.withLock(function () {
       requireImported_(month);
       var apps = Store.readEntityMonth(Config.TABS.applications, month);
-      if (appNameTaken_(apps, name, null)) {
-        throw invalid_('L’application « ' + name + ' » existe déjà pour ' + month + '.');
-      }
+      requireFreeAppName_(apps, name, null, month);
       // Same columns as the imported rows (null when not provided), then the provided values.
       var info = Store.latestImportInfo(month);
       var rec = {};
@@ -433,9 +452,7 @@ var ApiImpl_ = (function () {
       var apps = Store.readEntityMonth(Config.TABS.applications, month);
       var current = findById_(apps, id);
       if (!current) throw notFound_('Application');
-      if (appNameTaken_(apps, newName, id)) {
-        throw invalid_('L’application « ' + newName + ' » existe déjà pour ' + month + '.');
-      }
+      requireFreeAppName_(apps, newName, id, month);
       var oldName = Core.str(current[Core.KEY_APP]);
       if (oldName === newName) return { record: enrichApps_([current])[0], actionsUpdated: 0 };
 
@@ -457,7 +474,7 @@ var ApiImpl_ = (function () {
     return Store.listMonths().map(function (m) {
       return {
         month: m,
-        postes: enrichPostes_(postesAll[m] || []).map(function (r) { return pick_(r, POSTE_SLIM_FIELDS); }),
+        postes: Core.enrichPostes(postesAll[m] || []).map(function (r) { return pick_(r, POSTE_SLIM_FIELDS); }),
         applications: enrichApps_(appsAll[m] || []).map(function (r) { return pick_(r, APP_SLIM_FIELDS); })
       };
     });
@@ -465,9 +482,29 @@ var ApiImpl_ = (function () {
 
   // -------------------------------------------------------------------------------- actions
 
-  var ACTION_FIELDS = ['target_type', 'target_name', 'equipe', 'action', 'responsable', 'date_created',
-    'date_completed', 'deadline', 'priorite', 'status', 'source_month', 'comment'];
-  var REPLACEMENT_FIELDS = ['old_poste', 'new_poste', 'equipe', 'responsable', 'date_replacement', 'comment'];
+  /** Client-writable fields: the sheet schema minus the server-managed id / stamps (read at call time:
+   *  Config may load after this file). */
+  function writableFields_(tab) {
+    return Config.SCHEMAS[tab].filter(function (f) { return ['id', 'recorded_at', 'updated_at'].indexOf(f) < 0; });
+  }
+
+  /** New Action / Replacement row: validated fields + defaults + stamps, id generated under the lock. */
+  function insertRecord_(tab, fields, normalize, args, defaults) {
+    var rec = { id: '' };
+    fields.forEach(function (f) { rec[f] = normalize(f, args[f]); });
+    Object.keys(defaults).forEach(function (f) { if (!rec[f]) rec[f] = defaults[f]; });
+    rec.recorded_at = Config.today();
+    return Store.withLock(function () {
+      rec.id = Config.uuid();
+      return normalizeRows_([Store.insertRow(tab, rec)], Config.SCHEMAS[tab])[0];
+    });
+  }
+
+  function updateRecord_(tab, id, patch) {
+    return Store.withLock(function () {
+      return normalizeRows_([Store.updateRow(tab, id, patch)], Config.SCHEMAS[tab])[0];
+    });
+  }
 
   /** Validates / normalises one Action field value. */
   function actionField_(field, value) {
@@ -516,38 +553,23 @@ var ApiImpl_ = (function () {
   }
 
   function getActions() {
-    return {
-      actions: normalizeRows_(Store.listRows(Config.TABS.actions), Config.SCHEMAS[Config.TABS.actions]),
-      replacements: normalizeRows_(Store.listRows(Config.TABS.replacements),
-        Config.SCHEMAS[Config.TABS.replacements])
-    };
+    function rows(tab) { return normalizeRows_(Store.listRows(tab), Config.SCHEMAS[tab]); }
+    return { actions: rows(Config.TABS.actions), replacements: rows(Config.TABS.replacements) };
   }
 
   function addAction(args) {
-    var rec = { id: '' };
-    ACTION_FIELDS.forEach(function (f) { rec[f] = actionField_(f, args[f]); });
-    if (!rec.status) rec.status = 'À faire';
-    if (!rec.date_created) rec.date_created = Config.todayFr();
-    rec.recorded_at = Config.today();
-    rec.updated_at = '';
-    return Store.withLock(function () {
-      rec.id = Config.uuid();
-      var stored = Store.insertRow(Config.TABS.actions, rec);
-      return normalizeRows_([stored], Config.SCHEMAS[Config.TABS.actions])[0];
-    });
+    return insertRecord_(Config.TABS.actions, writableFields_(Config.TABS.actions), actionField_, args,
+      { status: 'À faire', date_created: Config.todayFr(), updated_at: '' });
   }
 
   function updateAction(args) {
     var id = requireId_(args.id);
     // A client-sent updated_at is tolerated (whole objects round-trip) but always replaced by today.
-    var patch = patch_(args.updates, ACTION_FIELDS.concat(['updated_at']), function (k, v) {
+    var patch = patch_(args.updates, writableFields_(Config.TABS.actions).concat(['updated_at']), function (k, v) {
       return k === 'updated_at' ? '' : actionField_(k, v);
     });
     patch.updated_at = Config.today();
-    return Store.withLock(function () {
-      var row = Store.updateRow(Config.TABS.actions, id, patch);
-      return normalizeRows_([row], Config.SCHEMAS[Config.TABS.actions])[0];
-    });
+    return updateRecord_(Config.TABS.actions, id, patch);
   }
 
   function deleteRowById_(tab, args, what) {
@@ -575,24 +597,13 @@ var ApiImpl_ = (function () {
   }
 
   function addReplacement(args) {
-    var rec = { id: '' };
-    REPLACEMENT_FIELDS.forEach(function (f) { rec[f] = replacementField_(f, args[f]); });
-    if (!rec.date_replacement) rec.date_replacement = Config.todayFr();
-    rec.recorded_at = Config.today();
-    return Store.withLock(function () {
-      rec.id = Config.uuid();
-      var stored = Store.insertRow(Config.TABS.replacements, rec);
-      return normalizeRows_([stored], Config.SCHEMAS[Config.TABS.replacements])[0];
-    });
+    return insertRecord_(Config.TABS.replacements, writableFields_(Config.TABS.replacements), replacementField_, args,
+      { date_replacement: Config.todayFr() });
   }
 
   function updateReplacement(args) {
     var id = requireId_(args.id);
-    var patch = patch_(args.updates, REPLACEMENT_FIELDS, replacementField_);
-    return Store.withLock(function () {
-      var row = Store.updateRow(Config.TABS.replacements, id, patch);
-      return normalizeRows_([row], Config.SCHEMAS[Config.TABS.replacements])[0];
-    });
+    return updateRecord_(Config.TABS.replacements, id, patch_(args.updates, writableFields_(Config.TABS.replacements), replacementField_));
   }
 
   function deleteReplacement(args) {
@@ -602,32 +613,52 @@ var ApiImpl_ = (function () {
   // ------------------------------------------------------------------------------- settings
 
   function accessView_(access, owner) {
-    var users = (access.users || []).filter(function (u) { return Access.normEmail(u.email) !== owner; })
-      .map(function (u) {
-        return { email: Access.normEmail(u.email), role: u.role, added_at: u.added_at, added_by: u.added_by };
-      });
-    function byEmail(a, b) { return a.email < b.email ? -1 : a.email > b.email ? 1 : 0; }
-    users.sort(byEmail);
-    var groups = (access.groups || []).map(function (g) {
-      return { email: Access.normEmail(g.email), role: g.role, added_at: g.added_at, added_by: g.added_by };
-    }).sort(byEmail);
-    return { owner: owner, users: users, groups: groups,
+    function entries(list) {
+      return (list || []).map(function (e) {
+        return { email: Access.normEmail(e.email), role: e.role, added_at: e.added_at, added_by: e.added_by };
+      }).filter(function (e) { return e.email !== owner; })
+        .sort(function (a, b) { return a.email < b.email ? -1 : a.email > b.email ? 1 : 0; });
+    }
+    return { owner: owner, users: entries(access.users), groups: entries(access.groups),
       domainRole: access.domainRole === 'lecteur' ? 'lecteur' : 'none' };
+  }
+
+  /**
+   * Every write to the access list: under the lock, change(access) edits the stored list (returning false
+   * = nothing to write), check(access) may refuse the result (no self lock-out); returns the AccessView.
+   */
+  function mutateAccess_(user, change, check) {
+    return Store.withLock(function () {
+      var access = Config.get().access;
+      var changed = change(access) !== false;
+      if (check) check(access);
+      if (changed) Config.setAccess(access);
+      return accessView_(access, user.owner);
+    });
+  }
+
+  /** Adds `email` with `role` to `list`, or changes its role; beforeAdd() may refuse a new entry. */
+  function upsertEntry_(list, email, role, user, beforeAdd) {
+    var existing = list.filter(function (e) { return Access.normEmail(e.email) === email; })[0];
+    if (existing) {
+      existing.email = email;
+      existing.role = role;
+      return;
+    }
+    if (beforeAdd) beforeAdd();
+    list.push({ email: email, role: role, added_at: Config.today(), added_by: user.email });
+  }
+
+  /** `list` without `email`; NOT_FOUND (missingText) when it was not there. */
+  function withoutEntry_(list, email, missingText) {
+    var kept = list.filter(function (e) { return Access.normEmail(e.email) !== email; });
+    if (kept.length === list.length) throw Core.makeError('NOT_FOUND', missingText);
+    return kept;
   }
 
   function getSettings(args, user) {
     var cfg = Config.get();
-    var source = { id: cfg.sourceId, url: cfg.sourceId ? sourceUrl_(cfg.sourceId) : '', title: '', tabsFound: null };
-    if (cfg.sourceId) {
-      try {
-        var ss = SpreadsheetApp.openById(cfg.sourceId);
-        source.url = ss.getUrl();
-        source.title = ss.getName();
-        source.tabsFound = Importer.tabsFound_(ss);
-      } catch (e) {
-        console.warn('api_getSettings: source ' + cfg.sourceId + ' not accessible (' + (e && e.message) + ')');
-      }
-    }
+    var source = sourceInfo_(cfg.sourceId, 'api_getSettings');
     return {
       threshold: cfg.threshold,
       defaultThreshold: Core.THRESHOLD,
@@ -657,18 +688,8 @@ var ApiImpl_ = (function () {
   function saveUser(args, user) {
     var email = editableEmail_(args.email, user);
     var role = Access.checkRole(args.role);
-    return Store.withLock(function () {
-      var access = Config.get().access;
-      var existing = access.users.filter(function (u) { return Access.normEmail(u.email) === email; })[0];
-      if (existing) {
-        existing.email = email;
-        existing.role = role;
-      } else {
-        requireRoom_(access, 1);
-        access.users.push({ email: email, role: role, added_at: Config.today(), added_by: user.email });
-      }
-      Config.setAccess(access);
-      return accessView_(access, user.owner);
+    return mutateAccess_(user, function (access) {
+      upsertEntry_(access.users, email, role, user, function () { requireRoom_(access, 1); });
     });
   }
 
@@ -699,12 +720,12 @@ var ApiImpl_ = (function () {
       if (reason) skipped.push({ email: typeof v === 'string' ? v : Core.str(v), reason: reason });
       else wanted.push(email);
     });
-    return Store.withLock(function () {
-      var access = Config.get().access;
+    var result = { added: [], updated: [], skipped: skipped };
+    result.access = mutateAccess_(user, function (access) {
       var byEmail = {};
       access.users.forEach(function (u) { byEmail[Access.normEmail(u.email)] = u; });
-      var added = [];
-      var updated = [];
+      var added = result.added;
+      var updated = result.updated;
       wanted.forEach(function (email) {
         var hit = byEmail[email];
         if (!hit) added.push(email);
@@ -717,9 +738,9 @@ var ApiImpl_ = (function () {
       added.forEach(function (email) {
         access.users.push({ email: email, role: role, added_at: today, added_by: user.email });
       });
-      if (added.length || updated.length) Config.setAccess(access);
-      return { access: accessView_(access, user.owner), added: added, updated: updated, skipped: skipped };
+      return added.length + updated.length > 0;
     });
+    return result;
   }
 
   /** No self lock-out through groups: the caller must still be admin with the new list. */
@@ -733,70 +754,37 @@ var ApiImpl_ = (function () {
   function saveGroup(args, user) {
     var role = Access.checkRole(args.role);
     var email = Access.checkGroup(args.email); // GroupsApp call: outside the lock
-    return Store.withLock(function () {
-      var access = Config.get().access;
-      var existing = access.groups.filter(function (g) { return Access.normEmail(g.email) === email; })[0];
-      if (existing) {
-        existing.email = email;
-        existing.role = role;
-      } else {
-        if (access.groups.length >= Config.MAX_GROUPS) {
-          throw invalid_('La liste est limitée à ' + Config.MAX_GROUPS + ' groupes.');
-        }
-        access.groups.push({ email: email, role: role, added_at: Config.today(), added_by: user.email });
-      }
-      requireStillAdmin_(user, access);
-      Config.setAccess(access);
-      return accessView_(access, user.owner);
-    });
+    return mutateAccess_(user, function (access) {
+      upsertEntry_(access.groups, email, role, user, function () {
+        if (access.groups.length >= Config.MAX_GROUPS) throw invalid_('La liste est limitée à ' + Config.MAX_GROUPS + ' groupes.');
+      });
+    }, function (access) { requireStillAdmin_(user, access); });
   }
 
   function removeGroup(args, user) {
     var email = Access.checkEmail(args.email);
-    return Store.withLock(function () {
-      var access = Config.get().access;
-      var kept = access.groups.filter(function (g) { return Access.normEmail(g.email) !== email; });
-      if (kept.length === access.groups.length) {
-        throw Core.makeError('NOT_FOUND', 'Aucun groupe enregistré : ' + email + '.');
-      }
-      access.groups = kept;
-      requireStillAdmin_(user, access);
-      Config.setAccess(access);
-      return accessView_(access, user.owner);
-    });
+    return mutateAccess_(user, function (access) {
+      access.groups = withoutEntry_(access.groups, email, 'Aucun groupe enregistré : ' + email + '.');
+    }, function (access) { requireStillAdmin_(user, access); });
   }
 
   function removeUser(args, user) {
     var email = editableEmail_(args.email, user);
-    return Store.withLock(function () {
-      var access = Config.get().access;
-      var kept = access.users.filter(function (u) { return Access.normEmail(u.email) !== email; });
-      if (kept.length === access.users.length) {
-        throw Core.makeError('NOT_FOUND', 'Aucun accès enregistré pour ' + email + '.');
-      }
-      access.users = kept;
-      Config.setAccess(access);
-      return accessView_(access, user.owner);
+    return mutateAccess_(user, function (access) {
+      access.users = withoutEntry_(access.users, email, 'Aucun accès enregistré pour ' + email + '.');
     });
   }
 
   function setDomainRole(args, user) {
     var role = Access.checkRole(args.role, Access.DOMAIN_ROLES);
-    return Store.withLock(function () {
-      var access = Config.get().access;
-      access.domainRole = role;
-      Config.setAccess(access);
-      return accessView_(access, user.owner);
-    });
+    return mutateAccess_(user, function (access) { access.domainRole = role; });
   }
 
   // ----------------------------------------------------------------------------------- diff
 
   function getDiff(args) {
-    var oldMonth = requireMonth_(args.oldMonth, 'ancien mois');
-    var newMonth = requireMonth_(args.newMonth, 'nouveau mois');
-    requireImported_(oldMonth);
-    requireImported_(newMonth);
+    var oldMonth = requireImportedMonth_(args.oldMonth, 'ancien mois');
+    var newMonth = requireImportedMonth_(args.newMonth, 'nouveau mois');
     return {
       oldMonth: oldMonth,
       newMonth: newMonth,
@@ -807,6 +795,7 @@ var ApiImpl_ = (function () {
 
   return {
     bootstrap: bootstrap,
+    savePrefs: savePrefs,
     setConfig: setConfig,
     getMonthData: getMonthData,
     importMonth: importMonth,
@@ -841,6 +830,7 @@ var ApiImpl_ = (function () {
 // Function declarations (not vars) so that google.script.run and the editor can see them.
 
 function api_bootstrap(argsJson) { return apiWrap_(ApiImpl_.bootstrap, 'api_bootstrap', 'lecteur')(argsJson); }
+function api_savePrefs(argsJson) { return apiWrap_(ApiImpl_.savePrefs, 'api_savePrefs', 'lecteur')(argsJson); }
 function api_setConfig(argsJson) { return apiWrap_(ApiImpl_.setConfig, 'api_setConfig', 'admin')(argsJson); }
 function api_getMonthData(argsJson) { return apiWrap_(ApiImpl_.getMonthData, 'api_getMonthData', 'lecteur')(argsJson); }
 function api_importMonth(argsJson) { return apiWrap_(ApiImpl_.importMonth, 'api_importMonth', 'admin')(argsJson); }

@@ -58,11 +58,24 @@ Load the fonts from Google Fonts in `index.html`
 with the system fallbacks above.
 
 ## Components
-- **Sidebar**: `--paper-2`, full viewport height (sticky), 1px right rule. Wordmark "Shadow IT" in
-  mono 500 with a small "Industry · conformité" subtitle. Nav = plain text links with a 2px ink bar
-  on the left of the active item; numbers on the right showing counts are allowed (e.g. postes 7).
-  Period + filters below a small-caps "PÉRIODE" / "FILTRES" label. Footer: text links to the data
-  sheet and the source sheet, "Changer de source" as a text button.
+- **Logo**: the ghost (the Streamlit app's 👻, redrawn): inline SVG on a 24px grid, 1.75px ink
+  outline with round joins, rounded dome, wavy hem, two filled round eyes. Never an emoji. 28px in the
+  sidebar and the rail, 22px in the mobile top bar; decorative (`aria-hidden`), the wordmark names the app.
+- **Sidebar**: `--paper-2`, full viewport height (sticky), 1px right rule. Ghost logo, then the wordmark
+  "Shadow IT" in mono 500 with a small "Industry · conformité" subtitle. Nav = text links led by a 16px « Trait »
+  line icon (1.5px stroke, square caps, mitred joins, `currentColor`; `--ink-3` at rest, `--ink` on
+  hover / active), with a 2px ink bar on the left of the active item; numbers on the right showing
+  counts are allowed (e.g. postes 7). Footer: text links to the data sheet and the source sheet, the
+  signed-in account, then « Réduire le menu ».
+- **Collapsed rail** (> 900px, remembered per Google account, with a browser copy for an instant start): 56px wide, the ghost alone (no wordmark), icons
+  only (labels kept for screen readers), the page name in an ink tooltip to the right of the icon,
+  footer links hidden. The active page keeps its 2px ink bar.
+- **App bar**: sticky 48px bar on paper above every page, 1px `--rule` below. Small-caps « PÉRIODE »
+  then the month stepper `‹ Mai 2026 ›` (one outlined control: two 28px step buttons around the month
+  dropdown), a hairline separator, then « ÉQUIPE » and « BÂTIMENT / LABO » multiselects with inline
+  small-caps labels and « Réinitialiser ». An active filter gets an ink outline; on the right, « 2 postes
+  sur 7 » while a filter is active. A filter that does not apply to the page (Bâtiment on Suivi des
+  actions) is disabled with a dashed border and reads « Non applicable » (reason in a tooltip).
 - **Page header**: small-caps breadcrumb/month line (`MAI 2026 · EXPORT 2026-05`) above a 20px title.
   A hairline below. Page-level actions right-aligned, as text or outline buttons.
 - **KPI strip** (dashboard): one row, 4 columns divided by vertical hairlines, no boxes. Label in
@@ -135,7 +148,24 @@ with the system fallbacks above.
   « Erreur : <message> ».
 - Numbers fr-FR: `71,4 %` (narrow no-break space before %), thousands with narrow no-break space.
 
+## Loading
+- **Startup splash** (the only screen with the team brand): on paper, the Value Chain Information
+  Security lockup in ink (mark redrawn as inline SVG; wordmark in Inter 400 / 700, the team's face),
+  a 168×2px indeterminate ink bar, one 13px `--ink-2` line naming the real step (« Vérification de
+  l'accès… », « Chargement de mai 2026… »), the ghost + « Shadow IT » in mono `--ink-3` at the foot.
+  After 8 s a second line explains the Apps Script cold start; on failure the bar and step give way to
+  an alert line and a primary « Réessayer ». It fades out in 200 ms and never blocks clicks.
+- **Skeletons** for page bodies (UI.skeleton): `--skel` grey bars at the real sizes and positions
+  (KPI strip, half-gauges, 32px table rows, chart block), one slow shimmer, real labels where known.
+  Spinners + text stay only for small waits the user started (busy buttons, drawers, history panels).
+- **Progress line**: 2px indeterminate ink line on the app bar's bottom edge while anything in the
+  page is `aria-busy`.
+- **Month change**: the page and the filters stay readable at 45 % opacity (not interactive) until
+  the new month is in; no blank page between two months.
+
 ## Accessibility
 Contrast ≥ 4.5:1 for text (all tokens above pass on `--paper`), visible focus ring on everything
 interactive, never colour-only status (always text + colour), `prefers-reduced-motion` respected,
-touch targets ≥ 32px, works at 390px wide (sidebar becomes a top bar with a menu button).
+touch targets ≥ 32px, works at 390px wide (sidebar becomes a top bar with a menu button; the app bar
+keeps the month stepper and folds the filters behind a « Filtres » button showing the number of
+active values).
