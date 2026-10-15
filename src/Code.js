@@ -34,9 +34,23 @@ function coreScript() {
   return src.replace(/<\/script/gi, '<\\/script');
 }
 
-/** Run once from the Apps Script editor: authorizes the script and creates the data spreadsheet. */
+/**
+ * Run once from the Apps Script editor: authorizes the script, creates the data spreadsheet and the
+ * hourly synchronisation trigger.
+ */
 function setup() {
   var ss = Store.ensure();
   Logger.log('Classeur de données : %s', ss.getUrl());
+  Sync.enable();
+  Logger.log('Synchronisation horaire active.');
   return ss.getUrl();
+}
+
+/**
+ * Time-driven trigger handler (every hour, created by Sync.enable): synchronises the current month
+ * with the source spreadsheet. Public because a trigger cannot call a private (`_`) function; a call
+ * from google.script.run would only run the same idempotent sync and returns nothing.
+ */
+function syncHourly() {
+  Sync.runFromTrigger();
 }

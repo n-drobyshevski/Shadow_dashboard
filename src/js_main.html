@@ -328,7 +328,7 @@
     UI.clear(appbar);
     var monthOptions = s.months.length ?
       s.months.map(function (m) { return { value: m, label: Fmt.monthTitle(m) }; }) :
-      [{ value: '', label: 'Aucun mois importé' }];
+      [{ value: '', label: 'Aucune donnée' }];
     monthSelect = UI.dropdown({
       id: 'month-select',
       labelledBy: 'appbar-period-label',
@@ -358,10 +358,209 @@
     appbar.appendChild(toggle);
     appbar.appendChild(filtersBox);
     appbar.appendChild(el('p', { class: 'appbar-count', id: 'appbar-count', role: 'status', hidden: true }));
+    appbar.appendChild(syncChip());
     appbar.appendChild(el('span', { class: 'appbar-progress', id: 'appbar-progress', 'aria-hidden': 'true' }));
     updateStepper();
+    updateSyncChip();
     setFiltersOpen(false);
     renderFilters();
+  }
+
+  // ------------------------------------------------------------------------------ synchronisation (app bar)
+
+  /**
+   * The current month follows the source spreadsheet: the server re-reads it every hour (Sync.js). The
+   * app bar ends with a status button (« ■ 14:02 ») whose panel tells when the last synchronisation ran,
+   * what it changed, and — for admins — « Synchroniser maintenant ». The status is polled every
+   * SYNC_POLL_MS (and when the tab comes back): when the server synchronised changes since the data on
+   * screen was loaded, the button says « Nouvelles données » and the panel offers « Actualiser ».
+   */
+  var SYNC_POLL_MS = 10 * 60 * 1000;
+  var pollingStarted = false;
+  var syncing = false;        // « Synchroniser maintenant » in progress (this tab)
+  var seenChangeAt = null;    // lastChangeAt of the data on screen (null = not known yet)
+  var newData = false;
+  var lastPoll = 0;
+  var syncPop = null;
+
+  function syncStatus() { return State.get().sync || {}; }
+
+  /** busy | ko (last run failed) | new (newer data on the server) | off (never ran) | warn | ok */
+  function syncTone(st) {
+    if (syncing) return 'busy';
+    if (st.lastError && (!st.lastOkAt || st.lastError.at >= st.lastOkAt)) return 'ko';
+    if (newData) return 'new';
+    if (!st.lastOkAt) return 'off';
+    return st.warnings && st.warnings.length ? 'warn' : 'ok';
+  }
+
+  /** « à 14:02 » today, « le 04/05 à 10:30 » otherwise. */
+  function syncWhen(stamp) {
+    var t = Fmt.stamp(stamp);
+    var i = t.lastIndexOf(' ');
+    return i < 0 ? 'à ' + t : 'le ' + t.slice(0, i) + ' à ' + t.slice(i + 1);
+  }
+
+  function syncChipText(st, tone) {
+    if (tone === 'busy') return 'Synchronisation…';
+    if (tone === 'ko') return 'Échec ' + Fmt.stamp(st.lastError.at);
+    if (tone === 'new') return 'Nouvelles données';
+    if (tone === 'off') return st.enabled ? 'En attente' : 'Synchro inactive';
+    return Fmt.stamp(st.lastOkAt);
+  }
+
+  function syncSentence(st, tone) {
+    if (tone === 'busy') return 'Synchronisation en cours';
+    if (tone === 'ko') return 'Échec de la synchronisation ' + syncWhen(st.lastError.at);
+    if (tone === 'off') return st.enabled ? 'Première synchronisation à venir' : 'Synchronisation automatique inactive';
+    return 'Synchronisé ' + syncWhen(st.lastOkAt) + (tone === 'new' ? ', nouvelles données disponibles' : '');
+  }
+
+  function syncChip() {
+    return el('button', { type: 'button', class: 'sync-chip', id: 'sync-chip', 'aria-haspopup': 'dialog',
+      'aria-expanded': 'false', onClick: function (e) { toggleSyncPanel(e.currentTarget); } },
+      el('span', { class: 'sync-chip-mark', 'aria-hidden': 'true' }), el('span', { class: 'sync-chip-text' }));
+  }
+
+  function updateSyncChip() {
+    var chip = document.getElementById('sync-chip');
+    if (chip) {
+      var st = syncStatus();
+      var tone = syncTone(st);
+      chip.dataset.tone = tone;
+      chip.setAttribute('aria-label', 'Synchronisation : ' + syncSentence(st, tone) + '. Afficher le détail.');
+      chip.querySelector('.sync-chip-text').textContent = syncChipText(st, tone);
+      var mark = chip.querySelector('.sync-chip-mark');
+      UI.clear(mark);
+      if (tone === 'busy') mark.appendChild(UI.spinner());
+    }
+    if (syncPop && syncPop.isOpen()) {
+      // Re-render the open panel; keyboard focus stays on the same control.
+      var focused = syncPop.node.contains(document.activeElement) ? document.activeElement.id : '';
+      UI.clear(syncPop.node).appendChild(syncPanel());
+      syncPop.reposition();
+      var again = focused && document.getElementById(focused);
+      if (again) again.focus();
+    }
+  }
+
+  function syncPanel() {
+    var s = State.get();
+    var st = syncStatus();
+    var tone = syncTone(st);
+    var admin = State.canEdit();
+    var markTone = { ko: 'ko', warn: 'warn', off: 'neutral', busy: 'info', new: 'todo' }[tone] || 'ok';
+    var box = el('div', { class: 'sync-panel', id: 'sync-panel' },
+      el('p', { class: 'sync-panel-status', id: 'sync-panel-status' }, UI.statusMark(syncSentence(st, tone), markTone)));
+    if (tone === 'ko') {
+      box.appendChild(el('p', { class: 'alert alert-error', id: 'sync-panel-error' }, st.lastError.message +
+        (st.lastOkAt ? ' Les données affichées datent de la synchronisation ' + syncWhen(st.lastOkAt) + '.' : '')));
+    }
+    var month = st.month || s.currentMonth;
+    box.appendChild(el('p', { class: 'muted small' },
+      'Toutes les heures, ' + Fmt.monthLong(month) + ' (le mois en cours) est relu depuis le Google Sheet source',
+      admin && s.sourceUrl ? [' ', UI.extLink(s.sourceUrl, s.sourceTitle || 'source')] : null,
+      '. Les mois précédents restent tels qu’à leur dernière synchronisation.'));
+    if (st.lastChangeAt) {
+      box.appendChild(el('p', { class: 'small', id: 'sync-panel-change' }, 'Dernière modification ',
+        el('span', { class: 'mono' }, Fmt.stamp(st.lastChangeAt)), ' · ', Fmt.syncChange(st.lastChange) || '—'));
+    }
+    if (st.warnings && st.warnings.length && tone !== 'ko') {
+      box.appendChild(el('div', { class: 'alert alert-warning' },
+        el('ul', { class: 'warning-list' }, st.warnings.map(function (w) { return el('li', null, w); }))));
+    }
+    var actions = el('div', { class: 'sync-panel-actions' });
+    if (newData) {
+      actions.appendChild(el('button', { type: 'button', class: 'btn btn-primary btn-sm', id: 'sync-reload',
+        onClick: function () { closeSyncPanel(); reloadData(); } }, 'Actualiser'));
+    }
+    if (admin) {
+      var enable = !st.enabled;
+      var run = el('button', { type: 'button', class: 'btn btn-secondary btn-sm', id: enable ? 'sync-enable' : 'sync-now',
+        onClick: function () { syncNow(run, { enable: enable }); } },
+        enable ? 'Activer la synchronisation horaire' : 'Synchroniser maintenant');
+      actions.appendChild(run);
+      if (syncing) UI.busy(run, true, 'Synchronisation…');
+      actions.appendChild(el('button', { type: 'button', class: 'btn btn-link btn-sm', id: 'sync-journal',
+        onClick: function () { closeSyncPanel(); go('settings'); } }, 'Journal'));
+    }
+    if (actions.childNodes.length) box.appendChild(actions);
+    return box;
+  }
+
+  function toggleSyncPanel(chip) {
+    if (syncPop && syncPop.isOpen()) { closeSyncPanel(); return; }
+    refreshSyncStatus();
+    chip.setAttribute('aria-expanded', 'true');
+    syncPop = UI.popover({ anchor: chip, content: syncPanel(), className: 'sync-popover', id: 'sync-popover',
+      role: 'dialog', ariaLabel: 'Synchronisation', align: 'end', matchWidth: false, maxHeight: 420, keepOnTab: true,
+      onClose: function () { chip.setAttribute('aria-expanded', 'false'); syncPop = null; } });
+  }
+
+  function closeSyncPanel() {
+    if (syncPop && syncPop.isOpen()) syncPop.close('api');
+  }
+
+  /** Status from the server; marks « Nouvelles données » when it synchronised changes since the screen loaded. */
+  function refreshSyncStatus() {
+    lastPoll = Date.now();
+    return api.call('api_getSyncStatus', null).then(function (st) {
+      if (seenChangeAt !== null && st.lastChangeAt && st.lastChangeAt !== seenChangeAt) newData = true;
+      State.set({ sync: st });
+      updateSyncChip();
+      return st;
+    }, function (err) {
+      console.warn('Statut de synchronisation indisponible : ' + UI.errorText(err));
+      return null;
+    });
+  }
+
+  function startSyncPolling() {
+    seenChangeAt = syncStatus().lastChangeAt || '';
+    setInterval(function () { if (State.get().configured && !document.hidden) refreshSyncStatus(); }, SYNC_POLL_MS);
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden && State.get().configured && Date.now() - lastPoll > 60 * 1000) refreshSyncStatus();
+    });
+  }
+
+  /** Newer data on the server: drop the caches, reload the bootstrap (a new month may exist), re-mount. */
+  function reloadData() {
+    newData = false;
+    var before = State.get().month;
+    State.invalidate();
+    return State.refreshBootstrap().then(function (s) {
+      seenChangeAt = (s.sync || {}).lastChangeAt || '';
+      updateSyncChip();
+      // A changed month re-mounts through onStateChange; the same month has to be re-mounted here.
+      if (s.month === before) refresh();
+    });
+  }
+
+  /**
+   * « Synchroniser maintenant » (and « Activer… », opts.enable: creates the hourly trigger first). Shared by
+   * the app bar panel, Paramètres and the empty dashboard; `button` (optional) shows the busy state.
+   * @return {Promise<Object|null>} {status, result} or null on error (reported in a toast)
+   */
+  function syncNow(button, opts) {
+    if (syncing) return Promise.resolve(null);
+    syncing = true;
+    updateSyncChip();
+    var p = api.call(opts && opts.enable ? 'api_enableSync' : 'api_syncNow', null);
+    if (button) UI.busy(button, p, 'Synchronisation…').then(null, function () {});
+    return p.then(function (res) {
+      syncing = false;
+      var r = res.result || {};
+      State.set({ sync: res.status });
+      UI.toast(r.changed ? 'Synchronisé — ' + Fmt.syncChange(r.changes) + '.' : 'Synchronisé — aucune modification.', 'success');
+      if (r.changed || newData) return reloadData().then(function () { return res; });
+      seenChangeAt = res.status.lastChangeAt || '';
+      updateSyncChip();
+      return res;
+    }, function (err) {
+      syncing = false;
+      UI.errorToast(err, 'Synchronisation impossible');
+      return refreshSyncStatus().then(function () { return null; });
+    });
   }
 
   /** ‹ / › move to the previous / next imported month (months are sorted ascending). */
@@ -509,13 +708,15 @@
     return missing.length ? 'Onglet(s) introuvable(s) : ' + missing.join(', ') : '';
   }
 
+  /** Saves the source (the server creates the hourly trigger), then synchronises the current month at once. */
   function applySource(source) {
     return api.call('api_setConfig', { source: source }).then(function (res) {
       UI.toast('Source configurée — ' + (res.sourceTitle || res.sourceId) + '.', 'success');
       var warn = tabsWarning(res);
       if (warn) UI.toast(warn + '.', 'error');
+      if (res.sync && res.sync.authError) UI.toast(res.sync.authError, 'error');
       State.invalidate();
-      return State.refreshBootstrap().then(function () { return res; });
+      return State.refreshBootstrap().then(function () { return syncNow(); }).then(function () { return res; });
     });
   }
 
@@ -538,7 +739,7 @@
     main.appendChild(el('div', { class: 'page page-config', dataset: { page: 'unconfigured' } },
       UI.pageHeader({ kicker: BRAND + ' · configuration', title: 'Source de données' }),
       el('p', { class: 'page-lede' }, 'L’application n’est pas encore configurée. Un administrateur doit d’abord ' +
-        'définir le classeur source et importer un premier mois.'),
+        'définir le classeur source ; les données arrivent ensuite toutes les heures.'),
       u.email ? el('p', { class: 'field-help' }, 'Connecté en tant que ', el('span', { class: 'mono' }, u.email),
         ' · ' + (ROLE_LABELS[u.role] || u.role) + '.') : null,
       el('div', { class: 'form-actions' },
@@ -598,7 +799,8 @@
         el('p', { id: 'config-help', class: 'page-lede' },
           'Collez l’URL (ou l’identifiant) du Google Sheet source « ShadowIT_Industry ». Il doit contenir les onglets « ' +
           Core.SOURCE_TABS.postes + ' », « ' + Core.SOURCE_TABS.applications + ' » et « ' +
-          Core.SOURCE_TABS.referentiel + ' ». Chaque import en fait un instantané mensuel dans le classeur de données.'),
+          Core.SOURCE_TABS.referentiel + ' ». L’application le relit toutes les heures : le mois en cours suit la source, ' +
+          'les mois passés restent figés. Les modifications faites ici sont écrites dans la source.'),
         form)));
     setTimeout(function () { input.focus(); }, 0);
   }
@@ -622,6 +824,7 @@
       if (has(changed, 'page')) renderAll();
       return;
     }
+    if (has(changed, 'sync')) updateSyncChip();
     if (has(changed, 'months') || has(changed, 'dataUrl') || has(changed, 'sourceUrl') || has(changed, 'sourceTitle')) {
       renderSidebar();
       renderAppbar();
@@ -772,6 +975,7 @@
       booted = true;
       syncSidebarPref();
       renderAll();
+      if (!pollingStarted) { pollingStarted = true; startSyncPolling(); }
       splash.done();
     }, function (err) {
       if (err && err.code === 'FORBIDDEN') { booted = true; splash.done(); renderDeniedScreen(err); return; }
@@ -788,6 +992,7 @@
     boot: boot,
     applySource: applySource,
     sourceErrorText: sourceErrorText,
+    syncNow: syncNow,
     ROLE_LABELS: ROLE_LABELS
   };
 

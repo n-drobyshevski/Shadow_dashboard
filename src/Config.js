@@ -58,11 +58,11 @@ var Config = (function () {
     Replacements: ['id', 'old_poste', 'new_poste', 'equipe', 'responsable', 'date_replacement', 'comment',
       'recorded_at'],
     ImportLog: ['month', 'imported_at', 'source_id', 'counts_json', 'postes_headers_json', 'apps_headers_json',
-      'warnings_json'],
+      'warnings_json', 'changes_json'],
     Meta: ['key', 'value']
   };
 
-  var SCHEMA_VERSION = '1';
+  var SCHEMA_VERSION = '2'; // 2: ImportLog.changes_json (hourly sync)
 
   function props_() {
     return PropertiesService.getScriptProperties();

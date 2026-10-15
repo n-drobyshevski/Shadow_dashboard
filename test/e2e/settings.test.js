@@ -31,12 +31,12 @@ async function lastToast(page) {
 }
 
 describe('settings (admin)', () => {
-  test('renders the three sections with the current values', async () => {
+  test('renders the four sections with the current values', async () => {
     await withApp({ page: 'settings' }, async (app) => {
       const { page } = app;
       assert.equal((await page.textContent('#main .page-title')).trim(), 'Paramètres');
       const titles = await page.$$eval('#settings-body .section-title', (ns) => ns.map((n) => n.textContent.trim()));
-      assert.deepEqual(titles, ['Source de données', 'Seuil de conformité', 'Accès']);
+      assert.deepEqual(titles, ['Source de données', 'Synchronisation', 'Seuil de conformité', 'Accès']);
       assert.equal((await page.textContent('#settings-source-link')).trim(), 'ShadowIT_Industry');
       assert.match(await page.textContent('#settings-source-info'), /Suivi des postes/);
       assert.equal(await page.inputValue('#settings-threshold'), '80');
@@ -50,6 +50,54 @@ describe('settings (admin)', () => {
       assert.equal(await owner.locator('button').count(), 0);
       assert.equal(await page.locator(`#access-table tr[data-email="${ACCOUNTS.LECTEUR}"] button:has-text("Retirer")`).count(), 1);
       assert.doesNotMatch(await page.textContent('#main'), /\p{Extended_Pictographic}/u);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('synchronisation: status, journal (newest first, warnings on demand), « Synchroniser maintenant »', async () => {
+    await withApp({ page: 'settings' }, async (app) => {
+      const { page } = app;
+      await page.waitForSelector('#settings-sync #import-log tbody tr[data-month]');
+      assert.match(await page.textContent('#settings-sync-auto'), /Active · toutes les heures/);
+      assert.equal(await page.textContent('#settings-sync-change'),
+        '04/05 10:30 · +1 poste · −1 poste · 2 postes modifiés (3 valeurs) · +1 application · −1 application');
+      // Journal: newest first, months as « mai 2026 », time as DD/MM/YYYY HH:MM; older manual imports say so.
+      assert.deepEqual(await page.$$eval('#import-log tbody tr[data-month]', (ns) => ns.map((n) => n.dataset.month)),
+        ['2026-05', '2026-04']);
+      assert.deepEqual(await page.$$eval('#import-log tbody tr[data-month] td:nth-child(2)', (ns) => ns.map((n) => n.textContent)),
+        ['mai 2026', 'avril 2026']);
+      assert.match(await page.textContent('#import-log tbody tr[data-month] td:first-child'), /^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
+      assert.equal(await page.textContent('#import-log tbody tr[data-month] td:nth-child(3)'), 'import manuel');
+      // Warnings are revealed by the count button (no native tooltip).
+      const toggle = '#import-log tr[data-month="2026-05"] .import-warn-toggle';
+      assert.equal((await page.textContent(toggle)).trim(), '1');
+      const target = await page.getAttribute(toggle, 'aria-controls');
+      assert.equal(await page.isVisible('#' + target), false);
+      await page.click(toggle);
+      assert.equal(await page.getAttribute(toggle, 'aria-expanded'), 'true');
+      assert.match(await page.textContent('#' + target), /ignorée/);
+
+      // The current month is created by the sync: a new journal row, the status follows (app bar too).
+      await page.click('#settings-sync-now');
+      await page.waitForFunction(() => document.querySelectorAll('#import-log tbody tr[data-month]').length === 3);
+      await app.waitIdle();
+      assert.equal(await page.textContent('#import-log tbody tr[data-month] td:nth-child(3)'), 'mois créé');
+      assert.match(await page.textContent('#settings-sync-change'), /^\d{2}:\d{2} · mois créé$/);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('synchronisation inactive: « Activer la synchronisation horaire »', async () => {
+    await withApp({ page: 'settings', sync: { enabled: false } }, async (app) => {
+      const { page } = app;
+      await page.waitForSelector('#settings-sync-enable');
+      assert.match(await page.textContent('#settings-sync-auto'), /Inactive/);
+      assert.equal((await page.textContent('#sync-chip')).trim().length > 0, true);
+      await page.click('#settings-sync-enable');
+      await page.waitForSelector('#settings-sync-now');
+      await app.waitIdle();
+      assert.deepEqual((await callsNamed(app, 'api_enableSync')).length, 1);
+      assert.match(await page.textContent('#settings-sync-auto'), /Active · toutes les heures/);
       assert.deepEqual(app.errors, []);
     });
   });

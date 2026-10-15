@@ -292,14 +292,18 @@
   }
 
   /**
-   * UI.noData(id) -> the empty state of a page when no month is imported: admins get a link to the import
-   * form of the dashboard, lecteurs are told an administrator has to import.
+   * UI.noData(id) -> the empty state of a page when no month is synchronised yet: admins can run the first
+   * synchronisation (App.syncNow), lecteurs are told the data comes with the next hourly run.
    */
   function noData(id) {
-    var node = State.canEdit() ?
-      empty('Aucune donnée importée.', el('button', { type: 'button', class: 'btn btn-link',
-        onClick: function () { App.go('dashboard'); } }, 'Importer un export depuis le tableau de bord')) :
-      empty('Aucun mois importé. Un administrateur doit importer les données.');
+    var node;
+    if (State.canEdit()) {
+      var run = el('button', { type: 'button', class: 'btn btn-link', onClick: function () { App.syncNow(run); } },
+        'Synchroniser maintenant');
+      node = empty('Aucune donnée pour le moment.', run);
+    } else {
+      node = empty('Aucune donnée pour le moment. Les données arrivent à la prochaine synchronisation horaire.');
+    }
     node.id = id;
     return node;
   }

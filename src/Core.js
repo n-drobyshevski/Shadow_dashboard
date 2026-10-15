@@ -313,6 +313,7 @@ function CoreFactory_() {
     }
 
     var records = [];
+    var rows = [];
     var missingKey = 0;
     for (var r = headerIdx + 1; r < display.length; r++) {
       var dRow = Array.isArray(display[r]) ? display[r] : [];
@@ -336,13 +337,15 @@ function CoreFactory_() {
         continue;
       }
       records.push(rec);
+      rows.push(r);
     }
 
     var warnings = [];
     if (missingKey > 0) {
       warnings.push(missingKey + ' ligne(s) sans « ' + keyField + ' » ignorée(s)');
     }
-    return { headers: headers, records: records, warnings: warnings };
+    // rows[i] / columns[j] = grid indexes (0-based) of records[i] / headers[j], for writing back.
+    return { headers: headers, records: records, warnings: warnings, headerRow: headerIdx, rows: rows, columns: cols };
   }
 
   /**

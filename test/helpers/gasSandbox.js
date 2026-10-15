@@ -36,6 +36,7 @@ function loadGas(options) {
     lockTimeout: opts.lockTimeout,
     srcDir,
     echoConsole: opts.echoConsole,
+    scriptAppDenied: opts.scriptAppDenied,
   });
   if (opts.props) env.PropertiesService.getScriptProperties().setProperties(opts.props);
 
@@ -49,6 +50,7 @@ function loadGas(options) {
     Session: env.Session,
     GroupsApp: env.GroupsApp,
     CacheService: env.CacheService,
+    ScriptApp: env.ScriptApp,
     console: env.console,
     Date,
   });
@@ -59,6 +61,12 @@ function loadGas(options) {
     const file = path.join(srcDir, f);
     vm.runInContext(fs.readFileSync(file, 'utf8'), ctx, { filename: file });
   }
+  // Test-only stand-in for the manual import endpoint the app no longer has (the hourly sync imports
+  // the current month): Importer.importMonth for any month, under the same admin envelope, so that
+  // tests can build several months of history.
+  ctx.api_importMonth = ctx.apiWrap_(function (args) {
+    return ctx.Importer.importMonth(args.month, args.overwrite === true);
+  }, 'api_importMonth (test)', 'admin');
   return { ctx, env, files };
 }
 

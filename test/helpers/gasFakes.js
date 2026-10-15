@@ -379,10 +379,26 @@ function createGasEnv(options) {
 
     setValue(value) {
       count('setValue');
+      maybeFail('setValue', { id: this._sheet._ss._id, sheet: this._sheet._name });
       const r = this._row - 1;
       const c = this._col - 1;
       state.writes.push({ spreadsheetId: this._sheet._ss._id, sheet: this._sheet._name, a1: a1(this._row, this._col, 1, 1), rows: 1, cols: 1, plainText: this._sheet._format(r, c) === '@' });
       this._sheet._write(r, c, value);
+      return this;
+    }
+
+    /** Formulas: a value that is a string starting with '=' (fixtures store formulas that way). */
+    getFormulas() {
+      count('getFormulas');
+      return this._each((r, c) => { const v = this._sheet._value(r, c); return typeof v === 'string' && v.charAt(0) === '=' ? v : ''; });
+    }
+    getFormula() { return this.getFormulas()[0][0]; }
+
+    /** Copies values (formulas included, verbatim) to the top-left of `target`. */
+    copyTo(target) {
+      count('copyTo');
+      this._each((r, c, i, j) => target._sheet._set(target._sheet._vals, target._row - 1 + i, target._col - 1 + j, copyCell(this._sheet._value(r, c))));
+      state.copies = (state.copies || 0) + 1;
       return this;
     }
 
@@ -706,6 +722,36 @@ function createGasEnv(options) {
     clear() { state.logs.length = 0; },
   };
 
+  // ------------------------------------------------------------------------------ ScriptApp
+  // state.triggers: [{id, handler, everyHours}]; state.scriptAppDenied = true makes every call throw
+  // (the deployer has not accepted the script.scriptapp scope yet).
+  state.triggers = [];
+  state.scriptAppDenied = !!opts.scriptAppDenied;
+  let nextTrigger = 1;
+  function scriptAppGuard() {
+    if (state.scriptAppDenied) throw new Error('Exception: You do not have permission to call ScriptApp.getProjectTriggers.');
+  }
+  function makeTrigger(t) {
+    return { getHandlerFunction() { return t.handler; }, getUniqueId() { return t.id; }, __def: t };
+  }
+  const ScriptApp = {
+    getProjectTriggers() { scriptAppGuard(); return state.triggers.map(makeTrigger); },
+    deleteTrigger(trigger) {
+      scriptAppGuard();
+      const i = state.triggers.findIndex((t) => t.id === trigger.getUniqueId());
+      if (i >= 0) state.triggers.splice(i, 1);
+    },
+    newTrigger(handler) {
+      scriptAppGuard();
+      const def = { id: 'trig' + (nextTrigger++), handler: String(handler), everyHours: null };
+      const time = {
+        everyHours(n) { def.everyHours = n; return time; },
+        create() { state.triggers.push(def); return makeTrigger(def); },
+      };
+      return { timeBased() { return time; } };
+    },
+  };
+
   const fakeConsole = {};
   for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
     fakeConsole[level] = (...args) => {
@@ -716,6 +762,7 @@ function createGasEnv(options) {
 
   return {
     SpreadsheetApp, PropertiesService, LockService, Utilities, HtmlService, Logger, Session, GroupsApp, CacheService,
+    ScriptApp,
     /** Defines Google Groups: {email: {members:[...], children?:[...], hidden?:bool}} (merged). */
     __setGroups(groups) {
       for (const [k, v] of Object.entries(groups)) state.groups[k.toLowerCase()] = v;

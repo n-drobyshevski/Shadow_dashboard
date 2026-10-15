@@ -134,8 +134,11 @@
 
   function remove(rec, ctx) {
     var name = Core.str(rec[KEY]);
-    UI.confirm('Supprimer l’application ' + UI.quote(name) + ' de l’export de ' + Fmt.monthLong(ctx.month) +
-      ' ? Cette opération est irréversible (les actions liées sont conservées).',
+    var live = ctx.month === State.get().currentMonth;
+    UI.confirm('Supprimer l’application ' + UI.quote(name) + (live ?
+      ' ? Sa ligne est supprimée de l’onglet ' + UI.quote(Core.SOURCE_TABS.applications) + ' du Google Sheet source.' :
+      ' de l’historique de ' + Fmt.monthLong(ctx.month) + ' ? Le Google Sheet source n’est pas modifié.') +
+      ' Cette opération est irréversible (les actions liées sont conservées).',
       { title: 'Supprimer l’application', okLabel: 'Supprimer', danger: true,
         onConfirm: function () { return api.call('api_deleteApplication', { month: ctx.month, id: rec._id }); } })
       .then(function (ok) {

@@ -44,9 +44,12 @@
 /**
  * Pages.settings — « Paramètres » (admin only; docs/API.md §3 settings endpoints).
  *
- * Three sections, each saved on its own:
+ * Four sections, each saved on its own:
  *   - Source de données: current source spreadsheet, tabs found, data spreadsheet; change the source
- *     (App.applySource -> api_setConfig, the same path as the configuration screen).
+ *     (App.applySource -> api_setConfig then a first synchronisation, the same path as the configuration screen).
+ *   - Synchronisation: hourly trigger on / off (api_enableSync), last run, last change, error, « Synchroniser
+ *     maintenant » (App.syncNow -> api_syncNow), and the journal of the runs that changed something
+ *     (api_getImportLog, newest first). Re-rendered when the status changes elsewhere (app bar).
  *   - Seuil de conformité: integer 1–100 (api_setThreshold). Every cache is dropped and the bootstrap is
  *     reloaded so that every page re-scores with the new value.
  *   - Accès: role of the other accounts of the domain (api_setDomainRole), the access list with an inline
@@ -64,6 +67,8 @@
   window.Pages = window.Pages || {};
   var el = UI.el;
   var page = null;        // root of the mounted page: late responses do not touch a page that was left
+  var syncView = null;    // the « Synchronisation » section (re-rendered when State.sync changes)
+  var unsubscribe = null;
   function alive() { return !!page && page.isConnected; }
 
   function roleLabel(role) { return (App.ROLE_LABELS || {})[role] || role; }
@@ -121,9 +126,126 @@
       el('div', { class: 'form-actions' }, button));
 
     return UI.section('Source de données',
-      el('p', { class: 'page-lede', id: 'settings-source-help' }, 'Le classeur « ShadowIT_Industry » dont chaque ' +
-        'import fait un instantané mensuel. Changer de source ne modifie pas les mois déjà importés.'),
+      el('p', { class: 'page-lede', id: 'settings-source-help' }, 'Le classeur « ShadowIT_Industry », relu toutes ' +
+        'les heures. Changer de source ne modifie pas les mois passés : le mois en cours suit la nouvelle source.'),
       info, form);
+  }
+
+  // ------------------------------------------------------------------------------ synchronisation
+
+  /** « 14:02 » / « 04/05 10:30 » in mono. */
+  function stampNode(v) { return el('span', { class: 'mono' }, Fmt.stamp(v)); }
+
+  function syncStatusBlock(st) {
+    var failed = st.lastError && (!st.lastOkAt || st.lastError.at >= st.lastOkAt);
+    var rows = [
+      el('dt', null, 'Automatique'),
+      el('dd', { id: 'settings-sync-auto' }, st.enabled ? UI.statusMark('Active · toutes les heures', 'ok') :
+        UI.statusMark('Inactive', 'neutral'), st.authError ? el('div', { class: 'field-error' }, st.authError) : null),
+      el('dt', null, 'Mois en cours'),
+      el('dd', null, Fmt.monthTitle(st.month || State.get().currentMonth)),
+      el('dt', null, 'Dernière réussite'),
+      el('dd', { id: 'settings-sync-last' }, st.lastOkAt ? stampNode(st.lastOkAt) : el('span', { class: 'field-help' }, 'Jamais.')),
+      el('dt', null, 'Dernière modification'),
+      el('dd', { id: 'settings-sync-change' }, st.lastChangeAt ? [stampNode(st.lastChangeAt), ' · ',
+        Fmt.syncChange(st.lastChange) || '—'] : el('span', { class: 'field-help' }, 'Aucune.'))
+    ];
+    return [
+      el('dl', { class: 'kv', id: 'settings-sync-info' }, rows),
+      failed ? el('p', { class: 'alert alert-error', id: 'settings-sync-error' }, 'Échec ',
+        stampNode(st.lastError.at), ' : ' + st.lastError.message) : null,
+      st.warnings && st.warnings.length && !failed ? el('div', { class: 'alert alert-warning' },
+        el('ul', { class: 'warning-list' }, st.warnings.map(function (w) { return el('li', null, w); }))) : null
+    ];
+  }
+
+  /** Warnings of one run: a hidden row listing them, revealed by the count button of its row. */
+  function logWarnings(e, i) {
+    var w = e.warnings || [];
+    if (!w.length) return { toggle: null, detail: null };
+    var detailId = 'sync-log-warnings-' + i;
+    var detail = el('tr', { class: 'import-warnings-row', id: detailId, hidden: true },
+      el('td', { colspan: '6' }, el('ul', { class: 'warning-list' }, w.map(function (t) { return el('li', null, t); }))));
+    var toggle = el('button', { type: 'button', class: 'btn btn-quiet btn-sm import-warn-toggle',
+      'aria-expanded': 'false', 'aria-controls': detailId,
+      'aria-label': UI.plural(w.length, 'alerte', 'alertes') + ' — afficher le détail',
+      onClick: function () {
+        var open = toggle.getAttribute('aria-expanded') !== 'true';
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        detail.hidden = !open;
+      } }, String(w.length));
+    return { toggle: toggle, detail: detail };
+  }
+
+  function loadSyncLog(box) {
+    UI.asyncBlock(box, {
+      load: function () { return api.call('api_getImportLog', null); },
+      placeholder: function () { return UI.loading('Chargement du journal…', { small: true }); },
+      small: true,
+      error: { prefix: 'Journal indisponible' },
+      live: alive,
+      render: function (log) {
+        var entries = (log || []).slice(0, 12);
+        if (!entries.length) { box.appendChild(UI.empty('Aucune synchronisation pour le moment.', { small: true })); return; }
+        var warn = entries.map(logWarnings);
+        function count(key) { return function (e) { return UI.fmtNum((e.counts || {})[key]); }; }
+        box.appendChild(UI.table({
+          className: 'import-table sync-log-table',
+          columns: [
+            { label: 'Quand', mono: true, cell: function (e) { return Fmt.dateTime(e.imported_at); } },
+            { label: 'Mois', cell: function (e) { return Fmt.monthLong(e.month); } },
+            { label: 'Changements', cell: function (e) {
+              return e.changes ? Fmt.syncChange(e.changes) : el('span', { class: 'faint' }, 'import manuel'); } },
+            { label: 'Postes', num: true, cell: count('postes') },
+            { label: 'Applis', num: true, cell: count('applications') },
+            { label: 'Alertes', num: true, cell: function (e, i) { return warn[i].toggle || el('span', { class: 'faint' }, '—'); } }
+          ],
+          rows: entries,
+          rowAttrs: function (e) { return { dataset: { month: e.month } }; },
+          extraRows: function (e, i) { return warn[i].detail; }
+        }));
+      }
+    });
+  }
+
+  function syncSection(initial) {
+    var statusBox = el('div', { class: 'settings-sync-status', id: 'settings-sync-status' });
+    var actions = el('div', { class: 'form-actions' });
+    var logBox = el('div', { class: 'import-log', id: 'import-log' });
+    var st = initial || {};
+
+    function render(next) {
+      st = next || {};
+      UI.clear(statusBox);
+      syncStatusBlock(st).forEach(function (n) { if (n) statusBox.appendChild(n); });
+      UI.clear(actions);
+      var enable = !st.enabled;
+      var run = el('button', { type: 'button', class: enable ? 'btn btn-primary' : 'btn btn-secondary',
+        id: enable ? 'settings-sync-enable' : 'settings-sync-now',
+        onClick: function () {
+          App.syncNow(run, { enable: enable }).then(function (res) { if (res && alive()) loadSyncLog(logBox); });
+        } }, enable ? 'Activer la synchronisation horaire' : 'Synchroniser maintenant');
+      actions.appendChild(run);
+    }
+    render(st);
+    loadSyncLog(logBox);
+
+    var section = UI.section('Synchronisation',
+      el('p', { class: 'page-lede' }, 'Toutes les heures, le mois en cours est relu depuis la source ; le 1er du mois, ' +
+        'le mois précédent est figé tel qu’à sa dernière synchronisation. Les modifications du mois en cours faites ' +
+        'dans l’application sont écrites dans la source ; celles d’un mois passé ne changent que son historique.'),
+      statusBox, actions,
+      el('h3', { class: 'subsection-title' }, 'Journal des synchronisations'),
+      logBox);
+    section.id = 'settings-sync';
+    // The app bar (or another tab action) changed the status: show it, keeping what only Paramètres knows.
+    section.__sync = function (next) {
+      var merged = {};
+      Object.keys(next || {}).forEach(function (k) { merged[k] = next[k]; });
+      if (st.authError && !merged.enabled) merged.authError = st.authError;
+      render(merged);
+    };
+    return section;
   }
 
   // ------------------------------------------------------------------------------ threshold
@@ -496,6 +618,8 @@
       placeholder: function () { return UI.skeleton('lines', { label: 'Chargement des paramètres…', rows: 8 }); },
       render: function (s) {
         body.appendChild(sourceSection(s, function () { load(body); }));
+        syncView = syncSection(s.sync);
+        body.appendChild(syncView);
         body.appendChild(thresholdSection(s));
         body.appendChild(accessSection(s));
       }
@@ -504,13 +628,22 @@
 
   function mount(root) {
     page = root;
+    syncView = null;
+    unsubscribe = State.subscribe(function (st, changed) {
+      if (changed.indexOf('sync') >= 0 && syncView && syncView.isConnected && st.sync) syncView.__sync(st.sync);
+    });
     var body = el('div', { class: 'settings-body', id: 'settings-body' });
     root.appendChild(UI.pageHeader({ title: 'Paramètres', kicker: 'Shadow IT · administration' }));
     root.appendChild(body);
     load(body);
   }
 
-  function unmount() { page = null; }
+  function unmount() {
+    page = null;
+    syncView = null;
+    if (unsubscribe) unsubscribe();
+    unsubscribe = null;
+  }
 
   window.Pages.settings = { id: 'settings', title: 'Paramètres', mount: mount, unmount: unmount };
 })();

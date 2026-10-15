@@ -124,7 +124,7 @@ test('Store.ensure creates the data spreadsheet once, with every tab, header and
     assert.deepEqual(sh.getRange(1, 1, 1, sb.ctx.Config.SCHEMAS[tab].length).getValues()[0], plain(sb.ctx.Config.SCHEMAS[tab]), tab);
     assert.equal(sh.getFrozenRows(), 1, tab);
   }
-  assert.deepEqual(tabValues(Object.assign(sb, { dataId: id }), 'Meta'), [['key', 'value'], ['schema_version', '1']]);
+  assert.deepEqual(tabValues(Object.assign(sb, { dataId: id }), 'Meta'), [['key', 'value'], ['schema_version', '2']]);
   assertAllWritesPlainText(sb.env);
 
   // cached within the execution: no extra Sheets calls
@@ -160,7 +160,7 @@ test('Store.ensure repairs a missing tab / header under the lock; the fast path 
   assert.equal(lock.held, false);
   assert.ok(sb.ss.getSheetByName('Replacements'));
   assert.deepEqual(tabValues(sb, 'Actions')[0], plain(sb.Config.SCHEMAS.Actions));
-  assert.deepEqual(tabValues(sb, 'Meta'), [['key', 'value'], ['schema_version', '1']]);
+  assert.deepEqual(tabValues(sb, 'Meta'), [['key', 'value'], ['schema_version', '2']]);
 });
 
 test('Store.ensure never replaces a configured data spreadsheet that fails to open', () => {
@@ -372,8 +372,13 @@ test('import log round trip and latestImportInfo', () => {
   const e2 = Object.assign({}, e1, { month: '2026-05', imported_at: '2026-05-03 10:00', warnings: [] });
   const e3 = Object.assign({}, e1, { imported_at: '2026-05-04 11:00', counts: { postes: 7, applications: 5, referentiel: 8 } });
   [e1, e2, e3].forEach((e) => sb.Store.appendImportLog(e));
-  assert.deepEqual(plain(sb.Store.getImportLog()), [e1, e2, e3]);
-  assert.deepEqual(plain(sb.Store.latestImportInfo('2026-04')), e3);
+  const noChanges = (e) => Object.assign({}, e, { changes: null });
+  assert.deepEqual(plain(sb.Store.getImportLog()), [e1, e2, e3].map(noChanges));
+  assert.deepEqual(plain(sb.Store.latestImportInfo('2026-04')), noChanges(e3));
+  // changes round trip (hourly sync)
+  const changes = { created: false, postes: { added: 1, removed: 0, changed: 2, values: 3 }, applications: null, referentiel: false };
+  sb.Store.appendImportLog(Object.assign({}, e1, { month: '2026-07', changes }));
+  assert.deepEqual(plain(sb.Store.latestImportInfo('2026-07').changes), changes);
   assert.equal(sb.Store.latestImportInfo('2026-01'), null);
   // imported_at defaults to now
   sb.Store.appendImportLog({ month: '2026-06', source_id: 'SRC' });

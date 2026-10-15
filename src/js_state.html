@@ -22,7 +22,8 @@
     loading: false,
     threshold: 80,
     user: { email: '', role: '', isOwner: false },
-    prefs: {}                  // the account's interface preferences (api_bootstrap.prefs)
+    prefs: {},                 // the account's interface preferences (api_bootstrap.prefs)
+    sync: null                 // hourly synchronisation status (api_bootstrap.sync / api_getSyncStatus)
   };
   var subscribers = [];
 
@@ -251,6 +252,7 @@
         threshold: threshold,
         user: prev.email === user.email && prev.role === user.role && prev.isOwner === user.isOwner ? prev : user,
         prefs: b.prefs && typeof b.prefs === 'object' ? b.prefs : {},
+        sync: b.sync && typeof b.sync === 'object' ? b.sync : null,
         loading: false
       });
       return state;
@@ -295,6 +297,8 @@
  *   Fmt.monthRange(a, b)       -> 'Avril 2026 – mai 2026' (one month -> 'Mai 2026')
  *   Fmt.date('2026-05-04')     -> '04/05/2026'        (DD/MM/YYYY input is returned unchanged)
  *   Fmt.dateTime('2026-05-04 10:30') / ('2026-05-04T10:30:00') -> '04/05/2026 10:30'
+ *   Fmt.stamp('2026-05-04 10:30')  -> '10:30' today, '04/05 10:30' this year, else '04/05/2026 10:30'
+ *   Fmt.syncChange(changes)    -> '+2 postes · 1 application modifiée (3 valeurs)' (ImportLog / sync changes)
  * Invalid input is returned as a string unchanged ('' for null).
  */
 (function () {
@@ -325,7 +329,44 @@
     return r ? r[3] + '/' + r[2] + '/' + r[1] + ' ' + r[4] + ':' + r[5] : date(v);
   }
 
+  /** Short time stamp for status lines (the server stamps in Europe/Paris, the viewers are there too). */
+  function stamp(v) {
+    var r = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(s(v).trim());
+    if (!r) return dateTime(v);
+    var now = new Date();
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    var today = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate());
+    if (r[1] + '-' + r[2] + '-' + r[3] === today) return r[4] + ':' + r[5];
+    if (Number(r[1]) === now.getFullYear()) return r[3] + '/' + r[2] + ' ' + r[4] + ':' + r[5];
+    return dateTime(v);
+  }
+
+  function counted(n, one, many) { return n + ' ' + (n > 1 ? many : one); }
+
+  /** One entity's part of a change summary: '+2 postes', '−1 application', '3 postes modifiés (5 valeurs)'. */
+  function entityChange(d, one, many, modOne, modMany) {
+    if (!d) return [];
+    var out = [];
+    if (d.added) out.push('+' + counted(d.added, one, many));
+    if (d.removed) out.push('−' + counted(d.removed, one, many));
+    if (d.changed) out.push(counted(d.changed, one + ' ' + modOne, many + ' ' + modMany) +
+      (d.values && d.values !== d.changed ? ' (' + counted(d.values, 'valeur', 'valeurs') + ')' : ''));
+    return out;
+  }
+
+  /** What a synchronisation changed, in words ('' for nothing / unknown). */
+  function syncChange(c) {
+    if (!c || typeof c !== 'object') return '';
+    if (c.created) return 'mois créé';
+    var parts = entityChange(c.postes, 'poste', 'postes', 'modifié', 'modifiés')
+      .concat(entityChange(c.applications, 'application', 'applications', 'modifiée', 'modifiées'));
+    if (c.referentiel) parts.push('référentiel mis à jour');
+    return parts.length ? parts.join(' · ') : 'en-têtes de colonnes mis à jour';
+  }
+
   window.Fmt = {
+    stamp: stamp,
+    syncChange: syncChange,
     monthLong: monthLong,
     monthTitle: monthTitle,
     MONTHS: MONTHS,

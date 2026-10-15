@@ -632,12 +632,13 @@ var Store = (function () {
         counts: parseJsonValue_(o.counts_json, {}),
         postes_headers: parseJsonValue_(o.postes_headers_json, []),
         apps_headers: parseJsonValue_(o.apps_headers_json, []),
-        warnings: parseJsonValue_(o.warnings_json, [])
+        warnings: parseJsonValue_(o.warnings_json, []),
+        changes: parseJsonValue_(o.changes_json, null)
       };
     });
   }
 
-  /** @param {{month, imported_at?, source_id, counts, postes_headers, apps_headers, warnings}} entry */
+  /** @param {{month, imported_at?, source_id, counts, postes_headers, apps_headers, warnings, changes?}} entry */
   function appendImportLog(entry) {
     var e = entry || {};
     appendRows_(Config.TABS.importLog, [[
@@ -647,7 +648,8 @@ var Store = (function () {
       JSON.stringify(e.counts || {}),
       JSON.stringify(e.postes_headers || []),
       JSON.stringify(e.apps_headers || []),
-      JSON.stringify(e.warnings || [])
+      JSON.stringify(e.warnings || []),
+      e.changes ? JSON.stringify(e.changes) : ''
     ]]);
   }
 

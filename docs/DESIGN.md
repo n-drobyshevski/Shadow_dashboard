@@ -29,8 +29,8 @@ gauge styling, copy with emoji). Data, behaviour and API contracts are unchanged
 3. **Colour is data, not decoration.** The UI is ink-on-paper neutral. Colour appears only to encode
    status (conforme / non conforme, risk level) and for the single interactive accent.
 4. **Density with air.** Compact rows (32px), generous outer margins, consistent 8px grid.
-5. **Plain French.** Short, factual, no emoji, no exclamation marks. « Import terminé — 7 postes,
-   5 applications. » not « ✅ Import réussi ! ».
+5. **Plain French.** Short, factual, no emoji, no exclamation marks. « Synchronisé — +2 postes. »
+   not « ✅ Synchronisation réussie ! ».
 
 ## Tokens
 ```
@@ -142,11 +142,32 @@ with the system fallbacks above.
 
 ## Copy
 - Titles: « Tableau de bord », « Postes », « Applications », « Suivi temporel », « Suivi des actions ».
-- Buttons: « Importer », « Ré-importer », « Enregistrer », « Annuler », « Ajouter un poste générique »,
+- Buttons: « Synchroniser maintenant », « Activer la synchronisation horaire », « Actualiser »,
+  « Enregistrer », « Annuler », « Ajouter un poste générique »,
   « Nouvelle application », « Renommer », « Supprimer », « Exporter CSV », « Nouvelle action ».
-- Toasts: « Import terminé — 7 postes, 5 applications. », « 3 modifications enregistrées. »,
+- Toasts: « Synchronisé — +2 postes · 1 application modifiée. », « Synchronisé — aucune modification. »,
+  « 3 modifications enregistrées dans le Google Sheet source. », « 1 modification enregistrée (historique de
+  mai 2026). »,
   « Erreur : <message> ».
 - Numbers fr-FR: `71,4 %` (narrow no-break space before %), thousands with narrow no-break space.
+
+## Synchronisation
+- **Status button**, last item of the app bar (`#sync-chip`): a 7px square + the time of the last
+  successful run in mono (« ■ 14:02 », « 04/05 10:30 » on another day). The square carries the state:
+  green ok, amber when the source had warnings, hollow before the first run; the whole button turns
+  `--ko` on failure (« ■ Échec 11:02 ») and ink, in sans, for « Nouvelles données ». While a run is in
+  progress: spinner + « Synchronisation… ». Below 900px it wraps under the period.
+- **Panel** (a popover under the button, 340px): status sentence as a status mark, the error in an
+  `alert-error` line saying how old the shown data is, one ink-2 line explaining the hourly run, « Dernière
+  modification <time> · <what changed> », source warnings, then the actions (admins: « Synchroniser
+  maintenant » secondary + « Journal » link; everybody: « Actualiser » primary when newer data exists).
+  No link to the source for lecteurs (private to the deployer).
+- **Paramètres → Synchronisation**: kv list (Automatique, Mois en cours, Dernière réussite, Dernière
+  modification), the button, then « Journal des synchronisations » (one row per run that changed
+  something, warnings behind the count button).
+- **Where an edit goes**, for admins above the Postes / Applications tables: an `alert-info` line, « Les
+  modifications sont écrites dans le Google Sheet source. » for the current month, « Mois figé : … » for a
+  past one.
 
 ## Loading
 - **Startup splash** (the only screen with the team brand): on paper, the Value Chain Information

@@ -14,14 +14,16 @@ identifiers and comments are **English**.
   - **no top-level `const`/`let`/`class`**, and **no top-level code that touches another file**
     (IIFE bodies may only *define* functions; cross-file calls happen inside functions).
 - Names ending in `_` are private (hidden from `google.script.run`). Only `api_*`, `doGet`,
-  `include`, `coreScript`, `setup` are public functions.
+  `include`, `coreScript`, `setup` and `syncHourly` (the time-driven trigger handler: a trigger cannot
+  call a private function) are public functions.
 - No `Date` object ever crosses `google.script.run`: every `api_*` takes **one JSON string** and
   returns **one JSON string** (see §3).
 - OAuth scopes: only `https://www.googleapis.com/auth/spreadsheets`,
   `https://www.googleapis.com/auth/userinfo.email` (for `Session.getActiveUser()` /
-  `getEffectiveUser()`) and `https://www.googleapis.com/auth/groups` (`GroupsApp` membership checks).
-  `Session`, `GroupsApp` and `CacheService` are used **only** in `src/Access.js`. Do not use `DriveApp`, `UrlFetchApp`,
-  `MailApp`, etc.
+  `getEffectiveUser()`), `https://www.googleapis.com/auth/groups` (`GroupsApp` membership checks) and
+  `https://www.googleapis.com/auth/script.scriptapp` (the hourly sync trigger).
+  `Session`, `GroupsApp` and `CacheService` are used **only** in `src/Access.js`, `ScriptApp` **only** in
+  `src/Sync.js`. Do not use `DriveApp`, `UrlFetchApp`, `MailApp`, etc.
 - Web app: `executeAs: USER_DEPLOYING`, `access: DOMAIN`. Identity and roles are checked in-app (§4 Access).
 
 ### Files and ownership
@@ -31,7 +33,8 @@ identifiers and comments are **English**.
 | `src/Config.js` | `var Config` | Script Properties + constants (tab names, schemas). |
 | `src/Access.js` | `var Access` | Caller identity (Session) and roles. Only module that reads `Session`. |
 | `src/Store.js` | `var Store` | Data spreadsheet repository. Only module that writes to the data spreadsheet. |
-| `src/Importer.js` | `var Importer` | Reads the live source spreadsheet and snapshots a month. |
+| `src/Importer.js` | `var Importer` | Reads the live source spreadsheet, snapshots a month, writes the current month's edits back into the source. |
+| `src/Sync.js` | `var Sync` | Hourly synchronisation of the current month (trigger, status). Only module that uses `ScriptApp`. |
 | `src/Api.js` | global `api_*` functions + `apiWrap_` | `google.script.run` entry points. |
 | `src/Code.js` | `doGet`, `include`, `coreScript`, `setup` | Web app entry + template helpers. |
 | `src/index.html` | template | Shell; includes css + scripts. |
@@ -128,8 +131,14 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
   or a lecteur calls an admin endpoint) and applies the effective threshold (`Core.setThreshold`), then
   catches errors: `err.code` in `Core.ERROR_CODES` → that code, else `INTERNAL`; message in French when
   produced by us; `console.error` the stack.
-- Roles: **lecteur** endpoints = `api_bootstrap`, `api_getMonthData`, `api_getImportLog`, `api_getTimeline`,
-  `api_getActions`, `api_getDiff`. Every other endpoint is **admin** only.
+- Roles: **lecteur** endpoints = `api_bootstrap`, `api_savePrefs`, `api_getMonthData`, `api_getSyncStatus`,
+  `api_getImportLog`, `api_getTimeline`, `api_getActions`, `api_getDiff`. Every other endpoint is **admin** only.
+- **Current month = live.** The month of today (Europe/Paris) follows the source spreadsheet: the hourly sync
+  re-imports it, and every edit of that month (`api_savePostes`, `api_saveApplications`, `api_addGenericPoste`,
+  `api_addApplication`, `api_deleteApplication`, `api_renameApplication`) is written into the source FIRST
+  (`Importer.writeEdits` / `appendRecord` / `deleteRecord`), then into the snapshot, under the same lock. Past
+  months are frozen history: their edits change the snapshot only. Fields without a source column (Galink /
+  IDP) stay app-only.
 - Writes are performed inside `Store.withLock(fn)`; lock timeout (20 s) → `BUSY`.
 
 ### Record shapes
@@ -145,24 +154,34 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 - **Replacement**: `{id, old_poste, new_poste, equipe, responsable, date_replacement:'DD/MM/YYYY',
   comment, recorded_at:'YYYY-MM-DD'}` (all strings).
 - **ImportLog entry**: `{month, imported_at:'YYYY-MM-DD HH:mm', source_id, counts:{postes, applications,
-  referentiel}, postes_headers:[...], apps_headers:[...], warnings:[...]}`.
+  referentiel}, postes_headers:[...], apps_headers:[...], warnings:[...], changes:Changes|null}` — one entry per
+  synchronisation that changed something (`changes` is `null` for the manual imports of earlier versions).
+- **Changes**: `{created:bool, postes:Diff, applications:Diff, referentiel:bool}`, `Diff = {added, removed,
+  changed, values}` (records matched by key with `normKey`; `changed` counts records, `values` the cells that
+  differ; a pure row-order change is not a change).
+- **SyncStatus**: `{enabled:bool, month:'YYYY-MM' (current month), lastRunAt, lastOkAt, lastChangeAt
+  ('YYYY-MM-DD HH:mm' | ''), lastChange:{month, at, created, postes:Diff, applications:Diff, referentiel}|null,
+  lastError:{at, code, message}|null, warnings:[string], authError?:string}` (`SYNC_STATE` Script Property;
+  `authError` only from `api_getSettings` / `api_setConfig` when the deployer has not granted the ScriptApp scope).
 
 ### Functions
 
 | Function | Args | Returns `data` | Errors |
 |---|---|---|---|
-| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:'', threshold:int, user:{email, role:'admin'|'lecteur', isOwner:bool}, prefs:{sidebar?:'open'|'collapsed'}}` (`dataUrl` / `sourceUrl` / `sourceTitle` are `''` for lecteurs: the spreadsheets are private to the deployer) | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
+| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:'', threshold:int, user:{email, role:'admin'|'lecteur', isOwner:bool}, prefs:{sidebar?:'open'|'collapsed'}, sync:SyncStatus}` (`dataUrl` / `sourceUrl` / `sourceTitle` are `''` for lecteurs: the spreadsheets are private to the deployer) | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
 | `api_savePrefs` | `{sidebar:'open'\|'collapsed'}` (any subset of the known keys) | `{prefs}` = the caller's stored preferences. Every role (lecteurs included): interface state only, per account (`PREFS_<email>` Script Property). | `VALIDATION` (unknown key or value, nothing to save, no identity) |
-| `api_setConfig` | `{source:'url or id'}` | `{sourceId, sourceTitle, sourceUrl, tabsFound:{postes:bool, applications:bool, referentiel:bool}}` | `VALIDATION` (bad id), `SOURCE_ERROR` (cannot open / no postes+apps tab). Saved only on success. |
+| `api_setConfig` | `{source:'url or id'}` | `{sourceId, sourceTitle, sourceUrl, tabsFound:{postes:bool, applications:bool, referentiel:bool}, sync:SyncStatus}` — also creates the hourly trigger (`sync.authError` when ScriptApp is not authorised; the source is saved anyway). The client then calls `api_syncNow`. | `VALIDATION` (bad id), `SOURCE_ERROR` (cannot open / no postes+apps tab). Saved only on success. |
 | `api_getMonthData` | `{month}` | `{month, postes:[rec], applications:[rec], referentiel:{cat:[v]}, columns:{postes:[h], applications:[h]}, importInfo:{imported_at, warnings:[]}\|null}` | `VALIDATION`, `NOT_FOUND` (month not imported). `columns.applications` always ends with `Galink`, `IDP` if missing from the source headers. |
-| `api_importMonth` | `{month, overwrite:bool}` | `{month, counts:{postes, applications, referentiel}, overwritten:bool, carriedOver:n, warnings:[...]}` | `NOT_CONFIGURED`, `VALIDATION`, `MONTH_EXISTS` (month already imported and `overwrite` false), `SOURCE_ERROR` |
-| `api_getImportLog` | – | `[ImportLog entry]` newest first | – |
-| `api_savePostes` | `{month, changes:[{id, updates:{col:value}}]}` | `{updated:[rec]}` | `VALIDATION` (keys starting with `_` or the key column are rejected), `NOT_FOUND` |
-| `api_addGenericPoste` | `{month}` | `{created:bool, record:rec}` (existing record if already present) | `NOT_FOUND` |
-| `api_saveApplications` | `{month, changes:[{id, updates}]}` | `{updated:[rec]}` | as `api_savePostes` |
-| `api_addApplication` | `{month, record:{...}}` | `rec` | `VALIDATION` (blank name, or name already exists in month — compared with `normKey`) |
-| `api_deleteApplication` | `{month, id}` | `{deleted:true, id}` | `NOT_FOUND` |
-| `api_renameApplication` | `{month, id, newName}` | `{record:rec, actionsUpdated:n}` — also renames `target_name` of every Action with `target_type==='application'` and `target_name===oldName` | `VALIDATION` (blank / duplicate), `NOT_FOUND` |
+| `api_getSyncStatus` | – | `SyncStatus` | – |
+| `api_syncNow` | – | `{status:SyncStatus, result:SyncResult}` — synchronises the current month now. `SyncResult = {month, counts:{postes, applications, referentiel}, overwritten:bool, carriedOver:n, warnings:[...], changed:bool, changes:Changes}`; nothing is written when `changed` is false. | `NOT_CONFIGURED`, `SOURCE_ERROR`, `BUSY` (recorded in `lastError`, except `BUSY`) |
+| `api_enableSync` | – | as `api_syncNow`, after creating the hourly trigger if it is missing | `INTERNAL` (ScriptApp not authorised), then as `api_syncNow` |
+| `api_getImportLog` | – | `[ImportLog entry]` newest first (the « Journal des synchronisations ») | – |
+| `api_savePostes` | `{month, changes:[{id, updates:{col:value}}]}` | `{updated:[rec], sourceUpdated:bool}` (`true` = current month, written into the source) | `VALIDATION` (keys starting with `_` or the key column are rejected; a source cell computed by a formula; a value refused by the source cell's data validation), `NOT_FOUND`, `SOURCE_ERROR` (row not found in the source: renamed or deleted since the last sync) |
+| `api_addGenericPoste` | `{month}` | `{created:bool, record:rec}` (existing record if already present; current month: also appended to the source) | `NOT_FOUND` |
+| `api_saveApplications` | `{month, changes:[{id, updates}]}` | `{updated:[rec], sourceUpdated:bool}` | as `api_savePostes` |
+| `api_addApplication` | `{month, record:{...}}` | `rec` (current month: also appended to the source tab, below its last application) | `VALIDATION` (blank name, or name already exists in month or in the source — compared with `normKey`) |
+| `api_deleteApplication` | `{month, id}` | `{deleted:true, id}` (current month: its source row is deleted too, when there is one) | `NOT_FOUND` |
+| `api_renameApplication` | `{month, id, newName}` | `{record:rec, actionsUpdated:n}` — also renames `target_name` of every Action with `target_type==='application'` and `target_name===oldName`; current month: the source key cell too | `VALIDATION` (blank / duplicate), `NOT_FOUND`, `SOURCE_ERROR` |
 | `api_getTimeline` | – | `[{month, postes:[slim], applications:[slim]}]` asc by month. Slim poste = `{'Équipe','Bâtiment / Labo','EDR Decathlon','IT Decathlon','Réseau Decathlon','Niveau de risque',_score,_conforme}`; slim app = `{'Équipe','SIP','Contrat','Galink','IDP','Niveau de risque',_score,_conforme}` (so `Core.filterData` / `computeKpis` / `riskCounts` work on them). | – |
 | `api_getActions` | – | `{actions:[Action], replacements:[Replacement]}` | – |
 | `api_addAction` | `{target_type, target_name, equipe, action, responsable?, date_created?, date_completed?, deadline?, priorite?, status?, source_month?, comment?}` | `Action` (`id` generated, `status` default `'À faire'`, `date_created` default today DD/MM/YYYY, `recorded_at` today ISO) | `VALIDATION` (`target_type` not poste/application, blank `target_name` or `action`) |
@@ -172,7 +191,7 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 | `api_updateReplacement` | `{id, updates}` | `Replacement` | `NOT_FOUND` |
 | `api_deleteReplacement` | `{id}` | `{deleted:true, id}` | `NOT_FOUND` |
 | `api_getDiff` | `{oldMonth, newMonth}` | `{oldMonth, newMonth, postes:Core.diffPostes(...), applications:Core.diffApplications(...)}` (records enriched) | `VALIDATION`, `NOT_FOUND` |
-| `api_getSettings` | – | `{threshold, defaultThreshold:80, source:{id, url, title, tabsFound\|null}, dataUrl, access:AccessView, me:email}` | – |
+| `api_getSettings` | – | `{threshold, defaultThreshold:80, source:{id, url, title, tabsFound\|null}, dataUrl, access:AccessView, me:email, sync:SyncStatus}` (`sync.enabled` checked against the real triggers) | – |
 | `api_setThreshold` | `{threshold}` | `{threshold}` | `VALIDATION` (not an integer 1–100) |
 | `api_saveUser` | `{email, role:'admin'\|'lecteur'}` | `AccessView` (adds or changes the role) | `VALIDATION` (bad email / role, the owner, or the caller's own account) |
 | `api_addUsers` | `{emails:[string] (1–500), role}` | `{access:AccessView, added:[email], updated:[email] (role changed), skipped:[{email, reason}]}` — one write; invalid addresses, duplicates, the owner, the caller and accounts that already have that role are skipped with a reason | `VALIDATION` (role, empty / too long list, more than 2000 accounts) |
@@ -185,7 +204,8 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 (owner excluded), groups:[same shape] sorted by email, domainRole:'none'|'lecteur'}`. Emails are trimmed and lower-cased.
 
 The **complete list** of public API functions (used by the contract test) is exactly:
-`api_bootstrap, api_savePrefs, api_setConfig, api_getMonthData, api_importMonth, api_getImportLog, api_savePostes,
+`api_bootstrap, api_savePrefs, api_setConfig, api_getMonthData, api_getSyncStatus, api_syncNow, api_enableSync,
+api_getImportLog, api_savePostes,
 api_addGenericPoste, api_saveApplications, api_addApplication, api_deleteApplication,
 api_renameApplication, api_getTimeline, api_getActions, api_addAction, api_updateAction,
 api_deleteAction, api_addReplacement, api_updateReplacement, api_deleteReplacement, api_getDiff,
@@ -209,7 +229,8 @@ Config.SCHEMAS = {
   Actions:      ['id','target_type','target_name','equipe','action','responsable','date_created','date_completed',
                  'deadline','priorite','status','source_month','comment','recorded_at','updated_at'],
   Replacements: ['id','old_poste','new_poste','equipe','responsable','date_replacement','comment','recorded_at'],
-  ImportLog:    ['month','imported_at','source_id','counts_json','postes_headers_json','apps_headers_json','warnings_json'],
+  ImportLog:    ['month','imported_at','source_id','counts_json','postes_headers_json','apps_headers_json','warnings_json',
+                 'changes_json'],
   Meta:         ['key','value']
 }
 Config.SCHEMA_VERSION = '1'
@@ -313,8 +334,12 @@ Importer.readSource()       -> {sourceId, title, postes:{headers,records,warning
                                Per tab: one getDataRange() then getValues() + getDisplayValues();
                                Date cells formatted 'dd/MM/yyyy' in ss.getSpreadsheetTimeZone().
                                Missing postes AND applications tab -> SOURCE_ERROR.
-Importer.importMonth(month, overwrite) -> api_importMonth data (see §3). Inside Store.withLock; every
-                               read happens before the first write.
+Importer.importMonth(month, overwrite, {skipUnchanged?}) -> SyncResult (see §3). Inside Store.withLock;
+                               every read happens before the first write. MONTH_EXISTS when the month
+                               exists and !overwrite. With skipUnchanged, an overwrite that changes nothing
+                               (records, headers, référentiel) writes nothing, not even the ImportLog.
+                               « Poste générique Decathlon » is added to the postes when an application
+                               names it in « Installé sur poste » and the source has no such poste.
                                Missing entity / Référentiel tab (the other entity tab present): the
                                stored snapshot of that month is KEPT (overwrite) or nothing is written
                                (new month) — never replaced by an empty one; a warning says so
@@ -330,6 +355,28 @@ Importer.importMonth(month, overwrite) -> api_importMonth data (see §3). Inside
                                mois X était incomplet : Galink/IDP repris de Y…' when incomplete).
                                Write order: Applications, Référentiel, Postes, then the ImportLog
                                entry (= completion marker).
+Importer.writeEdits(entity, [{name, fields}]) -> cells written. entity 'postes'|'applications'; locates
+                               each row by key (normKey) in the source tab, checks every cell first (row
+                               found -> else SOURCE_ERROR; no formula -> else VALIDATION), then setValue per
+                               cell (Core.escapeFormula: text stays text). Fields without a source column
+                               are skipped (snapshot only). A value refused by data validation -> VALIDATION.
+Importer.appendRecord(entity, rec) -> void. New source row just below the last record (inserted when that
+                               row is not empty); formulas of the last record's row are copied down into
+                               the columns the record leaves blank. Duplicate key -> VALIDATION.
+Importer.deleteRecord(entity, name) -> bool (false when the source has no such row).
+```
+
+### Sync (`src/Sync.js`)
+```
+Sync.currentMonth()   -> Config.today().slice(0, 7)
+Sync.status()         -> SyncStatus (SYNC_STATE Script Property + month)
+Sync.verifiedStatus() -> status with `enabled` checked against ScriptApp.getProjectTriggers(); never throws
+                         (authError when ScriptApp is not authorised)
+Sync.enable()         -> creates the 'syncHourly' trigger (timeBased().everyHours(1)) once; removes duplicates
+Sync.run()            -> {status, result}: Importer.importMonth(currentMonth, true, {skipUnchanged:true});
+                         records lastRunAt / lastOkAt / lastChangeAt + lastChange / lastError (not for BUSY)
+Sync.runFromTrigger() -> run() when a source is configured; rethrows failures (Google e-mails the owner)
+syncHourly()          -> (Code.js) the trigger handler: Sync.runFromTrigger()
 ```
 
 ### Code (`src/Code.js`)
@@ -339,7 +386,8 @@ doGet(e)        -> HtmlService.createTemplateFromFile('index').evaluate()
                    .addMetaTag('viewport','width=device-width, initial-scale=1')
 include(name)   -> HtmlService.createHtmlOutputFromFile(name).getContent()
 coreScript()    -> 'var Core = (' + CoreFactory_.toString() + ')();'   (output must not contain '</script')
-setup()         -> Store.ensure(); logs data spreadsheet URL. Run once from the editor to authorize.
+setup()         -> Store.ensure(); Sync.enable(); logs data spreadsheet URL. Run once from the editor to authorize.
+syncHourly()    -> Sync.runFromTrigger() (time-driven trigger, every hour)
 ```
 
 ---------------------------------------------------------------------------------------------------
@@ -379,7 +427,9 @@ State.set(patch)                 -> shallow merge + notify subscribers (fn(state
 State.subscribe(fn)              -> unsubscribe()
 state = { page:'dashboard', configured:false, months:[], month:'', currentMonth:'', dataUrl:'', sourceUrl:'',
           sourceTitle:'', filters:{equipes:[], batiments:[]}, loading:false, threshold:80,
-          user:{email:'', role:'', isOwner:false} }
+          user:{email:'', role:'', isOwner:false}, prefs:{}, sync:SyncStatus|null }
+Fmt.stamp('2026-05-04 10:30')    -> '10:30' today, '04/05 10:30' this year, else '04/05/2026 10:30'
+Fmt.syncChange(changes)          -> '+2 postes · 1 application modifiée' / 'mois créé' / '' (Changes, §3)
 State.canEdit()                  -> true for admins (pages hide every write control otherwise)
 State.loadMonth(month, {force}?) -> Promise<monthData>  (api_getMonthData; cached per month)
 State.getMonthData(month)        -> cached monthData | null
@@ -413,7 +463,7 @@ UI.section(title, ...children)             -> section with h2
 UI.asyncBlock(box, {load, render, placeholder?, error?, small?, errorId?, live?}) -> Promise (see js_ui.html)
 UI.monthError(month)      -> {prefix:'Impossible de charger mai 2026', retry} for asyncBlock
 UI.monthHeader({title, month, kickerId, actions?}) -> page header with the « Mai 2026 · Export 2026-05 » kicker
-UI.noData(id)             -> empty state when no month is imported (admins: link to the import form)
+UI.noData(id)             -> empty state when no month is synchronised yet (admins: « Synchroniser maintenant »)
 UI.filterNote(scope) / UI.plural(n, one, many) / UI.errorToast(err, context?)
 UI.empty(text)                             -> empty-state block
 UI.toast(message, type='info'|'success'|'error')
@@ -487,7 +537,12 @@ App.boot()            -> called on DOMContentLoaded, behind the #splash (static 
                          « Chargement de mai 2026… » State.loadMonth(month) (warms the cache); then renders and
                          fades the splash out. After 8 s a note explains the Apps Script cold start; a failure
                          shows the error + « Réessayer » on the splash; FORBIDDEN → « Accès refusé ».
-                         If !configured: configuration screen (paste source sheet URL -> api_setConfig).
+                         If !configured: configuration screen (paste source sheet URL -> App.applySource:
+                         api_setConfig, then a first App.syncNow()).
+App.syncNow(button?, {enable?}) -> Promise<{status, result}|null>: api_syncNow (api_enableSync with enable);
+                         toast « Synchronisé — <changes> » / « Synchronisé — aucune modification. »; after a
+                         change: State.invalidate() + State.refreshBootstrap() + re-mount. Errors: toast, then
+                         api_getSyncStatus.
 Loading:               page bodies show UI.skeleton(...) (aria-busy) while their data loads; any
                          [aria-busy] in #main draws the app bar progress line. Month change on the same page:
                          the page and the filters stay, dimmed (.is-stale), until the new month is cached,
@@ -504,7 +559,14 @@ once. The source is changed in Paramètres
 App bar (`#appbar`, sticky): `Période` = `#month-prev` ‹ `#month-select` (asc list, default latest) ›
 `#month-next`; `Équipe` (`#filter-equipe`) and `Bâtiment / Labo` (`#filter-batiment`) multiselects
 (options from current month postes via `Core.uniqueSorted`), `#filters-reset`, `#appbar-count`
-(« 2 postes sur 7 » while a filter is active). Below 900px the filters fold behind `#filters-toggle`.
+(« 2 postes sur 7 » while a filter is active), then `#sync-chip` (last item): the synchronisation status
+(`data-tone` ok | warn | ko | new | off | busy; text « 14:02 », « Échec 11:02 », « Nouvelles données »,
+« Synchronisation… »). Its panel (`UI.popover`, `#sync-popover` > `#sync-panel`): status sentence, the error,
+what the last change was (`Fmt.syncChange`), the source warnings, and — admins only — `#sync-now`
+« Synchroniser maintenant » (`#sync-enable` when the trigger is off) and `#sync-journal` (→ Paramètres);
+`#sync-reload` « Actualiser » when newer data exists. The status (`State.get().sync`) is polled with
+`api_getSyncStatus` every 10 min, when the tab comes back and when the panel opens: a `lastChangeAt` newer
+than the data on screen sets « Nouvelles données ». Below 900px the filters fold behind `#filters-toggle`.
 Boot: `FORBIDDEN` from `api_bootstrap` → « Accès refusé » screen (`.page-denied`, server message,
 « Réessayer »); a lecteur on an unconfigured app gets a waiting screen (`data-page="unconfigured"`)
 instead of the configuration form.
@@ -513,7 +575,8 @@ instead of the configuration form.
 ## 6. Page specifications
 
 ### Tableau de bord (`dashboard`) — 1:1 port of `Tableau_de_bord.py`
-- No months → warning `Aucune donnée importée.` + import panel only.
+- No months → `#dashboard-empty` « Aucune donnée pour le moment. … » (+ `#dashboard-sync` « Synchroniser
+  maintenant » for admins). There is no import section: the data comes from the hourly sync.
 - Title `👻 Tableau de bord — Shadow IT`, caption `Export : <month>`.
 - 4 metric cards: `Postes inventoriés`, `Postes conformes` (sub = taux %), `Applications inventoriées`,
   `Applications conformes` (sub = taux %). KPIs computed with `Core.computeKpis` on filtered data.
@@ -522,18 +585,15 @@ instead of the configuration form.
 - `Détail conformité`: Postes (Sans EDR, Non IT Decathlon, Hors réseau Decathlon), Applications (Sans SIP,
   Sans contrat, Sans Galink, Sans IDP).
 - Histograms `Distribution des scores — Postes` / `— Applications`.
-- `📥 Importer depuis Google Sheets`: month input (default `currentMonth`), button `📥 Importer`; on
-  `MONTH_EXISTS` → `UI.confirm('Le mois X existe déjà. Ré-importer écrase les postes, applications et le référentiel de ce mois (Galink/IDP sont conservés). Continuer ?', {danger:true})` → retry with
-  `overwrite:true`. Success toast `✅ Import réussi : N postes, M applications`, then
-  `State.invalidate()` + `State.refreshBootstrap()` + select imported month. Show warnings. Below: last 5
-  import log entries.
 
 ### Postes (`postes`)
 - Header with counts; toolbar: search, `Conformité` select (Toutes / Conformes / Non conformes),
   `➕ Poste générique` (api_addGenericPoste), `⬇️ CSV` export.
 - `UI.editableTable` over filtered postes; columns = `columns.postes` order (key column first, not
   editable) + computed `Score` (`UI.scoreBadge`) + `Applis` count; options via `Core.optionsForColumn`.
-  onSave → `api_savePostes` → `State.patchRecords`.
+  onSave → `api_savePostes` → `State.patchRecords`; toast « N modifications enregistrées dans le Google Sheet
+  source. » (current month) or « … (historique de mai 2026). ». Admins see `#postes-edit-note` (`data-live`
+  1|0) saying where an edit goes.
 - Row click → drawer: score, conformity criteria (IT, EDR, Chiffrement, Type de compte, Réseau), installed
   applications (from `Core.buildPosteAppsRelation(apps).byPoste` + the poste's own `Application` column),
   linked actions (State.loadActions filtered by target poste) with `➕ Action` button (formModal →

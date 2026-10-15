@@ -2,7 +2,7 @@
 /**
  * E2E tests of the read-only mode (role lecteur, docs/API.md §3 "Roles", docs/DESIGN.md "Signed-in account"):
  * every data page hides its write controls (hidden, not disabled) and never calls an admin-only endpoint,
- * while everything that only reads (filters, tabs, drawers, CSV export, charts, diff, import ledger) stays.
+ * while everything that only reads (filters, tabs, drawers, CSV export, charts, diff, sync status) stays.
  * A light check confirms that admins still get the controls.
  * Run: NODE_PATH=$(npm root -g) PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node --test test/e2e/readonly.test.js
  */
@@ -18,22 +18,22 @@ const posteId = (name) => 'p-' + MONTH + '-' + (data.MONTHS[MONTH].postes.findIn
 const appId = (name) => 'a-' + MONTH + '-' + (data.MONTHS[MONTH].applications.findIndex((a) => a[KEY_APP] === name) + 1);
 
 /** Every endpoint a lecteur must never call (the server answers FORBIDDEN). */
-const ADMIN_APIS = ['api_setConfig', 'api_importMonth', 'api_savePostes', 'api_addGenericPoste', 'api_saveApplications',
+const ADMIN_APIS = ['api_setConfig', 'api_syncNow', 'api_enableSync', 'api_savePostes', 'api_addGenericPoste', 'api_saveApplications',
   'api_addApplication', 'api_deleteApplication', 'api_renameApplication', 'api_addAction', 'api_updateAction',
   'api_deleteAction', 'api_addReplacement', 'api_updateReplacement', 'api_deleteReplacement',
   'api_getSettings', 'api_setThreshold', 'api_saveUser', 'api_removeUser', 'api_setDomainRole', 'api_saveGroup',
   'api_removeGroup'];
 
 /** Write controls of the data pages (ids, classes of row actions / inline editing, dirty bar). */
-const WRITE_SELECTORS = ['#import-panel', '#import-button', '#import-month', 'form.import-form', '#postes-add-generic',
+const WRITE_SELECTORS = ['#dashboard-sync', '#sync-now', '#sync-enable', '.edit-note', '#postes-add-generic',
   '#apps-add', '#app-rename', '#app-delete', '#drawer-add-action', '#action-add', '#replacement-add', '.btn-delete',
   '.btn-mark-done', '.cell-editable', '.th-editable', '.cell-editor-host', '.etable-dirtybar', '.etable-save',
   '.etable-cancel', '.modal'];
 
 /** Button labels of write actions (docs/DESIGN.md "Copy"). */
-const WRITE_LABELS = /^(Importer|Ré-importer|Ajouter un poste générique|Nouvelle application|Renommer|Supprimer|Nouvelle action|Nouveau remplacement|Enregistrer.*|Annuler)$/;
+const WRITE_LABELS = /^(Synchroniser maintenant|Activer la synchronisation horaire|Ajouter un poste générique|Nouvelle application|Renommer|Supprimer|Nouvelle action|Nouveau remplacement|Enregistrer.*|Annuler)$/;
 
-const LECTEUR_EMPTY = 'Aucun mois importé. Un administrateur doit importer les données.';
+const LECTEUR_EMPTY = 'Aucune donnée pour le moment. Les données arrivent à la prochaine synchronisation horaire.';
 
 async function withApp(options, fn) {
   const app = await openApp(options);
@@ -71,16 +71,18 @@ async function closeDrawer(app) {
 // ------------------------------------------------------------------------------------------- lecteur
 
 describe('read-only mode (lecteur)', () => {
-  test('dashboard: no import form, the import ledger and the charts stay', async () => {
+  test('dashboard: the sync status without its actions, the charts stay', async () => {
     await withApp({ email: ACCOUNTS.LECTEUR }, async (app) => {
       const { page } = app;
       assert.equal(await page.evaluate(() => State.canEdit()), false);
       await page.waitForSelector('#dashboard-body .kpi-strip');
       await assertNoWriteControls(page, 'dashboard');
-      // Import ledger (api_getImportLog is allowed), alone in its section.
-      assert.equal((await page.textContent('#import-history-panel .section-title')).trim(), 'Derniers imports');
-      assert.ok(await page.$$eval('#import-log tbody tr[data-month]', (trs) => trs.length) > 0, 'import ledger rows');
-      assert.ok((await app.calls()).some((c) => c.name === 'api_getImportLog'));
+      // Sync status in the app bar (api_getSyncStatus is allowed): no button, no link to the private source.
+      await page.click('#sync-chip');
+      await page.waitForSelector('#sync-panel');
+      assert.equal(await page.$$eval('#sync-panel button, #sync-panel a', (ns) => ns.length), 0);
+      assert.match(await page.textContent('#sync-panel'), /Dernière modification/);
+      await page.keyboard.press('Escape');
       // Charts are drawn; the conformity details still expand.
       assert.ok((await app.plots()).some((p) => p.id === 'chart-gauge-postes'));
       await page.click('#detail-postes details:not(.is-zero) summary');
@@ -236,8 +238,9 @@ describe('admin still edits (light check)', () => {
     await withApp({}, async (app) => {
       const { page } = app;
       assert.equal(await page.evaluate(() => State.canEdit()), true);
-      assert.ok(await page.$('#import-panel #import-button'), 'import form');
-      assert.equal(await page.$('#import-history-panel'), null);
+      await page.click('#sync-chip');
+      await page.waitForSelector('#sync-panel #sync-now');
+      await page.keyboard.press('Escape');
 
       await app.goto('postes');
       await page.waitForSelector('#postes-table .cell-editable');

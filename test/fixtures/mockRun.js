@@ -33,8 +33,8 @@ function mockMain(FIX, OPTS) {
   var KEY_APP = 'Nom du logiciel / service';
   var ERROR_CODES = ['NOT_CONFIGURED', 'MONTH_EXISTS', 'NOT_FOUND', 'BUSY', 'VALIDATION', 'SOURCE_ERROR',
     'FORBIDDEN', 'INTERNAL'];
-  var LECTEUR_APIS = ['api_bootstrap', 'api_savePrefs', 'api_getMonthData', 'api_getImportLog', 'api_getTimeline',
-    'api_getActions', 'api_getDiff'];
+  var LECTEUR_APIS = ['api_bootstrap', 'api_savePrefs', 'api_getMonthData', 'api_getSyncStatus', 'api_getImportLog',
+    'api_getTimeline', 'api_getActions', 'api_getDiff'];
   var PREF_VALUES = { sidebar: ['open', 'collapsed'] };
   var OWNER = 'owner@decathlon.com';
   var seq = 0;
@@ -80,6 +80,9 @@ function mockMain(FIX, OPTS) {
     });
   }
 
+  /** The month the hourly sync follows: OPTS.currentMonth or the real one. */
+  function currentMonth() { return OPTS.currentMonth || Core().currentMonth(new Date()); }
+
   var db = {
     configured: !!OPTS.configured,
     sourceId: OPTS.configured ? FIX.SOURCE_ID : '',
@@ -109,6 +112,21 @@ function mockMain(FIX, OPTS) {
       'labo-textile@decathlon.com': ['ines.textile@decathlon.com']
     }
   };
+  // Hourly synchronisation status (Sync.js): ran a few minutes ago; OPTS.sync overrides fields.
+  db.sync = {
+    enabled: !!OPTS.configured,
+    lastRunAt: OPTS.configured && !OPTS.empty ? nowStamp() : '',
+    lastOkAt: OPTS.configured && !OPTS.empty ? nowStamp() : '',
+    lastChangeAt: OPTS.configured && !OPTS.empty ? '2026-05-04 10:30' : '',
+    lastChange: OPTS.configured && !OPTS.empty ? { month: '2026-05', at: '2026-05-04 10:30', created: false,
+      postes: { added: 1, removed: 1, changed: 2, values: 3 }, applications: { added: 1, removed: 1, changed: 0, values: 0 },
+      referentiel: false } : null,
+    lastError: null,
+    warnings: []
+  };
+  if (OPTS.sync) Object.keys(OPTS.sync).forEach(function (k) { db.sync[k] = OPTS.sync[k]; });
+  function syncStatus() { var st = clone(db.sync); st.month = currentMonth(); return st; }
+
   if (!OPTS.empty) {
     var stamps = { '2026-04': '2026-04-02 09:15', '2026-05': '2026-05-04 10:30' };
     Object.keys(FIX.MONTHS).sort().forEach(function (m) {
@@ -177,7 +195,7 @@ function mockMain(FIX, OPTS) {
       rec._updated_at = now;
       return rec;
     });
-    return { updated: enrich(entity, updated) };
+    return { updated: enrich(entity, updated), sourceUpdated: a.month === currentMonth() };
   }
 
   function slim(rec, fields) {
@@ -210,6 +228,58 @@ function mockMain(FIX, OPTS) {
     return { deleted: true, id: id };
   }
 
+  /**
+   * Sync.run: the current month is (re)read from the "live" source, which always holds the 2026-05
+   * fixture (test/fixtures/source.js). A month that exists already is unchanged (nothing written, no log).
+   */
+  function runSync() {
+    if (!db.configured) fail('NOT_CONFIGURED', 'Aucun classeur source n’est configuré. Renseignez-le dans « Paramètres ».');
+    var month = currentMonth();
+    var at = nowStamp();
+    db.sync.lastRunAt = at;
+    if (db.months[month]) {
+      db.sync.lastOkAt = at;
+      db.sync.lastError = null;
+      return { status: syncStatus(), result: { month: month, counts: { postes: db.months[month].postes.length,
+        applications: db.months[month].applications.length, referentiel: Object.keys(FIX.REFERENTIEL).length },
+        overwritten: true, carriedOver: 0, warnings: [], changed: false,
+        changes: { created: false, postes: { added: 0, removed: 0, changed: 0, values: 0 },
+          applications: { added: 0, removed: 0, changed: 0, values: 0 }, referentiel: false } } };
+    }
+    var live = FIX.MONTHS[FIX.LIVE_MONTH];
+    var prevMonth = Core().previousMonth(monthList(), month);
+    var prevApps = prevMonth && db.months[prevMonth] ? db.months[prevMonth].applications : [];
+    var postes = buildPostes(month, live.postes);
+    var merged = Core().mergeCarryOver(live.applications, prevApps, KEY_APP, ['Galink', 'IDP']);
+    var apps = merged.records.map(function (r, i) {
+      r._id = 'a-' + month + '-' + uuid('imp');
+      r._key = s(r[KEY_APP]);
+      r._order = i;
+      r._updated_at = '';
+      return r;
+    });
+    postes.forEach(function (r) { r._id = 'p-' + month + '-' + uuid('imp'); });
+    var warnings = ['Suivi des postes : 1 ligne(s) sans « Nom du poste » ignorée(s)'];
+    db.months[month] = {
+      postes: postes, applications: apps, referentiel: clone(FIX.REFERENTIEL),
+      columns: { postes: FIX.POSTES_HEADERS.slice(), applications: APP_COLUMNS.slice() }
+    };
+    var counts = { postes: postes.length, applications: apps.length, referentiel: Object.keys(FIX.REFERENTIEL).length };
+    var changes = { created: true, postes: { added: postes.length, removed: 0, changed: 0, values: 0 },
+      applications: { added: apps.length, removed: 0, changed: 0, values: 0 }, referentiel: true };
+    db.importLog.push({ month: month, imported_at: at, source_id: db.sourceId, counts: counts,
+      postes_headers: FIX.POSTES_HEADERS.slice(), apps_headers: FIX.APPS_HEADERS.slice(),
+      warnings: warnings.slice(), changes: changes });
+    db.sync.lastOkAt = at;
+    db.sync.lastError = null;
+    db.sync.lastChangeAt = at;
+    db.sync.lastChange = { month: month, at: at, created: true, postes: changes.postes,
+      applications: changes.applications, referentiel: true };
+    db.sync.warnings = warnings.slice();
+    return { status: syncStatus(), result: { month: month, counts: counts, overwritten: false,
+      carriedOver: merged.carried, warnings: warnings, changed: true, changes: changes } };
+  }
+
   // ------------------------------------------------------------------------------ api_*
   var API = {
     api_bootstrap: function () {
@@ -220,13 +290,14 @@ function mockMain(FIX, OPTS) {
         configured: db.configured,
         months: months,
         latestMonth: months.length ? months[months.length - 1] : '',
-        currentMonth: Core().currentMonth(new Date()),
+        currentMonth: currentMonth(),
         dataUrl: admin ? sheetUrl('1MockDataSpreadsheetId_ShadowIT_AppData') : '',
         sourceUrl: db.configured && admin ? sheetUrl(db.sourceId) : '',
         sourceTitle: db.configured && admin ? db.sourceTitle : '',
         threshold: db.threshold,
         user: user,
-        prefs: clone(db.prefs[user.email] || {})
+        prefs: clone(db.prefs[user.email] || {}),
+        sync: syncStatus()
       };
     },
 
@@ -252,8 +323,9 @@ function mockMain(FIX, OPTS) {
       db.configured = true;
       db.sourceId = id;
       db.sourceTitle = 'ShadowIT_Industry';
+      db.sync.enabled = true;
       return { sourceId: id, sourceTitle: db.sourceTitle, sourceUrl: sheetUrl(id),
-        tabsFound: { postes: true, applications: true, referentiel: true } };
+        tabsFound: { postes: true, applications: true, referentiel: true }, sync: syncStatus() };
     },
 
     api_getMonthData: function (args) {
@@ -269,38 +341,13 @@ function mockMain(FIX, OPTS) {
       };
     },
 
-    api_importMonth: function (args) {
-      var a = obj(args);
-      if (!db.configured) fail('NOT_CONFIGURED', "La source n'est pas configurée.");
-      if (!Core().validateMonth(a.month)) fail('VALIDATION', 'Mois invalide : « ' + s(a.month) + ' » (format AAAA-MM).');
-      var exists = !!db.months[a.month];
-      if (exists && !a.overwrite) fail('MONTH_EXISTS', 'Le mois ' + a.month + ' existe déjà.');
-      // The "live" source sheet always holds the 2026-05 fixture (see test/fixtures/source.js).
-      var live = FIX.MONTHS[FIX.LIVE_MONTH];
-      var prevMonth = exists ? a.month : Core().previousMonth(monthList(), a.month);
-      var prevApps = prevMonth && db.months[prevMonth] ? db.months[prevMonth].applications : [];
-      var postes = buildPostes(a.month, live.postes);
-      var merged = Core().mergeCarryOver(live.applications, prevApps, KEY_APP, ['Galink', 'IDP']);
-      var apps = merged.records.map(function (r, i) {
-        r._id = 'a-' + a.month + '-' + uuid('imp');
-        r._key = s(r[KEY_APP]);
-        r._order = i;
-        r._updated_at = '';
-        return r;
-      });
-      postes.forEach(function (r) { r._id = 'p-' + a.month + '-' + uuid('imp'); });
-      var warnings = ['Suivi des postes : 1 ligne(s) sans « Nom du poste » ignorée(s)'];
-      db.months[a.month] = {
-        postes: postes, applications: apps, referentiel: clone(FIX.REFERENTIEL),
-        columns: { postes: FIX.POSTES_HEADERS.slice(), applications: APP_COLUMNS.slice() }
-      };
-      var counts = { postes: postes.length, applications: apps.length,
-        referentiel: Object.keys(FIX.REFERENTIEL).length };
-      db.importLog.push({ month: a.month, imported_at: nowStamp(), source_id: db.sourceId, counts: counts,
-        postes_headers: FIX.POSTES_HEADERS.slice(), apps_headers: FIX.APPS_HEADERS.slice(),
-        warnings: warnings.slice() });
-      return { month: a.month, counts: counts, overwritten: exists, carriedOver: merged.carried,
-        warnings: warnings };
+    api_getSyncStatus: function () { return syncStatus(); },
+
+    api_syncNow: function () { return runSync(); },
+
+    api_enableSync: function () {
+      db.sync.enabled = true;
+      return runSync();
     },
 
     api_getImportLog: function () { return clone(db.importLog).reverse(); },
@@ -462,7 +509,8 @@ function mockMain(FIX, OPTS) {
           { id: '', url: '', title: '', tabsFound: null },
         dataUrl: sheetUrl('1MockDataSpreadsheetId_ShadowIT_AppData'),
         access: accessView(),
-        me: db.email
+        me: db.email,
+        sync: syncStatus()
       };
     },
 
@@ -675,12 +723,14 @@ function mockMain(FIX, OPTS) {
 
 /**
  * @param {{empty?:boolean, configured?:boolean, delayMs?:number, email?:string, failNext?:object,
- *          prefs?:object}} [options]  prefs: the visitor's stored preferences ({sidebar:'collapsed'}).
+ *          prefs?:object, currentMonth?:string, sync?:object}} [options]  prefs: the visitor's stored
+ *   preferences ({sidebar:'collapsed'}). currentMonth: the month the sync follows (default: today's).
+ *   sync: fields of the synchronisation status to override ({lastError:{at, code, message}}, …).
  *   email: the visitor (default the owner, admin). 'lea.reader@decathlon.com' is a lecteur,
  *   'sam.admin@decathlon.com' a second admin, any other address has no access, '' = identity not passed.
  * @returns {string} browser JavaScript (no surrounding <script> tag)
  */
-function buildMockScript({ empty = false, configured = true, delayMs = 0, email, failNext, prefs } = {}) {
+function buildMockScript({ empty = false, configured = true, delayMs = 0, email, failNext, prefs, currentMonth, sync } = {}) {
   const fixtures = {
     POSTES_HEADERS: data.POSTES_HEADERS,
     APPS_HEADERS: data.APPS_HEADERS,
@@ -695,7 +745,8 @@ function buildMockScript({ empty = false, configured = true, delayMs = 0, email,
   // Escape '<' so that fixture strings such as '</script>' cannot terminate the inline script.
   const json = (v) => JSON.stringify(v).replace(/</g, '\\u003c')
     .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
-  return '(' + mockMain.toString() + ')(' + json(fixtures) + ', ' + json({ empty, configured, delayMs, email, failNext: failNext || {}, prefs: prefs || null }) + ');';
+  return '(' + mockMain.toString() + ')(' + json(fixtures) + ', ' + json({ empty, configured, delayMs, email, failNext: failNext || {}, prefs: prefs || null,
+    currentMonth: currentMonth || null, sync: sync || null }) + ');';
 }
 
 module.exports = { buildMockScript };

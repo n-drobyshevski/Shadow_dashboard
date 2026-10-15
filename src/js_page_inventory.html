@@ -266,7 +266,8 @@
             State.patchRecords(month, spec.entity, (res && res.updated) || []);
             ctx.refresh();
             var edits = changes.reduce(function (sum, c) { return sum + Object.keys(c.updates || {}).length; }, 0);
-            UI.toast(UI.plural(edits, 'modification enregistrée', 'modifications enregistrées') + '.', 'success');
+            UI.toast(UI.plural(edits, 'modification enregistrée', 'modifications enregistrées') +
+              (res && res.sourceUpdated ? ' dans le Google Sheet source.' : ' (historique de ' + Fmt.monthLong(month) + ').'), 'success');
           });
         }
       });
@@ -274,6 +275,14 @@
 
       var note = UI.filterNote(spec.filterScope);
       if (note) v.body.appendChild(note);
+      // Where an edit goes: the current month follows the source (written there), a past month is history.
+      if (canEdit) {
+        var live = month === State.get().currentMonth;
+        v.body.appendChild(el('p', { class: 'alert alert-info edit-note', id: p + '-edit-note', dataset: { live: live ? '1' : '0' } },
+          live ? 'Les modifications sont écrites dans le Google Sheet source' +
+            (spec.entity === 'applications' ? ' (Galink et IDP restent dans l’application).' : '.') :
+            'Mois figé : les modifications ne changent que l’historique de ' + Fmt.monthLong(month) + ', pas le Google Sheet source.'));
+      }
       v.body.appendChild(stats);
       (spec.sections ? spec.sections(ctx) : []).forEach(function (section) { v.body.appendChild(section); });
       renderStats();

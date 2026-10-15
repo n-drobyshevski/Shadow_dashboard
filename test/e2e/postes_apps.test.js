@@ -156,6 +156,35 @@ describe('postes page', () => {
     });
   });
 
+  test('where an edit goes: the current month is written into the source, a past month is history', async () => {
+    await withApp({ page: 'postes', currentMonth: MONTH }, async (app) => {
+      const { page } = app;
+      await page.waitForSelector('#postes-edit-note');
+      assert.equal(await page.getAttribute('#postes-edit-note', 'data-live'), '1');
+      assert.equal(await page.textContent('#postes-edit-note'),
+        'Les modifications sont écrites dans le Google Sheet source.');
+      await editCell(page, 'postes', posteId('LAB-MEC-01'), 'Responsable', 'Zoé Lefèvre');
+      await saveTable(app, 'postes');
+      assert.ok((await toasts(page)).includes('1 modification enregistrée dans le Google Sheet source.'));
+
+      await page.evaluate(() => window.State.set({ month: '2026-04' }));
+      await page.waitForSelector('#postes-edit-note[data-live="0"]');
+      assert.equal(await page.textContent('#postes-edit-note'),
+        'Mois figé : les modifications ne changent que l’historique de avril 2026, pas le Google Sheet source.');
+
+      // Deleting an application of the current month removes its source row: the dialog says so.
+      await app.goto('apps');
+      await page.evaluate(() => window.State.set({ month: '2026-05' }));
+      await openDrawerFor(app, 'apps', appId('Figma'));
+      await page.click('#app-delete');
+      await page.waitForSelector('.modal .confirm-message');
+      assert.match(await page.textContent('.modal .confirm-message'),
+        /^Supprimer l’application «\sFigma\s» \? Sa ligne est supprimée de l’onglet «\sSuivi des applications\s» du Google Sheet source\./);
+      await modalButton(page, 'Annuler');
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
   test('inline edit sends api_savePostes {month, changes:[{id, updates}]} and updates the UI', async () => {
     await withApp({ page: 'postes' }, async (app) => {
       const { page } = app;
@@ -174,7 +203,7 @@ describe('postes page', () => {
       assert.equal((await page.textContent(cellSel('postes', id, 'Responsable'))).trim(), 'Zoé Lefèvre');
       assert.equal((await page.textContent(cellSel('postes', id, '_score'))).trim(), '85,0\u202f%');
       assert.ok(await page.isHidden('#postes-table .etable-dirtybar'));
-      assert.ok((await toasts(page)).includes('2 modifications enregistrées.'));
+      assert.ok((await toasts(page)).includes('2 modifications enregistrées (historique de mai 2026).'));
       assert.match(await page.textContent('#postes-stats'), /6 conformes/);
       // Cache patched (re-enriched).
       const cached = await page.evaluate((pid) => {
@@ -362,11 +391,14 @@ describe('postes page', () => {
     });
   });
 
-  test('empty state when nothing was imported', async () => {
+  test('empty state when nothing was synchronised: admins can run the first sync', async () => {
     await withApp({ empty: true, page: 'postes' }, async (app) => {
-      assert.match(await app.page.textContent('#postes-empty'), /Aucune donnée importée/);
+      assert.equal((await app.page.textContent('#postes-empty')).trim(), 'Aucune donnée pour le moment. Synchroniser maintenant');
       await app.goto('apps');
-      assert.match(await app.page.textContent('#apps-empty'), /Aucune donnée importée/);
+      assert.match(await app.page.textContent('#apps-empty'), /Aucune donnée pour le moment/);
+      await app.page.click('#apps-empty button');
+      await app.page.waitForSelector('#apps-table tbody tr[data-id]');
+      await app.waitIdle();
       assert.deepEqual(app.errors, []);
     });
   });
@@ -425,7 +457,7 @@ describe('applications page', () => {
       assert.equal((await page.textContent(cellSel('apps', id, '_score'))).trim(), '60,0\u202f%');
       assert.equal((await page.textContent(cellSel('apps', id, 'Galink'))).trim(), 'Oui');
       assert.equal(await page.textContent('#apps-migration [data-field="Galink"] [data-count="oui"]'), '4');
-      assert.ok((await toasts(page)).includes('1 modification enregistrée.'));
+      assert.ok((await toasts(page)).includes('1 modification enregistrée (historique de mai 2026).'));
       const cached = await page.evaluate((aid) => window.State.getMonthData('2026-05').applications.find((a) => a._id === aid)._score, id);
       assert.equal(cached, 60);
       assert.deepEqual(app.errors, []);
@@ -532,7 +564,7 @@ describe('applications page', () => {
       await openDrawerFor(app, 'apps', id);
       await page.click('#app-delete');
       await page.waitForSelector('.modal .confirm-message');
-      assert.match(await page.textContent('.modal .confirm-message'), /Figma.*de l’export de mai 2026/);
+      assert.match(await page.textContent('.modal .confirm-message'), /Figma.*de l’historique de mai 2026 \? Le Google Sheet source n’est pas modifié\./);
       // Destructive dialog: the focus starts on « Annuler ».
       await page.waitForFunction(() => document.activeElement && document.activeElement.textContent === 'Annuler');
       await modalButton(page, 'Annuler');
