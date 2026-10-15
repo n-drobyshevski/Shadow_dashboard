@@ -1,4 +1,16 @@
+# Dependencies
 node_modules/
+
+# Test output and local caches (Plotly build, fonts for e2e screenshots)
 test-results/
+playwright-report/
 .artifacts/
+
+# clasp credentials: never commit (clasp login writes ~/.clasprc.json; a project-local
+# .clasprc.json is possible with --auth). .clasp.json (scriptId + rootDir) IS committed.
 .clasprc.json
+.clasprc*.json
+
+# Editors / OS
+.DS_Store
+*.log

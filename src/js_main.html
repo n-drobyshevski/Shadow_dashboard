@@ -12,15 +12,15 @@
   var el = UI.el;
 
   /**
-   * Navigation order + labels (also used when a page file failed to register). Text-only nav
-   * (docs/DESIGN.md): page icons registered by the pages are not rendered.
+   * Navigation order + labels. The shell owns the labels: each one is the page title (docs/DESIGN.md
+   * « Copy »), whatever the page registers. Text-only nav: page icons are not rendered.
    */
   var NAV = [
     { id: 'dashboard', title: 'Tableau de bord' },
     { id: 'postes', title: 'Postes' },
     { id: 'apps', title: 'Applications' },
     { id: 'timeline', title: 'Suivi temporel' },
-    { id: 'actions', title: 'Suivi actions' }
+    { id: 'actions', title: 'Suivi des actions' }
   ];
   var BRAND = 'Shadow IT';
   var BRAND_SUB = 'Industry · conformité';
@@ -32,6 +32,7 @@
   var filtersBox = null;
   var filterOptionsMonth = null;   // month whose options are rendered in the filters box
   var suppressFilterRender = false; // filters changed by the sidebar widgets themselves
+  var filtersPage = null;           // page the filters box was rendered for (Bâtiment disabled on actions)
 
   function pages() { return window.Pages || {}; }
   function navInfo(id) { return NAV.filter(function (n) { return n.id === id; })[0]; }
@@ -138,27 +139,33 @@
     UI.clear(sidebar);
     var nav = el('nav', { class: 'nav', 'aria-label': 'Pages' },
       el('ul', { class: 'nav-list' }, NAV.map(function (n) {
-        var p = pages()[n.id];
         var counted = n.id === 'postes' || n.id === 'apps';
         return el('li', null, el('button', { type: 'button', class: 'nav-link', dataset: { page: n.id },
           onClick: function () { go(n.id); } },
-          el('span', { class: 'nav-label' }, (p && p.title) || n.title),
+          el('span', { class: 'nav-label' }, n.title),
           counted ? el('span', { class: 'nav-count', dataset: { count: n.id } }) : null));
       })));
 
     var monthOptions = s.months.length ?
-      s.months.map(function (m) { return { value: m, label: UI.fmtMonth(m) + ' (' + m + ')' }; }) :
+      s.months.map(function (m) { return { value: m, label: Fmt.monthTitle(m) }; }) :
       [{ value: '', label: 'Aucun mois importé' }];
     var monthSelect = UI.select({
       label: 'Mois',
+      id: 'month-select',
       options: monthOptions,
       value: s.month,
+      disabled: !s.months.length,
       onChange: function (v) { if (v) State.set({ month: v }); }
     });
     monthSelect.classList.add('month-select');
+    // Native <select> builds (older UI.select) ignore id / disabled: set them on the control.
     var sel = monthSelect.querySelector('select');
-    sel.id = 'month-select';
-    if (!s.months.length) sel.disabled = true;
+    if (sel) {
+      sel.id = 'month-select';
+      if (!s.months.length) sel.disabled = true;
+    } else if (!s.months.length && typeof monthSelect.setDisabled === 'function') {
+      monthSelect.setDisabled(true);
+    }
 
     filtersBox = el('div', { class: 'filters' });
     filterOptionsMonth = null;
@@ -166,8 +173,8 @@
     var footer = el('div', { class: 'sidebar-footer' },
       s.dataUrl ? UI.extLink(s.dataUrl, 'Données (Google Sheet)', { class: 'side-link', id: 'link-data' }) : null,
       s.sourceUrl ? UI.extLink(s.sourceUrl, 'Source', { class: 'side-link', id: 'link-source',
-        title: s.sourceTitle ? 'Source : ' + s.sourceTitle : null }) : null,
-      el('button', { type: 'button', class: 'btn btn-link', id: 'btn-source',
+        'aria-label': s.sourceTitle ? 'Source : ' + s.sourceTitle : null }) : null,
+      el('button', { type: 'button', class: 'btn btn-quiet', id: 'btn-source',
         onClick: function () { openSourceModal(); } }, 'Changer de source'));
 
     sidebar.appendChild(el('div', { class: 'sidebar-inner' },
@@ -180,7 +187,11 @@
     renderFilters();
   }
 
-  /** Équipe / Bâtiment multiselects; options come from the selected month's postes. */
+  /**
+   * Équipe / Bâtiment multiselects; options come from the selected month's postes. On Suivi des actions
+   * only the Équipe filter applies (actions and replacements carry an équipe, no bâtiment): the Bâtiment
+   * filter is disabled there, with a visible « Non applicable ici » note.
+   */
   function renderFilters() {
     if (!filtersBox) return;
     var s = State.get();
@@ -188,17 +199,18 @@
     if (s.month && !md) {
       // Load once, then render the options (the page usually triggers the same cached request).
       var month = s.month;
-      UI.clear(filtersBox).appendChild(el('p', { class: 'muted small' }, UI.spinner(), ' Chargement des filtres…'));
+      UI.clear(filtersBox).appendChild(el('p', { class: 'field-help', role: 'status' }, UI.spinner(), 'Chargement des filtres…'));
       State.loadMonth(month).then(function () {
         if (State.get().month === month) renderFilters();
       }, function () {
         if (State.get().month === month) {
-          UI.clear(filtersBox).appendChild(el('p', { class: 'muted small' }, 'Filtres indisponibles.'));
+          UI.clear(filtersBox).appendChild(el('p', { class: 'field-help', role: 'status' }, 'Filtres indisponibles.'));
         }
       });
       return;
     }
     filterOptionsMonth = s.month;
+    filtersPage = s.page;
     updateNavCounts();
     var postes = md ? md.postes : [];
     var f = s.filters || { equipes: [], batiments: [] };
@@ -217,12 +229,36 @@
       onChange: function (values) { setFilters({ batiments: values }); }
     }));
     filtersBox.lastChild.id = 'filter-batiment';
+    if (s.page === 'actions') disableFilter(filtersBox.lastChild, 'filter-batiment-na');
     // Always present (hidden when unused) so that toggling it never forces a re-render of the
     // multiselects while the user is ticking boxes.
-    filtersBox.appendChild(el('button', { type: 'button', class: 'btn btn-link btn-small', id: 'filters-reset',
+    filtersBox.appendChild(el('button', { type: 'button', class: 'btn btn-quiet btn-sm', id: 'filters-reset',
       hidden: !hasActiveFilters(f),
       onClick: function () { State.set({ filters: { equipes: [], batiments: [] } }); } },
       'Réinitialiser les filtres'));
+  }
+
+  /** Shows `month` in the sidebar month control (custom dropdown or native select) without firing onChange. */
+  function syncMonthSelect(month) {
+    var wrap = sidebar && sidebar.querySelector('.month-select');
+    if (wrap && typeof wrap.setValue === 'function') {
+      if (typeof wrap.getValue !== 'function' || wrap.getValue() !== month) wrap.setValue(month);
+      return;
+    }
+    var sel = document.getElementById('month-select');
+    if (sel && sel.value !== month) sel.value = month;
+  }
+
+  /** Disables every control of a filter widget and adds a visible note under it (never colour only). */
+  function disableFilter(node, noteId) {
+    node.classList.add('is-disabled');
+    node.setAttribute('aria-disabled', 'true');
+    if (typeof node.setDisabled === 'function') node.setDisabled(true);
+    Array.prototype.forEach.call(node.querySelectorAll('button, input, select, [tabindex]'), function (c) {
+      if ('disabled' in c) c.disabled = true; else c.setAttribute('tabindex', '-1');
+      c.setAttribute('aria-describedby', noteId);
+    });
+    node.appendChild(el('p', { class: 'filter-na', id: noteId }, 'Non applicable ici : les actions n’ont pas de bâtiment.'));
   }
 
   function hasActiveFilters(f) {
@@ -279,17 +315,27 @@
       'aria-describedby': 'config-help config-error' });
     var error = el('p', { id: 'config-error', class: 'field-error', role: 'alert', hidden: true });
     var button = el('button', { type: 'submit', class: 'btn btn-primary', id: 'config-submit' }, 'Enregistrer la source');
+    // Invalid field: red border (aria-invalid) + the message under the field, as in every form.
+    function showError(msg) {
+      error.textContent = msg || '';
+      error.hidden = !msg;
+      if (msg) input.setAttribute('aria-invalid', 'true'); else input.removeAttribute('aria-invalid');
+    }
     var form = el('form', { class: 'config-form', novalidate: true, onSubmit: function (e) {
       e.preventDefault();
       var value = input.value.trim();
-      error.hidden = true;
-      if (!value) { error.textContent = 'Ce champ est obligatoire.'; error.hidden = false; input.focus(); return; }
+      showError(null);
+      if (!value) { showError('Ce champ est obligatoire.'); input.focus(); return; }
       button.disabled = true;
-      button.textContent = 'Vérification…';
+      button.classList.add('is-busy');
+      var sp = UI.spinner();
+      sp.removeAttribute('role'); sp.removeAttribute('aria-label'); sp.setAttribute('aria-hidden', 'true');
+      UI.clear(button).appendChild(sp);
+      button.appendChild(document.createTextNode('Vérification…'));
       applySource(value).catch(function (err) {
-        error.textContent = sourceErrorText(err);
-        error.hidden = false;
+        showError(sourceErrorText(err));
         button.disabled = false;
+        button.classList.remove('is-busy');
         button.textContent = 'Enregistrer la source';
         input.focus();
       });
@@ -342,10 +388,10 @@
     if (has(changed, 'months') || has(changed, 'dataUrl') || has(changed, 'sourceUrl') || has(changed, 'sourceTitle')) {
       renderSidebar();
     } else if (has(changed, 'month')) {
-      var sel = document.getElementById('month-select');
-      if (sel && sel.value !== s.month) sel.value = s.month;
+      syncMonthSelect(s.month);
       renderFilters();
-    } else if (has(changed, 'filters') && !suppressFilterRender) {
+    } else if ((has(changed, 'filters') && !suppressFilterRender) ||
+        (has(changed, 'page') && (s.page === 'actions') !== (filtersPage === 'actions'))) {
       renderFilters();
     }
     if (has(changed, 'page') || has(changed, 'month') || has(changed, 'filters')) mountPage();

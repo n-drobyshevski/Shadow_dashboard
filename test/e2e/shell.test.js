@@ -6,14 +6,14 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const { openApp } = require('./harness');
+const { openApp, chooseOption, chooseOptions, optionLabels, dropdownValue, typeDate } = require('./harness');
 
 const PAGES = [
   { id: 'dashboard', title: 'Tableau de bord' },
   { id: 'postes', title: 'Postes' },
   { id: 'apps', title: 'Applications' },
   { id: 'timeline', title: 'Suivi temporel' },
-  { id: 'actions', title: 'Suivi actions' },
+  { id: 'actions', title: 'Suivi des actions' },
 ];
 
 async function withApp(options, fn) {
@@ -42,9 +42,11 @@ describe('shell', () => {
       assert.equal(await page.textContent('#sidebar .nav-count[data-count="apps"]'), '5');
       assert.equal(await page.getAttribute('#sidebar .nav-link[data-page="dashboard"]', 'aria-current'), 'page');
 
-      // Période: ascending months, latest selected by default.
-      assert.deepEqual(await page.$$eval('#month-select option', (os) => os.map((o) => o.value)), ['2026-04', '2026-05']);
-      assert.equal(await page.inputValue('#month-select'), '2026-05');
+      // Période: ascending months, latest selected by default (custom dropdown, no native <select>).
+      assert.equal(await page.$('#sidebar select:not(.dd-compat)'), null);
+      assert.equal(await page.getAttribute('#month-select', 'aria-haspopup'), 'listbox');
+      assert.deepEqual(await optionLabels(page, '#month-select', { values: true }), ['2026-04', '2026-05']);
+      assert.equal(await dropdownValue(page, '#month-select'), '2026-05');
 
       // Footer links open in a new tab without opener.
       for (const id of ['#link-data', '#link-source']) {
@@ -126,17 +128,20 @@ describe('shell', () => {
   test('Équipe / Bâtiment filters persist across pages', async () => {
     await withApp({}, async (app) => {
       const { page } = app;
-      const equipes = await page.$$eval('#filter-equipe input[type=checkbox]', (cs) => cs.map((c) => c.value));
-      assert.deepEqual(equipes, ['Labo Chaussure', 'Labo Mécanique', 'Labo Textile', 'R&D Vélo']);
-      const batiments = await page.$$eval('#filter-batiment input[type=checkbox]', (cs) => cs.map((c) => c.value));
-      assert.deepEqual(batiments, ['Bâtiment A', 'Bâtiment B', 'Bâtiment C']);
+      const eq = '#filter-equipe .dd-trigger';
+      const bat = '#filter-batiment .dd-trigger';
+      assert.deepEqual(await optionLabels(page, eq), ['Labo Chaussure', 'Labo Mécanique', 'Labo Textile', 'R&D Vélo']);
+      assert.deepEqual(await optionLabels(page, bat), ['Bâtiment A', 'Bâtiment B', 'Bâtiment C']);
 
-      await page.click('#filter-equipe .ms-toggle');
-      assert.equal(await page.getAttribute('#filter-equipe .ms-toggle', 'aria-expanded'), 'true');
-      await page.check('#filter-equipe input[value="Labo Textile"]');
+      // The list opens as a popover (portalled to <body>): the sidebar does not grow.
+      const sidebarH = await page.$eval('#sidebar .sidebar-inner', (n) => n.scrollHeight);
+      await page.click(eq);
+      assert.equal(await page.getAttribute(eq, 'aria-expanded'), 'true');
+      assert.equal(await page.$eval('#sidebar .sidebar-inner', (n) => n.scrollHeight), sidebarH);
+      assert.equal(await page.getAttribute(`#${await page.getAttribute(eq, 'aria-controls')}`, 'aria-multiselectable'), 'true');
+      await chooseOptions(page, eq, ['Labo Textile']);
       await app.waitIdle();
-      await page.click('#filter-batiment .ms-toggle');
-      await page.check('#filter-batiment input[value="Bâtiment A"]');
+      await chooseOptions(page, bat, ['Bâtiment A']);
       await app.waitIdle();
       const expected = { equipes: ['Labo Textile'], batiments: ['Bâtiment A'] };
       assert.deepEqual(await page.evaluate(() => window.State.get().filters), expected);
@@ -144,13 +149,13 @@ describe('shell', () => {
       for (const id of ['postes', 'timeline', 'dashboard']) {
         await app.goto(id);
         assert.deepEqual(await page.evaluate(() => window.State.get().filters), expected, `filters kept on ${id}`);
-        assert.equal((await page.textContent('#filter-equipe .ms-summary')).trim(), 'Labo Textile');
-        assert.equal(await page.isChecked('#filter-equipe input[value="Labo Textile"]'), true);
-        assert.equal(await page.isChecked('#filter-batiment input[value="Bâtiment A"]'), true);
+        assert.equal((await page.textContent('#filter-equipe .dd-value')).trim(), 'Labo Textile');
+        assert.deepEqual(await dropdownValue(page, eq), ['Labo Textile']);
+        if (id !== 'actions') assert.deepEqual(await dropdownValue(page, bat), ['Bâtiment A']);
       }
 
       // Month change keeps the filters too.
-      await page.selectOption('#month-select', '2026-04');
+      await chooseOption(page, '#month-select', '2026-04');
       await page.waitForFunction(() => ((document.getElementById('dashboard-caption') || {}).dataset || {}).month === '2026-04');
       await app.waitIdle();
       assert.deepEqual(await page.evaluate(() => window.State.get().filters), expected);
@@ -158,7 +163,7 @@ describe('shell', () => {
       await page.click('#filters-reset');
       await app.waitIdle();
       assert.deepEqual(await page.evaluate(() => window.State.get().filters), { equipes: [], batiments: [] });
-      assert.equal((await page.textContent('#filter-equipe .ms-summary')).trim(), 'Toutes');
+      assert.equal((await page.textContent('#filter-equipe .dd-value')).trim(), 'Toutes');
       assert.deepEqual(app.errors, []);
     });
   });
@@ -203,9 +208,14 @@ describe('shell', () => {
       const t = '#ui-test';
       assert.equal(await page.$$eval(`${t} tbody tr`, (r) => r.length), 25);
       assert.match(await page.textContent(`${t} .etable-pager`), /Page 1 \/ 3/);
-      await page.click(`${t} tbody tr[data-id="r0"] td[data-col="edr"]`);
+      const edrCell = `${t} tbody tr[data-id="r0"] td[data-col="edr"]`;
+      const widthBefore = await page.$eval(edrCell, (td) => td.getBoundingClientRect().width);
+      await page.click(edrCell);
+      // The editor is laid over the cell: the column keeps its width; the list opens at once.
+      assert.equal(await page.$eval(edrCell, (td) => td.getBoundingClientRect().width), widthBefore);
+      assert.equal(await page.getAttribute(`${edrCell} .dd-trigger`, 'aria-expanded'), 'true');
       assert.equal(await page.textContent(`${t} tbody tr[data-id="r0"] td[data-col="_calc"]`), 'EDR absent');
-      await page.selectOption(`${t} tbody tr[data-id="r0"] td[data-col="edr"] select`, 'Oui');
+      await chooseOption(page, `${edrCell} .dd-trigger`, 'Oui');
       // The whole row is re-rendered after an inline edit: computed columns follow immediately.
       assert.equal(await page.textContent(`${t} tbody tr[data-id="r0"] td[data-col="_calc"]`), 'EDR présent');
       await page.click(`${t} tbody tr[data-id="r1"] td[data-col="note"]`);
@@ -221,7 +231,7 @@ describe('shell', () => {
       assert.equal(await page.textContent(`${t} tbody tr[data-id="r1"] td[data-col="note"]`), 'À vérifier');
       // cancel reverts
       await page.click(`${t} tbody tr[data-id="r2"] td[data-col="edr"]`);
-      await page.selectOption(`${t} tbody tr[data-id="r2"] td[data-col="edr"] select`, '');
+      await chooseOption(page, `${t} tbody tr[data-id="r2"] td[data-col="edr"] .dd-trigger`, '—');
       await page.click(`${t} .etable-cancel`);
       assert.equal(await page.textContent(`${t} tbody tr[data-id="r2"] td[data-col="edr"]`), 'Non');
       // search + sort
@@ -240,18 +250,22 @@ describe('shell', () => {
         { name: 'poste', label: 'Poste', type: 'select', allowCustom: true, options: ['LAB-TEX-01'] },
       ] }));
       await page.waitForSelector('.modal form');
-      assert.equal(await page.inputValue('.modal input[type=date]'), '2026-03-15');
+      assert.equal(await page.$('.modal select:not(.dd-compat), .modal input[type=date], .modal datalist'), null);
+      assert.equal(await page.inputValue('.modal input[name=deadline]'), '15/03/2026');
       await page.click('.modal .btn-primary');
       assert.equal((await page.textContent('.modal .field-error:not([hidden])')).trim(), 'Ce champ est obligatoire.');
+      assert.equal(await page.evaluate(() => document.activeElement.name), 'action', 'first invalid field focused');
       await page.fill('.modal input[name=action]', '  Installer EDR ');
-      await page.fill('.modal input[type=date]', '2026-04-30');
-      await page.selectOption('.modal select[name=status]', 'Terminé');
-      await page.fill('.modal input[name=poste]', 'Nouveau poste');
+      await typeDate(page, '.modal input[name=deadline]', '30/04/2026');
+      await chooseOption(page, '.modal [name=status]', 'Terminé');
+      await chooseOption(page, '.modal input[name=poste]', 'Nouveau poste');
       await page.click('.modal .btn-primary');
       assert.deepEqual(await formPromise, { action: 'Installer EDR', deadline: '30/04/2026', status: 'Terminé', poste: 'Nouveau poste' });
 
-      // ---- confirm
+      // ---- confirm (danger: the focus starts on « Annuler »)
       const conf = page.evaluate(() => UI.confirm('Sûr ?', { danger: true }));
+      await page.waitForSelector('.modal .btn-danger');
+      await page.waitForFunction(() => document.activeElement && document.activeElement.textContent === 'Annuler');
       await page.click('.modal .btn-danger');
       assert.equal(await conf, true);
       const conf2 = page.evaluate(() => UI.confirm('Sûr ?'));
@@ -277,7 +291,8 @@ describe('shell', () => {
       await page.waitForSelector('.drawer', { state: 'detached' });
 
       // ---- formatting + CSV export
-      assert.deepEqual(await page.evaluate(() => [UI.fmtPct(30.4), UI.fmtPct(null), UI.fmtPct(80, 0)]), ['30,4 %', '—', '80 %']);
+      assert.deepEqual(await page.evaluate(() => [UI.fmtPct(30.4), UI.fmtPct(null), UI.fmtPct(80, 0)]),
+        ['30,4\u202f%', '—', '80\u202f%']);
       const [download] = await Promise.all([
         page.waitForEvent('download'),
         page.evaluate(() => UI.downloadCsv('export.csv', ['a', 'b'], [{ a: '=1+1', b: 'x;y' }, { a: null, b: 'é"t' }])),

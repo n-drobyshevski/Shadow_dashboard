@@ -15,6 +15,13 @@
  * fonts.gstatic.com files by their path with '/' replaced by '_'), so screenshots use the real IBM Plex
  * faces; when the cache is missing they are aborted and the system fallbacks are used.
  *
+ * Control helpers (custom dropdowns, no native <select>):
+ *   chooseOption(page, triggerSelector, labelOrValue)    single dropdown / combobox
+ *   chooseOptions(page, triggerSelector, [labels])        multiple selection (exact set)
+ *   optionLabels(page, triggerSelector, {values?})        option labels (or values)
+ *   dropdownValue(page, triggerSelector)                  current value (trigger.value)
+ *   typeDate(page, inputSelector, 'DD/MM/YYYY')           UI.dateField input + blur
+ *
  * Run: NODE_PATH=$(npm root -g) PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node --test test/e2e/
  */
 const fs = require('node:fs');
@@ -166,6 +173,114 @@ async function openApp({ empty = false, configured = true, page: pageId = 'dashb
   return app;
 }
 
+// ---------------------------------------------------------------------------------------------- controls
+// The app has no native <select>: dropdowns are UI.dropdown (js_controls.html). The trigger is a
+// <button id=…> (or an <input role=combobox> for comboboxes); the listbox is portalled to <body> while
+// open, with id = aria-controls of the trigger. page.selectOption / page.check do not apply any more.
+
+/** Waits for the listbox of `trigger` (a Locator) and returns its id. Opens it when it is closed. */
+async function openListbox(page, triggerSelector) {
+  const trigger = page.locator(triggerSelector).first();
+  if ((await trigger.getAttribute('aria-expanded')) !== 'true') {
+    if ((await trigger.evaluate((n) => n.tagName)) === 'INPUT') {
+      await trigger.focus();
+      await trigger.press('ArrowDown');
+    } else {
+      await trigger.click();
+    }
+  }
+  const listId = await trigger.getAttribute('aria-controls');
+  await page.waitForSelector(`[id="${listId}"][role=listbox]`, { state: 'visible' });
+  return listId;
+}
+
+/** Index of the option whose label (or, failing that, value) is exactly `text`; -1 when absent. */
+function findOptionIndex(page, listId, text) {
+  return page.evaluate(({ listId, text }) => {
+    const rows = Array.from(document.getElementById(listId).querySelectorAll('[role=option]'));
+    const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+    let i = rows.findIndex((r) => norm((r.querySelector('.dd-option-label') || r).textContent) === norm(text));
+    if (i < 0) i = rows.findIndex((r) => r.dataset.value === text);
+    return i;
+  }, { listId, text });
+}
+
+/**
+ * Picks one option of a dropdown: opens it (click on the trigger) when closed, then clicks the option
+ * whose label — or value — is exactly `optionLabel`. On a combobox input the text is typed instead and
+ * the matching suggestion (or the « Utiliser « … » » row) is clicked.
+ *   await chooseOption(page, '#month-select', '2026-04');
+ */
+async function chooseOption(page, triggerSelector, optionLabel) {
+  const trigger = page.locator(triggerSelector).first();
+  if ((await trigger.evaluate((n) => n.tagName)) === 'INPUT') {
+    await trigger.fill(String(optionLabel));
+    const listId = await trigger.getAttribute('aria-controls');
+    await page.waitForSelector(`[id="${listId}"][role=listbox]`, { state: 'visible' });
+    const i = await findOptionIndex(page, listId, optionLabel);
+    const custom = page.locator(`[id="${listId}"] [role=option].dd-option-custom`);
+    if (i >= 0) await page.locator(`[id="${listId}"] [role=option]`).nth(i).click();
+    else if (await custom.count()) await custom.click();
+    else throw new Error(`chooseOption: no option « ${optionLabel} » in ${triggerSelector}`);
+    return;
+  }
+  const listId = await openListbox(page, triggerSelector);
+  const i = await findOptionIndex(page, listId, optionLabel);
+  if (i < 0) {
+    const labels = await page.$$eval(`[id="${listId}"] [role=option]`, (rs) => rs.map((r) => r.textContent.trim()));
+    throw new Error(`chooseOption: no option « ${optionLabel} » in ${triggerSelector} (${labels.join(' | ')})`);
+  }
+  await page.locator(`[id="${listId}"] [role=option]`).nth(i).click();
+  await page.waitForSelector(`[id="${listId}"]`, { state: 'detached' });
+}
+
+/**
+ * Multiple-selection dropdown: makes the selection exactly `labels` (labels or values), toggling
+ * options with clicks, then closes the list with Escape.
+ *   await chooseOptions(page, '#filter-equipe .dd-trigger', ['Labo Textile']);
+ */
+async function chooseOptions(page, triggerSelector, labels) {
+  const listId = await openListbox(page, triggerSelector);
+  const want = new Set(labels.map(String));
+  const rows = page.locator(`[id="${listId}"] [role=option]`);
+  const n = await rows.count();
+  for (const text of want) {
+    if ((await findOptionIndex(page, listId, text)) < 0) throw new Error(`chooseOptions: no option « ${text} »`);
+  }
+  for (let i = 0; i < n; i++) {
+    const row = rows.nth(i);
+    const label = ((await row.locator('.dd-option-label').textContent()) || '').trim();
+    const value = await row.getAttribute('data-value');
+    const selected = (await row.getAttribute('aria-selected')) === 'true';
+    const wanted = want.has(label) || want.has(value);
+    if (selected !== wanted) await row.click();
+  }
+  await page.keyboard.press('Escape');
+  await page.waitForSelector(`[id="${listId}"]`, { state: 'detached' });
+}
+
+/** Labels (or values with {values:true}) of the options of a dropdown; the list is closed again. */
+async function optionLabels(page, triggerSelector, { values = false } = {}) {
+  const listId = await openListbox(page, triggerSelector);
+  const out = await page.$$eval(`[id="${listId}"] [role=option]`, (rs, values) => rs.map((r) => (values ?
+    r.dataset.value : (r.querySelector('.dd-option-label') || r).textContent.trim())), values);
+  await page.keyboard.press('Escape');
+  await page.waitForSelector(`[id="${listId}"]`, { state: 'detached' });
+  return out;
+}
+
+/** Current value of a dropdown trigger (string, or array for multiple selection). */
+function dropdownValue(page, triggerSelector) {
+  return page.$eval(triggerSelector, (n) => n.value);
+}
+
+/** Types a date into a UI.dateField input ('DD/MM/YYYY') and leaves the field (commit + validation). */
+async function typeDate(page, selector, value) {
+  const input = page.locator(selector).first();
+  await input.fill(String(value));
+  await input.evaluate((n) => n.blur());
+}
+
 /** Opens the app on `pageId`, waits for charts to settle and writes a full-page PNG to `outPath`. */
 async function screenshot(pageId, outPath, options = {}) {
   const app = await openApp({ ...options, page: pageId });
@@ -179,7 +294,8 @@ async function screenshot(pageId, outPath, options = {}) {
   }
 }
 
-module.exports = { openApp, screenshot, waitIdle };
+module.exports = { openApp, screenshot, waitIdle, chooseOption, chooseOptions, optionLabels, dropdownValue, typeDate,
+  openListbox };
 
 if (require.main === module) {
   // node test/e2e/harness.js <pageId> <out.png>

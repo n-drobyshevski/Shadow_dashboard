@@ -1,0 +1,1347 @@
+<script>
+/**
+ * Form controls of the ledger UI (extends window.UI; loaded right after js_ui.html).
+ * Visual language: docs/DESIGN.md. Styles: css_controls.html. No native <select>, no datalist, no native
+ * date/month pickers and no title= tooltips anywhere in the app: use the controls below.
+ *
+ * ------------------------------------------------------------------------------------------------
+ * PUBLIC API
+ * ------------------------------------------------------------------------------------------------
+ * UI.popover({anchor, content, className?, id?, role?, ariaLabel?, labelledBy?, returnFocus?, ignore?,
+ *             matchWidth=true, maxHeight=320, align='start'|'end', onClose?(reason)})
+ *     -> {node, anchor, close(reason?, {restoreFocus=true}?), reposition(), isOpen()}
+ *   Overlay surface portalled to <body> (position: fixed, z-index above modal and drawer), placed under the
+ *   anchor (flips above when there is no room), min-width = anchor width, repositioned on scroll/resize.
+ *   Closes on outside pointerdown ('outside'), Esc ('escape', focus back to returnFocus || anchor), Tab
+ *   inside the panel ('tab', unless the keydown was defaultPrevented), anchor scrolled out ('scroll').
+ *   Only one popover is open at a time: opening one closes the previous one ('replaced').
+ *   UI.popover.current() -> the open popover or null; UI.popover.closeAll().
+ *
+ * UI.dropdown({id?, name?, label?, ariaLabel?, labelledBy?, options, value, onChange?, onClose?(reason),
+ *              placeholder?, emptyLabel='—', allowEmpty?, searchable?, size='md'|'sm', disabled?, mono?,
+ *              multiple?, combobox?, tokens?, className?}) -> Element (div.dd)
+ *   options: [string | {value, label?, hint?, group?, disabled?}]. Replaces <select>.
+ *   - single (default): trigger <button id=id aria-haspopup=listbox>; value is a string.
+ *   - allowEmpty: adds a first option '' labelled emptyLabel. placeholder: text shown while value is ''.
+ *   - searchable: filter box at the top of the list (default: automatic above 8 options).
+ *   - multiple: value is an array; rows carry the drawn checkbox; footer « Effacer la sélection »; the
+ *     trigger summarises the selection « Labo Textile + 1 » (placeholder, default « Toutes », when empty).
+ *   - combobox: the trigger is a text <input id=id role=combobox>; free text allowed, the list filters as
+ *     you type, its last row is « Utiliser « … » ». onChange(text) fires on commit (option, Enter, Tab, blur).
+ *   - tokens: comma-separated multi-token combobox (« POSTE-01, POSTE-02 »); suggestions complete the
+ *     token being typed; value is the normalised « a, b » string.
+ *   - size 'sm': 28px trigger for table cells. mono: identifiers / months in IBM Plex Mono.
+ *   Element methods: getValue(), setValue(v) (no onChange), setOptions(opts), setDisabled(bool), focus(),
+ *   open(), close(), isOpen(); properties: .control (the trigger: button or input), .value (get/set).
+ *   The trigger (button) also exposes .value (get/set), so document.getElementById(id).value works.
+ *   onClose(reason): 'select' | 'escape' | 'outside' | 'tab' | 'toggle' | 'replaced' | 'scroll' | ...
+ *   Keyboard: ArrowDown/ArrowUp/Enter/Space open; arrows move; Home/End; PageUp/PageDown; type-ahead;
+ *   Enter/Space select (toggle in multiple mode); Esc closes and restores focus; Tab closes (and commits
+ *   combobox text; in multiple mode Tab first reaches « Effacer la sélection »).
+ *   The listbox (role=listbox, id = id + '-listbox', options role=option + aria-selected) only exists while
+ *   open; aria-controls / aria-activedescendant point at it.
+ *
+ * UI.dateField({id?, name?, value 'DD/MM/YYYY', onChange?(value), onValidate?(message), required?, min?, max?,
+ *               size='md'|'sm', ariaLabel?, labelledBy?, placeholder='JJ/MM/AAAA', className?}) -> div.dd-field
+ *   Mono text input (id = id) with a JJ/MM/AAAA mask (« 12032026 » -> « 12/03/2026 », « 1/3/2026 » ->
+ *   « 01/03/2026 », ISO paste converted), validated with Core.frToIso + a real-calendar check + min/max
+ *   ('DD/MM/YYYY'). The caret button (or ArrowDown / Alt+ArrowDown) opens a calendar in a UI.popover: French
+ *   month/day names, Monday first, today marked, arrows/Home/End/PageUp/PageDown (+Shift = year), Enter
+ *   selects, « Aujourd’hui » / « Effacer ». On blur: aria-invalid set, onValidate(message|'') called,
+ *   onChange(value) when the valid value changed. Methods: getValue() ('DD/MM/YYYY' normalised, '' when
+ *   empty or invalid), getText() (raw text), setValue(v), validate() -> '' | message, setDisabled(b),
+ *   focus(), open(), close(); property .control (the input).
+ *
+ * UI.monthField({id?, name?, value 'YYYY-MM', options?:[known months], onChange?, onValidate?, required?,
+ *                size?, ariaLabel?, labelledBy?, placeholder='AAAA-MM', className?}) -> div.dd-field
+ *   Same pattern for months: mono input with an AAAA-MM mask validated by Core.validateMonth, and a year /
+ *   12-month grid popover (known months marked « importé »). Same methods as dateField.
+ *
+ * UI.checkbox({checked, label, onChange?(checked), id?, name?, value?, disabled?}) -> label.cb
+ *   Custom-drawn checkbox (ink square, 2px radius) over a real visually-hidden <input type=checkbox>.
+ *   Methods: getValue(), setValue(bool), setDisabled(bool); property .input.
+ *
+ * UI.tooltip(target, text | Node, {focusable?}?) -> target
+ *   Ink tooltip (white Plex 12px, 3px radius). Shows after 300 ms of hover and at once on keyboard focus;
+ *   Esc dismisses; touch: tap toggles. Wires aria-describedby to a hidden description node. Calling it again
+ *   on the same target replaces the text; UI.tooltip(target, null) removes it. focusable:true adds
+ *   tabindex=0 to a non-focusable target. UI.el(tag, {tooltip: '…'}) calls it for you (never use title=).
+ *
+ * UI.searchField({id?, value?, placeholder='Rechercher…', ariaLabel?, onInput?(value), className?,
+ *                 inputClass?}) -> div.search-field
+ *   <input type=search> without the native decorations, plus a 24px « × » clear button (aria-label
+ *   « Effacer la recherche ») shown when the field has text; Esc clears. Methods: getValue(), setValue(v,
+ *   emit?), focus(); property .input.
+ *
+ * UI.busy(button, promise | true | false, label?) -> Promise (same result) | restore function (true)
+ *   Busy state of a button while `promise` runs: spinner + label, colours and width kept, aria-busy and
+ *   aria-disabled set, clicks swallowed. busy(btn, true) starts it manually and returns the restore
+ *   function; busy(btn, false) stops it.
+ *
+ * UI.fieldError(control, message) -> the .field-error node
+ *   Unified validation display: red 12px message under the field, --ko border, aria-invalid and
+ *   aria-describedby. control: an input / textarea / dropdown / dateField / monthField (its .control is
+ *   used). An empty message clears the error.
+ * ------------------------------------------------------------------------------------------------
+ */
+(function () {
+  'use strict';
+
+  var UI = window.UI;
+  var el = UI.el;
+  var clear = UI.clear;
+  var uid = 0;
+  function nextId(prefix) { uid++; return (prefix || 'ctl') + '-' + uid; }
+  function str(v) { return Core.str(v); }
+  function fold(v) {
+    return String(v === null || v === undefined ? '' : v).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  }
+  function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+  function focusNoScroll(node) {
+    if (!node || typeof node.focus !== 'function') return;
+    try { node.focus({ preventScroll: true }); } catch (e) { node.focus(); }
+  }
+  function addToken(node, attr, token) {
+    var list = (node.getAttribute(attr) || '').split(/\s+/).filter(Boolean);
+    if (list.indexOf(token) < 0) list.push(token);
+    node.setAttribute(attr, list.join(' '));
+  }
+  function removeToken(node, attr, token) {
+    var list = (node.getAttribute(attr) || '').split(/\s+/).filter(function (t) { return t && t !== token; });
+    if (list.length) node.setAttribute(attr, list.join(' ')); else node.removeAttribute(attr);
+  }
+  function isPrintable(e) { return e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey; }
+
+  // ============================================================================== popover
+
+  var openPop = null;
+  var GAP = 4;
+  var EDGE = 8;
+
+  function popover(o) {
+    var opts = o || {};
+    if (openPop) openPop.close('replaced', { restoreFocus: false });
+    var anchor = opts.anchor;
+    var panel = el('div', {
+      class: ['popover', opts.className], id: opts.id || null, role: opts.role || null,
+      'aria-label': opts.ariaLabel || null, 'aria-labelledby': opts.labelledBy || null
+    });
+    if (opts.content) panel.appendChild(opts.content);
+    var closed = false;
+    var api;
+
+    function inside(t) {
+      if (!(t instanceof Node)) return false;
+      if (panel.contains(t) || (anchor && anchor.contains(t))) return true;
+      return (opts.ignore || []).some(function (n) { return n && n.contains(t); });
+    }
+    function onPointerDown(e) { if (!inside(e.target)) close('outside', { restoreFocus: false }); }
+    function onKey(e) {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      close('escape');
+    }
+    function onPanelKey(e) { if (e.key === 'Tab' && !e.defaultPrevented) close('tab'); }
+    function onScroll(e) {
+      if (e.target instanceof Node && panel.contains(e.target)) return;
+      reposition();
+    }
+    function reposition() {
+      if (closed) return;
+      if (!anchor || !anchor.isConnected) { close('detached', { restoreFocus: false }); return; }
+      var r = anchor.getBoundingClientRect();
+      var vw = document.documentElement.clientWidth || window.innerWidth;
+      var vh = window.innerHeight;
+      if (r.bottom < 0 || r.top > vh || (r.width === 0 && r.height === 0)) { close('scroll', { restoreFocus: false }); return; }
+      var maxH = opts.maxHeight || 320;
+      panel.style.minWidth = opts.matchWidth === false ? '' : Math.min(Math.round(r.width), vw - 2 * EDGE) + 'px';
+      panel.style.maxWidth = (vw - 2 * EDGE) + 'px';
+      panel.style.maxHeight = '';
+      panel.style.top = '0px';
+      panel.style.left = '0px';
+      var natural = panel.scrollHeight;
+      var below = vh - r.bottom - GAP - EDGE;
+      var above = r.top - GAP - EDGE;
+      var placeBelow = natural <= below || below >= above;
+      var h = Math.max(80, Math.min(natural, maxH, placeBelow ? below : above));
+      panel.style.maxHeight = h + 'px';
+      var top = placeBelow ? r.bottom + GAP : r.top - GAP - Math.min(natural, h);
+      var w = panel.offsetWidth;
+      var left = opts.align === 'end' ? r.right - w : r.left;
+      left = clamp(left, EDGE, Math.max(EDGE, vw - w - EDGE));
+      panel.style.top = Math.round(top) + 'px';
+      panel.style.left = Math.round(left) + 'px';
+      panel.dataset.placement = placeBelow ? 'bottom' : 'top';
+    }
+    function close(reason, co) {
+      if (closed) return;
+      closed = true;
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', reposition);
+      if (panel.parentNode) panel.parentNode.removeChild(panel);
+      if (openPop === api) openPop = null;
+      if (!co || co.restoreFocus !== false) {
+        var f = opts.returnFocus || anchor;
+        if (f && f.isConnected) focusNoScroll(f);
+      }
+      if (opts.onClose) opts.onClose(reason || 'close');
+    }
+
+    document.body.appendChild(panel);
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKey, true);
+    panel.addEventListener('keydown', onPanelKey);
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', reposition);
+    api = { node: panel, anchor: anchor, close: close, reposition: reposition, isOpen: function () { return !closed; } };
+    openPop = api;
+    reposition();
+    return api;
+  }
+  popover.current = function () { return openPop; };
+  popover.closeAll = function () { if (openPop) openPop.close('api', { restoreFocus: false }); };
+
+  // ============================================================================== checkbox
+
+  /** UI.checkbox({checked, label, onChange, id?, name?, value?, disabled?}) -> label.cb */
+  function checkbox(o) {
+    var opts = o || {};
+    var input = el('input', { type: 'checkbox', class: 'cb-input', id: opts.id || null, name: opts.name || null,
+      value: opts.value !== undefined ? opts.value : null, disabled: !!opts.disabled });
+    input.checked = !!opts.checked;
+    var root = el('label', { class: ['cb', opts.disabled ? 'is-disabled' : null, opts.className] }, input,
+      el('span', { class: 'cb-box', 'aria-hidden': 'true' }),
+      opts.label !== undefined && opts.label !== null && opts.label !== '' ? el('span', { class: 'cb-label' }, opts.label) : null);
+    input.addEventListener('change', function () { if (opts.onChange) opts.onChange(input.checked); });
+    root.input = input;   // (label.control natively returns the input too)
+    root.getValue = function () { return input.checked; };
+    root.setValue = function (b) { input.checked = !!b; };
+    root.setDisabled = function (b) { input.disabled = !!b; root.classList.toggle('is-disabled', !!b); };
+    root.focus = function () { input.focus(); };
+    return root;
+  }
+
+  // ============================================================================== tooltip
+
+  var tipStore = null;
+  var tipBubble = null;
+  var tipTarget = null;
+  var tipTimer = null;
+  var tipTouched = false;
+
+  function ensureTipStore() {
+    if (!tipStore || !tipStore.isConnected) {
+      tipStore = el('div', { class: 'tooltip-store', id: 'tooltip-store', hidden: true });
+      document.body.appendChild(tipStore);
+    }
+    // Drop the descriptions of targets that left the document.
+    Array.prototype.slice.call(tipStore.children).forEach(function (d) {
+      if (d.__target && !d.__target.isConnected) tipStore.removeChild(d);
+    });
+    return tipStore;
+  }
+
+  function hideTip() {
+    clearTimeout(tipTimer);
+    tipTimer = null;
+    tipTouched = false;
+    if (tipBubble && tipBubble.parentNode) tipBubble.parentNode.removeChild(tipBubble);
+    tipTarget = null;
+  }
+
+  function showTip(target) {
+    var info = target.__tooltip;
+    if (!info || !target.isConnected) return;
+    clearTimeout(tipTimer);
+    if (!tipBubble) tipBubble = el('div', { class: 'tooltip', 'aria-hidden': 'true' });
+    clear(tipBubble);
+    Array.prototype.forEach.call(info.desc.childNodes, function (n) { tipBubble.appendChild(n.cloneNode(true)); });
+    document.body.appendChild(tipBubble);
+    tipTarget = target;
+    var r = target.getBoundingClientRect();
+    var vw = document.documentElement.clientWidth || window.innerWidth;
+    tipBubble.style.left = '0px';
+    tipBubble.style.top = '0px';
+    var w = tipBubble.offsetWidth;
+    var h = tipBubble.offsetHeight;
+    var top = r.top - h - 6;
+    var place = 'top';
+    if (top < EDGE) { top = r.bottom + 6; place = 'bottom'; }
+    var left = clamp(r.left + r.width / 2 - w / 2, EDGE, Math.max(EDGE, vw - w - EDGE));
+    tipBubble.style.left = Math.round(left) + 'px';
+    tipBubble.style.top = Math.round(top) + 'px';
+    tipBubble.dataset.placement = place;
+  }
+
+  function onTipKey(e) {
+    if (e.key === 'Escape' && tipTarget && !popover.current()) hideTip();
+  }
+  document.addEventListener('keydown', onTipKey, true);
+  document.addEventListener('pointerdown', function (e) {
+    if (tipTouched && tipTarget && !(e.target instanceof Node && tipTarget.contains(e.target))) hideTip();
+  }, true);
+  window.addEventListener('scroll', function () { if (tipTarget) hideTip(); }, true);
+
+  /** UI.tooltip(target, text|Node|null, {focusable?}?) -> target */
+  function tooltip(target, content, o) {
+    if (!target) return target;
+    var opts = o || {};
+    var info = target.__tooltip;
+    if (content === null || content === undefined || content === '') {
+      if (info) {
+        removeToken(target, 'aria-describedby', info.desc.id);
+        if (info.desc.parentNode) info.desc.parentNode.removeChild(info.desc);
+        if (tipTarget === target) hideTip();
+        target.__tooltip = null;
+      }
+      return target;
+    }
+    var store = ensureTipStore();
+    if (!info) {
+      var desc = el('span', { id: nextId('tip') });
+      desc.__target = target;
+      info = target.__tooltip = { desc: desc };
+      store.appendChild(desc);
+      addToken(target, 'aria-describedby', desc.id);
+      target.addEventListener('mouseenter', function () {
+        if (!target.__tooltip) return;
+        clearTimeout(tipTimer);
+        tipTimer = setTimeout(function () { showTip(target); }, 300);
+      });
+      target.addEventListener('mouseleave', function () {
+        if (tipTouched) return;
+        clearTimeout(tipTimer);
+        if (tipTarget === target && document.activeElement !== target) hideTip();
+      });
+      target.addEventListener('focusin', function () {
+        if (!target.__tooltip) return;
+        var kb = false;
+        try { kb = target.matches(':focus-visible') || (document.activeElement && document.activeElement.matches(':focus-visible')); } catch (e) { kb = true; }
+        if (kb) showTip(target);
+      });
+      target.addEventListener('focusout', function () { if (tipTarget === target) hideTip(); });
+      target.addEventListener('pointerdown', function (e) {
+        if (e.pointerType !== 'touch' || !target.__tooltip) return;
+        if (tipTarget === target) { hideTip(); return; }
+        showTip(target);
+        tipTouched = true;
+      });
+    } else if (!info.desc.isConnected) {
+      store.appendChild(info.desc);
+    }
+    clear(info.desc);
+    info.desc.appendChild(content instanceof Node ? content : document.createTextNode(String(content)));
+    if (opts.focusable && !target.hasAttribute('tabindex') &&
+        !/^(A|BUTTON|INPUT|SELECT|TEXTAREA)$/.test(target.tagName)) target.setAttribute('tabindex', '0');
+    if (tipTarget === target) showTip(target);
+    return target;
+  }
+
+  // ============================================================================== dropdown
+
+  function normOptions(list) {
+    return (list || []).map(function (o) {
+      if (o !== null && typeof o === 'object') {
+        var v = str(o.value);
+        return { value: v, label: o.label !== undefined && o.label !== null ? String(o.label) : v,
+          hint: o.hint ? String(o.hint) : '', group: o.group ? String(o.group) : '', disabled: !!o.disabled };
+      }
+      var s = str(o);
+      return { value: s, label: s, hint: '', group: '', disabled: false };
+    });
+  }
+
+  function splitTokens(text) {
+    var seen = {};
+    return String(text || '').split(',').map(function (t) { return t.trim(); }).filter(function (t) {
+      if (!t || seen[fold(t)]) return false;
+      seen[fold(t)] = true;
+      return true;
+    });
+  }
+
+  /** UI.dropdown(options) -> div.dd (see the API block above). */
+  function dropdown(o) {
+    var opts = o || {};
+    var multiple = !!opts.multiple;
+    var tokens = !!opts.tokens;
+    var combo = !!opts.combobox || tokens;
+    var size = opts.size === 'sm' ? 'sm' : 'md';
+    var emptyLabel = opts.emptyLabel !== undefined && opts.emptyLabel !== null ? String(opts.emptyLabel) : '—';
+    var baseId = opts.id || nextId('dd');
+    var listId = baseId + '-listbox';
+    var labelId = baseId + '-label';
+    var valueId = baseId + '-value';
+    var options = normOptions(opts.options);
+    var value = multiple ? [] : '';
+    var committedText = '';
+    var pop = null;
+    var listbox = null;
+    var searchInput = null;
+    var footerBtn = null;
+    var visible = [];
+    var active = -1;
+    var query = '';
+    var typeBuf = '';
+    var typeTimer = null;
+
+    var root = el('div', { class: ['dd', 'dd-' + size, multiple ? 'dd-multiple' : null, combo ? 'dd-combobox' : null,
+      opts.mono ? 'dd-mono' : null, opts.className] });
+    var nameRef = opts.labelledBy || null;
+    if (opts.label) {
+      root.appendChild(combo ? el('label', { class: 'field-label dd-label', id: labelId, for: baseId }, opts.label) :
+        el('span', { class: 'field-label dd-label', id: labelId }, opts.label));
+      nameRef = nameRef || labelId;
+    } else if (!nameRef && opts.ariaLabel && !combo) {
+      root.appendChild(el('span', { class: 'sr-only', id: labelId }, opts.ariaLabel));
+      nameRef = labelId;
+    }
+
+    var caret = el('span', { class: 'dd-caret', 'aria-hidden': 'true' });
+    var trigger;
+    var valueEl = null;
+    var caretBtn = null;
+    var anchor;
+    if (combo) {
+      trigger = el('input', { type: 'text', id: baseId, name: opts.name || null, class: ['input', 'dd-input', opts.mono ? 'mono' : null],
+        role: 'combobox', autocomplete: 'off', spellcheck: 'false', 'aria-autocomplete': 'list', 'aria-expanded': 'false',
+        'aria-controls': listId, 'aria-labelledby': opts.labelledBy || null,
+        'aria-label': !opts.label && !opts.labelledBy ? (opts.ariaLabel || null) : null,
+        placeholder: opts.placeholder || null });
+      caretBtn = el('button', { type: 'button', class: 'dd-caret-btn', tabindex: '-1', 'aria-label': 'Afficher les suggestions' }, caret);
+      anchor = el('div', { class: 'dd-control' }, trigger, caretBtn);
+      root.appendChild(anchor);
+    } else {
+      valueEl = el('span', { class: 'dd-value', id: valueId });
+      trigger = el('button', { type: 'button', id: baseId, name: opts.name || null, class: 'dd-trigger', 'aria-haspopup': 'listbox',
+        'aria-expanded': 'false', 'aria-controls': listId,
+        'aria-labelledby': nameRef ? nameRef + ' ' + valueId : null }, valueEl, caret);
+      anchor = trigger;
+      root.appendChild(trigger);
+      if (opts.label) {
+        root.firstChild.addEventListener('click', function () { if (!trigger.disabled) trigger.focus(); });
+      }
+    }
+
+    // ---- value helpers
+    function findOption(v) {
+      for (var i = 0; i < options.length; i++) if (options[i].value === v) return options[i];
+      return null;
+    }
+    function labelOf(v) { var op = findOption(v); return op ? op.label : v; }
+    function orderSelection(list) {
+      var wanted = {};
+      list.forEach(function (v) { wanted[v] = true; });
+      var out = options.filter(function (op) { return wanted[op.value]; }).map(function (op) { return op.value; });
+      list.forEach(function (v) { if (out.indexOf(v) < 0) out.push(v); });
+      return out;
+    }
+    function normalizeText(text) { return tokens ? splitTokens(text).join(', ') : String(text || '').trim(); }
+    function currentTokens() { return String(trigger.value || '').split(','); }
+    function isSelected(op) {
+      if (op.isCustom) return false;
+      if (multiple) return value.indexOf(op.value) >= 0;
+      if (combo) {
+        if (tokens) return splitTokens(trigger.value).map(fold).indexOf(fold(op.value)) >= 0;
+        return fold(trigger.value.trim()) === fold(op.value);
+      }
+      return op.value === value;
+    }
+
+    function display() {
+      if (combo) return;
+      var text;
+      var ph = false;
+      if (multiple) {
+        if (!value.length) { text = opts.placeholder || 'Toutes'; ph = true; }
+        else text = labelOf(value[0]) + (value.length > 1 ? ' + ' + (value.length - 1) : '');
+      } else {
+        var op = findOption(value);
+        if (value === '' && (opts.placeholder || !op)) { text = opts.placeholder || emptyLabel; ph = true; }
+        else text = op ? op.label : value;
+      }
+      valueEl.textContent = text;
+      if (footerBtn) footerBtn.disabled = !value.length;
+      root.classList.toggle('is-placeholder', ph);
+      root.classList.toggle('has-value', multiple ? value.length > 0 : value !== '');
+    }
+
+    // ---- list rendering
+    function allOptions() {
+      var list = options.slice();
+      if (!multiple && !combo && opts.allowEmpty && !findOption('')) {
+        list.unshift({ value: '', label: emptyLabel, hint: '', group: '', isEmpty: true });
+      }
+      return list;
+    }
+    function filtered() {
+      var list = allOptions();
+      if (tokens) {
+        var used = currentTokens().slice(0, -1).map(function (t) { return fold(t.trim()); });
+        list = list.filter(function (op) { return used.indexOf(fold(op.value)) < 0; });
+      }
+      var q = fold(query).trim();
+      if (q) {
+        list = list.filter(function (op) {
+          return !op.isEmpty && (fold(op.label).indexOf(q) >= 0 || fold(op.value).indexOf(q) >= 0 || fold(op.hint).indexOf(q) >= 0);
+        });
+      }
+      if (combo) {
+        var raw = query.trim();
+        if (raw && !allOptions().some(function (op) { return fold(op.value) === fold(raw); })) {
+          list.push({ value: raw, label: raw, hint: '', group: '', isCustom: true });
+        }
+      }
+      return list;
+    }
+    function optionRows() { return listbox ? listbox.querySelectorAll('[role=option]') : []; }
+    function focusTarget() { return combo ? trigger : (searchInput || listbox); }
+
+    function renderList() {
+      if (!listbox) return;
+      visible = filtered();
+      clear(listbox);
+      if (!visible.length) {
+        listbox.appendChild(el('div', { class: 'dd-empty', role: 'presentation' },
+          options.length ? 'Aucun résultat.' : 'Aucune valeur disponible.'));
+      }
+      var lastGroup = '';
+      visible.forEach(function (op, i) {
+        if (op.group && op.group !== lastGroup) listbox.appendChild(el('div', { class: 'dd-group', role: 'presentation' }, op.group));
+        lastGroup = op.group || '';
+        var label = op.isCustom ?
+          el('span', { class: 'dd-option-label' }, 'Utiliser « ', el('span', { class: opts.mono ? 'mono' : null }, op.value), ' »') :
+          el('span', { class: 'dd-option-label' }, op.label);
+        listbox.appendChild(el('div', {
+          role: 'option', id: listId + '-o' + i,
+          class: ['dd-option', op.isCustom ? 'dd-option-custom' : null, op.isEmpty ? 'dd-option-empty' : null],
+          'aria-selected': isSelected(op) ? 'true' : 'false', 'aria-disabled': op.disabled ? 'true' : null,
+          dataset: { index: i, value: op.value }
+        },
+        multiple ? el('span', { class: 'cb-box', 'aria-hidden': 'true' }) : el('span', { class: 'dd-check', 'aria-hidden': 'true' }),
+        label,
+        op.hint ? el('span', { class: 'dd-option-hint' }, op.hint) : null));
+      });
+    }
+
+    function scrollIntoList(row) {
+      if (!listbox || !row) return;
+      var top = row.offsetTop;
+      var bottom = top + row.offsetHeight;
+      if (top < listbox.scrollTop) listbox.scrollTop = top - 4;
+      else if (bottom > listbox.scrollTop + listbox.clientHeight) listbox.scrollTop = bottom - listbox.clientHeight + 4;
+    }
+
+    function setActive(i, scroll) {
+      var rows = optionRows();
+      var target = focusTarget();
+      Array.prototype.forEach.call(rows, function (r) { r.classList.remove('is-active'); });
+      if (!rows.length || i < 0) {
+        active = -1;
+        if (target) target.removeAttribute('aria-activedescendant');
+        return;
+      }
+      active = clamp(i, 0, rows.length - 1);
+      rows[active].classList.add('is-active');
+      if (target) target.setAttribute('aria-activedescendant', rows[active].id);
+      if (scroll !== false) scrollIntoList(rows[active]);
+    }
+    function move(delta) {
+      var n = visible.length;
+      if (!n) return;
+      if (active < 0) { setActive(delta > 0 ? 0 : n - 1); return; }
+      setActive(clamp(active + delta, 0, n - 1));
+    }
+
+    function typeAhead(ch) {
+      clearTimeout(typeTimer);
+      typeTimer = setTimeout(function () { typeBuf = ''; }, 700);
+      typeBuf += fold(ch);
+      var same = typeBuf.split('').every(function (c) { return c === typeBuf[0]; });
+      var q = same ? typeBuf[0] : typeBuf;
+      var n = visible.length;
+      var from = same ? active + 1 : Math.max(active, 0);
+      for (var k = 0; k < n; k++) {
+        var idx = (from + k) % n;
+        if (fold(visible[idx].label).indexOf(q) === 0) { setActive(idx); return true; }
+      }
+      return false;
+    }
+
+    // ---- open / close
+    function open(how) {
+      if (trigger.disabled || pop) return;
+      var h = how || {};
+      query = h.query !== undefined ? h.query : '';
+      typeBuf = '';
+      var searchable = !combo && (opts.searchable === undefined || opts.searchable === null ? options.length > 8 : !!opts.searchable);
+      listbox = el('div', { id: listId, role: 'listbox', class: 'dd-list', tabindex: '-1',
+        'aria-multiselectable': multiple ? 'true' : null,
+        'aria-labelledby': nameRef || null, 'aria-label': nameRef ? null : (opts.ariaLabel || 'Options') });
+      listbox.addEventListener('mousedown', function (e) { e.preventDefault(); });
+      listbox.addEventListener('mousemove', function (e) {
+        var row = e.target.closest && e.target.closest('[role=option]');
+        if (row && Number(row.dataset.index) !== active) setActive(Number(row.dataset.index), false);
+      });
+      listbox.addEventListener('click', function (e) {
+        var row = e.target.closest && e.target.closest('[role=option]');
+        if (row) choose(Number(row.dataset.index));
+      });
+      var content = el('div', { class: 'dd-panel' });
+      searchInput = null;
+      if (searchable) {
+        searchInput = el('input', { type: 'text', class: 'dd-search', role: 'combobox', 'aria-expanded': 'true',
+          'aria-controls': listId, 'aria-autocomplete': 'list', 'aria-label': 'Filtrer les options',
+          placeholder: 'Filtrer…', autocomplete: 'off', spellcheck: 'false', value: query });
+        searchInput.addEventListener('input', function () {
+          query = searchInput.value;
+          renderList();
+          setActive(visible.length ? 0 : -1);
+        });
+        searchInput.addEventListener('keydown', onListKey);
+        content.appendChild(el('div', { class: 'dd-search-wrap' }, searchInput));
+      } else {
+        listbox.addEventListener('keydown', onListKey);
+      }
+      content.appendChild(listbox);
+      footerBtn = null;
+      if (multiple) {
+        footerBtn = el('button', { type: 'button', class: 'btn btn-link btn-small dd-clear', onClick: clearSelection }, 'Effacer la sélection');
+        footerBtn.addEventListener('keydown', function (e) {
+          if (e.key === 'Tab' && e.shiftKey) { e.preventDefault(); focusNoScroll(focusTarget()); }
+        });
+        footerBtn.disabled = !value.length;
+        content.appendChild(el('div', { class: 'dd-footer' }, footerBtn));
+      }
+      pop = popover({ anchor: anchor, content: content, returnFocus: trigger, onClose: onPopClose,
+        className: ['dd-popover', 'dd-popover-' + size, opts.mono ? 'dd-mono' : null].filter(Boolean).join(' ') });
+      trigger.setAttribute('aria-expanded', 'true');
+      root.classList.add('is-open');
+      renderList();
+      var idx = -1;
+      if (h.at === 'first') idx = 0;
+      else if (h.at === 'last') idx = visible.length - 1;
+      else if (!combo || h.at === 'selected') {
+        for (var i = 0; i < visible.length; i++) { if (isSelected(visible[i])) { idx = i; break; } }
+        if (idx < 0 && !combo) idx = 0;
+      }
+      if (searchable && query) idx = visible.length ? 0 : -1;
+      if (!combo) focusNoScroll(searchable ? searchInput : listbox);
+      setActive(idx);
+      if (h.typeahead) typeAhead(h.typeahead);
+      pop.reposition();
+      if (active >= 0) scrollIntoList(optionRows()[active]);
+    }
+
+    function onPopClose(reason) {
+      pop = null;
+      listbox = null;
+      searchInput = null;
+      footerBtn = null;
+      active = -1;
+      trigger.setAttribute('aria-expanded', 'false');
+      trigger.removeAttribute('aria-activedescendant');
+      root.classList.remove('is-open');
+      if (combo && (reason === 'outside' || reason === 'tab' || reason === 'scroll')) commitText();
+      if (opts.onClose) opts.onClose(reason);
+    }
+    function closePop(reason, restore) { if (pop) pop.close(reason, { restoreFocus: restore !== false }); }
+
+    // ---- selection
+    function emit() { if (opts.onChange) opts.onChange(multiple ? value.slice() : value); }
+    function commitText() {
+      var v = normalizeText(trigger.value);
+      if (trigger.value !== v) trigger.value = v;
+      if (v !== committedText) {
+        committedText = v;
+        if (opts.onChange) opts.onChange(v);
+      }
+    }
+    function choose(i) {
+      var op = visible[i];
+      if (!op || op.disabled) return;
+      if (multiple) {
+        if (value.indexOf(op.value) >= 0) value = value.filter(function (v) { return v !== op.value; });
+        else value = orderSelection(value.concat([op.value]));
+        var row = optionRows()[i];
+        if (row) row.setAttribute('aria-selected', value.indexOf(op.value) >= 0 ? 'true' : 'false');
+        setActive(i, false);
+        display();
+        emit();
+        return;
+      }
+      if (combo) {
+        if (tokens && !op.isCustom) {
+          var t = currentTokens();
+          t[t.length - 1] = op.value;
+          trigger.value = t.map(function (x) { return x.trim(); }).filter(Boolean).join(', ') + ', ';
+          query = '';
+          renderList();
+          setActive(-1);
+          if (pop) pop.reposition();
+          return;
+        }
+        if (tokens) {
+          trigger.value = normalizeText(trigger.value);
+        } else {
+          trigger.value = op.value;
+        }
+        query = '';
+        closePop('select');
+        commitText();
+        return;
+      }
+      var changed = value !== op.value;
+      value = op.value;
+      display();
+      closePop('select');
+      if (changed) emit();
+    }
+    function clearSelection() {
+      if (!value.length) return;
+      value = [];
+      Array.prototype.forEach.call(optionRows(), function (r) { r.setAttribute('aria-selected', 'false'); });
+      focusNoScroll(focusTarget());
+      display();
+      emit();
+    }
+
+    // ---- keyboard
+    function onListKey(e) {
+      var inSearch = e.target === searchInput;
+      if (!isPrintable(e)) typeBuf = '';
+      switch (e.key) {
+        case 'ArrowDown': e.preventDefault(); move(1); break;
+        case 'ArrowUp':
+          e.preventDefault();
+          if (e.altKey) closePop('escape'); else move(-1);
+          break;
+        case 'PageDown': e.preventDefault(); move(10); break;
+        case 'PageUp': e.preventDefault(); move(-10); break;
+        case 'Home': if (!inSearch) { e.preventDefault(); setActive(0); } break;
+        case 'End': if (!inSearch) { e.preventDefault(); setActive(visible.length - 1); } break;
+        case 'Enter':
+          e.preventDefault();
+          if (active >= 0) choose(active);
+          break;
+        case ' ':
+          if (!inSearch) { e.preventDefault(); if (active >= 0) choose(active); }
+          break;
+        case 'Tab':
+          if (multiple && footerBtn && !footerBtn.disabled && !e.shiftKey) { e.preventDefault(); footerBtn.focus(); }
+          break;
+        default:
+          if (!inSearch && isPrintable(e)) { e.preventDefault(); typeAhead(e.key); }
+      }
+    }
+
+    if (combo) {
+      trigger.addEventListener('input', function () {
+        query = tokens ? currentTokens().slice(-1)[0] : trigger.value;
+        if (!pop) open({ query: query });
+        else renderList();
+        setActive(-1);
+        if (pop) pop.reposition();
+      });
+      trigger.addEventListener('keydown', function (e) {
+        switch (e.key) {
+          case 'ArrowDown':
+            e.preventDefault();
+            if (!pop) open({ query: '', at: e.altKey ? 'selected' : 'first' }); else move(1);
+            break;
+          case 'ArrowUp':
+            if (pop) { e.preventDefault(); if (e.altKey) closePop('escape'); else move(-1); }
+            break;
+          case 'PageDown': if (pop) { e.preventDefault(); move(10); } break;
+          case 'PageUp': if (pop) { e.preventDefault(); move(-10); } break;
+          case 'Enter':
+            if (pop) {
+              e.preventDefault();
+              if (active >= 0) choose(active);
+              else { closePop('select'); commitText(); }
+            } else {
+              commitText();
+            }
+            break;
+          case 'Tab':
+            commitText();
+            closePop('tab', false);
+            break;
+          default:
+        }
+      });
+      trigger.addEventListener('blur', function (e) {
+        var to = e.relatedTarget;
+        if (to && pop && pop.node.contains(to)) return;
+        commitText();
+        closePop('blur', false);
+      });
+      caretBtn.addEventListener('mousedown', function (e) { e.preventDefault(); });
+      caretBtn.addEventListener('click', function () {
+        if (trigger.disabled) return;
+        if (pop) closePop('toggle');
+        else { trigger.focus(); open({ query: '', at: 'selected' }); }
+      });
+    } else {
+      trigger.addEventListener('click', function () {
+        if (pop) closePop('toggle'); else open();
+      });
+      trigger.addEventListener('keydown', function (e) {
+        if (pop) return;
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          open();
+        } else if (e.key === 'Home' || e.key === 'End') {
+          e.preventDefault();
+          open({ at: e.key === 'Home' ? 'first' : 'last' });
+        } else if (isPrintable(e)) {
+          e.preventDefault();
+          var searchable = opts.searchable === undefined || opts.searchable === null ? options.length > 8 : !!opts.searchable;
+          if (searchable) open({ query: e.key });
+          else open({ typeahead: e.key });
+        }
+      });
+    }
+
+    // ---- public surface
+    root.control = trigger;
+    root.trigger = trigger;
+    root.getValue = function () {
+      if (multiple) return value.slice();
+      if (combo) return normalizeText(trigger.value);
+      return value;
+    };
+    root.setValue = function (v) {
+      if (multiple) {
+        value = orderSelection((Array.isArray(v) ? v : (v === null || v === undefined || v === '' ? [] : [v])).map(str).filter(Boolean));
+        value.forEach(function (x) { if (!findOption(x)) options.push({ value: x, label: x, hint: '', group: '' }); });
+      } else if (combo) {
+        committedText = normalizeText(v === null || v === undefined ? '' : String(v));
+        trigger.value = committedText;
+      } else {
+        value = str(v);
+      }
+      display();
+      if (pop) { renderList(); setActive(active); }
+    };
+    root.setOptions = function (list) {
+      options = normOptions(list);
+      if (multiple) value.forEach(function (x) { if (!findOption(x)) options.push({ value: x, label: x, hint: '', group: '' }); });
+      display();
+      if (pop) { renderList(); setActive(Math.min(active, visible.length - 1)); pop.reposition(); }
+    };
+    root.setDisabled = function (b) {
+      trigger.disabled = !!b;
+      if (caretBtn) caretBtn.disabled = !!b;
+      root.classList.toggle('is-disabled', !!b);
+      if (b) closePop('disabled', false);
+    };
+    root.focus = function () { focusNoScroll(trigger); };
+    root.open = function () { if (combo) trigger.focus(); open(combo ? { query: '', at: 'selected' } : undefined); };
+    root.close = function () { closePop('api'); };
+    root.isOpen = function () { return !!pop; };
+    var accessor = {
+      configurable: true,
+      get: function () { return multiple ? root.getValue() : root.getValue(); },
+      set: function (v) { root.setValue(v); }
+    };
+    Object.defineProperty(root, 'value', accessor);
+    if (!combo) Object.defineProperty(trigger, 'value', accessor);
+
+    root.setValue(opts.value);
+    if (opts.disabled) root.setDisabled(true);
+    return root;
+  }
+
+  // ============================================================================== dates
+
+  var MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre',
+    'novembre', 'décembre'];
+  var MONTHS_SHORT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+  var DAYS = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'];
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+  function frOf(d) { return pad2(d.getDate()) + '/' + pad2(d.getMonth() + 1) + '/' + d.getFullYear(); }
+  function isoOf(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+  function today() { var n = new Date(); return new Date(n.getFullYear(), n.getMonth(), n.getDate()); }
+  function addDays(d, n) { return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n); }
+  function addMonths(d, n) {
+    var t = new Date(d.getFullYear(), d.getMonth() + n, 1);
+    var last = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
+    return new Date(t.getFullYear(), t.getMonth(), Math.min(d.getDate(), last));
+  }
+  function sameDay(a, b) { return !!a && !!b && isoOf(a) === isoOf(b); }
+  /** 'D/M/YYYY' -> Date (local midnight) when it is a real calendar day, else null. */
+  function parseFr(s) {
+    var iso = Core.frToIso(str(s));
+    if (!iso) return null;
+    var p = iso.split('-').map(Number);
+    var d = new Date(p[0], p[1] - 1, p[2]);
+    if (d.getFullYear() !== p[0] || d.getMonth() !== p[1] - 1 || d.getDate() !== p[2]) return null;
+    return d;
+  }
+
+  /** Progressive JJ/MM/AAAA mask (typing at the end of the field). */
+  function maskDate(raw) {
+    var iso = /^\s*(\d{4})-(\d{2})-(\d{2})\s*$/.exec(raw);
+    if (iso) return Core.isoToFr(iso[1] + '-' + iso[2] + '-' + iso[3]) || raw;
+    var s = String(raw).replace(/[.\-\s]/g, '/').replace(/[^\d/]/g, '');
+    var f = ['', '', ''];
+    var i = 0;
+    for (var k = 0; k < s.length; k++) {
+      var ch = s.charAt(k);
+      if (ch === '/') {
+        if (f[i].length && i < 2) { if (f[i].length === 1) f[i] = '0' + f[i]; i++; }
+        continue;
+      }
+      if (i < 2 && f[i].length === 2) i++;
+      if (i === 2 && f[2].length === 4) break;
+      f[i] += ch;
+    }
+    var out = f[0];
+    if (i >= 1) out += '/' + f[1];
+    if (i >= 2) out += '/' + f[2];
+    if ((i === 0 && f[0].length === 2) || (i === 1 && f[1].length === 2)) out += '/';
+    return out;
+  }
+  /** Progressive AAAA-MM mask. */
+  function maskMonth(raw) {
+    var fr = /^\s*(\d{1,2})[/.\- ](\d{4})\s*$/.exec(raw);
+    if (fr) return fr[2] + '-' + pad2(Number(fr[1]));
+    var d = String(raw).replace(/\D/g, '').slice(0, 6);
+    if (d.length < 4) return d;
+    return d.slice(0, 4) + '-' + d.slice(4);
+  }
+
+  /**
+   * Shared shell of dateField / monthField: input + caret button, mask, blur validation, popover.
+   * spec: {kind, mask(raw), normalize(text) -> value|'' , check(text) -> message, buildPicker(api) -> {node, focus()}}
+   */
+  function maskedField(o, spec) {
+    var opts = o || {};
+    var id = opts.id || nextId(spec.kind);
+    var size = opts.size === 'sm' ? 'sm' : 'md';
+    var input = el('input', { type: 'text', id: id, name: opts.name || null, class: ['input', 'dd-input', 'mono', spec.kind + '-input'],
+      inputmode: 'numeric', autocomplete: 'off', spellcheck: 'false', maxlength: String(spec.maxLength),
+      placeholder: opts.placeholder || spec.placeholder, required: !!opts.required,
+      'aria-label': opts.ariaLabel || null, 'aria-labelledby': opts.labelledBy || null });
+    var btn = el('button', { type: 'button', class: 'dd-caret-btn', tabindex: '-1', 'aria-label': spec.openLabel,
+      'aria-haspopup': 'dialog', 'aria-expanded': 'false' }, el('span', { class: 'dd-caret', 'aria-hidden': 'true' }));
+    var control = el('div', { class: 'dd-control' }, input, btn);
+    var root = el('div', { class: ['dd-field', spec.kind, 'dd-' + size, opts.className] }, control);
+    var committed = '';
+    var pop = null;
+
+    function validate() {
+      var text = input.value.trim();
+      if (!text) return opts.required ? 'Ce champ est obligatoire.' : '';
+      return spec.check(text, opts);
+    }
+    function setInvalid(msg) {
+      input.setAttribute('aria-invalid', msg ? 'true' : 'false');
+      root.classList.toggle('is-invalid', !!msg);
+      if (opts.onValidate) opts.onValidate(msg);
+    }
+    function commit() {
+      var msg = validate();
+      var v = msg ? '' : spec.normalize(input.value.trim());
+      if (!msg && v) input.value = v;
+      setInvalid(msg);
+      if (!msg && v !== committed) {
+        committed = v;
+        if (opts.onChange) opts.onChange(v);
+      }
+      return !msg;
+    }
+    input.addEventListener('input', function (e) {
+      var it = e.inputType || '';
+      if (it.indexOf('delete') === 0 || input.selectionStart !== input.value.length) {
+        var clean = input.value.replace(spec.allowed, '');
+        if (clean !== input.value) input.value = clean;
+      } else {
+        input.value = spec.mask(input.value);
+      }
+      if (input.getAttribute('aria-invalid') === 'true' && !validate()) setInvalid('');
+    });
+    input.addEventListener('blur', function (e) {
+      if (e.relatedTarget && pop && pop.node.contains(e.relatedTarget)) return;
+      if (pop) return;
+      commit();
+    });
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown' && !pop) { e.preventDefault(); openPicker(); }
+    });
+    btn.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    btn.addEventListener('click', function () {
+      if (input.disabled) return;
+      if (pop) pop.close('toggle'); else openPicker();
+    });
+
+    function openPicker() {
+      if (input.disabled || pop) return;
+      var picker = spec.buildPicker({
+        value: validate() ? null : input.value.trim(),
+        opts: opts,
+        select: function (v) {
+          input.value = v;
+          if (pop) pop.close('select');
+          commit();
+        }
+      });
+      pop = popover({ anchor: control, content: picker.node, returnFocus: input, matchWidth: false, role: 'dialog',
+        ariaLabel: spec.dialogLabel, className: 'cal-popover',
+        onClose: function () {
+          pop = null;
+          btn.setAttribute('aria-expanded', 'false');
+          root.classList.remove('is-open');
+        } });
+      btn.setAttribute('aria-expanded', 'true');
+      root.classList.add('is-open');
+      picker.focus();
+    }
+
+    root.control = input;
+    root.input = input;
+    root.getValue = function () { var msg = validate(); return msg ? '' : spec.normalize(input.value.trim()); };
+    root.getText = function () { return input.value; };
+    root.setValue = function (v) {
+      var s = str(v);
+      var n = s ? spec.normalize(s) : '';
+      input.value = n || s;
+      committed = n;
+      if (input.getAttribute('aria-invalid') === 'true') setInvalid(validate());
+    };
+    root.validate = validate;
+    root.commit = commit;
+    root.setDisabled = function (b) { input.disabled = !!b; btn.disabled = !!b; root.classList.toggle('is-disabled', !!b); if (b && pop) pop.close('disabled', { restoreFocus: false }); };
+    root.focus = function () { focusNoScroll(input); };
+    root.open = openPicker;
+    root.close = function () { if (pop) pop.close('api'); };
+    root.isOpen = function () { return !!pop; };
+    root.setValue(opts.value);
+    if (opts.disabled) root.setDisabled(true);
+    return root;
+  }
+
+  /** Tab cycling inside a picker panel (a small dialog): the panel keeps the focus. */
+  function trapTab(node) {
+    node.addEventListener('keydown', function (e) {
+      if (e.key !== 'Tab') return;
+      var items = Array.prototype.filter.call(node.querySelectorAll('button:not([disabled])'), function (b) {
+        return b.tabIndex >= 0 || b === document.activeElement;
+      });
+      if (!items.length) return;
+      e.preventDefault();
+      var i = items.indexOf(document.activeElement);
+      var n = (i + (e.shiftKey ? -1 : 1) + items.length) % items.length;
+      items[n].focus();
+    });
+  }
+
+  function calendar(ctx) {
+    var o = ctx.opts;
+    var min = o.min ? parseFr(o.min) : null;
+    var max = o.max ? parseFr(o.max) : null;
+    var selected = ctx.value ? parseFr(ctx.value) : null;
+    var now = today();
+    function clampDay(d) {
+      if (min && isoOf(d) < isoOf(min)) return min;
+      if (max && isoOf(d) > isoOf(max)) return max;
+      return d;
+    }
+    var activeDay = clampDay(selected || now);
+    var titleId = nextId('cal-title');
+    var title = el('span', { class: 'cal-title', id: titleId, 'aria-live': 'polite' });
+    var prev = el('button', { type: 'button', class: 'cal-nav', 'aria-label': 'Mois précédent', tabindex: '0' }, '‹');
+    var next = el('button', { type: 'button', class: 'cal-nav', 'aria-label': 'Mois suivant', tabindex: '0' }, '›');
+    var tbody = el('tbody');
+    var grid = el('table', { class: 'cal-grid', role: 'grid', 'aria-labelledby': titleId },
+      el('thead', null, el('tr', null, DAYS.map(function (d) {
+        return el('th', { scope: 'col', 'aria-label': d }, d.charAt(0).toUpperCase());
+      }))), tbody);
+    var todayBtn = el('button', { type: 'button', class: 'btn btn-link btn-small cal-today' }, 'Aujourd’hui');
+    var clearBtn = el('button', { type: 'button', class: 'btn btn-link btn-small cal-clear' }, 'Effacer');
+    var node = el('div', { class: 'cal' },
+      el('div', { class: 'cal-head' }, prev, title, next), grid, el('div', { class: 'cal-foot' }, todayBtn, clearBtn));
+    function disabledDay(d) { return (min && isoOf(d) < isoOf(min)) || (max && isoOf(d) > isoOf(max)); }
+    function render() {
+      title.textContent = cap(MONTHS[activeDay.getMonth()]) + ' ' + activeDay.getFullYear();
+      clear(tbody);
+      var first = new Date(activeDay.getFullYear(), activeDay.getMonth(), 1);
+      var start = addDays(first, -((first.getDay() + 6) % 7));
+      for (var w = 0; w < 6; w++) {
+        var tr = el('tr');
+        for (var k = 0; k < 7; k++) {
+          var d = addDays(start, w * 7 + k);
+          var isActive = sameDay(d, activeDay);
+          var sel = sameDay(d, selected);
+          tr.appendChild(el('td', { role: 'gridcell', 'aria-selected': sel ? 'true' : null },
+            el('button', { type: 'button', tabindex: isActive ? '0' : '-1', dataset: { iso: isoOf(d) },
+              class: ['cal-day', d.getMonth() !== activeDay.getMonth() ? 'is-outside' : null, sel ? 'is-selected' : null,
+                sameDay(d, now) ? 'is-today' : null],
+              'aria-current': sameDay(d, now) ? 'date' : null,
+              'aria-label': DAYS[(d.getDay() + 6) % 7] + ' ' + d.getDate() + ' ' + MONTHS[d.getMonth()] + ' ' + d.getFullYear(),
+              disabled: disabledDay(d) }, String(d.getDate()))));
+        }
+        tbody.appendChild(tr);
+      }
+    }
+    function focusActive() {
+      var b = tbody.querySelector('button[data-iso="' + isoOf(activeDay) + '"]');
+      if (b) focusNoScroll(b);
+    }
+    function moveTo(d) { activeDay = clampDay(d); render(); focusActive(); }
+    function fromIso(iso) { var p = iso.split('-').map(Number); return new Date(p[0], p[1] - 1, p[2]); }
+    tbody.addEventListener('click', function (e) {
+      var b = e.target.closest && e.target.closest('button[data-iso]');
+      if (b && !b.disabled) ctx.select(frOf(fromIso(b.dataset.iso)));
+    });
+    grid.addEventListener('keydown', function (e) {
+      var d = null;
+      switch (e.key) {
+        case 'ArrowLeft': d = addDays(activeDay, -1); break;
+        case 'ArrowRight': d = addDays(activeDay, 1); break;
+        case 'ArrowUp': d = addDays(activeDay, -7); break;
+        case 'ArrowDown': d = addDays(activeDay, 7); break;
+        case 'Home': d = addDays(activeDay, -((activeDay.getDay() + 6) % 7)); break;
+        case 'End': d = addDays(activeDay, 6 - ((activeDay.getDay() + 6) % 7)); break;
+        case 'PageUp': d = addMonths(activeDay, e.shiftKey ? -12 : -1); break;
+        case 'PageDown': d = addMonths(activeDay, e.shiftKey ? 12 : 1); break;
+        case 'Enter':
+        case ' ':
+          e.preventDefault();
+          if (!disabledDay(activeDay)) ctx.select(frOf(activeDay));
+          return;
+        default: return;
+      }
+      e.preventDefault();
+      moveTo(d);
+    });
+    prev.addEventListener('click', function () { activeDay = clampDay(addMonths(activeDay, -1)); render(); });
+    next.addEventListener('click', function () { activeDay = clampDay(addMonths(activeDay, 1)); render(); });
+    todayBtn.addEventListener('click', function () { ctx.select(frOf(now)); });
+    clearBtn.addEventListener('click', function () { ctx.select(''); });
+    trapTab(node);
+    render();
+    return { node: node, focus: focusActive };
+  }
+
+  function monthGrid(ctx) {
+    var o = ctx.opts;
+    var known = {};
+    (o.options || []).forEach(function (m) { known[str(m)] = true; });
+    var nowMonth = Core.currentMonth ? Core.currentMonth() : '';
+    var selected = ctx.value || '';
+    var start = selected || nowMonth || (Object.keys(known).sort().pop() || '');
+    var year = Number(start.slice(0, 4)) || new Date().getFullYear();
+    var activeM = Number(start.slice(5, 7)) || 1;
+    var titleId = nextId('mcal-title');
+    var title = el('span', { class: 'cal-title', id: titleId, 'aria-live': 'polite' });
+    var prev = el('button', { type: 'button', class: 'cal-nav', 'aria-label': 'Année précédente' }, '‹');
+    var next = el('button', { type: 'button', class: 'cal-nav', 'aria-label': 'Année suivante' }, '›');
+    var tbody = el('tbody');
+    var grid = el('table', { class: 'cal-grid mcal-grid', role: 'grid', 'aria-labelledby': titleId }, tbody);
+    var nowBtn = el('button', { type: 'button', class: 'btn btn-link btn-small cal-today' }, 'Mois en cours');
+    var clearBtn = el('button', { type: 'button', class: 'btn btn-link btn-small cal-clear' }, 'Effacer');
+    var node = el('div', { class: 'cal mcal' },
+      el('div', { class: 'cal-head' }, prev, title, next), grid,
+      Object.keys(known).length ? el('p', { class: 'mcal-legend' }, el('span', { class: 'mcal-dot', 'aria-hidden': 'true' }), 'mois importé') : null,
+      el('div', { class: 'cal-foot' }, nowBtn, clearBtn));
+    function key(y, m) { return y + '-' + pad2(m); }
+    function render() {
+      title.textContent = String(year);
+      clear(tbody);
+      for (var r = 0; r < 3; r++) {
+        var tr = el('tr');
+        for (var c = 0; c < 4; c++) {
+          var m = r * 4 + c + 1;
+          var k = key(year, m);
+          tr.appendChild(el('td', { role: 'gridcell', 'aria-selected': k === selected ? 'true' : null },
+            el('button', { type: 'button', class: ['cal-day', 'mcal-month', known[k] ? 'has-data' : null, k === selected ? 'is-selected' : null,
+              k === nowMonth ? 'is-today' : null], tabindex: m === activeM ? '0' : '-1', dataset: { month: k },
+              'aria-current': k === nowMonth ? 'date' : null,
+              'aria-label': MONTHS[m - 1] + ' ' + year + (known[k] ? ', importé' : '') }, MONTHS_SHORT[m - 1])));
+        }
+        tbody.appendChild(tr);
+      }
+    }
+    function focusActive() {
+      var b = tbody.querySelector('button[data-month="' + key(year, activeM) + '"]');
+      if (b) focusNoScroll(b);
+    }
+    function moveBy(n) {
+      var idx = year * 12 + (activeM - 1) + n;
+      year = Math.floor(idx / 12);
+      activeM = (idx % 12) + 1;
+      render();
+      focusActive();
+    }
+    tbody.addEventListener('click', function (e) {
+      var b = e.target.closest && e.target.closest('button[data-month]');
+      if (b) ctx.select(b.dataset.month);
+    });
+    grid.addEventListener('keydown', function (e) {
+      var map = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -4, ArrowDown: 4, PageUp: -12, PageDown: 12 };
+      if (Object.prototype.hasOwnProperty.call(map, e.key)) { e.preventDefault(); moveBy(map[e.key]); return; }
+      if (e.key === 'Home') { e.preventDefault(); moveBy(1 - activeM); return; }
+      if (e.key === 'End') { e.preventDefault(); moveBy(12 - activeM); return; }
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); ctx.select(key(year, activeM)); }
+    });
+    prev.addEventListener('click', function () { year--; render(); });
+    next.addEventListener('click', function () { year++; render(); });
+    nowBtn.addEventListener('click', function () { if (nowMonth) ctx.select(nowMonth); });
+    clearBtn.addEventListener('click', function () { ctx.select(''); });
+    trapTab(node);
+    render();
+    return { node: node, focus: focusActive };
+  }
+
+  /** UI.dateField({value 'DD/MM/YYYY', onChange, required?, min?, max?, ...}) */
+  function dateField(o) {
+    return maskedField(o, {
+      kind: 'datefield',
+      placeholder: 'JJ/MM/AAAA',
+      maxLength: 10,
+      openLabel: 'Ouvrir le calendrier',
+      dialogLabel: 'Choisir une date',
+      allowed: /[^\d/]/g,
+      mask: maskDate,
+      normalize: function (text) { var d = parseFr(text); return d ? frOf(d) : ''; },
+      check: function (text, opts) {
+        var d = parseFr(text);
+        if (!d) return 'Date invalide : format JJ/MM/AAAA.';
+        var min = opts.min ? parseFr(opts.min) : null;
+        var max = opts.max ? parseFr(opts.max) : null;
+        if (min && isoOf(d) < isoOf(min)) return 'Date antérieure au ' + frOf(min) + '.';
+        if (max && isoOf(d) > isoOf(max)) return 'Date postérieure au ' + frOf(max) + '.';
+        return '';
+      },
+      buildPicker: calendar
+    });
+  }
+
+  /** UI.monthField({value 'YYYY-MM', options?, onChange, ...}) */
+  function monthField(o) {
+    return maskedField(o, {
+      kind: 'monthfield',
+      placeholder: 'AAAA-MM',
+      maxLength: 7,
+      openLabel: 'Choisir un mois',
+      dialogLabel: 'Choisir un mois',
+      allowed: /[^\d-]/g,
+      mask: maskMonth,
+      normalize: function (text) { var m = maskMonth(text); return Core.validateMonth(m) ? m : ''; },
+      check: function (text) { return Core.validateMonth(maskMonth(text)) ? '' : 'Format attendu : AAAA-MM.'; },
+      buildPicker: monthGrid
+    });
+  }
+
+  // ============================================================================== search field
+
+  /** UI.searchField({id?, value?, placeholder?, ariaLabel?, onInput?, className?, inputClass?}) */
+  function searchField(o) {
+    var opts = o || {};
+    var input = el('input', { type: 'search', id: opts.id || null, class: ['input', 'search-input', opts.inputClass],
+      placeholder: opts.placeholder || 'Rechercher…', 'aria-label': opts.ariaLabel || 'Rechercher',
+      autocomplete: 'off', spellcheck: 'false', value: opts.value || '' });
+    var clearBtn = el('button', { type: 'button', class: 'search-clear', 'aria-label': 'Effacer la recherche',
+      hidden: !opts.value }, '×');
+    var root = el('div', { class: ['search-field', opts.className] }, el('div', { class: 'search-box' }, input, clearBtn));
+    function sync() { clearBtn.hidden = !input.value; }
+    function setValue(v, emit) {
+      input.value = v === null || v === undefined ? '' : String(v);
+      sync();
+      if (emit && opts.onInput) opts.onInput(input.value);
+    }
+    input.addEventListener('input', function () { sync(); if (opts.onInput) opts.onInput(input.value); });
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && input.value) { e.preventDefault(); e.stopPropagation(); setValue('', true); }
+    });
+    clearBtn.addEventListener('click', function () { setValue('', true); input.focus(); });
+    root.input = input;
+    root.control = input;
+    root.getValue = function () { return input.value; };
+    root.setValue = setValue;
+    root.focus = function () { input.focus(); };
+    return root;
+  }
+
+  // ============================================================================== busy, field errors
+
+  document.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('[aria-busy="true"]') : null;
+    if (b && (b.tagName === 'BUTTON' || b.classList.contains('btn'))) { e.preventDefault(); e.stopImmediatePropagation(); }
+  }, true);
+
+  /** UI.busy(button, promise|true|false, label?) */
+  function busy(button, task, label) {
+    if (!button) return task === true ? function () {} : Promise.resolve(task);
+    if (task === false) { if (button.__busyRestore) button.__busyRestore(); return Promise.resolve(); }
+    if (!button.__busyRestore) {
+      var kids = Array.prototype.slice.call(button.childNodes);
+      var prevMin = button.style.minWidth;
+      var w = button.offsetWidth;
+      var text = label || button.textContent;
+      if (w) button.style.minWidth = w + 'px';
+      clear(button);
+      button.appendChild(el('span', { class: 'spinner btn-spinner', 'aria-hidden': 'true' }));
+      button.appendChild(el('span', { class: 'btn-busy-label' }, text));
+      button.classList.add('is-busy');
+      button.setAttribute('aria-busy', 'true');
+      button.setAttribute('aria-disabled', 'true');
+      button.__busyRestore = function () {
+        clear(button);
+        kids.forEach(function (k) { button.appendChild(k); });
+        button.style.minWidth = prevMin;
+        button.classList.remove('is-busy');
+        button.removeAttribute('aria-busy');
+        button.removeAttribute('aria-disabled');
+        button.__busyRestore = null;
+      };
+    }
+    if (task === true || task === undefined) return button.__busyRestore;
+    var restore = button.__busyRestore;
+    return Promise.resolve(task).then(function (r) { restore(); return r; }, function (e) { restore(); throw e; });
+  }
+
+  /** UI.fieldError(control, message) -> p.field-error */
+  function fieldError(control, message) {
+    if (!control) return null;
+    var host = control;
+    var target = control.control || control;
+    if (!target.id) target.id = nextId('field');
+    var errId = target.id + '-err';
+    var scope = host.closest ? (host.closest('.form-field, .field, .config-form, .import-form') || host.parentNode) : null;
+    var err = document.getElementById(errId) || (scope && scope.querySelector ? scope.querySelector('[id="' + errId + '"]') : null);
+    if (!err) {
+      err = el('p', { class: 'field-error', id: errId, hidden: true });
+      // Inside a labelled control wrapper (UI.select / UI.dropdown with a label: div.dd.field), else after it.
+      if (host.classList && host.classList.contains('field') && host !== target) host.appendChild(err);
+      else if (host.parentNode) host.parentNode.insertBefore(err, host.nextSibling);
+    }
+    var msg = message ? String(message) : '';
+    err.textContent = msg;
+    err.hidden = !msg;
+    target.setAttribute('aria-invalid', msg ? 'true' : 'false');
+    addToken(target, 'aria-describedby', errId);
+    if (host !== target && host.classList) host.classList.toggle('is-invalid', !!msg);
+    return err;
+  }
+
+  Object.assign(UI, {
+    popover: popover,
+    dropdown: dropdown,
+    checkbox: checkbox,
+    tooltip: tooltip,
+    dateField: dateField,
+    monthField: monthField,
+    searchField: searchField,
+    busy: busy,
+    fieldError: fieldError,
+    parseFrDate: parseFr
+  });
+})();
+</script>

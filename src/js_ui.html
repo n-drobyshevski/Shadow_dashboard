@@ -18,6 +18,32 @@
  *                                           sans face so that it stays narrow inside mono figures.
  *   UI.cellMark(column, value)          -> read view of a ledger cell: Statut / Niveau de risque as marks,
  *                                           Oui/Non criteria with « Non » in --ko; null for other columns.
+ *   UI.NNBSP                            -> '\u202f' (narrow no-break space: before %, inside « »).
+ *   UI.el(tag, {tooltip: text|Node})    -> custom tooltip (UI.tooltip, js_controls.html); never use title=.
+ *   UI.empty(text, action? | {action?, small?})  -> one line of ink-2 text ("no data" only).
+ *   UI.loading(text='Chargement…', {small?})     -> spinner + text (role=status).
+ *   UI.errorState(err|text, {retry?, prefix='Erreur', small?}) -> alert-error line « Erreur : message »
+ *                                           (role=alert) + optional « Réessayer » text button.
+ *   UI.errorText(err)                   -> err.message || 'Erreur inconnue.' (one fallback spelling).
+ *   UI.modal(...) also accepts {initialFocus?: Element}; it returns {close, node, buttons, setBusy(bool)}.
+ *     An action whose onClick returns a Promise keeps the dialog open with UI.busy on that button.
+ *     Dialogs with a danger action open with the focus on the non-destructive button (Annuler).
+ *   UI.confirm(message, {..., onConfirm?: () => Promise}) -> Promise<boolean>; with onConfirm the dialog
+ *     stays open (busy button) until the promise settles; a rejection is shown inline, dialog kept open.
+ *   UI.formModal({..., onSubmit?: (values) => Promise}) -> Promise<values|null>: with onSubmit the modal
+ *     stays open (busy submit button) until the promise resolves; on rejection the error is shown inline
+ *     (err.field = a field name -> under that field, else an alert at the top) and the values are kept.
+ *     Field types: text | textarea | select (UI.dropdown) | select+allowCustom (combobox; tokens:true =
+ *     comma-separated multi-token) | date (UI.dateField, 'DD/MM/YYYY') | month (UI.monthField, options =
+ *     known months). Extra field keys: hint (help line), min/max (date), mono (identifiers), disabled.
+ *   UI.select({..., id?, disabled?, mono?, searchable?, placeholder?}) / UI.multiSelect({..., id?}) build a
+ *     UI.dropdown (js_controls.html); the returned element has getValue/setValue/setOptions/setDisabled.
+ *   UI.editableTable: the search box is a UI.searchField (input.etable-search, « × » clear button, Esc
+ *     clears). Inline editors are laid over the cell (the column never changes width): columns with
+ *     `options` -> UI.dropdown size sm opened at once (select commits, Esc / outside click cancel);
+ *     date columns (label containing Date / Deadline / Prochaine revue / Échéance, or col.type 'date')
+ *     -> UI.dateField sm (Enter commits a valid date, an invalid one is refused); others -> text input.
+ *     « Enregistrer (n) » shows UI.busy while onSave runs.
  */
 (function () {
   'use strict';
@@ -61,6 +87,7 @@
     var children = Array.prototype.slice.call(arguments, 2);
     var value;
     var hasValue = false;
+    var tip = null;
     if (attrs && (attrs instanceof Node || Array.isArray(attrs) || typeof attrs !== 'object')) {
       // Called as UI.el(tag, child, ...): no attributes object.
       children.unshift(attrs);
@@ -89,6 +116,8 @@
         } else if (k === 'value') {
           value = v;
           hasValue = true;
+        } else if (k === 'tooltip') {
+          tip = v;
         } else if (/^on[A-Za-z]/.test(k) && typeof v === 'function') {
           node.addEventListener(k.slice(2).toLowerCase(), v);
         } else if (k === 'innerHTML' || k === 'outerHTML') {
@@ -102,6 +131,7 @@
     }
     appendChildren(node, children);
     if (hasValue) node.value = value === null || value === undefined ? '' : value;
+    if (tip !== null && window.UI && window.UI.tooltip) window.UI.tooltip(node, tip);
     return node;
   }
 
@@ -122,11 +152,12 @@
 
   function isNum(n) { return n !== null && n !== undefined && n !== '' && isFinite(Number(n)); }
 
+  /** UI.fmtPct(n, digits=1) -> '71,4\u202f%' (fr-FR, narrow no-break space before %); '—' for blanks. */
   function fmtPct(n, digits) {
     if (!isNum(n)) return '—';
-    var d = digits === undefined ? 1 : digits;
+    var d = digits === undefined || digits === null ? 1 : digits;
     return new Intl.NumberFormat('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: false })
-      .format(Number(n)) + ' %';
+      .format(Number(n)) + NNBSP + '%';
   }
 
   /** Same text as fmtPct; the narrow no-break space is wrapped so that it stays narrow in mono text. */
@@ -255,10 +286,41 @@
       el('span', { class: 'leader-value num' }, value));
   }
 
-  /** One line of ink-2 text, left-aligned; optional action node after it. */
-  function empty(text, action) {
-    return el('div', { class: 'empty-state', role: 'note' },
-      el('p', null, text || 'Aucune donnée.', action ? [' ', action] : null));
+  /**
+   * UI.empty(text, action? | {action?, small?}) -> one line of ink-2 text, left-aligned ("no data" only);
+   * optional action node (text button / link) after it.
+   */
+  function empty(text, o) {
+    var opts = o instanceof Node ? { action: o } : (o || {});
+    return el('div', { class: ['empty-state', opts.small ? 'is-small' : null], role: 'note' },
+      el('p', null, text || 'Aucune donnée.', opts.action ? [' ', opts.action] : null));
+  }
+
+  /** UI.loading(text='Chargement…', {small?}) -> spinner + one line of ink-2 text. */
+  function loading(text, o) {
+    var opts = o || {};
+    return el('div', { class: ['loading-state', opts.small ? 'is-small' : null], role: 'status' },
+      el('span', { class: 'spinner', 'aria-hidden': 'true' }), el('span', null, text || 'Chargement…'));
+  }
+
+  /** UI.errorText(err) -> the message of an Error / string, 'Erreur inconnue.' when there is none. */
+  function errorText(err) {
+    var m = err && typeof err === 'object' ? err.message : err;
+    m = m === null || m === undefined ? '' : String(m).trim();
+    return m || 'Erreur inconnue.';
+  }
+
+  /**
+   * UI.errorState(err|text, {retry?, prefix='Erreur', small?}) -> « Erreur : message » as an alert-error
+   * line (role=alert), with a « Réessayer » text button when retry is given.
+   */
+  function errorState(err, o) {
+    var opts = o || {};
+    var prefix = opts.prefix === undefined ? 'Erreur' : opts.prefix;
+    var text = (prefix ? prefix + ' : ' : '') + errorText(err);
+    return el('div', { class: ['alert', 'alert-error', 'error-state', opts.small ? 'is-small' : null], role: 'alert' },
+      el('p', null, text, opts.retry ? el('button', { type: 'button', class: 'btn btn-link error-retry',
+        onClick: function () { opts.retry(); } }, 'Réessayer') : null));
   }
 
   function spinner() {
@@ -300,19 +362,28 @@
     return root;
   }
 
+  function openPopover() { return window.UI && UI.popover && UI.popover.current ? UI.popover.current() : null; }
+
   /**
    * Shared overlay behaviour: Escape closes, Tab is trapped inside `panel`, focus is restored on close.
-   * Returns a close() function; `onClose` runs exactly once.
+   * Returns a close(force?) function; `onClose` runs exactly once. `canClose()` (optional) can veto the
+   * user-initiated closes (Escape, backdrop) — used while a busy action runs.
+   * Escape is left to an open popover (dropdown, calendar) and to a non-empty search field first.
    */
-  function openOverlay(overlay, panel, onClose) {
+  function openOverlay(overlay, panel, onClose, canClose) {
     var previous = document.activeElement;
     var closed = false;
+    function userClose() { if (!canClose || canClose()) close(); }
     function onKey(e) {
       if (e.key === 'Escape') {
+        if (openPopover()) return;
+        var t = e.target;
+        if (t && t.matches && t.matches('input[type=search]') && t.value) return;
         // Only the top-most overlay reacts.
         var root = modalRoot();
-        if (root.lastElementChild === overlay) { e.stopPropagation(); close(); }
+        if (root.lastElementChild === overlay) { e.stopPropagation(); userClose(); }
       } else if (e.key === 'Tab') {
+        if (!panel.contains(document.activeElement)) return;
         var items = Array.prototype.filter.call(panel.querySelectorAll(FOCUSABLE), function (n) {
           return n.offsetParent !== null || n === document.activeElement;
         });
@@ -326,6 +397,8 @@
     function close() {
       if (closed) return;
       closed = true;
+      var pop = openPopover();
+      if (pop && pop.anchor && overlay.contains(pop.anchor)) pop.close('overlay', { restoreFocus: false });
       document.removeEventListener('keydown', onKey, true);
       if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
       if (!modalRoot().firstElementChild) document.body.classList.remove('has-overlay');
@@ -334,40 +407,56 @@
       }
       if (onClose) onClose();
     }
-    overlay.addEventListener('mousedown', function (e) { if (e.target === overlay) close(); });
+    overlay.addEventListener('mousedown', function (e) { if (e.target === overlay) userClose(); });
     document.addEventListener('keydown', onKey, true);
+    if (openPopover()) UI.popover.closeAll();
     modalRoot().appendChild(overlay);
     document.body.classList.add('has-overlay');
     return close;
   }
 
+  var FIELD_FOCUS = 'input:not([type=hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled]), ' +
+    '.dd-trigger:not([disabled])';
+
   function focusFirst(container, fallback) {
-    var target = container.querySelector('input:not([type=hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled])') || fallback;
+    var target = (container && container.querySelector(FIELD_FOCUS)) || fallback;
     if (target) setTimeout(function () { try { target.focus(); } catch (e) { /* ignore */ } }, 0);
   }
 
   /**
-   * UI.modal({title, body, actions:[{label, primary?, danger?, onClick(close)}], wide?, onClose?}) -> {close, node}
-   * onClick may return a Promise: buttons are disabled until it settles.
+   * UI.modal({title, body, actions:[{label, primary?, danger?, onClick(close)}], wide?, onClose?, initialFocus?})
+   *   -> {close, node, buttons, setBusy(bool)}
+   * onClick may return a Promise: the dialog stays open, the clicked button shows UI.busy, the other buttons
+   * are disabled and Escape / backdrop / × are ignored until it settles.
+   * Initial focus: the first field of the body, else the primary button; for a dialog with a danger action,
+   * the first non-destructive button (« Annuler ») so that a stray Enter never deletes.
    */
   function modal(o) {
     var opts = o || {};
     var titleId = nextId('modal-title');
     var close;
     var buttons = [];
+    var busyCount = 0;
     var actions = opts.actions && opts.actions.length ? opts.actions : [{ label: 'Fermer', primary: true }];
     var footer = el('div', { class: 'modal-footer' });
+    function setBusy(on) {
+      busyCount = Math.max(0, busyCount + (on ? 1 : -1));
+      var b = busyCount > 0;
+      buttons.forEach(function (btn) { if (!btn.classList.contains('is-busy')) btn.disabled = b; });
+      closeBtn.disabled = b;
+      dialog.setAttribute('aria-busy', b ? 'true' : 'false');
+    }
     actions.forEach(function (a) {
       var btn = el('button', {
         type: 'button',
         class: 'btn' + (a.danger ? ' btn-danger' : a.primary ? ' btn-primary' : ' btn-secondary'),
         onClick: function () {
+          if (busyCount) return;
           var r = a.onClick ? a.onClick(close) : close();
           if (r && typeof r.then === 'function') {
-            buttons.forEach(function (b) { b.disabled = true; });
-            r.then(function () {}, function () {}).then(function () {
-              buttons.forEach(function (b) { b.disabled = false; });
-            });
+            var done = UI.busy(btn, r);
+            setBusy(true);
+            done.then(function () {}, function () {}).then(function () { setBusy(false); });
           }
         }
       }, a.label);
@@ -375,31 +464,48 @@
       footer.appendChild(btn);
     });
     var closeBtn = el('button', { type: 'button', class: 'icon-btn modal-close', 'aria-label': 'Fermer',
-      onClick: function () { close(); } }, '×');
+      onClick: function () { if (!busyCount) close(); } }, '×');
     var dialog = el('div', { class: 'modal' + (opts.wide ? ' modal-wide' : ''), role: 'dialog', 'aria-modal': 'true',
       'aria-labelledby': titleId },
       el('div', { class: 'modal-header' }, el('h2', { id: titleId, class: 'modal-title' }, opts.title || ''), closeBtn),
       el('div', { class: 'modal-body' }, opts.body || null),
       footer);
     var overlay = el('div', { class: 'modal-overlay' }, dialog);
-    close = openOverlay(overlay, dialog, opts.onClose);
+    close = openOverlay(overlay, dialog, opts.onClose, function () { return !busyCount; });
+    var hasDanger = actions.some(function (a) { return a.danger; });
     var primary = buttons.filter(function (b, i) { return actions[i].primary || actions[i].danger; })[0];
-    focusFirst(dialog.querySelector('.modal-body'), primary || closeBtn);
-    return { close: close, node: dialog };
+    var safe = buttons.filter(function (b, i) { return !actions[i].danger && !actions[i].primary; })[0];
+    if (opts.initialFocus) focusFirst(null, opts.initialFocus);
+    else if (hasDanger) focusFirst(null, safe || closeBtn);
+    else focusFirst(dialog.querySelector('.modal-body'), primary || closeBtn);
+    return { close: close, node: dialog, buttons: buttons, setBusy: setBusy };
   }
 
-  /** UI.confirm(message, {title?, okLabel?, cancelLabel?, danger?}) -> Promise<boolean> */
+  /**
+   * UI.confirm(message, {title?, okLabel?, cancelLabel?, danger?, onConfirm?}) -> Promise<boolean>
+   * onConfirm (optional) runs on « OK » and may return a Promise: the dialog stays open with the busy button;
+   * on rejection the error is shown inline and the dialog stays open (the user can retry or cancel).
+   */
   function confirm(message, o) {
     var opts = o || {};
     return new Promise(function (resolve) {
       var result = false;
+      var errorBox = el('div', { class: 'confirm-error' });
       modal({
         title: opts.title || 'Confirmation',
-        body: el('p', { class: 'confirm-message' }, message),
+        body: el('div', { class: 'confirm-body' }, el('p', { class: 'confirm-message' }, message), errorBox),
         actions: [
           { label: opts.cancelLabel || 'Annuler', onClick: function (close) { close(); } },
           { label: opts.okLabel || 'Confirmer', primary: !opts.danger, danger: !!opts.danger,
-            onClick: function (close) { result = true; close(); } }
+            onClick: function (close) {
+              if (!opts.onConfirm) { result = true; close(); return null; }
+              clear(errorBox);
+              var p;
+              try { p = Promise.resolve(opts.onConfirm()); } catch (e) { p = Promise.reject(e); }
+              return p.then(function () { result = true; close(); }, function (err) {
+                clear(errorBox).appendChild(errorState(err));
+              });
+            } }
         ],
         onClose: function () { resolve(result); }
       });
@@ -414,10 +520,13 @@
   }
 
   /**
-   * UI.formModal({title, fields, submitLabel?}) -> Promise<values|null>
+   * UI.formModal({title, fields, submitLabel?, onSubmit?, wide?}) -> Promise<values|null>
    * fields: [{name, label, type:'text'|'textarea'|'select'|'date'|'month', options?, value?, required?,
-   *           placeholder?, allowCustom?}]
-   * 'date' fields take and return 'DD/MM/YYYY'. Values are trimmed strings ('' when empty).
+   *           placeholder?, allowCustom?, tokens?, hint?, min?, max?, mono?, disabled?}]
+   * 'date' fields take and return 'DD/MM/YYYY'; 'month' fields 'YYYY-MM'. Values are trimmed strings
+   * ('' when empty). Enter submits; the first invalid field is focused; errors are shown under the fields
+   * (UI.fieldError). onSubmit(values) -> Promise keeps the modal open (busy submit button) until it
+   * resolves; on rejection the error is shown inline (err.field -> that field) and the values are kept.
    */
   function formModal(o) {
     var opts = o || {};
@@ -425,91 +534,146 @@
     return new Promise(function (resolve) {
       var result = null;
       var controls = {};
-      var errors = {};
-      var form = el('form', { class: 'form', novalidate: true, onSubmit: function (e) { e.preventDefault(); submit(); } });
+      var busyNow = false;
+      var alertBox = el('div', { class: 'form-alert', hidden: true });
+      var form = el('form', { class: 'form', novalidate: true, onSubmit: function (e) { e.preventDefault(); submit(); } },
+        alertBox);
 
       fields.forEach(function (f) {
         var id = nextId('field');
+        var labelId = id + '-label';
         var type = f.type || 'text';
         var value = f.value === null || f.value === undefined ? '' : String(f.value);
-        var control;
-        var extra = null;
-        var common = { id: id, name: f.name, class: 'input', required: !!f.required, placeholder: f.placeholder || null };
+        var control;   // element placed in the form
+        var focusEl;   // element receiving focus / aria-invalid
+        var get;
+        var common = { id: id, name: f.name, class: ['input', f.mono ? 'mono' : null], required: !!f.required,
+          placeholder: f.placeholder || null, disabled: !!f.disabled };
         if (type === 'textarea') {
-          control = el('textarea', Object.assign(common, { rows: 3, value: value }));
-        } else if (type === 'select' && f.allowCustom) {
-          var listId = nextId('list');
-          control = el('input', Object.assign(common, { type: 'text', list: listId, value: value, autocomplete: 'off' }));
-          extra = el('datalist', { id: listId }, normOptions(f.options).map(function (op) {
-            return el('option', { value: op.value }, op.label !== op.value ? op.label : null);
-          }));
+          control = focusEl = el('textarea', Object.assign(common, { rows: 3, value: value }));
+          get = function () { return String(control.value || '').trim(); };
         } else if (type === 'select') {
           var ops = normOptions(f.options);
-          if (value && !ops.some(function (op) { return op.value === value; })) ops.push({ value: value, label: value });
-          control = el('select', Object.assign(common, { value: value }),
-            el('option', { value: '' }, f.required ? '— Choisir —' : '—'),
-            ops.map(function (op) { return el('option', { value: op.value }, op.label); }));
-        } else if (type === 'date') {
-          control = el('input', Object.assign(common, { type: 'date', value: Core.frToIso(value) }));
-        } else if (type === 'month') {
-          control = el('input', Object.assign(common, { type: 'month', value: value, placeholder: f.placeholder || 'AAAA-MM' }));
+          if (!f.allowCustom && value && !ops.some(function (op) { return op.value === value; })) ops.push({ value: value, label: value });
+          control = UI.dropdown({ id: id, name: f.name, labelledBy: labelId, options: ops, value: value,
+            combobox: !!f.allowCustom, tokens: !!(f.allowCustom && f.tokens), mono: !!f.mono, disabled: !!f.disabled,
+            allowEmpty: !f.allowCustom && !f.required, emptyLabel: '—',
+            placeholder: f.placeholder || (!f.allowCustom && f.required ? 'Choisir…' : null) });
+          focusEl = control.control;
+          get = function () { return Core.str(control.getValue()); };
+        } else if (type === 'date' || type === 'month') {
+          var maker = type === 'date' ? UI.dateField : UI.monthField;
+          control = maker({ id: id, name: f.name, labelledBy: labelId, value: value, required: !!f.required,
+            min: f.min, max: f.max, options: f.options, disabled: !!f.disabled,
+            onValidate: function (msg) { UI.fieldError(control, msg); } });
+          focusEl = control.control;
+          get = function () { return control.getValue(); };
         } else {
-          control = el('input', Object.assign(common, { type: 'text', value: value }));
+          control = focusEl = el('input', Object.assign(common, { type: 'text', value: value }));
+          get = function () { return String(control.value || '').trim(); };
         }
+        var label = el('label', { for: id, id: labelId, class: 'field-label' }, f.label || f.name,
+          f.required ? el('span', { class: 'required', 'aria-hidden': 'true' }, ' *') : null);
+        if (focusEl.tagName === 'BUTTON') {
+          // A label click focuses the dropdown trigger without opening it.
+          label.addEventListener('click', function (e) { e.preventDefault(); if (!focusEl.disabled) focusEl.focus(); });
+        }
+        var hint = f.hint ? el('p', { class: 'field-help', id: id + '-help' }, f.hint) : null;
+        if (hint) focusEl.setAttribute('aria-describedby', id + '-help');
         var err = el('p', { class: 'field-error', id: id + '-err', hidden: true });
-        control.setAttribute('aria-describedby', id + '-err');
-        controls[f.name] = { field: f, control: control, type: type };
-        errors[f.name] = err;
+        focusEl.setAttribute('aria-describedby', ((focusEl.getAttribute('aria-describedby') || '') + ' ' + id + '-err').trim());
+        controls[f.name] = { field: f, control: control, focusEl: focusEl, type: type, get: get };
         form.appendChild(el('div', { class: 'form-field' + (type === 'textarea' ? ' form-field-wide' : '') },
-          el('label', { for: id, class: 'field-label' }, f.label || f.name,
-            f.required ? el('span', { class: 'required', 'aria-hidden': 'true' }, ' *') : null),
-          control, extra, err));
+          label, control, hint, err));
       });
-      // Hidden submit button so that Enter in a text input submits the form.
-      form.appendChild(el('button', { type: 'submit', hidden: true, tabindex: '-1', 'aria-hidden': 'true' }));
+
+      // Enter in a single-line field submits (dropdowns and comboboxes consume Enter while their list is open).
+      form.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter' || e.defaultPrevented || e.isComposing) return;
+        var t = e.target;
+        if (t.tagName !== 'INPUT') return;
+        e.preventDefault();
+        submit();
+      });
+
+      function check(name) {
+        var c = controls[name];
+        var v = c.get();
+        var msg = '';
+        if (c.type === 'date' || c.type === 'month') msg = c.control.validate();
+        else if (c.field.required && !v) msg = 'Ce champ est obligatoire.';
+        UI.fieldError(c.control, msg);
+        return { value: v, ok: !msg };
+      }
 
       function collect() {
         var values = {};
         var ok = true;
         Object.keys(controls).forEach(function (name) {
-          var c = controls[name];
-          var raw = String(c.control.value || '').trim();
-          var v = c.type === 'date' ? (raw ? Core.isoToFr(raw) : '') : raw;
-          var msg = '';
-          if (c.field.required && !v) msg = 'Ce champ est obligatoire.';
-          else if (c.type === 'month' && v && !Core.validateMonth(v)) msg = 'Format attendu : AAAA-MM.';
-          else if (c.type === 'date' && raw && !v) msg = 'Date invalide.';
-          errors[name].textContent = msg;
-          errors[name].hidden = !msg;
-          c.control.setAttribute('aria-invalid', msg ? 'true' : 'false');
-          if (msg) ok = false;
-          values[name] = v;
+          var r = check(name);
+          if (!r.ok) ok = false;
+          values[name] = r.value;
         });
         return ok ? values : null;
       }
 
+      function showError(err) {
+        var field = err && err.field && controls[err.field] ? controls[err.field] : null;
+        if (field) {
+          UI.fieldError(field.control, errorText(err));
+          field.focusEl.focus();
+          return;
+        }
+        clear(alertBox).appendChild(errorState(err));
+        alertBox.hidden = false;
+      }
+
       var m;
+      var submitBtn;
       function submit() {
+        if (busyNow) return;
         var values = collect();
         if (!values) {
           var bad = form.querySelector('[aria-invalid="true"]');
           if (bad) bad.focus();
           return;
         }
-        result = values;
-        m.close();
+        alertBox.hidden = true;
+        clear(alertBox);
+        if (!opts.onSubmit) {
+          result = values;
+          m.close();
+          return;
+        }
+        var p;
+        try { p = Promise.resolve(opts.onSubmit(values)); } catch (e) { p = Promise.reject(e); }
+        busyNow = true;
+        var done = UI.busy(submitBtn, p);
+        m.setBusy(true);
+        done.then(function () {
+          busyNow = false;
+          m.setBusy(false);
+          result = values;
+          m.close();
+        }, function (err) {
+          busyNow = false;
+          m.setBusy(false);
+          showError(err);
+        });
       }
 
       m = modal({
         title: opts.title || 'Formulaire',
         body: form,
-        wide: fields.length > 6,
+        wide: opts.wide !== undefined ? !!opts.wide : fields.length > 6,
         actions: [
           { label: 'Annuler', onClick: function (close) { close(); } },
           { label: opts.submitLabel || 'Enregistrer', primary: true, onClick: function () { submit(); } }
         ],
         onClose: function () { resolve(result); }
       });
+      submitBtn = m.buttons[m.buttons.length - 1];
+      submitBtn.setAttribute('type', 'button');
     });
   }
 
@@ -538,23 +702,37 @@
 
   // ------------------------------------------------------------------------------ tabs / selects
 
-  /** UI.tabs([{id, label, render(root)}], activeId?) -> Element. The panel is re-rendered on activation. */
+  /**
+   * UI.tabs([{id, label, render(root)}], activeId?) -> Element. The panel is re-rendered on activation.
+   * Keyboard: ArrowLeft/ArrowRight (wrap), Home/End. On narrow screens the tab row scrolls sideways with a
+   * fade on the clipped side(s) and keeps the active tab in view. The panel is not a Tab stop.
+   */
   function tabs(items, activeId) {
     var list = items || [];
     var baseId = nextId('tabs');
     var tablist = el('div', { class: 'tablist', role: 'tablist' });
-    var panel = el('div', { class: 'tabpanel', role: 'tabpanel', id: baseId + '-panel', tabindex: '0' });
+    var panel = el('div', { class: 'tabpanel', role: 'tabpanel', id: baseId + '-panel' });
     var buttons = {};
     var current = null;
+    function updateCue() {
+      var max = tablist.scrollWidth - tablist.clientWidth;
+      tablist.classList.toggle('has-more-left', max > 1 && tablist.scrollLeft > 1);
+      tablist.classList.toggle('has-more-right', max > 1 && tablist.scrollLeft < max - 1);
+    }
     /** Phones: the tab row scrolls sideways; keep the active tab in view (horizontal scroll only). */
     function revealTab(b, retried) {
       if (!b.isConnected) { if (!retried) setTimeout(function () { revealTab(b, true); }, 0); return; }
-      if (tablist.scrollWidth <= tablist.clientWidth) return;
-      var r = b.getBoundingClientRect();
-      var tr = tablist.getBoundingClientRect();
-      if (r.right > tr.right) tablist.scrollLeft += r.right - tr.right;
-      else if (r.left < tr.left) tablist.scrollLeft -= tr.left - r.left;
+      if (tablist.scrollWidth > tablist.clientWidth) {
+        var pad = 24;
+        var r = b.getBoundingClientRect();
+        var tr = tablist.getBoundingClientRect();
+        if (r.right > tr.right - pad) tablist.scrollLeft += r.right - tr.right + pad;
+        else if (r.left < tr.left + pad) tablist.scrollLeft -= tr.left - r.left + pad;
+      }
+      updateCue();
     }
+    tablist.addEventListener('scroll', updateCue, { passive: true });
+    if (typeof ResizeObserver === 'function') new ResizeObserver(updateCue).observe(tablist);
     function activate(id, focus) {
       if (!list.some(function (it) { return it.id === id; })) id = list.length ? list[0].id : null;
       current = id;
@@ -573,7 +751,7 @@
       clear(panel);
       var item = list.filter(function (it) { return it.id === id; })[0];
       if (item && item.render) {
-        try { item.render(panel); } catch (e) { console.error(e); panel.appendChild(empty('Erreur d’affichage : ' + e.message)); }
+        try { item.render(panel); } catch (e) { console.error(e); panel.appendChild(errorState(e, { prefix: 'Erreur d’affichage' })); }
       }
       root.dataset.active = id || '';
     }
@@ -584,11 +762,11 @@
         onClick: function () { activate(it.id); },
         onKeydown: function (e) {
           var idx = list.indexOf(it);
-          if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-            e.preventDefault();
-            var n = (idx + (e.key === 'ArrowRight' ? 1 : -1) + list.length) % list.length;
-            activate(list[n].id, true);
-          }
+          var n = -1;
+          if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') n = (idx + (e.key === 'ArrowRight' ? 1 : -1) + list.length) % list.length;
+          else if (e.key === 'Home') n = 0;
+          else if (e.key === 'End') n = list.length - 1;
+          if (n >= 0) { e.preventDefault(); activate(list[n].id, true); }
         }
       }, it.label);
       tablist.appendChild(buttons[it.id]);
@@ -600,88 +778,41 @@
     return root;
   }
 
-  /** UI.select({label?, options:[string|{value,label}], value, onChange}) -> Element (label wrapper). */
+  /**
+   * UI.select({label?, ariaLabel?, options:[string|{value,label,hint?,group?}], value, onChange, id?, disabled?,
+   *            mono?, searchable?, placeholder?, size?}) -> Element (div.field.select-field, a UI.dropdown).
+   * The trigger button carries `id`. Returned element: getValue/setValue/setOptions/setDisabled/focus, .control.
+   * Deprecated transition shim: root.querySelector('select') returns a hidden stand-in whose id / value /
+   * disabled are forwarded to the dropdown (pages should pass `id` / `disabled` instead).
+   */
   function select(o) {
     var opts = o || {};
-    var ops = normOptions(opts.options);
-    var value = opts.value === null || opts.value === undefined ? '' : String(opts.value);
-    var sel = el('select', {
-      class: 'input',
-      'aria-label': opts.label ? null : (opts.ariaLabel || 'Sélection'),
-      value: value,
-      onChange: function () { if (opts.onChange) opts.onChange(sel.value); }
-    }, ops.map(function (op) { return el('option', { value: op.value }, op.label); }));
-    sel.value = value;
-    return el('label', { class: 'field select-field' }, opts.label ? el('span', { class: 'field-label' }, opts.label) : null, sel);
+    var dd = UI.dropdown({
+      id: opts.id, label: opts.label || null, ariaLabel: opts.label ? null : (opts.ariaLabel || 'Sélection'),
+      options: opts.options, value: opts.value, onChange: opts.onChange, disabled: opts.disabled, mono: opts.mono,
+      searchable: opts.searchable, placeholder: opts.placeholder, size: opts.size, allowEmpty: opts.allowEmpty,
+      className: 'field select-field'
+    });
+    var trigger = dd.control;
+    var shim = el('select', { hidden: true, 'aria-hidden': 'true', tabindex: '-1', class: 'dd-compat' });
+    Object.defineProperty(shim, 'id', { get: function () { return trigger.id; }, set: function (v) { trigger.id = v; } });
+    Object.defineProperty(shim, 'value', { get: function () { return dd.getValue(); }, set: function (v) { dd.setValue(v); } });
+    Object.defineProperty(shim, 'disabled', { get: function () { return trigger.disabled; }, set: function (v) { dd.setDisabled(!!v); } });
+    dd.appendChild(shim);
+    return dd;
   }
 
   /**
-   * UI.multiSelect({label, options, value, onChange}) -> Element
-   * Inline disclosure: a summary button toggles a checkbox list (works inside the scrolling sidebar).
+   * UI.multiSelect({label, options:[string], value:[string], onChange:(values)=>void, id?, searchable?})
+   * -> Element (div.multiselect, a UI.dropdown in multiple mode: checkbox rows, « Effacer la sélection »,
+   * summary « Toutes » / « Labo Textile » / « Labo Textile + 1 »).
    */
   function multiSelect(o) {
     var opts = o || {};
-    var selected = (opts.value || []).map(String);
-    var options = (opts.options || []).map(String);
-    selected.forEach(function (v) { if (options.indexOf(v) < 0) options.push(v); });
-    var listId = nextId('ms');
-    var labelId = listId + '-label';
-    var summary = el('span', { class: 'ms-summary' });
-    var count = el('span', { class: 'ms-count', 'aria-hidden': 'true' });
-    var toggle = el('button', { type: 'button', class: 'ms-toggle input', 'aria-expanded': 'false',
-      'aria-controls': listId, 'aria-labelledby': labelId + ' ' + listId + '-sum' },
-      summary, count, el('span', { class: 'ms-caret', 'aria-hidden': 'true' }, '▾'));
-    summary.id = listId + '-sum';
-    var listBox = el('div', { class: 'ms-panel', id: listId, role: 'group', 'aria-labelledby': labelId, hidden: true });
-    var root = el('div', { class: 'multiselect' + (selected.length ? ' has-value' : '') },
-      el('span', { class: 'field-label', id: labelId }, opts.label || ''), toggle, listBox);
-
-    function updateSummary() {
-      summary.textContent = selected.length === 0 ? 'Toutes' :
-        selected.length <= 2 ? selected.join(', ') : selected.length + ' sélectionnées';
-      count.textContent = selected.length ? String(selected.length) : '';
-      root.classList.toggle('has-value', selected.length > 0);
-    }
-    function emit() {
-      // keep options order
-      selected = options.filter(function (v) { return selected.indexOf(v) >= 0; });
-      updateSummary();
-      if (opts.onChange) opts.onChange(selected.slice());
-    }
-    function renderList() {
-      clear(listBox);
-      if (!options.length) {
-        listBox.appendChild(el('p', { class: 'muted small' }, 'Aucune valeur disponible.'));
-        return;
-      }
-      options.forEach(function (v) {
-        var cb = el('input', { type: 'checkbox', value: v, checked: selected.indexOf(v) >= 0,
-          onChange: function () {
-            if (cb.checked) { if (selected.indexOf(v) < 0) selected.push(v); }
-            else selected = selected.filter(function (x) { return x !== v; });
-            emit();
-          } });
-        listBox.appendChild(el('label', { class: 'ms-option' }, cb, el('span', null, v)));
-      });
-      listBox.appendChild(el('button', { type: 'button', class: 'btn btn-link btn-small ms-clear',
-        onClick: function () {
-          selected = [];
-          Array.prototype.forEach.call(listBox.querySelectorAll('input[type=checkbox]'), function (c) { c.checked = false; });
-          emit();
-        } }, 'Effacer la sélection'));
-    }
-    function setOpen(open) {
-      listBox.hidden = !open;
-      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-      root.classList.toggle('open', open);
-    }
-    toggle.addEventListener('click', function () { setOpen(listBox.hidden); });
-    root.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape' && !listBox.hidden) { e.stopPropagation(); setOpen(false); toggle.focus(); }
-    });
-    renderList();
-    updateSummary();
-    return root;
+    return UI.dropdown({ id: opts.id, label: opts.label || null, ariaLabel: opts.label ? null : (opts.ariaLabel || 'Sélection'),
+      options: (opts.options || []).map(String), value: (opts.value || []).map(String), multiple: true,
+      placeholder: opts.placeholder || 'Toutes', onChange: opts.onChange, searchable: opts.searchable,
+      className: 'multiselect' });
   }
 
   // ------------------------------------------------------------------------------ editable table
@@ -737,9 +868,10 @@
     }
 
     // --- structure
-    var searchInput = opts.search === false ? null : el('input', {
-      type: 'search', class: 'input etable-search', placeholder: 'Rechercher…', 'aria-label': 'Rechercher dans le tableau',
-      onInput: function () { query = searchInput.value; page = 0; renderBody(); }
+    var searchBox = opts.search === false ? null : UI.searchField({
+      className: 'etable-search-field', inputClass: 'etable-search', placeholder: 'Rechercher…',
+      ariaLabel: 'Rechercher dans le tableau',
+      onInput: function (v) { query = v; page = 0; renderBody(); }
     });
     var countEl = el('span', { class: 'etable-count muted' });
     var saveBtn = el('button', { type: 'button', class: 'btn btn-primary btn-small etable-save', onClick: save });
@@ -749,7 +881,7 @@
       dirtyLabel, el('span', { class: 'spacer' }), cancelBtn, saveBtn);
     var toolbar = el('div', { class: 'etable-toolbar' },
       el('div', { class: 'etable-tools' }, opts.toolbar || null),
-      el('div', { class: 'etable-right' }, searchInput, countEl, opts.toolbarEnd || null));
+      el('div', { class: 'etable-right' }, searchBox, countEl, opts.toolbarEnd || null));
     var thead = el('thead');
     var tbody = el('tbody');
     var table = el('table', { class: 'table etable-table' }, thead, tbody);
@@ -793,8 +925,7 @@
         } }, label, el('span', { class: 'sort-ind', 'aria-hidden': 'true' },
           sortKey === col.key ? (sortDir === 1 ? '↑' : '↓') : '')) : label;
         tr.appendChild(el('th', { scope: 'col', 'aria-sort': sortable ? ariaSort : null, style: style,
-          class: [col.editable ? 'th-editable' : null, col.numeric ? 'num' : null],
-          title: col.editable ? 'Colonne modifiable' : null }, content));
+          class: [col.editable ? 'th-editable' : null, col.numeric ? 'num' : null] }, content));
       });
       thead.appendChild(tr);
     }
@@ -873,42 +1004,93 @@
       updateDirtyBar();
     }
 
+    /** Date-like columns get the date editor (DD/MM/YYYY mask, calendar, validation). */
+    var DATE_COL = /date|deadline|prochaine revue|échéance/i;
+    function isDateColumn(col) {
+      if (col.type) return col.type === 'date';
+      return !Array.isArray(col.options) && DATE_COL.test(String(col.label !== undefined ? col.label : col.key));
+    }
+
+    /**
+     * Inline editor, laid over the cell (absolutely positioned) so that the column never changes width:
+     * options -> UI.dropdown size sm opened at once (commit on select, Esc / outside click cancel);
+     * date columns -> UI.dateField sm (Enter / blur commit a valid date, an invalid one is refused);
+     * other columns -> text input (Enter / blur commit, Esc cancels).
+     */
     function startEdit(td, row, col) {
       if (td.classList.contains('cell-editing') || saving) return;
-      var current = view(row)[col.key];
-      var curStr = Core.str(current);
+      var curStr = Core.str(view(row)[col.key]);
+      var label = (col.label || col.key) + ' — modifier';
       var editor;
+      var getValue;
       var done = false;
-      if (Array.isArray(col.options)) {
-        var values = [''].concat(col.options.map(String));
-        if (values.indexOf(curStr) < 0) values.push(curStr);
-        editor = el('select', { class: 'input cell-editor', 'aria-label': (col.label || col.key) + ' — modifier' },
-          values.map(function (v) { return el('option', { value: v }, v === '' ? '—' : v); }));
-        editor.value = curStr;
-        editor.addEventListener('change', function () { commit(); });
-      } else {
-        editor = el('input', { type: 'text', class: 'input cell-editor', value: curStr, 'aria-label': (col.label || col.key) + ' — modifier' });
-      }
+      var host = el('div', { class: 'cell-editor-host' });
+
       function finish(apply) {
         if (done) return;
         done = true;
-        if (apply) setDirty(row, col.key, editor.value);
+        if (apply) setDirty(row, col.key, getValue());
         td.classList.remove('cell-editing');
+        if (host.parentNode) host.parentNode.removeChild(host);
         // Re-render every cell of the row: computed columns (score, criteria...) follow the edit at once.
         renderRow(td.parentNode, row);
         if (td.isConnected) td.focus();
       }
-      function commit() { finish(true); }
-      editor.addEventListener('blur', function () { finish(true); });
-      editor.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
-      });
-      editor.addEventListener('click', function (e) { e.stopPropagation(); });
+
+      if (Array.isArray(col.options)) {
+        var values = col.options.map(String);
+        if (curStr && values.indexOf(curStr) < 0) values.push(curStr);
+        editor = UI.dropdown({ size: 'sm', options: values, value: curStr, allowEmpty: true, emptyLabel: '—',
+          ariaLabel: label, mono: !!col.mono, searchable: values.length > 12,
+          onClose: function (reason) { finish(reason === 'select'); } });
+        getValue = function () { return editor.getValue(); };
+      } else if (isDateColumn(col)) {
+        editor = UI.dateField({ size: 'sm', value: curStr, ariaLabel: label });
+        getValue = function () { return editor.getValue(); };
+        var input = editor.control;
+        input.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            var msg = editor.validate();
+            if (msg) { input.setAttribute('aria-invalid', 'true'); return; }
+            finish(true);
+          } else if (e.key === 'Escape' && !editor.isOpen()) { e.preventDefault(); e.stopPropagation(); finish(false); }
+        });
+        input.addEventListener('blur', function () {
+          setTimeout(function () {
+            if (done || editor.isOpen() || host.contains(document.activeElement)) return;
+            if (editor.validate()) {
+              finish(false);
+              toast('Date invalide (JJ/MM/AAAA attendu) : modification annulée.', 'error');
+            } else {
+              finish(true);
+            }
+          }, 0);
+        });
+      } else {
+        editor = el('input', { type: 'text', class: 'input cell-editor', value: curStr, 'aria-label': label });
+        getValue = function () { return editor.value; };
+        editor.addEventListener('blur', function () { finish(true); });
+        editor.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+          else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+        });
+      }
+      host.addEventListener('click', function (e) { e.stopPropagation(); });
+      host.appendChild(editor);
+      // Freeze the geometry: the editor covers the cell (at least 140px wide, never past the table edge).
+      var cellW = td.offsetWidth;
+      var width = Math.max(cellW - 4, 140);
+      host.style.width = width + 'px';
+      if (td.offsetLeft + width + 2 > table.offsetWidth && width > cellW - 4) {
+        host.style.left = 'auto';
+        host.style.right = '2px';
+      }
       td.classList.add('cell-editing');
-      clear(td);
-      td.appendChild(editor);
-      editor.focus();
+      td.appendChild(host);
+      if (editor.open && Array.isArray(col.options)) editor.open();
+      else if (editor.focus) editor.focus();
+      if (editor.select && editor.tagName === 'INPUT') editor.select();
     }
 
     function renderBody() {
@@ -939,7 +1121,6 @@
           if (col.editable) {
             td.classList.add('cell-editable');
             td.tabIndex = 0;
-            td.title = 'Modifier';
             td.addEventListener('click', function (e) { e.stopPropagation(); startEdit(td, row, col); });
             td.addEventListener('keydown', function (e) {
               if ((e.key === 'Enter' || e.key === 'F2') && e.target === td) { e.preventDefault(); startEdit(td, row, col); }
@@ -974,8 +1155,11 @@
       // Sentence in sans, only the figure in mono (same text content as before).
       clear(dirtyLabel).appendChild(el('span', { class: 'etable-dirty-count' }, String(n)));
       dirtyLabel.appendChild(document.createTextNode(' modification' + (n > 1 ? 's' : '') + ' non enregistrée' + (n > 1 ? 's' : '')));
-      saveBtn.textContent = saving ? 'Enregistrement…' : 'Enregistrer (' + n + ')';
-      saveBtn.disabled = saving || n === 0 || !opts.onSave;
+      if (!saving) {
+        // While saving, UI.busy owns the button content (spinner + « Enregistrement… »).
+        saveBtn.textContent = 'Enregistrer (' + n + ')';
+        saveBtn.disabled = n === 0 || !opts.onSave;
+      }
       cancelBtn.disabled = saving;
     }
 
@@ -989,14 +1173,14 @@
       updateDirtyBar();
       var p;
       try { p = Promise.resolve(opts.onSave(changes)); } catch (e) { p = Promise.reject(e); }
-      p.then(function () {
+      UI.busy(saveBtn, p, 'Enregistrement…').then(function () {
         if (!rowsReplaced) {
           // The page did not push fresh rows: apply the saved values locally.
           rows = rows.map(function (r) { return snapshot[idOf(r)] ? Object.assign({}, r, snapshot[idOf(r)]) : r; });
         }
         dirty = {};
       }, function (err) {
-        toast((err && err.message) || 'Échec de l’enregistrement.', 'error');
+        toast('Erreur : ' + errorText(err), 'error');
       }).then(function () {
         saving = false;
         renderBody();
@@ -1066,6 +1250,10 @@
     leaderRow: leaderRow,
     section: section,
     empty: empty,
+    loading: loading,
+    errorState: errorState,
+    errorText: errorText,
+    NNBSP: NNBSP,
     toast: toast,
     modal: modal,
     confirm: confirm,
