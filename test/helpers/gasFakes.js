@@ -85,9 +85,11 @@ function parseA1(ref) {
  */
 function formatDate(date, tz, pattern) {
   if (!isDate(date) || Number.isNaN(date.getTime())) throw new Error('Invalid argument: date');
+  // Like Apps Script: a non-string / empty time zone is refused (« Argument incorrect : timeZone »).
+  if (typeof tz !== 'string' || !tz) throw new Error('Invalid argument: timeZone. Should be of type: String');
   const parts = {};
   const fmt = new Intl.DateTimeFormat('en-GB', {
-    timeZone: tz || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit',
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
   });
   for (const p of fmt.formatToParts(date)) parts[p.type] = p.value;
@@ -353,7 +355,7 @@ function createGasEnv(options) {
 
     getDisplayValues() {
       count('getDisplayValues');
-      const tz = this._sheet._ss.getSpreadsheetTimeZone();
+      const tz = this._sheet._ss.getSpreadsheetTimeZone() || 'Europe/Paris';
       return this._each((r, c) => {
         const d = this._sheet._get(this._sheet._disp, r, c);
         if (d !== undefined) return String(d);
@@ -427,7 +429,8 @@ function createGasEnv(options) {
     constructor(id, name, tz) {
       this._id = id;
       this._name = name;
-      this._tz = tz || timeZone;
+      // A fixture may set timeZone: null (real files converted from Excel can report no time zone).
+      this._tz = tz === undefined ? timeZone : tz;
       this._sheets = [];
     }
     getId() { return this._id; }

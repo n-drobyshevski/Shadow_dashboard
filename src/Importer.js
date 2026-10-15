@@ -75,13 +75,26 @@ var Importer = (function () {
   }
 
   /**
+   * Time zone of the source spreadsheet for Date cells. Some files (e.g. converted from Excel) report
+   * none: Utilities.formatDate would then throw « Argument incorrect : timeZone », so fall back to the
+   * app's zone (Config.TIME_ZONE).
+   */
+  function sourceTimeZone_(ss) {
+    var tz = null;
+    try { tz = ss.getSpreadsheetTimeZone(); } catch (e) { tz = null; }
+    if (typeof tz === 'string' && tz.trim()) return tz.trim();
+    console.warn('Importer: source spreadsheet has no time zone, using ' + Config.TIME_ZONE);
+    return Config.TIME_ZONE;
+  }
+
+  /**
    * Reads the whole configured source.
    * @return {{sourceId, title, postes:{headers,records,warnings}|null, applications:{...}|null,
    *           referentiel:Object<string,string[]>|null}}
    */
   function readSource() {
     var ss = openSource();
-    var tz = ss.getSpreadsheetTimeZone();
+    var tz = sourceTimeZone_(ss);
     var fmtDate = function (d) { return Utilities.formatDate(d, tz, 'dd/MM/yyyy'); };
 
     var postes = readEntityTab_(ss, Core.SOURCE_TABS.postes, Core.KEY_POSTE, fmtDate);
