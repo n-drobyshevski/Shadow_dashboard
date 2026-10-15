@@ -15,35 +15,12 @@
   var KEY_POSTE = Core.KEY_POSTE;
   var KEY_APP = Core.KEY_APP;
 
-  var token = 0;            // bumped on every mount/unmount: stale async renders are dropped
-  var chartEls = [];
+  var board = null;         // Charts.board of the rendered body (purged on re-render / leave)
+  var view = null;          // {body, month} of the mounted page (filter changes re-render the body in place)
   var lastImport = null;    // result of the last successful import (warnings survive the re-mount)
   var importLogCache = null;
 
   // ------------------------------------------------------------------------------ helpers
-
-  function header(s) {
-    var kicker = s.month ? [Fmt.monthTitle(s.month) + ' · ', el('span', { class: 'mono' }, 'Export ' + s.month)] :
-      'Aucun export importé';
-    var h = UI.pageHeader({ title: 'Tableau de bord', kicker: kicker, kickerId: s.month ? 'dashboard-caption' : null });
-    var k = h.querySelector('.page-kicker');
-    if (k && s.month) k.dataset.month = s.month;
-    return h;
-  }
-
-  function filterNote() {
-    var text = State.filterSummary('all');
-    return text ? el('p', { class: 'filter-note', role: 'status' }, text) : null;
-  }
-
-  /** Section (hairline + small-caps label) around a chart box; the draw runs once the box is in the DOM. */
-  function chartSection(title, id, draws, drawFn, caption) {
-    var box = el('div', { class: 'chart-box', id: id, role: 'img', 'aria-label': title });
-    chartEls.push(box);
-    draws.push(function () { drawFn(box); });
-    return el('section', { class: 'section chart-section', dataset: { chart: id } },
-      el('h2', { class: 'section-title' }, title), box, caption || null);
-  }
 
   function toneFor(rate, total) {
     if (!total) return null;
@@ -84,9 +61,9 @@
     var postes = f.postes;
     var apps = f.applications;
     var k = Core.computeKpis(postes, apps);
-    var draws = [];
+    board = Charts.board();
 
-    var note = filterNote();
+    var note = UI.filterNote('all');
     if (note) body.appendChild(note);
     if (!postes.length && !apps.length) {
       body.appendChild(UI.empty('Aucun poste ni application ne correspond aux filtres sélectionnés.'));
@@ -104,15 +81,15 @@
 
     // Gauges
     body.appendChild(el('div', { class: 'grid grid-2' },
-      chartSection('Conformité des postes', 'chart-gauge-postes', draws, function (box) { Charts.gauge(box, k.taux_postes); },
+      board.section('Conformité des postes', 'chart-gauge-postes', function (box) { Charts.gauge(box, k.taux_postes); },
         gaugeCaption(k.taux_postes, k.postes_conformes, k.total_postes, 'poste')),
-      chartSection('Conformité des applications', 'chart-gauge-apps', draws, function (box) { Charts.gauge(box, k.taux_apps); },
+      board.section('Conformité des applications', 'chart-gauge-apps', function (box) { Charts.gauge(box, k.taux_apps); },
         gaugeCaption(k.taux_apps, k.apps_conformes, k.total_apps, 'application'))));
 
     // Risk bars
     body.appendChild(el('div', { class: 'grid grid-2' },
-      chartSection('Risques — Postes', 'chart-risk-postes', draws, function (box) { Charts.riskBars(box, Core.riskCounts(postes)); }),
-      chartSection('Risques — Applications', 'chart-risk-apps', draws, function (box) { Charts.riskBars(box, Core.riskCounts(apps)); })));
+      board.section('Risques — Postes', 'chart-risk-postes', function (box) { Charts.riskBars(box, Core.riskCounts(postes)); }),
+      board.section('Risques — Applications', 'chart-risk-apps', function (box) { Charts.riskBars(box, Core.riskCounts(apps)); })));
 
     // Conformity details
     body.appendChild(UI.section('Détail conformité',
@@ -137,12 +114,10 @@
       return list.map(function (r) { return r._score; }).filter(function (v) { return v !== null && v !== undefined; });
     }
     body.appendChild(el('div', { class: 'grid grid-2' },
-      chartSection('Distribution des scores — Postes', 'chart-hist-postes', draws, function (box) { Charts.histogram(box, scores(postes)); }),
-      chartSection('Distribution des scores — Applications', 'chart-hist-apps', draws, function (box) { Charts.histogram(box, scores(apps)); })));
+      board.section('Distribution des scores — Postes', 'chart-hist-postes', function (box) { Charts.histogram(box, scores(postes)); }),
+      board.section('Distribution des scores — Applications', 'chart-hist-apps', function (box) { Charts.histogram(box, scores(apps)); })));
 
-    draws.forEach(function (d) {
-      try { d(); } catch (e) { console.error(e); }
-    });
+    board.draw();
   }
 
   // ------------------------------------------------------------------------------ import section
@@ -154,7 +129,7 @@
 
   function importLabel(month) { return State.get().months.indexOf(month) >= 0 ? 'Ré-importer' : 'Importer'; }
 
-  function importPanel(s, myToken) {
+  function importPanel(s) {
     var button = el('button', { type: 'submit', class: 'btn btn-primary', id: 'import-button' }, importLabel(s.currentMonth));
     var field = UI.monthField({ id: 'import-month', name: 'month', value: s.currentMonth || '', options: s.months,
       required: true, labelledBy: 'import-month-label',
@@ -197,9 +172,9 @@
             .then(function (ok) { return ok ? runImport(month, true) : null; });
         }
         var shown = err.code === 'NOT_CONFIGURED' ?
-          new Error('La source n’est pas configurée. Utilisez ' + UI.quote('Changer de source') + ' dans la barre latérale.') : err;
-        if (myToken === token) showError(shown);
-        UI.toast('Erreur : ' + UI.errorText(shown), 'error');
+          new Error('La source n’est pas configurée. Renseignez-la dans ' + UI.quote('Paramètres') + '.') : err;
+        if (status.isConnected) showError(shown);
+        UI.errorToast(shown);
         return null;
       });
     }
@@ -232,16 +207,16 @@
           el('h3', { class: 'subsection-title' }, 'Derniers imports'),
           logBox)));
     panel.id = 'import-panel';
-    loadImportLog(logBox, myToken);
+    loadImportLog(logBox);
     return panel;
   }
 
   /** Lecteurs: the import ledger alone (no form, no source line: the source sheet is private to admins). */
-  function importHistoryPanel(myToken) {
+  function importHistoryPanel() {
     var logBox = el('div', { class: 'import-log', id: 'import-log' });
     var panel = UI.section('Derniers imports', logBox);
     panel.id = 'import-history-panel';
-    loadImportLog(logBox, myToken);
+    loadImportLog(logBox);
     return panel;
   }
 
@@ -278,46 +253,48 @@
     return { toggle: toggle, detail: detail };
   }
 
-  function loadImportLog(box, myToken) {
-    UI.clear(box).appendChild(UI.loading('Chargement de l’historique…', { small: true }));
-    var p = importLogCache ? Promise.resolve(importLogCache) : api.call('api_getImportLog', null);
-    p.then(function (log) {
-      importLogCache = log || [];
-      if (myToken !== token) return;
-      UI.clear(box);
-      var entries = importLogCache.slice(0, 5);
-      if (!entries.length) { box.appendChild(UI.empty('Aucun import pour le moment.', { small: true })); return; }
-      var warn = entries.map(importWarnings);
-      function count(key) { return function (e) { return UI.fmtNum((e.counts || {})[key]); }; }
-      box.appendChild(UI.table({
-        className: 'import-table',
-        columns: [
-          { label: 'Mois', cell: function (e) { return Fmt.monthLong(e.month); } },
-          { label: 'Importé le', mono: true, cell: function (e) { return Fmt.dateTime(e.imported_at); } },
-          { label: 'Postes', num: true, cell: count('postes') },
-          { label: 'Applis', num: true, cell: count('applications') },
-          { label: 'Référentiel', num: true, cell: count('referentiel') },
-          { label: 'Alertes', num: true, cell: function (e, i) { return warn[i].toggle || el('span', { class: 'faint' }, '—'); } }
-        ],
-        rows: entries,
-        rowAttrs: function (e) { return { dataset: { month: e.month } }; },
-        extraRows: function (e, i) { return warn[i].detail; }
-      }));
-    }, function (err) {
-      if (myToken !== token) return;
-      UI.clear(box).appendChild(UI.errorState(err, { prefix: 'Historique indisponible', small: true,
-        retry: function () { loadImportLog(box, myToken); } }));
+  function loadImportLog(box) {
+    UI.asyncBlock(box, {
+      load: function () {
+        return importLogCache ? importLogCache : api.call('api_getImportLog', null).then(function (log) {
+          importLogCache = log || [];
+          return importLogCache;
+        });
+      },
+      placeholder: function () { return UI.loading('Chargement de l’historique…', { small: true }); },
+      small: true,
+      error: { prefix: 'Historique indisponible' },
+      render: function (log) {
+        var entries = log.slice(0, 5);
+        if (!entries.length) { box.appendChild(UI.empty('Aucun import pour le moment.', { small: true })); return; }
+        var warn = entries.map(importWarnings);
+        function count(key) { return function (e) { return UI.fmtNum((e.counts || {})[key]); }; }
+        box.appendChild(UI.table({
+          className: 'import-table',
+          columns: [
+            { label: 'Mois', cell: function (e) { return Fmt.monthLong(e.month); } },
+            { label: 'Importé le', mono: true, cell: function (e) { return Fmt.dateTime(e.imported_at); } },
+            { label: 'Postes', num: true, cell: count('postes') },
+            { label: 'Applis', num: true, cell: count('applications') },
+            { label: 'Référentiel', num: true, cell: count('referentiel') },
+            { label: 'Alertes', num: true, cell: function (e, i) { return warn[i].toggle || el('span', { class: 'faint' }, '—'); } }
+          ],
+          rows: entries,
+          rowAttrs: function (e) { return { dataset: { month: e.month } }; },
+          extraRows: function (e, i) { return warn[i].detail; }
+        }));
+      }
     });
   }
 
   // ------------------------------------------------------------------------------ page
 
   function mount(root) {
-    var myToken = ++token;
-    chartEls = [];
+    purgeCharts();
+    view = null;
     var s = State.get();
     var canEdit = State.canEdit();
-    root.appendChild(header(s));
+    root.appendChild(UI.monthHeader({ title: 'Tableau de bord', month: s.month, kickerId: 'dashboard-caption' }));
 
     if (!s.months.length) {
       // Empty state: one line of ink-2 text; the import section right below is the action (admins only).
@@ -325,36 +302,43 @@
         'Aucun mois importé. Un administrateur doit importer les données.');
       empty.id = 'dashboard-empty';
       root.appendChild(empty);
-      if (canEdit) root.appendChild(importPanel(s, myToken));
+      if (canEdit) root.appendChild(importPanel(s));
       return;
     }
 
-    var body = el('div', { class: 'dashboard-body', id: 'dashboard-body', 'aria-busy': 'true' },
-      UI.skeleton('dashboard', { label: 'Chargement des données…' }));
+    var body = el('div', { class: 'dashboard-body', id: 'dashboard-body' });
     root.appendChild(body);
-    root.appendChild(canEdit ? importPanel(s, myToken) : importHistoryPanel(myToken));
-
-    State.loadMonth(s.month).then(function (md) {
-      if (myToken !== token) return;
-      UI.clear(body);
-      body.setAttribute('aria-busy', 'false');
-      renderDashboard(body, State.get(), md);
-    }, function (err) {
-      if (myToken !== token) return;
-      UI.clear(body);
-      body.setAttribute('aria-busy', 'false');
-      body.appendChild(UI.errorState(err, { prefix: 'Impossible de charger ' + Fmt.monthLong(s.month),
-        retry: function () { State.invalidate(s.month); App.refresh(); } }));
+    root.appendChild(canEdit ? importPanel(s) : importHistoryPanel());
+    view = { body: body, month: s.month, ready: false };
+    var v = view;
+    UI.asyncBlock(body, {
+      load: function () { return State.loadMonth(v.month); },
+      placeholder: function () { return UI.skeleton('dashboard', { label: 'Chargement des données…' }); },
+      error: UI.monthError(v.month),
+      render: function (md) { v.ready = true; renderDashboard(body, State.get(), md); }
     });
   }
 
+  /** Filter change: only the figures and charts re-render (the import section and its history stay). */
+  function update(changed) {
+    var md = view && view.ready && State.getMonthData(view.month);
+    if (!md || changed.length !== 1 || changed[0] !== 'filters') return false;
+    purgeCharts();
+    UI.clear(view.body);
+    renderDashboard(view.body, State.get(), md);
+    return true;
+  }
+
+  function purgeCharts() {
+    if (board) board.purge();
+  }
+
   function unmount() {
-    token++;
-    chartEls.forEach(function (n) { Charts.purge(n); });
-    chartEls = [];
+    view = null;
+    purgeCharts();
   }
 
   window.Pages = window.Pages || {};
-  window.Pages.dashboard = { id: 'dashboard', title: 'Tableau de bord', icon: '', mount: mount, unmount: unmount };
+  window.Pages.dashboard = { id: 'dashboard', title: 'Tableau de bord', mount: mount, unmount: unmount, update: update };
 })();
 </script>

@@ -240,9 +240,11 @@
       tipStore = el('div', { class: 'tooltip-store', id: 'tooltip-store', hidden: true });
       document.body.appendChild(tipStore);
     }
-    // Drop the descriptions of targets that left the document.
+    // Drop the descriptions of targets that left the document (not of targets built but not inserted yet).
     Array.prototype.slice.call(tipStore.children).forEach(function (d) {
-      if (d.__target && !d.__target.isConnected) tipStore.removeChild(d);
+      if (!d.__target) return;
+      if (d.__target.isConnected) d.__seen = true;
+      else if (d.__seen) tipStore.removeChild(d);
     });
     return tipStore;
   }
@@ -878,8 +880,7 @@
 
   // ============================================================================== dates
 
-  var MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre',
-    'novembre', 'décembre'];
+  var MONTHS = Fmt.MONTHS;
   var MONTHS_SHORT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
   var DAYS = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'];
   function pad2(n) { return (n < 10 ? '0' : '') + n; }

@@ -552,3 +552,34 @@ describe('loading states', () => {
     });
   });
 });
+
+describe('filter changes re-render in place', () => {
+  for (const id of ['postes', 'apps', 'dashboard', 'timeline']) {
+    test(`${id}: the header stays, only the data block re-renders`, async () => {
+      await withApp({ page: id }, async (app) => {
+        const { page } = app;
+        await page.evaluate(() => { window.__header = document.querySelector('#main .page-header'); });
+        const calls = (await app.calls()).length;
+        await chooseOptions(page, '#filter-equipe .dd-trigger', ['Labo Textile']);
+        await app.waitIdle();
+        assert.equal(await page.evaluate(() => document.querySelector('#main .page-header') === window.__header), true,
+          'same header node: the page was not re-mounted');
+        assert.ok(await page.$('#main .filter-note'), 'filter note shown');
+        assert.equal((await app.calls()).length, calls, 'no server call for a filter change');
+        assert.deepEqual(app.errors, []);
+      });
+    });
+  }
+
+  test('postes: an open drawer stays open while the filters change', async () => {
+    await withApp({ page: 'postes' }, async (app) => {
+      const { page } = app;
+      await page.click('#postes-table tbody tr:first-child .postes-key');
+      await page.waitForSelector('#poste-drawer');
+      await page.evaluate(() => window.State.set({ filters: { equipes: ['Labo Textile'], batiments: [] } }));
+      await app.waitIdle();
+      assert.ok(await page.isVisible('#poste-drawer'));
+      assert.deepEqual(app.errors, []);
+    });
+  });
+});

@@ -1,161 +1,18 @@
 <script>
 /**
- * Pages.postes — workstation inventory (docs/API.md §6 "Postes"), typeset per docs/DESIGN.md.
- *
- * Page header (month kicker + "Exporter CSV" / "Ajouter un poste générique"), a one-line stat summary,
- * the editable ledger table over the filtered postes of the selected month (column order =
- * monthData.columns.postes, key column first and read-only, computed Score + linked applications count),
- * conformity filter (UI.select), and a detail drawer (criteria, installed applications, linked
- * remediation actions + "Nouvelle action").
+ * Pages.postes — workstation inventory (docs/API.md §6 "Postes"), typeset per docs/DESIGN.md. Built by
+ * InventoryPage (js_page_inventory.html): header (« Exporter CSV » / « Ajouter un poste générique »), stat
+ * line, editable ledger, conformity filter. Specific here: the computed « Score » / « Applis » columns, the
+ * generic poste and the drawer (criteria, installed applications, linked remediation actions).
  *
  * Read-only mode (lecteur, !State.canEdit()): no « Ajouter un poste générique », no inline editing (plain
  * cells, a click anywhere on a row opens the drawer), no « Nouvelle action »; CSV export and the drawer stay.
- *
- * This file also defines window.EntityDrawer, shared with js_page_apps.html (loaded right after it):
- *     EntityDrawer.actionsBlock({target_type, target_name, equipe, month, values?, isOpen, emptyText})
- *         -> section « Actions liées » + « Nouvelle action ». The form is window.ActionForm.open (defined by
- *         js_page_actions.html: one form, copy and toast for the drawers and Suivi des actions) with the
- *         target prefilled and locked; the list re-renders from the refreshed actions cache. Lecteurs
- *         (!State.canEdit()) get the list alone, without « Nouvelle action ».
- *     EntityDrawer.actionItem(action) -> li (status mark, neutral priority, overdue mark, échéance…), with the
- *         marks of ActionForm (same as the Suivi des actions ledger).
- *     EntityDrawer.statLine(items:[Node|string]) -> p.stat-line ; EntityDrawer.count(n, one, many) -> [num, ' noun'].
  */
 (function () {
   'use strict';
 
   var el = UI.el;
   var KEY = Core.KEY_POSTE;
-
-  function todayIso() { return Core.frToIso(Core.fmtDDMMYYYY(new Date())); }
-
-  // ============================================================================== shared: EntityDrawer
-
-  /** Marks of the Suivi des actions ledger (window.ActionForm, js_page_actions.html), with local fallbacks. */
-  var FALLBACK_TONES = { 'À faire': 'neutral', 'En cours': 'warn', 'Terminé': 'ok', 'Abandonné': 'muted' };
-  var PRIORITY_CLASS = { 'Haute': 'priority-haute', 'Moyenne': 'priority-moyenne', 'Basse': 'priority-basse' };
-  function AF() { return window.ActionForm || {}; }
-  function statusMark(status) {
-    if (AF().statusMark) return AF().statusMark(status);
-    return UI.statusMark(Core.str(status) || '—', FALLBACK_TONES[Core.str(status)] || 'neutral');
-  }
-
-  function plural(n, one, many) { return UI.fmtNum(n) + ' ' + (n > 1 ? many : one); }
-  /** [figure in mono, ' noun'] for a stat line. */
-  function count(n, one, many) { return [el('span', { class: 'num' }, UI.fmtNum(n)), ' ' + (n > 1 ? many : one)]; }
-  function statLine(items, attrs) {
-    return el('p', Object.assign({ class: 'stat-line' }, attrs || {}),
-      items.filter(Boolean).map(function (it) { return el('span', { class: 'stat' }, it); }));
-  }
-
-  function isOverdue(a) {
-    if (AF().isOverdue) return AF().isOverdue(a);
-    if (a.status === 'Terminé' || a.status === 'Abandonné') return false;
-    var due = Core.frToIso(Core.str(a.deadline));
-    return !!due && due < todayIso();
-  }
-
-  function actionItem(a) {
-    var prio = Core.str(a.priorite);
-    return el('li', { dataset: { actionId: a.id } },
-      el('span', { class: 'action-title' }, a.action || '(sans libellé)'),
-      el('div', { class: 'action-meta' },
-        statusMark(a.status),
-        prio ? el('span', { class: ['mark', 'mark-priority', PRIORITY_CLASS[prio] || 'priority-basse'] },
-          'Priorité ' + prio.toLowerCase()) : null,
-        a.deadline ? el('span', null, 'Échéance ', el('span', { class: 'mono' }, a.deadline)) : null,
-        isOverdue(a) ? UI.statusMark('En retard', 'ko') : null,
-        a.responsable ? el('span', null, a.responsable) : null,
-        a.source_month ? el('span', { class: 'faint' }, 'Export de ' + Fmt.monthLong(a.source_month)) : null),
-      a.comment ? el('p', { class: 'action-comment' }, a.comment) : null);
-  }
-
-  /**
-   * « Actions liées » block of a drawer; reloads itself after « Nouvelle action ».
-   * o: {target_type, target_name, equipe, month, values?, isOpen(), emptyText}
-   */
-  function actionsBlock(o) {
-    var list = el('div', { class: 'drawer-actions-list', id: 'drawer-actions', 'aria-live': 'polite' });
-    // Lecteurs read the linked actions; creating one is an admin write (api_addAction).
-    var addBtn = !State.canEdit() ? null : el('button', { type: 'button', class: 'btn btn-secondary btn-sm', id: 'drawer-add-action',
-      onClick: function () {
-        if (!AF().open) return;
-        AF().open({ target: { type: o.target_type, name: o.target_name, equipe: o.equipe }, defaults: o.values || {},
-          trigger: addBtn, onSaved: function () { if (o.isOpen()) render(); } });
-      } }, 'Nouvelle action');
-
-    function render(opts) {
-      UI.clear(list).appendChild(UI.loading('Chargement des actions…', { small: true }));
-      State.loadActions(opts).then(function (res) {
-        if (!o.isOpen()) return;
-        var mine = (res.actions || []).filter(function (a) {
-          return a.target_type === o.target_type && a.target_name === o.target_name;
-        });
-        UI.clear(list);
-        if (!mine.length) { list.appendChild(UI.empty(o.emptyText, { small: true })); return; }
-        list.appendChild(el('ul', { class: 'action-list' }, mine.map(actionItem)));
-      }, function (err) {
-        if (!o.isOpen()) return;
-        UI.clear(list).appendChild(UI.errorState(err, { prefix: 'Actions indisponibles', small: true,
-          retry: function () { render({ force: true }); } }));
-      });
-    }
-
-    render();
-    return el('section', { class: 'drawer-section', id: 'drawer-actions-section' },
-      el('div', { class: 'section-head' }, el('h3', { class: 'section-title' }, 'Actions liées'), addBtn), list);
-  }
-
-  window.EntityDrawer = { actionsBlock: actionsBlock, actionItem: actionItem, statLine: statLine, count: count,
-    isOverdue: isOverdue };
-
-  // ===================================================================================== Postes page
-
-  var token = 0;              // bumped on every mount/unmount: stale async renders are dropped
-  var conformity = 'all';     // 'all' | 'ok' | 'ko' — kept across re-mounts (month / filter changes)
-  var drawerHandle = null;    // currently open drawer {close}
-
-  var CONFORMITY_OPTIONS = [
-    { value: 'all', label: 'Toutes' },
-    { value: 'ok', label: 'Conformes' },
-    { value: 'ko', label: 'Non conformes' }
-  ];
-
-  /** Source columns shown as identifiers / dates (mono). */
-  var MONO_COLUMNS = { 'N° Visite': 1, 'Date visite': 1, 'Prochaine revue': 1, "Date d'achat": 1, 'Deadline': 1,
-    'Version OS': 1 };
-  /** Source columns holding figures (right-aligned, mono, tabular). */
-  var NUMERIC_COLUMNS = { 'Score conformité': 1 };
-
-  // ------------------------------------------------------------------------------ helpers
-
-  function errorToast(err) { UI.toast('Erreur : ' + UI.errorText(err), 'error'); }
-
-  function header(s, actions) {
-    var kicker = s.month ? [Fmt.monthTitle(s.month) + ' · ', el('span', { class: 'mono' }, 'Export ' + s.month)] :
-      'Aucun export importé';
-    var h = UI.pageHeader({ title: 'Postes', kicker: kicker, kickerId: s.month ? 'postes-caption' : null, actions: actions });
-    var k = h.querySelector('.page-kicker');
-    if (k && s.month) k.dataset.month = s.month;
-    return h;
-  }
-
-  function filterNote() {
-    var text = State.filterSummary('postes');
-    return text ? el('p', { class: 'filter-note', role: 'status' }, text) : null;
-  }
-
-  function hasFilters(s) {
-    var f = s.filters || {};
-    return ((f.equipes || []).length + (f.batiments || []).length) > 0;
-  }
-
-  /** Column order from the month's headers, key column first (falls back to the record keys). */
-  function sourceColumns(md) {
-    var cols = (md.columns && md.columns.postes && md.columns.postes.length) ? md.columns.postes.slice() :
-      Object.keys(md.postes[0] || {}).filter(function (k) { return k.charAt(0) !== '_'; });
-    return [KEY].concat(cols.filter(function (c) { return c !== KEY; }));
-  }
 
   function splitList(v) {
     return Core.str(v).split(',').map(function (x) { return x.trim(); }).filter(Boolean);
@@ -199,29 +56,19 @@
         state === 'empty' ? 'neutral' : state));
   }
 
-  function openDrawer(id, month) {
-    var md = State.getMonthData(month);
-    var rec = md && md.postes.filter(function (r) { return r._id === id; })[0];
+  function openDrawer(id, ctx) {
+    var md = ctx.md();
+    var rec = md.postes.filter(function (r) { return r._id === id; })[0];
     if (!rec) return;
     var name = Core.str(rec[KEY]);
-    var relation = Core.buildPosteAppsRelation(md.applications);
-    var apps = installedApps(rec, relation);
+    var apps = installedApps(rec, Core.buildPosteAppsRelation(md.applications));
     var closed = false;
-    function isOpen() { return !closed; }
-
-    var kvRows = [['Équipe', rec['Équipe']], ['Bâtiment / Labo', rec['Bâtiment / Labo']], ['Responsable', rec['Responsable']],
-      ['OS', [Core.str(rec['OS']), Core.str(rec['Version OS'])].filter(Boolean).join(' ')], ['Statut', rec['Statut']],
-      ['Date visite', rec['Date visite']], ['Action corrective', rec['Action corrective']]];
 
     var body = el('div', { class: 'entity-drawer postes-drawer', id: 'poste-drawer', dataset: { id: rec._id } },
-      el('div', { class: 'drawer-head' },
-        el('span', { class: 'stat-line' }, el('span', { class: 'faint small' }, 'Score'), UI.scoreBadge(rec._score)),
-        UI.statusMark(rec._conforme ? 'Conforme' : 'Non conforme', rec._conforme ? 'ok' : 'ko'),
-        Core.str(rec['Niveau de risque']) ?
-          el('span', { class: 'stat-line' }, el('span', { class: 'faint small' }, 'Risque'), UI.riskBadge(rec['Niveau de risque'])) : null),
-      el('dl', { class: 'kv' }, kvRows.filter(function (kv) { return Core.str(kv[1]); }).map(function (kv) {
-        return [el('dt', null, kv[0]), el('dd', { class: kv[0] === 'Date visite' ? 'mono' : null }, Core.str(kv[1]))];
-      })),
+      EntityDrawer.head(rec),
+      EntityDrawer.kv([['Équipe', rec['Équipe']], ['Bâtiment / Labo', rec['Bâtiment / Labo']], ['Responsable', rec['Responsable']],
+        ['OS', [Core.str(rec['OS']), Core.str(rec['Version OS'])].filter(Boolean).join(' ')], ['Statut', rec['Statut']],
+        ['Date visite', rec['Date visite']], ['Action corrective', rec['Action corrective']]], { 'Date visite': 1 }),
       el('section', { class: 'drawer-section', id: 'poste-drawer-criteria' },
         el('h3', { class: 'section-title' }, 'Critères de conformité'),
         el('ul', { class: 'checklist' },
@@ -240,187 +87,67 @@
             el('span', { class: 'spacer' }),
             a.linked ? UI.scoreBadge(a.score) : null);
         })) : UI.empty('Aucune application liée à ce poste.', { small: true })),
-      actionsBlock({ target_type: 'poste', target_name: name, equipe: Core.str(rec['Équipe']), month: month,
-        isOpen: isOpen, emptyText: 'Aucune action liée à ce poste.',
+      EntityDrawer.actionsBlock({ target_type: 'poste', target_name: name, equipe: Core.str(rec['Équipe']), month: ctx.month,
+        isOpen: function () { return !closed; }, emptyText: 'Aucune action liée à ce poste.',
         values: { action: Core.str(rec['Action corrective']), responsable: Core.str(rec['Responsable action']),
           deadline: Core.frToIso(rec['Deadline']) ? Core.str(rec['Deadline']) : '' } }));
 
-    drawerHandle = UI.drawer({ title: name || '(sans nom)', body: body,
-      onClose: function () { closed = true; drawerHandle = null; } });
-  }
-
-  // ------------------------------------------------------------------------------ page body
-
-  function renderBody(body, s, md, myToken, actions) {
-    var month = s.month;
-    var cols = sourceColumns(md);
-    var relation = Core.buildPosteAppsRelation(md.applications);
-
-    function current() { return State.getMonthData(month) || md; }
-    function visible() {
-      var list = State.filtered(current()).postes;
-      if (conformity === 'ok') return list.filter(function (r) { return r._conforme; });
-      if (conformity === 'ko') return list.filter(function (r) { return !r._conforme; });
-      return list;
-    }
-
-    // Summary line (global-filtered postes, before the conformity filter):
-    // "7 postes   ■ 5 conformes 71,4 %   ■ 2 non conformes   1 sans score" (figures in mono).
-    var stats = el('div', { id: 'postes-stats', class: 'postes-stats-wrap', role: 'status' });
-    function renderStats() {
-      var all = State.filtered(current()).postes;
-      var ok = all.filter(function (r) { return r._conforme; }).length;
-      var ko = all.length - ok;
-      var unknown = all.filter(function (r) { return r._score === null || r._score === undefined; }).length;
-      UI.clear(stats).appendChild(statLine([
-        count(all.length, 'poste', 'postes'),
-        [UI.statusMark(count(ok, 'conforme', 'conformes'), 'ok'),
-          all.length ? [' ', el('span', { class: 'num' }, UI.fmtPctNode(ok / all.length * 100))] : null],
-        UI.statusMark(count(ko, 'non conforme', 'non conformes'), ko ? 'ko' : 'neutral'),
-        unknown ? el('span', { class: 'faint' }, count(unknown, 'sans score', 'sans score')) : null
-      ]));
-    }
-
-    var columns = cols.map(function (c, i) {
-      if (i === 0) {
-        return { key: c, label: c, editable: false, width: 150, render: function (row) {
-          return el('button', { type: 'button', class: 'postes-key', 'aria-haspopup': 'dialog',
-            onClick: function () { openDrawer(row._id, month); } }, Core.str(row[c]) || '(sans nom)');
-        } };
-      }
-      // Read view: Statut / Niveau de risque as status marks, « Non » criteria in --ko (the editor is unchanged).
-      return { key: c, label: c, editable: true, mono: !!MONO_COLUMNS[c], numeric: !!NUMERIC_COLUMNS[c],
-        options: Core.optionsForColumn(c, md.referentiel),
-        render: NUMERIC_COLUMNS[c] ? function (row) {
-          var n = Core.parseScore(row[c]);
-          return n === null || n === undefined ? Core.str(row[c]) : UI.fmtPctNode(n);
-        } : function (row) { return UI.cellMark(c, row[c]) || Core.str(row[c]); } };
-    });
-    // Computed columns right after the key column (they are what the user scans first). The table
-    // re-renders a row after every edit, so they follow unsaved edits of « Score conformité ».
-    columns.splice(1, 0, {
-      key: '_score', label: 'Score', editable: false, numeric: true,
-      render: function (row) { return UI.scoreBadge(Core.parseScore(row['Score conformité'])); },
-      sortValue: function (row) { return Core.parseScore(row['Score conformité']); }
-    }, {
-      key: '_apps', label: 'Applis', editable: false, numeric: true,
-      render: function (row) {
-        var n = installedApps(row, relation).length;
-        return el('span', { class: n ? null : 'faint' }, String(n));
-      },
-      sortValue: function (row) { return installedApps(row, relation).length; }
-    });
-
-    var conformitySelect = UI.select({ id: 'postes-conformity', label: 'Conformité', options: CONFORMITY_OPTIONS,
-      value: conformity, onChange: function (v) { conformity = v; table.setRows(visible()); } });
-
-    if (actions.generic) actions.generic.addEventListener('click', addGeneric);
-    actions.csv.addEventListener('click', function () {
-      UI.downloadCsv('postes_' + month + '.csv', cols, visible());
-    });
-
-    var canEdit = State.canEdit();
-    var table = UI.editableTable({
-      columns: columns,
-      rows: visible(),
-      readOnly: !canEdit,
-      toolbar: [conformitySelect],
-      emptyText: !md.postes.length ? 'Aucun poste dans cet export.' :
-        (hasFilters(s) || conformity !== 'all' ? 'Aucun poste ne correspond aux filtres.' : 'Aucun poste.'),
-      onRowClick: function (row) { openDrawer(row._id, month); },
-      onSave: !canEdit ? null : function (changes) {
-        return api.call('api_savePostes', { month: month, changes: changes }).then(function (res) {
-          State.patchRecords(month, 'postes', (res && res.updated) || []);
-          if (myToken !== token) return;
-          table.setRows(visible());
-          renderStats();
-          var n = changes.reduce(function (sum, c) { return sum + Object.keys(c.updates || {}).length; }, 0);
-          UI.toast(plural(n, 'modification enregistrée', 'modifications enregistrées') + '.', 'success');
-        });
-      }
-    });
-    table.node.id = 'postes-table';
-
-    function addGeneric() {
-      var p = api.call('api_addGenericPoste', { month: month }).then(function (res) {
-        var label = UI.quote(Core.GENERIC_POSTE_NAME);
-        if (res.created) {
-          State.addRecord(month, 'postes', res.record);
-          var hidden = hasFilters(State.get()) || conformity === 'ok';
-          UI.toast(label + ' ajouté' + (hidden ? ' (masqué par les filtres actifs).' : '.'), 'success');
-        } else {
-          UI.toast(label + ' existe déjà pour ' + Fmt.monthLong(month) + '.', 'info');
-        }
-        if (myToken !== token) return;
-        table.setRows(visible());
-        renderStats();
-      }, errorToast);
-      UI.busy(actions.generic, p);
-    }
-
-    var note = filterNote();
-    if (note) body.appendChild(note);
-    renderStats();
-    body.appendChild(stats);
-    var tableSection = UI.section('Inventaire', table.node);
-    tableSection.id = 'postes-inventory';
-    body.appendChild(tableSection);
-    if (actions.generic) actions.generic.disabled = false;
-    actions.csv.disabled = false;
+    ctx.drawer({ title: name || '(sans nom)', body: body, onClose: function () { closed = true; } });
   }
 
   // ------------------------------------------------------------------------------ page
 
-  function mount(root) {
-    var myToken = ++token;
-    var s = State.get();
-
-    if (!s.months.length || !s.month) {
-      root.appendChild(header(s));
-      var empty = !State.canEdit() ? UI.empty('Aucun mois importé. Un administrateur doit importer les données.') :
-        UI.empty('Aucune donnée importée.', el('button', { type: 'button', class: 'btn btn-link',
-          onClick: function () { App.go('dashboard'); } }, 'Importer un export depuis le tableau de bord'));
-      empty.id = 'postes-empty';
-      root.appendChild(empty);
-      return;
-    }
-
-    // Page-level actions live in the header; they are wired once the month is loaded. Lecteurs: CSV only.
-    var actions = {
-      generic: !State.canEdit() ? null : el('button', { type: 'button', class: 'btn btn-primary', id: 'postes-add-generic', disabled: true,
-        tooltip: 'Ajoute ' + UI.quote(Core.GENERIC_POSTE_NAME) + ' pour rattacher les applications non liées à un poste suivi.' },
-        'Ajouter un poste générique'),
-      csv: el('button', { type: 'button', class: 'btn btn-secondary', id: 'postes-export-csv', disabled: true,
-        tooltip: 'Exporte les lignes affichées (filtres compris).' }, 'Exporter CSV')
-    };
-    // One rule on every page: [Exporter CSV (secondary)] then [create action (primary)].
-    root.appendChild(header(s, [actions.csv, actions.generic].filter(Boolean)));
-
-    var body = el('div', { class: 'block-stack postes-body', id: 'postes-body', 'aria-busy': 'true' },
-      UI.skeleton('table', { label: 'Chargement des postes…', columns: 7 }));
-    root.appendChild(body);
-
-    State.loadMonth(s.month).then(function (md) {
-      if (myToken !== token) return;
-      UI.clear(body);
-      body.setAttribute('aria-busy', 'false');
-      renderBody(body, State.get(), md, myToken, actions);
-    }, function (err) {
-      if (myToken !== token) return;
-      UI.clear(body);
-      body.setAttribute('aria-busy', 'false');
-      body.appendChild(UI.errorState(err, { prefix: 'Impossible de charger ' + Fmt.monthLong(s.month),
-        retry: function () { State.invalidate(s.month); App.refresh(); } }));
-    });
-  }
-
-  function unmount() {
-    token++;
-    if (drawerHandle) drawerHandle.close();
-    drawerHandle = null;
+  function addGeneric(ctx, button) {
+    var p = api.call('api_addGenericPoste', { month: ctx.month }).then(function (res) {
+      var label = UI.quote(Core.GENERIC_POSTE_NAME);
+      if (res.created) {
+        State.addRecord(ctx.month, 'postes', res.record);
+        var hidden = State.hasFilters() || ctx.conformity() === 'ok';
+        UI.toast(label + ' ajouté' + (hidden ? ' (masqué par les filtres actifs).' : '.'), 'success');
+      } else {
+        UI.toast(label + ' existe déjà pour ' + Fmt.monthLong(ctx.month) + '.', 'info');
+      }
+      ctx.refresh();
+    }, function (err) { UI.errorToast(err); });
+    UI.busy(button, p);
   }
 
   window.Pages = window.Pages || {};
-  window.Pages.postes = { id: 'postes', title: 'Postes', icon: '', mount: mount, unmount: unmount };
+  window.Pages.postes = InventoryPage.create({
+    id: 'postes',
+    title: 'Postes',
+    entity: 'postes',
+    keyField: KEY,
+    filterScope: 'postes',
+    filtered: function () { return State.hasFilters(); },
+    nouns: { one: 'poste', many: 'postes', loading: 'Chargement des postes…', inExport: 'Aucun poste dans cet export.',
+      noMatch: 'Aucun poste ne correspond aux filtres.', none: 'Aucun poste.' },
+    /** Source columns shown as identifiers / dates (mono), and as figures. */
+    monoColumns: { 'N° Visite': 1, 'Date visite': 1, 'Prochaine revue': 1, "Date d'achat": 1, 'Deadline': 1, 'Version OS': 1 },
+    numericColumns: { 'Score conformité': 1 },
+    computedColumns: function (ctx) {
+      var relation = Core.buildPosteAppsRelation(ctx.md().applications);
+      function appCount(row) { return installedApps(row, relation).length; }
+      return [{
+        key: '_score', label: 'Score', editable: false, numeric: true,
+        render: function (row) { return UI.scoreBadge(Core.parseScore(row['Score conformité'])); },
+        sortValue: function (row) { return Core.parseScore(row['Score conformité']); }
+      }, {
+        key: '_apps', label: 'Applis', editable: false, numeric: true,
+        render: function (row) { var n = appCount(row); return el('span', { class: n ? null : 'faint' }, String(n)); },
+        sortValue: appCount
+      }];
+    },
+    statsExtra: function (all) {
+      var unknown = all.filter(function (r) { return r._score === null || r._score === undefined; }).length;
+      return [unknown ? el('span', { class: 'faint' }, EntityDrawer.count(unknown, 'sans score', 'sans score')) : null];
+    },
+    csvTooltip: 'Exporte les lignes affichées (filtres compris).',
+    csv: function (ctx) { return { file: 'postes_' + ctx.month + '.csv', columns: ctx.columns, rows: ctx.visible() }; },
+    saveApi: 'api_savePostes',
+    primary: { id: 'postes-add-generic', label: 'Ajouter un poste générique', run: addGeneric,
+      tooltip: 'Ajoute ' + UI.quote(Core.GENERIC_POSTE_NAME) + ' pour rattacher les applications non liées à un poste suivi.' },
+    openDrawer: openDrawer
+  });
 })();
 </script>

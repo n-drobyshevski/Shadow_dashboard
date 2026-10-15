@@ -581,17 +581,8 @@
       var value = input.value.trim();
       showError(null);
       if (!value) { showError('Ce champ est obligatoire.'); input.focus(); return; }
-      button.disabled = true;
-      button.classList.add('is-busy');
-      var sp = UI.spinner();
-      sp.removeAttribute('role'); sp.removeAttribute('aria-label'); sp.setAttribute('aria-hidden', 'true');
-      UI.clear(button).appendChild(sp);
-      button.appendChild(document.createTextNode('Vérification…'));
-      applySource(value).catch(function (err) {
+      UI.busy(button, applySource(value), 'Vérification…').catch(function (err) {
         showError(sourceErrorText(err));
-        button.disabled = false;
-        button.classList.remove('is-busy');
-        button.textContent = 'Enregistrer la source';
         input.focus();
       });
     } },
@@ -610,23 +601,6 @@
           Core.SOURCE_TABS.referentiel + ' ». Chaque import en fait un instantané mensuel dans le classeur de données.'),
         form)));
     setTimeout(function () { input.focus(); }, 0);
-  }
-
-  function openSourceModal(prefill) {
-    var s = State.get();
-    UI.formModal({
-      title: 'Changer de source',
-      submitLabel: 'Enregistrer',
-      fields: [{ name: 'source', label: 'URL ou ID du Google Sheet source', type: 'text', required: true,
-        value: typeof prefill === 'string' ? prefill : s.sourceUrl,
-        placeholder: 'https://docs.google.com/spreadsheets/d/…' }]
-    }).then(function (values) {
-      if (!values) return;
-      applySource(values.source).catch(function (err) {
-        UI.toast('Erreur : ' + sourceErrorText(err), 'error');
-        openSourceModal(values.source);
-      });
-    });
   }
 
   // ------------------------------------------------------------------------------ boot
@@ -658,8 +632,21 @@
         (has(changed, 'page') && (s.page === 'actions') !== (filtersPage === 'actions'))) {
       renderFilters();
     }
-    if (has(changed, 'page') || has(changed, 'filters')) mountPage();
+    if (has(changed, 'page')) mountPage();
     else if (has(changed, 'month')) swapMonth(s.month);
+    else if (has(changed, 'filters')) updatePage(changed);
+  }
+
+  /**
+   * Filter change: a page that can re-render its data from the cache does it in place (page.update(changed)
+   * returns true: header, scroll position and the open drawer stay); the others are mounted again.
+   */
+  function updatePage(changed) {
+    var handled = false;
+    if (currentPage && typeof currentPage.update === 'function') {
+      try { handled = currentPage.update(changed) === true; } catch (e) { console.error(e); }
+    }
+    if (!handled) mountPage();
   }
 
   /**
@@ -799,10 +786,8 @@
     go: go,
     refresh: refresh,
     boot: boot,
-    openSourceConfig: openSourceModal,
     applySource: applySource,
     sourceErrorText: sourceErrorText,
-    tabsWarning: tabsWarning,
     ROLE_LABELS: ROLE_LABELS
   };
 

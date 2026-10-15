@@ -138,10 +138,12 @@
     return s ? UI.statusMark(s, STATUS_TONES[s] || 'neutral') : UI.statusMark('—', 'neutral');
   }
 
-  function priorityMark(p) {
+  /** Neutral priority mark (weight + square shape, no colour); {long:true} -> « Priorité haute ». */
+  function priorityMark(p, o) {
     var s = Core.str(p);
     if (!s) return '';
-    return el('span', { class: ['mark', 'mark-priority', PRIORITY_CLASS[s] || 'priority-basse'] }, s);
+    return el('span', { class: ['mark', 'mark-priority', PRIORITY_CLASS[s] || 'priority-basse'] },
+      o && o.long ? 'Priorité ' + s.toLowerCase() : s);
   }
 
   /** Identifier cell: poste names in mono, application names in sans (docs/DESIGN.md "Tables"). */
@@ -162,10 +164,6 @@
     if (!isOverdue(a)) return dateCell(d);
     return el('span', { class: 'deadline-cell deadline-overdue' }, el('span', { class: 'mono' }, d), ' ',
       UI.statusMark('En retard', 'ko'));
-  }
-
-  function errorToast(err, prefix) {
-    UI.toast('Erreur : ' + (prefix ? prefix + '. ' : '') + UI.errorText(err), 'error');
   }
 
   function distinct(values) {
@@ -224,7 +222,7 @@
   function refreshAfterWrite(ctx) {
     return State.loadActions({ force: true }).then(function () {
       if (ctx.token === token) ctx.rerender();
-    }, function (err) { errorToast(err, 'Actualisation impossible'); });
+    }, function (err) { UI.errorToast(err, 'Actualisation impossible'); });
   }
 
   /**
@@ -238,13 +236,68 @@
     headerSlot.hidden = !node;
   }
 
-  /** « Filtres actifs — Équipe : … · Bâtiment / Labo : … (non applicable ici) » or null. */
-  function filterNote() {
-    var text = State.filterSummary('actions');
-    return text ? el('p', { class: 'filter-note', role: 'status' }, text) : null;
+  /**
+   * One ledger tab (actions, remplacements): header create button, skeleton, then — once the actions cache
+   * is loaded — the filter note, the « nothing yet » / « nothing for this équipe » states or o.build(rows)
+   * (rows = the o.pick list within the global Équipe filter, sorted with o.sort).
+   */
+  function ledgerTab(panel, ctx, o) {
+    setHeaderAction(o.addBtn);
+    UI.asyncBlock(panel, {
+      load: function () { return State.loadActions(); },
+      live: function () { return ctx.token === token; },
+      placeholder: function () { return UI.skeleton('table', { label: o.loading, columns: o.columns }); },
+      error: { prefix: o.errorPrefix, retry: ctx.rerender },
+      render: function (data) {
+        var note = UI.filterNote('actions');
+        if (note) panel.appendChild(note);
+        var all = data[o.pick] || [];
+        if (!all.length) { panel.appendChild(UI.empty(o.emptyAll)); return; }
+        var rows = State.filterByEquipe(all).sort(o.sort);
+        if (!rows.length) { panel.appendChild(UI.empty(o.emptyTeam)); return; }
+        o.build(rows);
+      }
+    });
   }
 
-  function hasEquipeFilter() { return ((State.get().filters || {}).equipes || []).length > 0; }
+  /**
+   * Create / edit form of a ledger record (action or remplacement): suggestions (busy trigger), UI.formModal,
+   * api add / update of the changed fields only, « Aucune modification. » when nothing changed.
+   * o: {existing?, trigger?, titles:[new, edit], wide?, fields(sug), prepare(values, sug) -> record,
+   *     addApi, updateApi, toast(saved, created) -> text, after(saved, created)} -> Promise<saved|null>
+   */
+  function recordForm(o) {
+    var existing = o.existing || null;
+    var loading = loadSuggestions();
+    if (o.trigger) UI.busy(o.trigger, loading);
+    return loading.then(function (sug) {
+      var saved = null;
+      var created = !existing;
+      return UI.formModal({
+        title: existing ? o.titles[1] : o.titles[0],
+        submitLabel: 'Enregistrer',
+        wide: !!o.wide,
+        fields: o.fields(sug),
+        onSubmit: function (values) {
+          var v = o.prepare(values, sug);
+          if (!existing) return api.call(o.addApi, v).then(function (rec) { saved = rec || v; });
+          var updates = changedFields(v, existing);
+          if (!Object.keys(updates).length) { saved = existing; created = null; return null; }
+          return api.call(o.updateApi, { id: existing.id, updates: updates }).then(function (rec) {
+            saved = rec || Object.assign({}, existing, updates);
+          });
+        }
+      }).then(function (values) {
+        if (!values || !saved) return null;
+        if (created === null) { UI.toast('Aucune modification.', 'info'); return null; }
+        UI.toast(o.toast(saved, created), 'success');
+        return o.after(saved, created);
+      });
+    }, function (err) {
+      UI.errorToast(err, 'Formulaire indisponible');
+      return null;
+    });
+  }
 
   /** Quiet destructive text button of a ledger row (32px hit area, never stacked). */
   function deleteButton(label, onDelete) {
@@ -318,45 +371,34 @@
     var opts = o || {};
     var existing = opts.existing || null;
     var target = !existing && opts.target ? opts.target : null;
-    var loading = loadSuggestions();
-    if (opts.trigger) UI.busy(opts.trigger, loading);
-    return loading.then(function (sug) {
-      var s = State.get();
-      var initial = existing || Object.assign({ source_month: s.month, priorite: 'Moyenne', status: 'À faire',
-        date_created: todayFr() }, opts.defaults || {},
-      target ? { target_type: target.type, target_name: target.name, equipe: Core.str(target.equipe) ||
-        equipeOf(sug.md, target.type, target.name) } : {});
-      var saved = null;
-      var created = !existing;
-      return UI.formModal({
-        title: existing ? 'Modifier l’action' : 'Nouvelle action',
-        submitLabel: 'Enregistrer',
-        wide: true,
-        fields: actionFields(initial, sug, target),
-        onSubmit: function (values) {
-          var v = completeActionValues(values, sug.md);
-          if (target) { v.target_type = target.type; v.target_name = target.name; }
-          if (!existing) {
-            return api.call('api_addAction', v).then(function (rec) { saved = rec || v; });
-          }
-          var updates = changedFields(v, existing);
-          if (!Object.keys(updates).length) { saved = existing; created = null; return null; }
-          return api.call('api_updateAction', { id: existing.id, updates: updates }).then(function (rec) {
-            saved = rec || Object.assign({}, existing, updates);
-          });
-        }
-      }).then(function (values) {
-        if (!values || !saved) return null;
-        if (created === null) { UI.toast('Aucune modification.', 'info'); return null; }
-        UI.toast((created ? 'Action créée — ' : 'Action mise à jour — ') + Core.str(saved.target_name) + '.', 'success');
-        // Fresh actions cache for every list that shows actions, then the caller's refresh.
-        return State.loadActions({ force: true }).then(null, function (err) { errorToast(err, 'Actualisation impossible'); })
+    return recordForm({
+      existing: existing,
+      trigger: opts.trigger,
+      titles: ['Nouvelle action', 'Modifier l’action'],
+      wide: true,
+      fields: function (sug) {
+        var initial = existing || Object.assign({ source_month: State.get().month, priorite: 'Moyenne', status: 'À faire',
+          date_created: todayFr() }, opts.defaults || {},
+        target ? { target_type: target.type, target_name: target.name, equipe: Core.str(target.equipe) ||
+          equipeOf(sug.md, target.type, target.name) } : {});
+        return actionFields(initial, sug, target);
+      },
+      prepare: function (values, sug) {
+        var v = completeActionValues(values, sug.md);
+        if (target) { v.target_type = target.type; v.target_name = target.name; }
+        return v;
+      },
+      addApi: 'api_addAction',
+      updateApi: 'api_updateAction',
+      toast: function (saved, created) {
+        return (created ? 'Action créée — ' : 'Action mise à jour — ') + Core.str(saved.target_name) + '.';
+      },
+      // Fresh actions cache for every list that shows actions, then the caller's refresh.
+      after: function (saved, created) {
+        return State.loadActions({ force: true }).then(null, function (err) { UI.errorToast(err, 'Actualisation impossible'); })
           .then(function () { return opts.onSaved ? opts.onSaved(saved, { created: created }) : null; })
           .then(function () { return saved; });
-      });
-    }, function (err) {
-      errorToast(err, 'Formulaire indisponible');
-      return null;
+      }
     });
   }
 
@@ -415,8 +457,7 @@
     var body = el('div', { class: 'entity-drawer action-drawer', id: 'action-drawer', dataset: { id: a.id } },
       el('div', { class: 'drawer-head' },
         statusMark(a.status),
-        prio ? el('span', { class: ['mark', 'mark-priority', PRIORITY_CLASS[prio] || 'priority-basse'] },
-          'Priorité ' + prio.toLowerCase()) : null,
+        priorityMark(prio, { long: true }) || null,
         isOverdue(a) ? UI.statusMark('En retard', 'ko') : null),
       el('p', { class: 'action-title' }, Core.str(a.action) || '(sans libellé)'),
       el('dl', { class: 'kv' }, rows.filter(function (r) { return Core.str(r[1]); }).map(function (r) {
@@ -432,20 +473,12 @@
     var addBtn = !canEdit ? null : el('button', { type: 'button', class: 'btn btn-primary', id: 'action-add',
       onClick: function () { openActionForm({ trigger: addBtn, onSaved: ctx.rerender }); } },
     'Nouvelle action');
-    setHeaderAction(addBtn);
-    panel.appendChild(UI.skeleton('table', { label: 'Chargement des actions…',
-      columns: ['Cible', 'Type', 'Équipe', 'Action', 'Responsable', 'Priorité', 'Échéance', 'Statut'] }));
-    State.loadActions().then(function (data) {
-      if (ctx.token !== token) return;
-      UI.clear(panel);
-      var note = filterNote();
-      if (note) panel.appendChild(note);
-      var all = data.actions || [];
-      if (!all.length) {
-        panel.appendChild(UI.empty('Aucune action enregistrée.'));
-        return;
-      }
-      var actions = State.filterByEquipe(all).sort(function (a, b) {
+    ledgerTab(panel, ctx, {
+      addBtn: addBtn, pick: 'actions', loading: 'Chargement des actions…',
+      columns: ['Cible', 'Type', 'Équipe', 'Action', 'Responsable', 'Priorité', 'Échéance', 'Statut'],
+      errorPrefix: 'Impossible de charger les actions',
+      emptyAll: 'Aucune action enregistrée.', emptyTeam: 'Aucune action pour l’équipe sélectionnée.',
+      sort: function (a, b) {
         // Open first, then by deadline (blank last), then by target name.
         var ca = CLOSED_STATUSES.indexOf(a.status) >= 0 ? 1 : 0;
         var cb = CLOSED_STATUSES.indexOf(b.status) >= 0 ? 1 : 0;
@@ -454,64 +487,58 @@
         var db = frSortValue(b.deadline) || '9999';
         if (da !== db) return da < db ? -1 : 1;
         return Core.str(a.target_name).localeCompare(Core.str(b.target_name), 'fr');
-      });
-      if (!actions.length) {
-        panel.appendChild(UI.empty('Aucune action pour l’équipe sélectionnée.'));
-        return;
-      }
+      },
+      build: function (actions) {
+        // Counts per status (within the global Équipe filter, independent of the table filters).
+        panel.appendChild(statLine(actions));
 
-      // Counts per status (within the global Équipe filter, independent of the table filters).
-      panel.appendChild(statLine(actions));
-
-      var table;
-      function apply() { table.setRows(filterActions(actions)); }
-      function filterSelect(id, label, key, options) {
-        return UI.select({ id: id, label: label, options: options, value: actionFilters[key],
-          onChange: function (v) { actionFilters[key] = v; apply(); } });
+        var table;
+        function apply() { table.setRows(filterActions(actions)); }
+        function filterSelect(id, label, key, options) {
+          return UI.select({ id: id, label: label, options: options, value: actionFilters[key],
+            onChange: function (v) { actionFilters[key] = v; apply(); } });
+        }
+        table = UI.editableTable({
+          rowKey: 'id',
+          readOnly: !canEdit,
+          pageSize: 50,
+          emptyText: 'Aucune action ne correspond aux filtres.',
+          toolbar: [
+            filterSelect('action-filter-status', 'Statut', 'status', [{ value: '', label: 'Tous' }].concat(Core.ACTION_STATUSES)),
+            filterSelect('action-filter-type', 'Type', 'type',
+              [{ value: '', label: 'Tous' }, { value: 'poste', label: 'Poste' }, { value: 'application', label: 'Application' }])
+          ],
+          onRowClick: function (a) {
+            if (canEdit) openActionForm({ existing: a, onSaved: ctx.rerender });
+            else openActionDetails(a);
+          },
+          columns: [
+            { key: 'target_name', label: 'Cible', render: function (a) { return targetCell(a.target_type, a.target_name); } },
+            { key: 'target_type', label: 'Type', render: function (a) { return TYPE_LABELS[a.target_type] || Core.str(a.target_type); } },
+            { key: 'equipe', label: 'Équipe' },
+            { key: 'action', label: 'Action' },
+            { key: 'responsable', label: 'Responsable' },
+            { key: 'priorite', label: 'Priorité', render: function (a) { return priorityMark(a.priorite); },
+              sortValue: function (a) { var i = Core.ACTION_PRIORITIES.indexOf(Core.str(a.priorite)); return i < 0 ? null : i; } },
+            { key: 'deadline', label: 'Échéance', render: deadlineCell, sortValue: function (a) { return frSortValue(a.deadline); } },
+            { key: 'status', label: 'Statut', render: function (a) { return statusMark(a.status); } },
+            { key: 'date_created', label: 'Créée', render: function (a) { return dateCell(a.date_created); },
+              sortValue: function (a) { return frSortValue(a.date_created); } },
+            { key: 'date_completed', label: 'Réalisée', render: function (a) { return dateCell(a.date_completed); },
+              sortValue: function (a) { return frSortValue(a.date_completed); } },
+            // « Supprimer » row action: admins only (no empty column for lecteurs).
+            canEdit ? { key: '_actions', label: '', sortable: false, render: function (a) {
+              return deleteButton('l’action ' + Core.str(a.action), function () {
+                confirmDelete(ctx, 'Supprimer l’action « ' + Core.str(a.action) + ' » (' + Core.str(a.target_name) + ') ?',
+                  'Supprimer l’action', function () { return api.call('api_deleteAction', { id: a.id }); }, 'Action supprimée.');
+              });
+            } } : null
+          ].filter(Boolean),
+          rows: filterActions(actions)
+        });
+        table.node.id = 'actions-table';
+        panel.appendChild(table.node);
       }
-      table = UI.editableTable({
-        rowKey: 'id',
-        readOnly: !canEdit,
-        pageSize: 50,
-        emptyText: 'Aucune action ne correspond aux filtres.',
-        toolbar: [
-          filterSelect('action-filter-status', 'Statut', 'status', [{ value: '', label: 'Tous' }].concat(Core.ACTION_STATUSES)),
-          filterSelect('action-filter-type', 'Type', 'type',
-            [{ value: '', label: 'Tous' }, { value: 'poste', label: 'Poste' }, { value: 'application', label: 'Application' }])
-        ],
-        onRowClick: function (a) {
-          if (canEdit) openActionForm({ existing: a, onSaved: ctx.rerender });
-          else openActionDetails(a);
-        },
-        columns: [
-          { key: 'target_name', label: 'Cible', render: function (a) { return targetCell(a.target_type, a.target_name); } },
-          { key: 'target_type', label: 'Type', render: function (a) { return TYPE_LABELS[a.target_type] || Core.str(a.target_type); } },
-          { key: 'equipe', label: 'Équipe' },
-          { key: 'action', label: 'Action' },
-          { key: 'responsable', label: 'Responsable' },
-          { key: 'priorite', label: 'Priorité', render: function (a) { return priorityMark(a.priorite); },
-            sortValue: function (a) { var i = Core.ACTION_PRIORITIES.indexOf(Core.str(a.priorite)); return i < 0 ? null : i; } },
-          { key: 'deadline', label: 'Échéance', render: deadlineCell, sortValue: function (a) { return frSortValue(a.deadline); } },
-          { key: 'status', label: 'Statut', render: function (a) { return statusMark(a.status); } },
-          { key: 'date_created', label: 'Créée', render: function (a) { return dateCell(a.date_created); },
-            sortValue: function (a) { return frSortValue(a.date_created); } },
-          { key: 'date_completed', label: 'Réalisée', render: function (a) { return dateCell(a.date_completed); },
-            sortValue: function (a) { return frSortValue(a.date_completed); } },
-          // « Supprimer » row action: admins only (no empty column for lecteurs).
-          canEdit ? { key: '_actions', label: '', sortable: false, render: function (a) {
-            return deleteButton('l’action ' + Core.str(a.action), function () {
-              confirmDelete(ctx, 'Supprimer l’action « ' + Core.str(a.action) + ' » (' + Core.str(a.target_name) + ') ?',
-                'Supprimer l’action', function () { return api.call('api_deleteAction', { id: a.id }); }, 'Action supprimée.');
-            });
-          } } : null
-        ].filter(Boolean),
-        rows: filterActions(actions)
-      });
-      table.node.id = 'actions-table';
-      panel.appendChild(table.node);
-    }, function (err) {
-      if (ctx.token !== token) return;
-      UI.clear(panel).appendChild(UI.errorState(err, { prefix: 'Impossible de charger les actions', retry: ctx.rerender }));
     });
   }
 
@@ -533,90 +560,67 @@
   }
 
   function openReplacementForm(ctx, existing, trigger) {
-    var loading = loadSuggestions();
-    if (trigger) UI.busy(trigger, loading);
-    return loading.then(function (sug) {
-      var outcome = null;
-      return UI.formModal({
-        title: existing ? 'Modifier le remplacement' : 'Nouveau remplacement',
-        submitLabel: 'Enregistrer',
-        fields: replacementFields(existing, sug),
-        onSubmit: function (values) {
-          var v = Object.assign({}, values);
-          if (!v.equipe) v.equipe = equipeOf(sug.md, 'poste', v.old_poste) || equipeOf(sug.md, 'poste', v.new_poste);
-          var label = v.old_poste + ' → ' + v.new_poste;
-          if (!existing) {
-            return api.call('api_addReplacement', v).then(function () { outcome = 'Remplacement enregistré — ' + label + '.'; });
-          }
-          var updates = changedFields(v, existing);
-          if (!Object.keys(updates).length) { outcome = ''; return null; }
-          return api.call('api_updateReplacement', { id: existing.id, updates: updates }).then(function () {
-            outcome = 'Remplacement mis à jour — ' + label + '.';
-          });
-        }
-      }).then(function (values) {
-        if (!values || outcome === null) return null;
-        if (!outcome) { UI.toast('Aucune modification.', 'info'); return null; }
-        UI.toast(outcome, 'success');
-        return refreshAfterWrite(ctx);
-      });
-    }, function (err) { errorToast(err, 'Formulaire indisponible'); });
+    return recordForm({
+      existing: existing,
+      trigger: trigger,
+      titles: ['Nouveau remplacement', 'Modifier le remplacement'],
+      fields: function (sug) { return replacementFields(existing, sug); },
+      prepare: function (values, sug) {
+        var v = Object.assign({}, values);
+        if (!v.equipe) v.equipe = equipeOf(sug.md, 'poste', v.old_poste) || equipeOf(sug.md, 'poste', v.new_poste);
+        return v;
+      },
+      addApi: 'api_addReplacement',
+      updateApi: 'api_updateReplacement',
+      toast: function (saved, created) {
+        return (created ? 'Remplacement enregistré — ' : 'Remplacement mis à jour — ') +
+          Core.str(saved.old_poste) + ' → ' + Core.str(saved.new_poste) + '.';
+      },
+      after: function () { return refreshAfterWrite(ctx); }
+    });
   }
 
   function renderReplacements(panel, ctx) {
     var canEdit = State.canEdit();
     var addBtn = !canEdit ? null : el('button', { type: 'button', class: 'btn btn-primary', id: 'replacement-add',
       onClick: function () { openReplacementForm(ctx, null, addBtn); } }, 'Nouveau remplacement');
-    setHeaderAction(addBtn);
-    panel.appendChild(UI.skeleton('table', { label: 'Chargement des remplacements…',
-      columns: ['Ancien poste', 'Nouveau poste', 'Équipe', 'Responsable', 'Date', 'Commentaire'] }));
-    State.loadActions().then(function (data) {
-      if (ctx.token !== token) return;
-      UI.clear(panel);
-      var note = filterNote();
-      if (note) panel.appendChild(note);
-      var all = data.replacements || [];
-      if (!all.length) {
-        panel.appendChild(UI.empty('Aucun remplacement enregistré.'));
-        return;
-      }
-      var rows = State.filterByEquipe(all).sort(function (a, b) {
+    ledgerTab(panel, ctx, {
+      addBtn: addBtn, pick: 'replacements', loading: 'Chargement des remplacements…',
+      columns: ['Ancien poste', 'Nouveau poste', 'Équipe', 'Responsable', 'Date', 'Commentaire'],
+      errorPrefix: 'Impossible de charger les remplacements',
+      emptyAll: 'Aucun remplacement enregistré.', emptyTeam: 'Aucun remplacement pour l’équipe sélectionnée.',
+      sort: function (a, b) {
         // Most recent first.
         var da = frSortValue(a.date_replacement);
         var db = frSortValue(b.date_replacement);
         return da === db ? 0 : (da < db ? 1 : -1);
-      });
-      if (!rows.length) {
-        panel.appendChild(UI.empty('Aucun remplacement pour l’équipe sélectionnée.'));
-        return;
+      },
+      build: function (rows) {
+        var table = UI.editableTable({
+          rowKey: 'id',
+          readOnly: !canEdit,
+          emptyText: 'Aucun remplacement enregistré.',
+          onRowClick: canEdit ? function (r) { openReplacementForm(ctx, r); } : null,
+          columns: [
+            { key: 'old_poste', label: 'Ancien poste', mono: true },
+            { key: 'new_poste', label: 'Nouveau poste', mono: true },
+            { key: 'equipe', label: 'Équipe' },
+            { key: 'responsable', label: 'Responsable' },
+            { key: 'date_replacement', label: 'Date', mono: true, sortValue: function (r) { return frSortValue(r.date_replacement); } },
+            { key: 'comment', label: 'Commentaire' },
+            canEdit ? { key: '_actions', label: '', sortable: false, render: function (r) {
+              var label = Core.str(r.old_poste) + ' → ' + Core.str(r.new_poste);
+              return deleteButton('le remplacement ' + label, function () {
+                confirmDelete(ctx, 'Supprimer le remplacement « ' + label + ' » ?', 'Supprimer le remplacement',
+                  function () { return api.call('api_deleteReplacement', { id: r.id }); }, 'Remplacement supprimé.');
+              });
+            } } : null
+          ].filter(Boolean),
+          rows: rows
+        });
+        table.node.id = 'replacements-table';
+        panel.appendChild(table.node);
       }
-      var table = UI.editableTable({
-        rowKey: 'id',
-        readOnly: !canEdit,
-        emptyText: 'Aucun remplacement enregistré.',
-        onRowClick: canEdit ? function (r) { openReplacementForm(ctx, r); } : null,
-        columns: [
-          { key: 'old_poste', label: 'Ancien poste', mono: true },
-          { key: 'new_poste', label: 'Nouveau poste', mono: true },
-          { key: 'equipe', label: 'Équipe' },
-          { key: 'responsable', label: 'Responsable' },
-          { key: 'date_replacement', label: 'Date', mono: true, sortValue: function (r) { return frSortValue(r.date_replacement); } },
-          { key: 'comment', label: 'Commentaire' },
-          canEdit ? { key: '_actions', label: '', sortable: false, render: function (r) {
-            var label = Core.str(r.old_poste) + ' → ' + Core.str(r.new_poste);
-            return deleteButton('le remplacement ' + label, function () {
-              confirmDelete(ctx, 'Supprimer le remplacement « ' + label + ' » ?', 'Supprimer le remplacement',
-                function () { return api.call('api_deleteReplacement', { id: r.id }); }, 'Remplacement supprimé.');
-            });
-          } } : null
-        ].filter(Boolean),
-        rows: rows
-      });
-      table.node.id = 'replacements-table';
-      panel.appendChild(table.node);
-    }, function (err) {
-      if (ctx.token !== token) return;
-      UI.clear(panel).appendChild(UI.errorState(err, { prefix: 'Impossible de charger les remplacements', retry: ctx.rerender }));
     });
   }
 
@@ -727,24 +731,20 @@
   }
 
   /** An identical action = same target type + name + action text, already closed as 'Terminé'. */
-  function findIdenticalDone(actions, type, ra) {
+  /** Recorded action with the same target and wording as a resolved one, whose status passes `statusOk`. */
+  function findSameAction(actions, type, ra, statusOk) {
     return actions.filter(function (a) {
       return a.target_type === type && Core.normKey(a.target_name) === Core.normKey(ra.name) &&
-        Core.normKey(a.action) === Core.normKey(ra.action) && Core.str(a.status) === 'Terminé';
+        Core.normKey(a.action) === Core.normKey(ra.action) && statusOk(Core.str(a.status));
     })[0] || null;
   }
-
-  function findOpenSame(actions, type, ra) {
-    return actions.filter(function (a) {
-      return a.target_type === type && Core.normKey(a.target_name) === Core.normKey(ra.name) &&
-        Core.normKey(a.action) === Core.normKey(ra.action) && CLOSED_STATUSES.indexOf(Core.str(a.status)) < 0;
-    })[0] || null;
-  }
+  function isDone(status) { return status === 'Terminé'; }
+  function isOpen(status) { return CLOSED_STATUSES.indexOf(status) < 0; }
 
   function resolvedRows(ctx, list, type, actions, diff) {
     return list.map(function (ra) {
-      var done = findIdenticalDone(actions, type, ra);
-      var open = done ? null : findOpenSame(actions, type, ra);
+      var done = findSameAction(actions, type, ra, isDone);
+      var open = done ? null : findSameAction(actions, type, ra, isOpen);
       var cell;
       if (done) {
         // Already recorded: a status mark, not a disabled button.
@@ -771,7 +771,7 @@
             })).then(function () {
               UI.toast('Action enregistrée comme terminée — ' + ra.name + '.', 'success');
               return refreshAfterWrite(ctx);
-            }, function (err) { errorToast(err, 'Enregistrement impossible'); });
+            }, function (err) { UI.errorToast(err, 'Enregistrement impossible'); });
           }
         }, 'Enregistrer comme terminée');
         cell = [btn, open ? el('div', { class: 'diff-open-note' }, 'Déjà suivie :', statusMark(open.status)) : null];
@@ -854,7 +854,7 @@
     setHeaderAction(null);
     var s = State.get();
     var months = Core.sortMonths(s.months || []);
-    var note = filterNote();
+    var note = UI.filterNote('actions');
     if (note) panel.appendChild(note);
     panel.appendChild(el('p', { class: 'page-lede diff-intro' }, 'Compare deux exports mensuels : postes et applications ' +
       'retirés ou ajoutés, champs modifiés, et actions correctives disparues (considérées comme résolues).'));

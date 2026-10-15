@@ -356,7 +356,7 @@ Only the scriptlet form `<?!= fn('arg') ?>` is used (so the Node renderer stays 
 <div id="toast-root"></div><div id="modal-root"></div>
 <script><?!= coreScript() ?></script>
 <?!= include('js_api') ?>  <?!= include('js_state') ?>  <?!= include('js_ui') ?>  <?!= include('js_charts') ?>
-<?!= include('js_page_dashboard') ?> <?!= include('js_page_postes') ?> <?!= include('js_page_apps') ?>
+<?!= include('js_page_dashboard') ?> <?!= include('js_page_inventory') ?> <?!= include('js_page_postes') ?> <?!= include('js_page_apps') ?>
 <?!= include('js_page_timeline') ?> <?!= include('js_page_actions') ?>
 <?!= include('js_main') ?>
 </body></html>
@@ -410,6 +410,11 @@ UI.scoreBadge(score)      -> badge with fmtPct, tone ok if >= 80 else ko, neutra
 UI.riskBadge(level)       -> badge colored with Core.RISK_COLORS
 UI.card({title, value, sub?, tone?})       -> metric card
 UI.section(title, ...children)             -> section with h2
+UI.asyncBlock(box, {load, render, placeholder?, error?, small?, errorId?, live?}) -> Promise (see js_ui.html)
+UI.monthError(month)      -> {prefix:'Impossible de charger mai 2026', retry} for asyncBlock
+UI.monthHeader({title, month, kickerId, actions?}) -> page header with the « Mai 2026 · Export 2026-05 » kicker
+UI.noData(id)             -> empty state when no month is imported (admins: link to the import form)
+UI.filterNote(scope) / UI.plural(n, one, many) / UI.errorToast(err, context?)
 UI.empty(text)                             -> empty-state block
 UI.toast(message, type='info'|'success'|'error')
 UI.modal({title, body:Node, actions:[{label, primary?, danger?, onClick:(close)=>any}], wide?}) -> {close}
@@ -442,14 +447,14 @@ Charts.gauge(el, value, {height=250})                 -> indicator gauge, bar Co
 Charts.riskBars(el, counts /* Core.riskCounts */)     -> bar per RISK_ORDER, colors RISK_COLORS, no legend
 Charts.histogram(el, scores:[number])                 -> 10 bins on 0–100, vline at 80 dashed, annotation 'Seuil 80%'
 Charts.line(el, {x:[labels], series:[{name, y:[number|null], color?}], threshold?:80, yTitle?, yRange?})
-Charts.bars(el, {x:[labels], y:[numbers], colors?, yTitle?, horizontal?})
 Charts.heatmap(el, {x:[labels], y:[labels], z:[[number|null]], zmin=0, zmax=100, title?})
 Charts.purge(el)
+Charts.board({sectionClass?}) -> {section(title, id, drawFn, caption?), draw(), purge()}  (charts of a page body)
 ```
 
 ### Pages
 `window.Pages = window.Pages || {}`; each page file registers
-`Pages.<id> = { id, title, icon, mount(root), unmount?() }` with ids and titles:
+`Pages.<id> = { id, title, mount(root), unmount?(), update?(changed) }` with ids and titles:
 
 | id | icon | title |
 |---|---|---|
@@ -460,9 +465,18 @@ Charts.purge(el)
 | `actions` | 📋 | Suivi actions |
 | `settings` | – | Paramètres (admin only; also reachable before a source is configured) |
 
-`mount(root)` receives the cleared `#main` element. Pages read `State.get()` (month, filters), call
-`State.loadMonth(...)`/`api.call(...)`, and render with `UI`/`Charts`. `App` re-mounts the current page
-(after calling `unmount`) whenever `month`, `filters` or `page` change, and after `App.refresh()`.
+`mount(root)` receives the cleared `#main` element. Pages read `State.get()` (month, filters), load with
+`UI.asyncBlock(box, {load, render, …})` (placeholder, error + « Réessayer », stale results dropped: no
+hand-written tokens), and render with `UI`/`Charts`. `App` re-mounts the current page (after calling
+`unmount`) when `page` changes and after `App.refresh()`; a month change keeps the page dimmed until the
+month is cached, then re-mounts it. A filter change calls `update(['filters'])` first: a page that returns
+true re-rendered its data in place from the cache (dashboard, postes, apps, timeline: header, scroll and
+an open drawer stay, no server call); otherwise it is re-mounted.
+
+Postes and Applications are built by `InventoryPage.create(spec)` (`js_page_inventory.html`, with
+`EntityDrawer`): header + CSV / create buttons, filter note, stat line, optional sections, the « Inventaire »
+editable table (key column → drawer, computed columns, « Conformité » filter, inline saves). Each page file
+only declares its spec (columns, nouns, CSV, create button, drawer).
 
 ### `window.App` (`js_main.html`)
 ```

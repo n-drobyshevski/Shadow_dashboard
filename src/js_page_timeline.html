@@ -50,8 +50,8 @@
   var el = UI.el;
   var NO_TEAM = 'Sans équipe';
 
-  var token = 0;        // bumped on every mount/unmount: stale async renders are dropped
-  var chartEls = [];
+  var board = null;     // Charts.board of the rendered body (purged on re-render / leave)
+  var view = null;      // {body, kicker, timeline} of the mounted page (filter changes re-render in place)
 
   /**
    * KPI table rows. `kind`: 'pct' (percentage, delta in points) or 'count'.
@@ -118,20 +118,6 @@
     if (!series.length) return 'Aucun export importé';
     return Fmt.monthRange(series[0].month, series[series.length - 1].month) + ' · ' + series.length +
       ' export' + (series.length > 1 ? 's' : '');
-  }
-
-  function filterNote() {
-    var text = State.filterSummary('all');
-    return text ? el('p', { class: 'filter-note', role: 'status' }, text) : null;
-  }
-
-  /** Section (hairline + small-caps label) holding a chart box; the draw runs once the box is in the DOM. */
-  function chartSection(title, id, draws, drawFn, caption) {
-    var box = el('div', { class: 'chart-box', id: id, role: 'img', 'aria-label': title });
-    chartEls.push(box);
-    draws.push(function () { drawFn(box); });
-    return el('section', { class: 'section chart-card' }, el('h2', { class: 'section-title' }, title), box,
-      caption || null);
   }
 
   /** "Mai 2026 — Postes 71,4 % ■ Sous le seuil · Applications 60,0 % ■ Sous le seuil · seuil 80 %". */
@@ -231,20 +217,15 @@
   // ------------------------------------------------------------------------------ page body
 
   function renderTimeline(body, s, timeline, kicker) {
-    var draws = [];
+    board = Charts.board({ sectionClass: 'chart-card' });
     var series = computeSeries(timeline, s.filters || { equipes: [], batiments: [] });
     if (kicker) kicker.textContent = kickerText(series);
 
-    var note = filterNote();
+    var note = UI.filterNote('all');
     if (note) body.appendChild(note);
 
     if (!series.length) {
-      // Lecteurs cannot import: no link to the import form, just who can.
-      var empty = !State.canEdit() ? UI.empty('Aucun mois importé. Un administrateur doit importer les données.') :
-        UI.empty('Aucune donnée importée.', el('button', { type: 'button', class: 'btn btn-link',
-          onClick: function () { App.go('dashboard'); } }, 'Importer un export depuis le tableau de bord'));
-      empty.id = 'timeline-empty';
-      body.appendChild(empty);
+      body.appendChild(UI.noData('timeline-empty'));
       return;
     }
     if (series.length < 2) {
@@ -259,7 +240,7 @@
 
     body.appendChild(el('div', { class: 'grid grid-2' },
       // Ledger line styles (Charts defaults): postes in ink, applications in ink-3 dashed.
-      chartSection('Taux de conformité', 'chart-timeline-taux', draws, function (box) {
+      board.section('Taux de conformité', 'chart-timeline-taux', function (box) {
         Charts.line(box, {
           x: x,
           series: [
@@ -273,7 +254,7 @@
       }, rateCaption(last)),
       // Part-of-whole bars, labelled directly: per month, one outline bar per inventory (inventoriés) with
       // the conformant part solid inside it, "5 sur 7" above, "Postes" / "Applis" under it. No legend.
-      chartSection('Inventaire et conformité (nombre)', 'chart-timeline-counts', draws, function (box) {
+      board.section('Inventaire et conformité (nombre)', 'chart-timeline-counts', function (box) {
         Charts.partBars(box, {
           x: x,
           groups: [
@@ -289,7 +270,7 @@
 
     var matrix = teamMatrix(series);
     body.appendChild(matrix.teams.length ?
-      chartSection('Conformité des postes par équipe', 'chart-timeline-heatmap', draws, function (box) {
+      board.section('Conformité des postes par équipe', 'chart-timeline-heatmap', function (box) {
         Charts.heatmap(box, { x: x, y: matrix.teams, z: matrix.z, zmin: 0, zmax: 100, maxCellWidth: 112 });
       }, el('p', { class: 'chart-caption' }, 'Part des postes conformes par équipe et par mois. Case vide : aucun poste ce mois-là.')) :
       UI.section('Conformité des postes par équipe', UI.empty('Aucun poste ne correspond aux filtres sélectionnés.')));
@@ -297,56 +278,51 @@
     body.appendChild(UI.section('Indicateurs par mois', kpiTable(series, s.month),
       series.length > 1 ? deltaLegend() : null));
 
-    draws.forEach(function (d) {
-      try { d(); } catch (e) { console.error(e); }
-    });
+    board.draw();
   }
 
   // ------------------------------------------------------------------------------ page
 
   /** Loads (or reloads with force) the timeline and renders it; resolves when the body is drawn. */
-  function load(body, kicker, force) {
-    var myToken = ++token;
-    chartEls.forEach(function (n) { Charts.purge(n); });
-    chartEls = [];
-    UI.clear(body).appendChild(UI.skeleton('chart', { label: 'Chargement de l’historique…' }));
-    body.setAttribute('aria-busy', 'true');
-    return State.loadTimeline({ force: !!force }).then(function (tl) {
-      if (myToken !== token) return;
-      UI.clear(body);
-      body.setAttribute('aria-busy', 'false');
-      renderTimeline(body, State.get(), tl, kicker);
-    }, function (err) {
-      if (myToken !== token) return;
-      UI.clear(body);
-      body.setAttribute('aria-busy', 'false');
-      var box = UI.errorState(err, { prefix: 'Impossible de charger l’historique',
-        retry: function () { load(body, kicker, true); } });
-      box.id = 'timeline-error';
-      body.appendChild(box);
+  function load(v, force) {
+    if (board) board.purge();
+    return UI.asyncBlock(v.body, {
+      load: function () { return State.loadTimeline({ force: !!force }); },
+      placeholder: function () { return UI.skeleton('chart', { label: 'Chargement de l’historique…' }); },
+      error: { prefix: 'Impossible de charger l’historique', retry: function () { load(v, true); } },
+      errorId: 'timeline-error',
+      render: function (tl) { v.timeline = tl; renderTimeline(v.body, State.get(), tl, v.kicker); }
     });
   }
 
   function mount(root) {
-    var body = el('div', { class: 'timeline-body', id: 'timeline-body', 'aria-busy': 'true' });
     var refreshBtn = el('button', { type: 'button', class: 'btn btn-secondary', id: 'timeline-refresh',
       tooltip: 'Recharger l’historique depuis le classeur de données' }, 'Actualiser');
     var header = UI.pageHeader({ title: 'Suivi temporel', kicker: 'Historique des exports', kickerId: 'timeline-kicker',
       actions: [refreshBtn] });
-    var kicker = header.querySelector('.page-kicker');
-    refreshBtn.addEventListener('click', function () { UI.busy(refreshBtn, load(body, kicker, true)); });
+    var v = view = { body: el('div', { class: 'timeline-body', id: 'timeline-body' }),
+      kicker: header.querySelector('.page-kicker'), timeline: null };
+    refreshBtn.addEventListener('click', function () { UI.busy(refreshBtn, load(v, true)); });
     root.appendChild(header);
-    root.appendChild(body);
-    load(body, kicker, false);
+    root.appendChild(v.body);
+    load(v, false);
+  }
+
+  /** Filter change: the series are recomputed from the loaded history (no reload, the header stays). */
+  function update(changed) {
+    if (!view || !view.timeline || changed.length !== 1 || changed[0] !== 'filters') return false;
+    if (board) board.purge();
+    UI.clear(view.body);
+    renderTimeline(view.body, State.get(), view.timeline, view.kicker);
+    return true;
   }
 
   function unmount() {
-    token++;
-    chartEls.forEach(function (n) { Charts.purge(n); });
-    chartEls = [];
+    view = null;
+    if (board) board.purge();
   }
 
   window.Pages = window.Pages || {};
-  window.Pages.timeline = { id: 'timeline', title: 'Suivi temporel', icon: '', mount: mount, unmount: unmount };
+  window.Pages.timeline = { id: 'timeline', title: 'Suivi temporel', mount: mount, unmount: unmount, update: update };
 })();
 </script>
