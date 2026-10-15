@@ -194,7 +194,7 @@
 
   /** Mono figure coloured ok/ko (no square). */
   function scoreBadge(score) {
-    var tone = !isNum(score) ? 'neutral' : (Number(score) >= Core.THRESHOLD ? 'ok' : 'ko');
+    var tone = !isNum(score) ? 'neutral' : (Number(score) >= Core.threshold() ? 'ok' : 'ko');
     var b = badge(null, tone);
     b.appendChild(fmtPctNode(score));
     b.classList.add('badge-score');

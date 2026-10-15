@@ -47,7 +47,28 @@ test('constants match the contract', () => {
   assert.deepEqual(Core.SOURCE_TABS,
     { postes: 'Suivi des postes', applications: 'Suivi des applications', referentiel: 'Référentiel' });
   assert.deepEqual(Core.ERROR_CODES,
-    ['NOT_CONFIGURED', 'MONTH_EXISTS', 'NOT_FOUND', 'BUSY', 'VALIDATION', 'SOURCE_ERROR', 'INTERNAL']);
+    ['NOT_CONFIGURED', 'MONTH_EXISTS', 'NOT_FOUND', 'BUSY', 'VALIDATION', 'SOURCE_ERROR', 'FORBIDDEN', 'INTERNAL']);
+});
+
+test('threshold: validate, set, and enrichment follows it', () => {
+  assert.equal(Core.threshold(), 80);
+  for (const v of [1, 75, 100, '60', ' 90 ']) assert.equal(Core.validateThreshold(v), Number(v));
+  for (const v of [0, 101, 75.5, '7a', '', null, undefined, NaN, '1e2', {}]) assert.equal(Core.validateThreshold(v), null, String(v));
+  const poste = { 'Score conformité': '75%' };
+  const app = { 'Éditeur': 'x', 'Type': 'x', 'Équipe': 'x', 'Installé sur poste': 'x', 'Niveau de risque': 'x',
+    'Données sensibles exposées': 'x', Contrat: 'Oui', SIP: 'Oui', IDP: 'Oui', Galink: 'Non' }; // 80
+  try {
+    assert.equal(Core.enrichPostes([poste])[0]._conforme, false);
+    assert.equal(Core.setThreshold(75), 75);
+    assert.equal(Core.threshold(), 75);
+    assert.equal(Core.enrichPostes([poste])[0]._conforme, true);
+    assert.equal(Core.setThreshold(90), 90);
+    assert.equal(Core.enrichApplications([app])[0]._score, 80);
+    assert.equal(Core.enrichApplications([app])[0]._conforme, false);
+    assert.equal(Core.setThreshold('nope'), 80, 'invalid resets to the default');
+  } finally {
+    Core.setThreshold(80);
+  }
 });
 
 test('constants are frozen (shared state cannot be corrupted)', () => {

@@ -7,6 +7,8 @@
 var Config = (function () {
   var PROP_DATA_ID = 'DATA_SPREADSHEET_ID';
   var PROP_SOURCE_ID = 'SOURCE_SPREADSHEET_ID';
+  var PROP_THRESHOLD = 'COMPLIANCE_THRESHOLD';
+  var PROP_ACCESS = 'ACCESS_JSON';
   var DATA_SPREADSHEET_NAME = 'ShadowIT_AppData';
 
   /**
@@ -44,10 +46,45 @@ var Config = (function () {
     return PropertiesService.getScriptProperties();
   }
 
-  /** @return {{dataId: string, sourceId: string}} ('' when unset) */
+  /**
+   * @return {{dataId: string, sourceId: string, threshold: number, access: {users: Object[], domainRole: string}}}
+   *   ids are '' when unset; threshold is Core.THRESHOLD when unset or invalid.
+   */
   function get() {
     var p = props_().getProperties() || {};
-    return { dataId: p[PROP_DATA_ID] || '', sourceId: p[PROP_SOURCE_ID] || '' };
+    var threshold = Core.validateThreshold(p[PROP_THRESHOLD] || '');
+    return {
+      dataId: p[PROP_DATA_ID] || '',
+      sourceId: p[PROP_SOURCE_ID] || '',
+      threshold: threshold === null ? Core.THRESHOLD : threshold,
+      access: parseAccess_(p[PROP_ACCESS])
+    };
+  }
+
+  /**
+   * Access list as stored in ACCESS_JSON: {users:[{email, role, added_at, added_by}], domainRole}.
+   * Anything unreadable becomes the empty list (only the deployer gets in), never an error.
+   */
+  function parseAccess_(json) {
+    var raw = null;
+    try { raw = json ? JSON.parse(json) : null; } catch (e) { raw = null; }
+    var users = raw && Array.isArray(raw.users) ? raw.users : [];
+    return {
+      users: users.filter(function (u) { return u && typeof u.email === 'string' && u.email; }).map(function (u) {
+        return { email: String(u.email), role: String(u.role || ''), added_at: String(u.added_at || ''),
+          added_by: String(u.added_by || '') };
+      }),
+      domainRole: raw && typeof raw.domainRole === 'string' ? raw.domainRole : 'none'
+    };
+  }
+
+  function setThreshold(n) {
+    props_().setProperty(PROP_THRESHOLD, String(n));
+  }
+
+  /** @param {{users: Object[], domainRole: string}} access */
+  function setAccess(access) {
+    props_().setProperty(PROP_ACCESS, JSON.stringify({ users: access.users || [], domainRole: access.domainRole || 'none' }));
   }
 
   function setDataId(id) {
@@ -76,6 +113,8 @@ var Config = (function () {
   return {
     PROP_DATA_ID: PROP_DATA_ID,
     PROP_SOURCE_ID: PROP_SOURCE_ID,
+    PROP_THRESHOLD: PROP_THRESHOLD,
+    PROP_ACCESS: PROP_ACCESS,
     DATA_SPREADSHEET_NAME: DATA_SPREADSHEET_NAME,
     TIME_ZONE: TIME_ZONE,
     TABS: TABS,
@@ -84,6 +123,8 @@ var Config = (function () {
     get: get,
     setDataId: setDataId,
     setSourceId: setSourceId,
+    setThreshold: setThreshold,
+    setAccess: setAccess,
     today: today,
     todayFr: todayFr,
     nowStamp: nowStamp,

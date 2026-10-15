@@ -18,6 +18,9 @@ function CoreFactory_() {
   // ------------------------------------------------------------------------------------------
 
   var THRESHOLD = 80;
+  // Effective compliance threshold (Paramètres). THRESHOLD stays the default; the server sets this
+  // from the Script Properties on every api_* call, the client from api_bootstrap.
+  var threshold_ = THRESHOLD;
   var KEY_POSTE = 'Nom du poste';
   var KEY_APP = 'Nom du logiciel / service';
   var GENERIC_POSTE_NAME = 'Poste générique Decathlon';
@@ -45,7 +48,7 @@ function CoreFactory_() {
   var ACTION_PRIORITIES = ['Haute', 'Moyenne', 'Basse'];
   var SOURCE_TABS = { postes: 'Suivi des postes', applications: 'Suivi des applications',
     referentiel: 'Référentiel' };
-  var ERROR_CODES = ['NOT_CONFIGURED', 'MONTH_EXISTS', 'NOT_FOUND', 'BUSY', 'VALIDATION', 'SOURCE_ERROR',
+  var ERROR_CODES = ['NOT_CONFIGURED', 'MONTH_EXISTS', 'NOT_FOUND', 'BUSY', 'VALIDATION', 'SOURCE_ERROR', 'FORBIDDEN',
     'INTERNAL'];
 
   // Field names used by several functions below.
@@ -394,7 +397,7 @@ function CoreFactory_() {
       var out = copy_(rec);
       var score = parseScore(out[F_SCORE]);
       out._score = score;
-      out._conforme = score !== null && score >= THRESHOLD;
+      out._conforme = score !== null && score >= threshold_;
       return out;
     });
   }
@@ -405,7 +408,7 @@ function CoreFactory_() {
       var out = copy_(rec);
       var s = scoreApplication(out);
       out._score = s.score;
-      out._conforme = s.score >= THRESHOLD;
+      out._conforme = s.score >= threshold_;
       out._criteria = s.criteria;
       return out;
     });
@@ -678,6 +681,22 @@ function CoreFactory_() {
     return out.sort(cmp_);
   }
 
+  /** Effective compliance threshold (integer 1–100; THRESHOLD unless changed in Paramètres). */
+  function threshold() { return threshold_; }
+
+  /** Valid threshold -> integer 1–100, else null. Accepts numbers and numeric strings ('75'). */
+  function validateThreshold(v) {
+    var n = typeof v === 'number' ? v : (typeof v === 'string' && /^\s*\d+\s*$/.test(v) ? Number(v) : NaN);
+    return isFinite(n) && Math.floor(n) === n && n >= 1 && n <= 100 ? n : null;
+  }
+
+  /** Sets the effective threshold (invalid values reset it to THRESHOLD). Returns the value set. */
+  function setThreshold(v) {
+    var n = validateThreshold(v);
+    threshold_ = n === null ? THRESHOLD : n;
+    return threshold_;
+  }
+
   /** Latest month in `months` strictly before `month`, or null. */
   function previousMonth(months, month) {
     if (!validateMonth(month)) return null;
@@ -737,7 +756,10 @@ function CoreFactory_() {
     mergeCarryOver: mergeCarryOver,
     optionsForColumn: optionsForColumn,
     sortMonths: sortMonths,
-    previousMonth: previousMonth
+    previousMonth: previousMonth,
+    threshold: threshold,
+    validateThreshold: validateThreshold,
+    setThreshold: setThreshold
   };
 }
 

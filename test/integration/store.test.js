@@ -88,10 +88,20 @@ test('fakes: Sheets typing rules (apostrophe, formulas, auto-conversion unless "
 
 test('Config: properties and date helpers', () => {
   const { ctx } = loadGas({ props: { SOURCE_SPREADSHEET_ID: 'src-id' } });
-  assert.deepEqual(plain(ctx.Config.get()), { dataId: '', sourceId: 'src-id' });
+  const noAccess = { users: [], domainRole: 'none' };
+  assert.deepEqual(plain(ctx.Config.get()), { dataId: '', sourceId: 'src-id', threshold: 80, access: noAccess });
   ctx.Config.setDataId('data-id');
   ctx.Config.setSourceId('other');
-  assert.deepEqual(plain(ctx.Config.get()), { dataId: 'data-id', sourceId: 'other' });
+  ctx.Config.setThreshold(75);
+  assert.deepEqual(plain(ctx.Config.get()), { dataId: 'data-id', sourceId: 'other', threshold: 75, access: noAccess });
+  ctx.Config.setAccess({ users: [{ email: 'a@decathlon.com', role: 'lecteur' }], domainRole: 'lecteur' });
+  assert.deepEqual(plain(ctx.Config.get().access), { users: [{ email: 'a@decathlon.com', role: 'lecteur',
+    added_at: '', added_by: '' }], domainRole: 'lecteur' });
+  // Corrupted properties never lock anybody out with an error: defaults instead.
+  ctx.PropertiesService.getScriptProperties().setProperty('ACCESS_JSON', '{oops');
+  ctx.PropertiesService.getScriptProperties().setProperty('COMPLIANCE_THRESHOLD', '250');
+  assert.deepEqual(plain(ctx.Config.get().access), noAccess);
+  assert.equal(ctx.Config.get().threshold, 80);
   assert.match(ctx.Config.today(), /^\d{4}-\d{2}-\d{2}$/);
   assert.match(ctx.Config.todayFr(), /^\d{2}\/\d{2}\/\d{4}$/);
   assert.match(ctx.Config.nowStamp(), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);

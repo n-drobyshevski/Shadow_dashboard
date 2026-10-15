@@ -563,6 +563,16 @@ function createGasEnv(options) {
     getDocumentLock() { return null; },
   };
 
+  // ------------------------------------------------------------------------------ Session
+  // Deployer = effective user; visitor = active user ('' = identity not passed, e.g. another domain).
+  state.session = { owner: opts.ownerEmail || 'owner@decathlon.com', active: undefined };
+  const Session = {
+    getEffectiveUser() { return { getEmail() { return state.session.owner; } }; },
+    getActiveUser() {
+      return { getEmail() { return state.session.active === undefined ? state.session.owner : state.session.active; } };
+    },
+  };
+
   const Utilities = {
     formatDate,
     getUuid() { return crypto.randomUUID(); },
@@ -664,8 +674,10 @@ function createGasEnv(options) {
   }
 
   return {
-    SpreadsheetApp, PropertiesService, LockService, Utilities, HtmlService, Logger,
+    SpreadsheetApp, PropertiesService, LockService, Utilities, HtmlService, Logger, Session,
     console: fakeConsole,
+    /** Sets the visitor's email (undefined = the deployer, '' = identity not passed). */
+    __setActiveUser(email) { state.session.active = email; },
     __state: state,
     __addSpreadsheet: addSpreadsheet,
     __fault: addFault,

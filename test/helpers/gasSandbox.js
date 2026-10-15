@@ -46,6 +46,7 @@ function loadGas(options) {
     Utilities: env.Utilities,
     HtmlService: env.HtmlService,
     Logger: env.Logger,
+    Session: env.Session,
     console: env.console,
     Date,
   });

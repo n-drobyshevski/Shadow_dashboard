@@ -96,7 +96,8 @@ test('Core exposes every contract name and nothing private', () => {
     'frToIso', 'isoToFr', 'extractSpreadsheetId', 'escapeFormula', 'findHeaderRow', 'rowsToRecords',
     'parseReferentiel', 'scoreApplication', 'enrichPostes', 'enrichApplications', 'uniqueSorted', 'filterData',
     'computeKpis', 'riskCounts', 'histogramBins', 'buildPosteAppsRelation', 'diffPostes', 'diffApplications',
-    'makeGenericPoste', 'mergeCarryOver', 'optionsForColumn', 'sortMonths', 'previousMonth'];
+    'makeGenericPoste', 'mergeCarryOver', 'optionsForColumn', 'sortMonths', 'previousMonth',
+    'threshold', 'validateThreshold', 'setThreshold'];
   assert.deepEqual(Object.keys(ctx.Core).sort(), expected.slice().sort());
 });
 

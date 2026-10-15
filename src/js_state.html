@@ -19,7 +19,9 @@
     sourceUrl: '',
     sourceTitle: '',
     filters: { equipes: [], batiments: [] },
-    loading: false
+    loading: false,
+    threshold: 80,
+    user: { email: '', role: '', isOwner: false }
   };
   var subscribers = [];
 
@@ -212,6 +214,11 @@
   function refreshBootstrap() {
     set({ loading: true });
     return api.call('api_bootstrap', null).then(function (b) {
+      // Before set(): subscribers re-render with the threshold the server scored with.
+      var threshold = Core.setThreshold(b.threshold);
+      var u = b.user || {};
+      var user = { email: u.email || '', role: u.role || '', isOwner: !!u.isOwner };
+      var prev = state.user || {};
       var months = Core.sortMonths(b.months || []);
       var month = months.indexOf(state.month) >= 0 ? state.month : (b.latestMonth || months[months.length - 1] || '');
       set({
@@ -222,6 +229,8 @@
         dataUrl: b.dataUrl || '',
         sourceUrl: b.sourceUrl || '',
         sourceTitle: b.sourceTitle || '',
+        threshold: threshold,
+        user: prev.email === user.email && prev.role === user.role && prev.isOwner === user.isOwner ? prev : user,
         loading: false
       });
       return state;
@@ -231,8 +240,14 @@
     });
   }
 
+  /** Admins edit; lecteurs only read (the server refuses their writes anyway, FORBIDDEN). */
+  function canEdit() {
+    return !!(state.user && state.user.role === 'admin');
+  }
+
   window.State = {
     get: get,
+    canEdit: canEdit,
     set: set,
     subscribe: subscribe,
     loadMonth: loadMonth,

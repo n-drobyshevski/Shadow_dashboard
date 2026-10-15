@@ -264,7 +264,7 @@
             { name: 'Postes', y: k.map(function (v) { return rate(v.total_postes, v.postes_conformes); }) },
             { name: 'Applications', y: k.map(function (v) { return rate(v.total_apps, v.apps_conformes); }) }
           ],
-          threshold: Core.THRESHOLD,
+          threshold: Core.threshold(),
           unit: '%',
           yRange: [0, 105]
         });

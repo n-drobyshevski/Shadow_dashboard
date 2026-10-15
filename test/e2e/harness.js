@@ -113,10 +113,13 @@ async function waitIdle(page, timeout = 10000) {
 
 /**
  * @param {{empty?:boolean, configured?:boolean, page?:string, viewport?:{width:number,height:number},
- *          delayMs?:number}} [options]
+ *          delayMs?:number, email?:string, readySelector?:string}} [options]
+ *   email: visitor seen by the mock (default the owner, admin; LECTEUR / ADMIN2 below; any other
+ *   address has no access; '' = identity not passed). readySelector overrides what openApp waits for
+ *   (e.g. '.page-denied').
  */
 async function openApp({ empty = false, configured = true, page: pageId = 'dashboard',
-  viewport = { width: 1400, height: 900 }, delayMs = 0 } = {}) {
+  viewport = { width: 1400, height: 900 }, delayMs = 0, email, readySelector } = {}) {
   const browser = await launchBrowser();
   const context = await browser.newContext({ viewport, locale: 'fr-FR', timezoneId: 'Europe/Paris' });
   const page = await context.newPage();
@@ -137,13 +140,15 @@ async function openApp({ empty = false, configured = true, page: pageId = 'dashb
     return route.abort();
   });
 
-  const html = renderIndex({ inject: '<script>' + buildMockScript({ empty, configured, delayMs }) + '</script>' });
+  const html = renderIndex({ inject: '<script>' + buildMockScript({ empty, configured, delayMs, email }) + '</script>' });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shadow-e2e-'));
   const file = path.join(dir, 'index.html');
   fs.writeFileSync(file, html);
   await page.goto('file://' + file);
 
-  if (configured) {
+  if (readySelector) {
+    await page.waitForSelector(readySelector, { timeout: 15000 });
+  } else if (configured) {
     await page.waitForSelector('#main .page[data-page="dashboard"]', { timeout: 15000 });
   } else {
     await page.waitForSelector('#config-source', { timeout: 15000 });
@@ -169,7 +174,7 @@ async function openApp({ empty = false, configured = true, page: pageId = 'dashb
       fs.rmSync(dir, { recursive: true, force: true });
     },
   };
-  if (configured && pageId && pageId !== 'dashboard') await app.goto(pageId);
+  if (configured && !readySelector && pageId && pageId !== 'dashboard') await app.goto(pageId);
   return app;
 }
 
@@ -294,7 +299,10 @@ async function screenshot(pageId, outPath, options = {}) {
   }
 }
 
-module.exports = { openApp, screenshot, waitIdle, chooseOption, chooseOptions, optionLabels, dropdownValue, typeDate,
+/** Mock accounts (test/fixtures/mockRun.js). */
+const ACCOUNTS = { OWNER: 'owner@decathlon.com', LECTEUR: 'lea.reader@decathlon.com', ADMIN2: 'sam.admin@decathlon.com' };
+
+module.exports = { ACCOUNTS, openApp, screenshot, waitIdle, chooseOption, chooseOptions, optionLabels, dropdownValue, typeDate,
   openListbox };
 
 if (require.main === module) {

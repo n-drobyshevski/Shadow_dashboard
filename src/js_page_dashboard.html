@@ -44,7 +44,7 @@
 
   function toneFor(rate, total) {
     if (!total) return null;
-    return rate >= Core.THRESHOLD ? 'ok' : 'ko';
+    return rate >= Core.threshold() ? 'ok' : 'ko';
   }
 
   /** "■ Sous le seuil · 5 conformes sur 7 · seuil 80 %" under a gauge (status always in words). */

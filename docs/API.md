@@ -17,14 +17,18 @@ identifiers and comments are **English**.
   `include`, `coreScript`, `setup` are public functions.
 - No `Date` object ever crosses `google.script.run`: every `api_*` takes **one JSON string** and
   returns **one JSON string** (see §3).
-- OAuth scope: only `https://www.googleapis.com/auth/spreadsheets`. Do not use `Session`, `DriveApp`,
-  `UrlFetchApp`, `MailApp`, etc.
+- OAuth scopes: only `https://www.googleapis.com/auth/spreadsheets` and
+  `https://www.googleapis.com/auth/userinfo.email` (for `Session.getActiveUser()` /
+  `getEffectiveUser()`, used **only** in `src/Access.js`). Do not use `DriveApp`, `UrlFetchApp`,
+  `MailApp`, etc.
+- Web app: `executeAs: USER_DEPLOYING`, `access: DOMAIN`. Identity and roles are checked in-app (§4 Access).
 
 ### Files and ownership
 | File | Module | Purpose |
 |---|---|---|
 | `src/Core.js` | `function CoreFactory_()` + `var Core = CoreFactory_();` | Pure logic, shared with client. **No GAS globals, no closures over outer scope.** |
 | `src/Config.js` | `var Config` | Script Properties + constants (tab names, schemas). |
+| `src/Access.js` | `var Access` | Caller identity (Session) and roles. Only module that reads `Session`. |
 | `src/Store.js` | `var Store` | Data spreadsheet repository. Only module that writes to the data spreadsheet. |
 | `src/Importer.js` | `var Importer` | Reads the live source spreadsheet and snapshots a month. |
 | `src/Api.js` | global `api_*` functions + `apiWrap_` | `google.script.run` entry points. |
@@ -35,7 +39,7 @@ identifiers and comments are **English**.
 | `src/js_state.html` | `window.State` | Global state store. |
 | `src/js_ui.html` | `window.UI` | DOM builder + components. |
 | `src/js_charts.html` | `window.Charts` | Plotly wrappers. |
-| `src/js_page_*.html` | `window.Pages.<id>` | One page each. |
+| `src/js_page_*.html` | `window.Pages.<id>` | One page each (incl. `settings`, admin only). |
 | `src/js_main.html` | `window.App` | Router, sidebar, boot. **Included last.** |
 
 ---------------------------------------------------------------------------------------------------
@@ -65,7 +69,7 @@ Core.COLUMN_REF_ALIASES  = { 'Bâtiment / Labo': 'Bâtiment' }   // column -> R�
 Core.ACTION_STATUSES     = ['À faire','En cours','Terminé','Abandonné']
 Core.ACTION_PRIORITIES   = ['Haute','Moyenne','Basse']
 Core.SOURCE_TABS         = { postes:'Suivi des postes', applications:'Suivi des applications', referentiel:'Référentiel' }
-Core.ERROR_CODES         = ['NOT_CONFIGURED','MONTH_EXISTS','NOT_FOUND','BUSY','VALIDATION','SOURCE_ERROR','INTERNAL']
+Core.ERROR_CODES         = ['NOT_CONFIGURED','MONTH_EXISTS','NOT_FOUND','BUSY','VALIDATION','SOURCE_ERROR','FORBIDDEN','INTERNAL']
 ```
 
 ## 2. Core functions (pure; identical on server and client)
@@ -105,6 +109,9 @@ All functions are **total**: they never throw on null/undefined/blank input unle
 | `optionsForColumn(col, referentiel)` | Référentiel category whose `normKey` equals `normKey(COLUMN_REF_ALIASES[col] || col)` → its values; else `['Oui','Non']` if `col` in `YES_NO_COLS`; else `null` (free text). |
 | `sortMonths(months)` | ascending, unique, only valid months. |
 | `previousMonth(months, month)` | the latest month in `months` strictly before `month`, or `null`. |
+| `threshold()` | effective compliance threshold used by `enrichPostes` / `enrichApplications` (default `THRESHOLD`). |
+| `validateThreshold(v)` | integer 1–100 (number or digit string) → that number, else `null`. |
+| `setThreshold(v)` | sets the effective threshold (invalid → `THRESHOLD`); returns it. Server: every api call, from Script Properties. Client: from `api_bootstrap`. |
 
 ---------------------------------------------------------------------------------------------------
 ## 3. Server API (`google.script.run`)
@@ -113,8 +120,13 @@ All functions are **total**: they never throw on null/undefined/blank input unle
 Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 - `argsJson` is a JSON string (`'null'` or `'{}'` when no args). Parse failure → `VALIDATION`.
 - Return value is `JSON.stringify({ok:true, data})` or `JSON.stringify({ok:false, error:{code, message}})`.
-- All wrapped by `apiWrap_(fn)` which catches errors: `err.code` in `Core.ERROR_CODES` → that code, else
-  `INTERNAL`; message in French when produced by us; `console.error` the stack.
+- All wrapped by `apiWrap_(fn, name, minRole)` which first checks the caller's role
+  (`Access.requireRole(minRole)`: `FORBIDDEN` when the identity is not passed, the account has no access,
+  or a lecteur calls an admin endpoint) and applies the effective threshold (`Core.setThreshold`), then
+  catches errors: `err.code` in `Core.ERROR_CODES` → that code, else `INTERNAL`; message in French when
+  produced by us; `console.error` the stack.
+- Roles: **lecteur** endpoints = `api_bootstrap`, `api_getMonthData`, `api_getImportLog`, `api_getTimeline`,
+  `api_getActions`, `api_getDiff`. Every other endpoint is **admin** only.
 - Writes are performed inside `Store.withLock(fn)`; lock timeout (20 s) → `BUSY`.
 
 ### Record shapes
@@ -136,7 +148,7 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 
 | Function | Args | Returns `data` | Errors |
 |---|---|---|---|
-| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:''}` | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
+| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:'', threshold:int, user:{email, role:'admin'|'lecteur', isOwner:bool}}` (`dataUrl` / `sourceUrl` / `sourceTitle` are `''` for lecteurs: the spreadsheets are private to the deployer) | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
 | `api_setConfig` | `{source:'url or id'}` | `{sourceId, sourceTitle, sourceUrl, tabsFound:{postes:bool, applications:bool, referentiel:bool}}` | `VALIDATION` (bad id), `SOURCE_ERROR` (cannot open / no postes+apps tab). Saved only on success. |
 | `api_getMonthData` | `{month}` | `{month, postes:[rec], applications:[rec], referentiel:{cat:[v]}, columns:{postes:[h], applications:[h]}, importInfo:{imported_at, warnings:[]}\|null}` | `VALIDATION`, `NOT_FOUND` (month not imported). `columns.applications` always ends with `Galink`, `IDP` if missing from the source headers. |
 | `api_importMonth` | `{month, overwrite:bool}` | `{month, counts:{postes, applications, referentiel}, overwritten:bool, carriedOver:n, warnings:[...]}` | `NOT_CONFIGURED`, `VALIDATION`, `MONTH_EXISTS` (month already imported and `overwrite` false), `SOURCE_ERROR` |
@@ -156,12 +168,21 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 | `api_updateReplacement` | `{id, updates}` | `Replacement` | `NOT_FOUND` |
 | `api_deleteReplacement` | `{id}` | `{deleted:true, id}` | `NOT_FOUND` |
 | `api_getDiff` | `{oldMonth, newMonth}` | `{oldMonth, newMonth, postes:Core.diffPostes(...), applications:Core.diffApplications(...)}` (records enriched) | `VALIDATION`, `NOT_FOUND` |
+| `api_getSettings` | – | `{threshold, defaultThreshold:80, source:{id, url, title, tabsFound\|null}, dataUrl, access:AccessView, me:email}` | – |
+| `api_setThreshold` | `{threshold}` | `{threshold}` | `VALIDATION` (not an integer 1–100) |
+| `api_saveUser` | `{email, role:'admin'\|'lecteur'}` | `AccessView` (adds or changes the role) | `VALIDATION` (bad email / role, the owner, or the caller's own account) |
+| `api_removeUser` | `{email}` | `AccessView` | `VALIDATION` (as above), `NOT_FOUND` |
+| `api_setDomainRole` | `{role:'none'\|'lecteur'}` | `AccessView` | `VALIDATION` |
+
+`AccessView` = `{owner:email, users:[{email, role, added_at:'YYYY-MM-DD', added_by:email}] sorted by email
+(owner excluded), domainRole:'none'|'lecteur'}`. Emails are trimmed and lower-cased.
 
 The **complete list** of public API functions (used by the contract test) is exactly:
 `api_bootstrap, api_setConfig, api_getMonthData, api_importMonth, api_getImportLog, api_savePostes,
 api_addGenericPoste, api_saveApplications, api_addApplication, api_deleteApplication,
 api_renameApplication, api_getTimeline, api_getActions, api_addAction, api_updateAction,
-api_deleteAction, api_addReplacement, api_updateReplacement, api_deleteReplacement, api_getDiff`
+api_deleteAction, api_addReplacement, api_updateReplacement, api_deleteReplacement, api_getDiff,
+api_getSettings, api_setThreshold, api_saveUser, api_removeUser, api_setDomainRole`
 
 ---------------------------------------------------------------------------------------------------
 ## 4. Server internals
@@ -184,13 +205,28 @@ Config.SCHEMAS = {
   Meta:         ['key','value']
 }
 Config.SCHEMA_VERSION = '1'
-Config.get()                 -> {dataId:''|id, sourceId:''|id}
-Config.setDataId(id), Config.setSourceId(id)
+Config.PROP_THRESHOLD = 'COMPLIANCE_THRESHOLD'      (integer 1–100 as a string)
+Config.PROP_ACCESS    = 'ACCESS_JSON'               ({users:[{email, role, added_at, added_by}], domainRole})
+Config.get()                 -> {dataId:''|id, sourceId:''|id, threshold:int (Core.THRESHOLD when unset),
+                                 access:{users:[...], domainRole:'none'|'lecteur'}} (unreadable JSON -> empty list)
+Config.setDataId(id), Config.setSourceId(id), Config.setThreshold(n), Config.setAccess(access)
 Config.today()               -> 'YYYY-MM-DD'        (Utilities.formatDate, script time zone)
 Config.todayFr()             -> 'DD/MM/YYYY'
 Config.nowStamp()            -> 'YYYY-MM-DD HH:mm'
 Config.uuid()                -> Utilities.getUuid()
 ```
+
+### Access (`src/Access.js`)
+```
+Access.ROLES = ['admin','lecteur'];  Access.DOMAIN_ROLES = ['none','lecteur']
+Access.ownerEmail()          -> Session.getEffectiveUser() email (the deployer), lower-cased
+Access.activeEmail()         -> Session.getActiveUser() email ('' when Google does not pass it: other domain)
+Access.roleOf(email, owner, access) -> 'admin' (owner) | listed role | 'lecteur' if domainRole is lecteur | ''
+Access.currentUser(access?)  -> {email, role, isOwner, owner}
+Access.requireRole(minRole, access?) -> currentUser or FORBIDDEN
+Access.checkEmail(v) / Access.checkRole(v, allowed?) -> normalised value or VALIDATION
+```
+The owner is always admin and never stored; nobody can edit their own access (no self lock-out).
 
 ### Store (`src/Store.js`) — the only writer to the data spreadsheet
 Data spreadsheet layout: one tab per entry of `Config.SCHEMAS`, row 1 = header (frozen), data from row 2.
@@ -322,7 +358,9 @@ State.get()                      -> state object (do not mutate directly)
 State.set(patch)                 -> shallow merge + notify subscribers (fn(state, changedKeys[]))
 State.subscribe(fn)              -> unsubscribe()
 state = { page:'dashboard', configured:false, months:[], month:'', currentMonth:'', dataUrl:'', sourceUrl:'',
-          sourceTitle:'', filters:{equipes:[], batiments:[]}, loading:false }
+          sourceTitle:'', filters:{equipes:[], batiments:[]}, loading:false, threshold:80,
+          user:{email:'', role:'', isOwner:false} }
+State.canEdit()                  -> true for admins (pages hide every write control otherwise)
 State.loadMonth(month, {force}?) -> Promise<monthData>  (api_getMonthData; cached per month)
 State.getMonthData(month)        -> cached monthData | null
 State.patchRecords(month, entity:'postes'|'applications', records[]) -> replace by _id in cache (re-enrich with Core)
