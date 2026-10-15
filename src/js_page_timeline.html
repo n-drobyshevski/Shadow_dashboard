@@ -239,8 +239,10 @@
     if (note) body.appendChild(note);
 
     if (!series.length) {
-      var empty = UI.empty('Aucune donnée importée.', el('button', { type: 'button', class: 'btn btn-link',
-        onClick: function () { App.go('dashboard'); } }, 'Importer un export depuis le tableau de bord'));
+      // Lecteurs cannot import: no link to the import form, just who can.
+      var empty = !State.canEdit() ? UI.empty('Aucun mois importé. Un administrateur doit importer les données.') :
+        UI.empty('Aucune donnée importée.', el('button', { type: 'button', class: 'btn btn-link',
+          onClick: function () { App.go('dashboard'); } }, 'Importer un export depuis le tableau de bord'));
       empty.id = 'timeline-empty';
       body.appendChild(empty);
       return;
