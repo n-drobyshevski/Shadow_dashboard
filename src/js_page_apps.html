@@ -1,16 +1,495 @@
+<style>
+/* Applications page (docs/API.md §6 "Applications"). Selectors are prefixed with the page / drawer class. */
+.page-apps .apps-stats { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin: 0 0 var(--space-3); }
+.page-apps .apps-inline-select { flex-direction: row; align-items: center; gap: var(--space-2); }
+.page-apps .apps-inline-select .input { width: auto; }
+.page-apps .apps-key { padding: 0; border: 0; background: none; font: inherit; font-weight: 600; color: var(--accent-strong);
+  cursor: pointer; text-align: left; overflow-wrap: anywhere; }
+.page-apps .apps-key:hover { text-decoration: underline; }
+.page-apps .apps-key:focus-visible { outline: none; box-shadow: var(--focus); border-radius: 3px; }
+.page-apps .apps-criteria { display: inline-flex; gap: 3px; flex-wrap: nowrap; }
+.page-apps .apps-criteria .badge { padding: 1px 6px; font-size: 11px; }
+.page-apps .apps-migration { display: flex; flex-wrap: wrap; gap: var(--space-3); margin: 0 0 var(--space-4); }
+.page-apps .apps-migration-item { flex: 1 1 220px; padding: var(--space-3) var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); }
+.page-apps .apps-migration-item h3 { margin: 0; font-size: 14px; font-weight: 650; }
+.page-apps .apps-migration-counts { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.apps-drawer { display: flex; flex-direction: column; gap: var(--space-4); }
+.apps-drawer .drawer-section h3 { font-size: 14px; font-weight: 650; margin: 0 0 var(--space-2); }
+.apps-drawer .drawer-head { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+.apps-drawer .drawer-buttons { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.apps-drawer .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px var(--space-3); margin: 0; }
+.apps-drawer .kv dt { color: var(--text-muted); font-size: 13px; }
+.apps-drawer .kv dd { margin: 0; overflow-wrap: anywhere; }
+.apps-drawer .checklist, .apps-drawer .rel-list, .apps-drawer .action-list { list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 6px; }
+.apps-drawer .checklist li, .apps-drawer .rel-list li { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
+.apps-drawer .action-list li { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3);
+  display: flex; flex-direction: column; gap: 4px; }
+.apps-drawer .action-meta { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; font-size: 12px; }
+.apps-drawer .section-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-2); }
+.apps-drawer .section-head h3 { margin: 0; }
+</style>
 <script>
-/* Placeholder page — replaced by the unit that owns this page. */
+/**
+ * Pages.apps — application inventory (docs/API.md §6 "Applications").
+ *
+ * Editable table over the filtered applications of the selected month (column order =
+ * monthData.columns.applications, key column first and read-only, Galink/IDP editable Oui/Non,
+ * computed Score + criteria badges that follow unsaved edits), Galink/IDP migration summary,
+ * conformity filter, "➕ Application", CSV export, and a detail drawer (5-criteria checklist, postes,
+ * linked actions + "➕ Action", rename / delete).
+ */
 (function () {
   'use strict';
-  window.Pages = window.Pages || {};
-  window.Pages.apps = {
-    id: 'apps',
-    title: 'Applications',
-    icon: '📦',
-    mount: function (root) {
-      root.appendChild(UI.el('h1', { class: 'page-title' }, '📦 Applications'));
-      root.appendChild(UI.empty('En construction'));
+
+  var el = UI.el;
+  var KEY = Core.KEY_APP;
+  var KEY_POSTE = Core.KEY_POSTE;
+
+  var token = 0;              // bumped on every mount/unmount: stale async renders are dropped
+  var conformity = 'all';     // 'all' | 'ok' | 'ko' — kept across re-mounts
+  var drawerHandle = null;    // currently open drawer {close}
+  var pageCtx = null;         // {token, month, refresh()} of the mounted table (used by the drawer)
+
+  var CONFORMITY_OPTIONS = [
+    { value: 'all', label: 'Toutes' },
+    { value: 'ok', label: 'Conformes' },
+    { value: 'ko', label: 'Non conformes' }
+  ];
+
+  /** Criteria of Core.scoreApplication, in display order. */
+  var CRITERIA = [
+    { key: 'contrat', short: 'Contrat', label: 'Contrat' },
+    { key: 'sip', short: 'SIP', label: 'SIP' },
+    { key: 'idp', short: 'IDP', label: 'IDP' },
+    { key: 'galink', short: 'Galink', label: 'Galink' },
+    { key: 'champs', short: 'Champs', label: 'Champs obligatoires renseignés' }
+  ];
+
+  // ------------------------------------------------------------------------------ helpers
+
+  function plural(n, one, many) { return UI.fmtNum(n) + ' ' + (n > 1 ? many : one); }
+
+  function filterNote(s) {
+    var f = s.filters || {};
+    var parts = [];
+    if ((f.equipes || []).length) parts.push('Équipe : ' + f.equipes.join(', '));
+    if ((f.batiments || []).length) parts.push('Bâtiment / Labo : ' + f.batiments.join(', ') + ' (postes uniquement)');
+    if (!parts.length) return null;
+    return el('p', { class: 'filter-note', role: 'status' }, el('span', { 'aria-hidden': 'true' }, '🔎 '),
+      'Filtres actifs — ' + parts.join(' · '));
+  }
+
+  function hasEquipeFilter(s) { return ((s.filters || {}).equipes || []).length > 0; }
+
+  /** Column order from the month's headers, key column first; Galink / IDP always present. */
+  function sourceColumns(md) {
+    var cols = (md.columns && md.columns.applications && md.columns.applications.length) ? md.columns.applications.slice() :
+      Object.keys(md.applications[0] || {}).filter(function (k) { return k.charAt(0) !== '_'; });
+    Core.APP_CUSTOM_FIELDS.forEach(function (c) { if (cols.indexOf(c) < 0) cols.push(c); });
+    return [KEY].concat(cols.filter(function (c) { return c !== KEY; }));
+  }
+
+  function findRecord(month, id) {
+    var md = State.getMonthData(month);
+    return md ? md.applications.filter(function (r) { return r._id === id; })[0] || null : null;
+  }
+
+  /** The page's table refresh, when the page that opened the drawer is still mounted. */
+  function refreshPage() {
+    if (pageCtx && pageCtx.token === token) pageCtx.refresh();
+  }
+
+  function yesNoOptions(col, ref) { return Core.optionsForColumn(col, ref) || ['Oui', 'Non']; }
+
+  function todayIso() {
+    var d = new Date();
+    return d.getFullYear() + '-' + (d.getMonth() < 9 ? '0' : '') + (d.getMonth() + 1) + '-' + (d.getDate() < 10 ? '0' : '') + d.getDate();
+  }
+
+  var STATUS_TONES = { 'À faire': 'warn', 'En cours': 'info', 'Terminé': 'ok', 'Abandonné': 'neutral' };
+
+  function actionItem(a) {
+    var open = a.status !== 'Terminé' && a.status !== 'Abandonné';
+    var due = Core.frToIso(a.deadline);
+    var overdue = open && due && due < todayIso();
+    return el('li', { dataset: { actionId: a.id } },
+      el('strong', null, a.action || '(sans libellé)'),
+      el('div', { class: 'action-meta' },
+        UI.badge(a.status || '—', STATUS_TONES[a.status] || 'neutral'),
+        a.priorite ? UI.badge('Priorité : ' + a.priorite, a.priorite === 'Haute' ? 'ko' : 'neutral') : null,
+        a.deadline ? UI.badge('Échéance : ' + a.deadline + (overdue ? ' (en retard)' : ''), overdue ? 'ko' : 'neutral') : null,
+        a.responsable ? el('span', { class: 'muted' }, '👤 ' + a.responsable) : null,
+        a.source_month ? el('span', { class: 'muted' }, 'Export ' + a.source_month) : null),
+      a.comment ? el('p', { class: 'muted small', style: 'margin:0' }, a.comment) : null);
+  }
+
+  /** "Actions liées" block for an application; reloads itself after "➕ Action". */
+  function actionsBlock(targetName, rec, month, isOpen) {
+    var list = el('div', { class: 'drawer-actions-list', id: 'drawer-actions', 'aria-live': 'polite' });
+    var addBtn = el('button', { type: 'button', class: 'btn btn-secondary btn-small', id: 'drawer-add-action',
+      onClick: function () { addAction(); } }, '➕ Action');
+
+    function render(opts) {
+      UI.clear(list).appendChild(el('p', { class: 'muted small' }, UI.spinner(), ' Chargement des actions…'));
+      State.loadActions(opts).then(function (res) {
+        if (!isOpen()) return;
+        var mine = (res.actions || []).filter(function (a) {
+          return a.target_type === 'application' && a.target_name === targetName;
+        });
+        UI.clear(list);
+        if (!mine.length) { list.appendChild(el('p', { class: 'muted small' }, 'Aucune action liée à cette application.')); return; }
+        list.appendChild(el('ul', { class: 'action-list' }, mine.map(actionItem)));
+      }, function (err) {
+        if (!isOpen()) return;
+        UI.clear(list).appendChild(el('p', { class: 'muted small' }, 'Actions indisponibles : ' + err.message));
+      });
     }
-  };
+
+    function addAction() {
+      UI.formModal({
+        title: 'Nouvelle action — ' + targetName,
+        submitLabel: 'Ajouter',
+        fields: [
+          { name: 'action', label: 'Action', type: 'text', required: true, value: Core.str(rec['Action corrective']) },
+          { name: 'responsable', label: 'Responsable', type: 'text', value: Core.str(rec['Responsable action']) },
+          { name: 'deadline', label: 'Échéance', type: 'date' },
+          { name: 'priorite', label: 'Priorité', type: 'select', options: Core.ACTION_PRIORITIES, value: 'Moyenne' },
+          { name: 'status', label: 'Statut', type: 'select', options: Core.ACTION_STATUSES, value: 'À faire', required: true },
+          { name: 'comment', label: 'Commentaire', type: 'textarea' }
+        ]
+      }).then(function (values) {
+        if (!values) return null;
+        addBtn.disabled = true;
+        return api.call('api_addAction', {
+          target_type: 'application', target_name: targetName, equipe: Core.str(rec['Équipe']),
+          action: values.action, responsable: values.responsable, deadline: values.deadline,
+          priorite: values.priorite, status: values.status, comment: values.comment, source_month: month
+        }).then(function () {
+          UI.toast('✅ Action ajoutée pour ' + targetName, 'success');
+          render({ force: true });
+        }, function (err) {
+          UI.toast('❌ Impossible d’ajouter l’action : ' + err.message, 'error');
+        }).then(function () { addBtn.disabled = false; });
+      });
+    }
+
+    render();
+    return el('section', { class: 'drawer-section' },
+      el('div', { class: 'section-head' }, el('h3', null, '📋 Actions liées'), addBtn), list);
+  }
+
+  // ------------------------------------------------------------------------------ drawer
+
+  function openDrawer(id, month) {
+    var md = State.getMonthData(month);
+    var rec = findRecord(month, id);
+    if (!md || !rec) return;
+    var name = Core.str(rec[KEY]);
+    var crit = rec._criteria || Core.scoreApplication(rec).criteria;
+    var missing = Core.APP_REQUIRED_FIELDS.filter(function (f) { return Core.isBlank(rec[f]); });
+    var postes = Core.buildPosteAppsRelation([rec]).byApp[name] || [];
+    var posteIndex = {};
+    md.postes.forEach(function (p) { posteIndex[Core.normKey(p[KEY_POSTE])] = p; });
+    var closed = false;
+    function isOpen() { return !closed; }
+
+    var kvRows = [['Éditeur', rec['Éditeur']], ['Type', rec['Type']], ['Équipe', rec['Équipe']],
+      ['Données sensibles exposées', rec['Données sensibles exposées']], ['Statut', rec['Statut']],
+      ['Action corrective', rec['Action corrective']]];
+
+    var renameBtn = el('button', { type: 'button', class: 'btn btn-secondary btn-small', id: 'app-rename',
+      onClick: function () { rename(rec, month); } }, '✏️ Renommer');
+    var deleteBtn = el('button', { type: 'button', class: 'btn btn-danger btn-small', id: 'app-delete',
+      onClick: function () { remove(rec, month); } }, '🗑️ Supprimer');
+
+    var body = el('div', { class: 'apps-drawer', id: 'app-drawer', dataset: { id: rec._id } },
+      el('div', { class: 'drawer-head' },
+        UI.scoreBadge(rec._score),
+        UI.badge(rec._conforme ? 'Conforme' : 'Non conforme', rec._conforme ? 'ok' : 'ko'),
+        UI.riskBadge(rec['Niveau de risque'])),
+      el('div', { class: 'drawer-buttons' }, renameBtn, deleteBtn),
+      el('dl', { class: 'kv' }, kvRows.filter(function (kv) { return Core.str(kv[1]); }).map(function (kv) {
+        return [el('dt', null, kv[0]), el('dd', null, Core.str(kv[1]))];
+      })),
+      el('section', { class: 'drawer-section', id: 'app-drawer-criteria' },
+        el('h3', null, '🛡️ Critères de conformité (20 points chacun)'),
+        el('ul', { class: 'checklist' }, CRITERIA.map(function (c) {
+          var ok = !!crit[c.key];
+          return el('li', { dataset: { criterion: c.key, ok: ok ? '1' : '0' } },
+            el('span', { role: 'img', 'aria-label': ok ? 'Rempli' : 'Non rempli' }, ok ? '✅' : '❌'),
+            el('span', null, c.label),
+            c.key === 'champs' && missing.length ? el('span', { class: 'muted small' }, 'Manquant : ' + missing.join(', ')) : null);
+        }))),
+      el('section', { class: 'drawer-section', id: 'app-drawer-postes' },
+        el('h3', null, '💻 Installée sur (' + postes.length + ')'),
+        postes.length ? el('ul', { class: 'rel-list' }, postes.map(function (p) {
+          var poste = posteIndex[Core.normKey(p)];
+          return el('li', { dataset: { poste: p } },
+            el('span', null, p),
+            poste ? UI.scoreBadge(poste._score) : el('span', { class: 'muted small' }, '(poste absent de l’inventaire)'),
+            poste && Core.str(poste['Équipe']) ? el('span', { class: 'muted small' }, Core.str(poste['Équipe'])) : null);
+        })) : el('p', { class: 'muted small' }, 'Aucun poste renseigné (« Installé sur poste »).')),
+      actionsBlock(name, rec, month, isOpen));
+
+    drawerHandle = UI.drawer({ title: '📦 ' + (name || '(sans nom)'), body: body,
+      onClose: function () { closed = true; drawerHandle = null; } });
+  }
+
+  function rename(rec, month) {
+    var oldName = Core.str(rec[KEY]);
+    UI.formModal({
+      title: 'Renommer l’application',
+      submitLabel: 'Renommer',
+      fields: [{ name: 'newName', label: 'Nouveau nom', type: 'text', required: true, value: oldName }]
+    }).then(function (values) {
+      if (!values || values.newName === oldName) return null;
+      return api.call('api_renameApplication', { month: month, id: rec._id, newName: values.newName }).then(function (res) {
+        State.patchRecords(month, 'applications', [res.record]);
+        var n = res.actionsUpdated || 0;
+        UI.toast('✅ Application renommée en « ' + values.newName + ' »' +
+          (n ? ' — ' + plural(n, 'action mise à jour', 'actions mises à jour') : ''), 'success');
+        // Action targets changed server side: reload them before the drawer re-renders.
+        return State.loadActions({ force: true }).catch(function () { return null; }).then(function () {
+          refreshPage();
+          if (drawerHandle) openDrawer(rec._id, month);
+        });
+      }, function (err) {
+        UI.toast('❌ Renommage impossible : ' + err.message, 'error');
+      });
+    });
+  }
+
+  function remove(rec, month) {
+    var name = Core.str(rec[KEY]);
+    UI.confirm('Supprimer l’application « ' + name + ' » de l’export ' + month + ' ? Cette opération est irréversible ' +
+      '(les actions liées sont conservées).', { title: 'Supprimer l’application', okLabel: 'Supprimer', danger: true })
+      .then(function (ok) {
+        if (!ok) return null;
+        return api.call('api_deleteApplication', { month: month, id: rec._id }).then(function () {
+          State.removeRecord(month, 'applications', rec._id);
+          if (drawerHandle) drawerHandle.close();
+          refreshPage();
+          UI.toast('🗑️ Application « ' + name + ' » supprimée', 'success');
+        }, function (err) {
+          UI.toast('❌ Suppression impossible : ' + err.message, 'error');
+        });
+      });
+  }
+
+  // ------------------------------------------------------------------------------ add application
+
+  function addApplication(md, month, onAdded) {
+    var s = State.get();
+    var ref = md.referentiel;
+    var equipes = Core.optionsForColumn('Équipe', ref) ||
+      Core.uniqueSorted(md.postes.concat(md.applications), 'Équipe');
+    var defaultEquipe = (s.filters.equipes || []).length === 1 ? s.filters.equipes[0] : '';
+    return UI.formModal({
+      title: 'Nouvelle application — ' + month,
+      submitLabel: 'Ajouter',
+      fields: [
+        { name: KEY, label: 'Nom du logiciel / service', type: 'text', required: true },
+        { name: 'Éditeur', label: 'Éditeur', type: 'text' },
+        { name: 'Type', label: 'Type', type: 'select', allowCustom: true, options: Core.optionsForColumn('Type', ref) || [] },
+        { name: 'Équipe', label: 'Équipe', type: 'select', allowCustom: true, options: equipes, value: defaultEquipe },
+        { name: 'Installé sur poste', label: 'Installé sur poste', type: 'select', allowCustom: true,
+          options: Core.uniqueSorted(md.postes, KEY_POSTE), placeholder: 'POSTE-01, POSTE-02' },
+        { name: 'Contrat', label: 'Contrat', type: 'select', options: yesNoOptions('Contrat', ref) },
+        { name: 'SIP', label: 'SIP', type: 'select', options: yesNoOptions('SIP', ref) },
+        { name: 'Données sensibles exposées', label: 'Données sensibles exposées', type: 'select',
+          options: yesNoOptions('Données sensibles exposées', ref) },
+        { name: 'Niveau de risque', label: 'Niveau de risque', type: 'select',
+          options: Core.optionsForColumn('Niveau de risque', ref) || Core.RISK_ORDER },
+        { name: 'Galink', label: 'Galink', type: 'select', options: yesNoOptions('Galink', ref) },
+        { name: 'IDP', label: 'IDP', type: 'select', options: yesNoOptions('IDP', ref) }
+      ]
+    }).then(function (values) {
+      if (!values) return null;
+      var record = {};
+      Object.keys(values).forEach(function (k) { record[k] = values[k] === '' ? null : values[k]; });
+      return api.call('api_addApplication', { month: month, record: record }).then(function (rec) {
+        State.addRecord(month, 'applications', rec);
+        var hidden = hasEquipeFilter(State.get()) && (State.get().filters.equipes || []).indexOf(Core.str(rec['Équipe'])) < 0;
+        UI.toast('✅ Application « ' + Core.str(rec[KEY]) + ' » ajoutée' + (hidden ? ' (masquée par les filtres actifs)' : ''),
+          'success');
+        onAdded(rec);
+      }, function (err) {
+        UI.toast('❌ Ajout impossible : ' + err.message, 'error');
+      });
+    });
+  }
+
+  // ------------------------------------------------------------------------------ page body
+
+  /** Migration readiness: Galink / IDP Oui / Non / vide counts. */
+  function migrationSummary(box, apps) {
+    UI.clear(box);
+    Core.APP_CUSTOM_FIELDS.forEach(function (f) {
+      var oui = 0;
+      var non = 0;
+      var vide = 0;
+      apps.forEach(function (a) {
+        var v = Core.str(a[f]);
+        if (v === 'Oui') oui++; else if (v === 'Non') non++; else vide++;
+      });
+      box.appendChild(el('div', { class: 'card apps-migration-item', dataset: { field: f } },
+        el('h3', null, (f === 'Galink' ? '🔗 ' : '🔑 ') + f),
+        el('div', { class: 'apps-migration-counts' },
+          el('span', { class: 'badge badge-ok', dataset: { count: 'oui' } }, 'Oui : ' + oui),
+          el('span', { class: 'badge badge-ko', dataset: { count: 'non' } }, 'Non : ' + non),
+          el('span', { class: 'badge badge-neutral', dataset: { count: 'vide' } }, 'Non renseigné : ' + vide)),
+        el('p', { class: 'muted small', style: 'margin:0' },
+          apps.length ? UI.fmtPct(oui / apps.length * 100) + ' des applications migrées' : 'Aucune application.')));
+    });
+  }
+
+  function criteriaBadges(row) {
+    var crit = Core.scoreApplication(row).criteria;
+    return el('span', { class: 'apps-criteria' }, CRITERIA.map(function (c) {
+      var ok = !!crit[c.key];
+      return el('span', { class: 'badge ' + (ok ? 'badge-ok' : 'badge-ko'), title: c.label + (ok ? ' : ✅' : ' : ❌'),
+        dataset: { criterion: c.key } }, c.short);
+    }));
+  }
+
+  function renderBody(body, s, md, myToken) {
+    var month = s.month;
+    var cols = sourceColumns(md);
+
+    function current() { return State.getMonthData(month) || md; }
+    function filteredApps() { return State.filtered(current()).applications; }
+    function visible() {
+      var list = filteredApps();
+      if (conformity === 'ok') return list.filter(function (r) { return r._conforme; });
+      if (conformity === 'ko') return list.filter(function (r) { return !r._conforme; });
+      return list;
+    }
+
+    var stats = el('div', { class: 'apps-stats', id: 'apps-stats', role: 'status' });
+    var migration = el('div', { class: 'apps-migration', id: 'apps-migration', role: 'region',
+      'aria-label': 'Migration Galink / IDP' });
+    function renderStats() {
+      var all = filteredApps();
+      var ok = all.filter(function (r) { return r._conforme; }).length;
+      UI.clear(stats).appendChild(el('span', { class: 'muted' }, plural(all.length, 'application', 'applications')));
+      stats.appendChild(UI.badge(plural(ok, 'conforme', 'conformes') + (all.length ? ' (' + UI.fmtPct(ok / all.length * 100) + ')' : ''), 'ok'));
+      stats.appendChild(UI.badge(plural(all.length - ok, 'non conforme', 'non conformes'), all.length - ok ? 'ko' : 'neutral'));
+      migrationSummary(migration, all);
+    }
+
+    var columns = cols.map(function (c, i) {
+      if (i === 0) {
+        return { key: c, label: c, editable: false, width: 170, render: function (row) {
+          return el('button', { type: 'button', class: 'apps-key', title: 'Voir le détail de l’application',
+            onClick: function () { openDrawer(row._id, month); } }, Core.str(row[c]) || '(sans nom)');
+        } };
+      }
+      return { key: c, label: c, editable: true, options: Core.optionsForColumn(c, md.referentiel) };
+    });
+    // Computed columns right after the key column; computed from the displayed row so that they
+    // follow unsaved edits (e.g. Galink Non -> Oui shows +20 immediately).
+    columns.splice(1, 0, {
+      key: '_score', label: 'Score', editable: false,
+      render: function (row) { return UI.scoreBadge(Core.scoreApplication(row).score); },
+      sortValue: function (row) { return Core.scoreApplication(row).score; }
+    }, {
+      key: '_criteria', label: 'Critères', editable: false, sortable: false,
+      render: criteriaBadges
+    });
+
+    var conformitySelect = UI.select({ label: 'Conformité', options: CONFORMITY_OPTIONS, value: conformity,
+      onChange: function (v) { conformity = v; table.setRows(visible()); } });
+    conformitySelect.classList.add('apps-inline-select');
+    conformitySelect.querySelector('select').id = 'apps-conformity';
+
+    var addBtn = el('button', { type: 'button', class: 'btn btn-primary btn-small', id: 'apps-add',
+      onClick: function () {
+        addBtn.disabled = true;
+        addApplication(current(), month, function () { refreshPage(); })
+          .then(function () { addBtn.disabled = false; }, function () { addBtn.disabled = false; });
+      } }, '➕ Application');
+    var csvBtn = el('button', { type: 'button', class: 'btn btn-secondary btn-small', id: 'apps-export-csv',
+      onClick: function () {
+        var rows = visible().map(function (r) { var o = Object.assign({}, r); o['Score calculé (%)'] = r._score; return o; });
+        UI.downloadCsv('applications_' + month + '.csv', cols.concat(['Score calculé (%)']), rows);
+      } }, '⬇️ CSV');
+
+    var table = UI.editableTable({
+      columns: columns,
+      rows: visible(),
+      toolbar: [conformitySelect, addBtn, csvBtn],
+      emptyText: !md.applications.length ? 'Aucune application dans cet export.' :
+        (hasEquipeFilter(s) || conformity !== 'all' ? 'Aucune application ne correspond aux filtres.' : 'Aucune application.'),
+      onRowClick: function (row) { openDrawer(row._id, month); },
+      onSave: function (changes) {
+        return api.call('api_saveApplications', { month: month, changes: changes }).then(function (res) {
+          State.patchRecords(month, 'applications', (res && res.updated) || []);
+          if (myToken !== token) return;
+          refresh();
+          UI.toast('✅ ' + plural(changes.length, 'application enregistrée', 'applications enregistrées'), 'success');
+        });
+      }
+    });
+    table.node.id = 'apps-table';
+
+    function refresh() {
+      table.setRows(visible());
+      renderStats();
+    }
+    pageCtx = { token: myToken, month: month, refresh: refresh };
+
+    var note = filterNote(s);
+    if (note) body.appendChild(note);
+    renderStats();
+    body.appendChild(stats);
+    body.appendChild(el('h2', { class: 'section-title' }, 'Migration Galink / IDP'));
+    body.appendChild(migration);
+    body.appendChild(table.node);
+  }
+
+  // ------------------------------------------------------------------------------ page
+
+  function mount(root) {
+    var myToken = ++token;
+    pageCtx = null;
+    var s = State.get();
+    root.appendChild(el('header', { class: 'page-header' },
+      el('h1', { class: 'page-title' }, '📦 Applications'),
+      s.month ? el('p', { class: 'page-caption', id: 'apps-caption' }, 'Export : ' + s.month) : null));
+
+    if (!s.months.length || !s.month) {
+      root.appendChild(el('div', { class: 'alert alert-warning', role: 'status', id: 'apps-empty' },
+        '⚠️ Aucune donnée importée. Importez un export mensuel depuis le Tableau de bord.'));
+      return;
+    }
+
+    var body = el('div', { class: 'apps-body', id: 'apps-body', 'aria-busy': 'true' },
+      el('p', { class: 'muted' }, UI.spinner(), ' Chargement des applications…'));
+    root.appendChild(body);
+
+    State.loadMonth(s.month).then(function (md) {
+      if (myToken !== token) return;
+      UI.clear(body);
+      body.setAttribute('aria-busy', 'false');
+      renderBody(body, State.get(), md, myToken);
+    }, function (err) {
+      if (myToken !== token) return;
+      UI.clear(body);
+      body.setAttribute('aria-busy', 'false');
+      body.appendChild(el('div', { class: 'alert alert-error', role: 'alert' },
+        'Impossible de charger le mois ' + s.month + ' : ' + err.message));
+    });
+  }
+
+  function unmount() {
+    token++;
+    pageCtx = null;
+    if (drawerHandle) drawerHandle.close();
+    drawerHandle = null;
+  }
+
+  window.Pages = window.Pages || {};
+  window.Pages.apps = { id: 'apps', title: 'Applications', icon: '📦', mount: mount, unmount: unmount };
 })();
 </script>

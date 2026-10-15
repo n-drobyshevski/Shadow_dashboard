@@ -7,6 +7,7 @@
   cursor: pointer; text-align: left; overflow-wrap: anywhere; }
 .page-postes .postes-key:hover { text-decoration: underline; }
 .page-postes .postes-key:focus-visible { outline: none; box-shadow: var(--focus); border-radius: 3px; }
+.postes-drawer { display: flex; flex-direction: column; gap: var(--space-4); }
 .postes-drawer .drawer-section h3 { font-size: 14px; font-weight: 650; margin: 0 0 var(--space-2); }
 .postes-drawer .drawer-head { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
 .postes-drawer .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px var(--space-3); margin: 0; }
@@ -18,7 +19,8 @@
 .postes-drawer .action-list li { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3);
   display: flex; flex-direction: column; gap: 4px; }
 .postes-drawer .action-meta { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; font-size: 12px; }
-.postes-drawer .section-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.postes-drawer .section-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-2); }
+.postes-drawer .section-head h3 { margin: 0; }
 </style>
 <script>
 /**
@@ -188,7 +190,7 @@
     var icon = !v ? '➖' : (v === okValue ? '✅' : '❌');
     var tone = !v ? 'neutral' : (v === okValue ? 'ok' : 'ko');
     return el('li', { dataset: { criterion: label } },
-      el('span', { 'aria-hidden': 'true' }, icon),
+      el('span', { role: 'img', 'aria-label': !v ? 'Non renseigné' : (v === okValue ? 'Conforme' : 'Non conforme') }, icon),
       el('span', null, label),
       UI.badge(v || 'Non renseigné', tone));
   }
