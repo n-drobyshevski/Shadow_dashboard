@@ -122,7 +122,7 @@
   /** Sections of the « Nouveau poste » form (EntityForm): source columns by name, unknown ones go to « Autres colonnes ». */
   var POSTE_SECTIONS = [
     { id: 'identification', title: 'Identification', open: true, columns: [KEY, 'Équipe', 'Bâtiment / Labo', 'Responsable'] },
-    { id: 'equipement', title: 'Équipement', open: true, columns: ["Date d'achat", 'Criticité équipement', 'OS', 'Version OS'] },
+    { id: 'equipement', title: 'Équipement', open: false, columns: ["Date d'achat", 'Criticité équipement', 'OS', 'Version OS'] },
     { id: 'conformite', title: 'Conformité', open: true,
       columns: ['IT Decathlon', 'EDR Decathlon', 'Chiffrement disque', 'Réseau Decathlon', 'Type de compte', 'Enrolée'] },
     { id: 'visite', title: 'Visite', open: false, columns: ['N° Visite', 'Date visite', 'Prochaine revue'] },
@@ -142,14 +142,18 @@
     }
   };
 
+  /** « Enchaîner avec un autre poste »: shared by the forms opened in a row (the box stays as left). */
+  var AGAIN = { label: 'Enchaîner avec un autre poste', checked: false };
+
   function posteForm(ctx) { return State.loadFormSchema('postes', ctx.month); }
 
   function newPoste(ctx, button) {
     return EntityForm.open(ctx, {
       entity: 'postes',
       keyField: KEY,
-      title: 'Nouveau poste — ' + Fmt.monthLong(ctx.month),
+      title: 'Nouveau poste',
       submitLabel: 'Créer le poste',
+      again: AGAIN,
       api: 'api_addPoste',
       sections: POSTE_SECTIONS,
       presentation: POSTE_PRESENTATION,

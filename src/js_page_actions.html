@@ -291,9 +291,10 @@
       var created = !existing;
       return UI.formModal({
         title: existing ? o.titles[1] : o.titles[0],
-        submitLabel: 'Enregistrer',
+        submitLabel: existing ? 'Enregistrer' : (o.createLabel || 'Enregistrer'),
         wide: !!o.wide,
         fields: o.fields(sug),
+        groups: o.groups ? o.groups(existing) : null,
         onSubmit: function (values) {
           var v = o.prepare(values, sug);
           if (!existing) return api.call(o.addApi, v).then(function (rec) { saved = rec || v; });
@@ -333,6 +334,20 @@
 
   // ------------------------------------------------------------------------------ shared action form
 
+  /** « Dans 1 semaine », « Fin du mois », « Dans 3 mois » from today (DD/MM/YYYY). */
+  function deadlineShortcuts() {
+    var now = new Date();
+    function plusDays(n) { var d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + n); return Core.fmtDDMMYYYY(d); }
+    var endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    var in3 = new Date(now.getFullYear(), now.getMonth() + 3, now.getDate());
+    return [{ label: 'Dans 1 semaine', value: plusDays(7) }, { label: 'Fin du mois', value: Core.fmtDDMMYYYY(endOfMonth) },
+      { label: 'Dans 3 mois', value: Core.fmtDDMMYYYY(in3) }];
+  }
+
+  /**
+   * The action form: what matters first (Cible, Action, Priorité as three buttons, Échéance with shortcuts), the
+   * rest under « Plus d’options » (open when editing). The Cible's type follows a known poste / application.
+   */
   function actionFields(v, sug, target) {
     var locked = !!target;
     /**
@@ -344,34 +359,58 @@
       var apps = sug.apps.map(function (a) { return { value: a, label: a, group: 'Applications' }; });
       return type === 'application' ? apps.concat(postes) : postes.concat(apps);
     }
+    /** 'poste' | 'application' for a known name ('' for a free text). */
+    function typeOf(name) {
+      var k = Core.normKey(name);
+      if (!k) return '';
+      if (sug.postes.some(function (p) { return Core.normKey(p) === k; })) return 'poste';
+      if (sug.apps.some(function (a) { return Core.normKey(a) === k; })) return 'application';
+      return '';
+    }
     var targetOptions = locked ? [v.target_name] : targetOptionsFor(v.target_type);
     var months = Core.sortMonths(State.get().months || []);
     return [
+      { name: 'target_name', label: 'Cible (poste ou application)', type: 'select', allowCustom: true, required: true,
+        disabled: locked, value: v.target_name, options: targetOptions, mono: v.target_type !== 'application',
+        placeholder: 'Nom du poste ou de l’application',
+        hint: locked || v.id ? null : 'Le type se déduit d’un poste ou d’une application connus.',
+        onChange: function (name, form) {
+          var type = typeOf(name);
+          var t = form.control('target_type');
+          if (!type || !t || locked) return;
+          t.setValue(type);
+          var cible = form.control('target_name');
+          if (cible) cible.setMono(type !== 'application');
+        } },
+      { name: 'action', label: 'Action', type: 'textarea', required: true, value: v.action },
+      { name: 'priorite', label: 'Priorité', type: 'choice', value: v.priorite,
+        options: Core.ACTION_PRIORITIES.slice().reverse() },
+      { name: 'deadline', label: 'Échéance', type: 'date', value: v.deadline, quick: deadlineShortcuts() },
       { name: 'target_type', label: 'Type de cible', type: 'select', required: true, value: v.target_type || 'poste',
-        disabled: locked, options: [{ value: 'poste', label: 'Poste' }, { value: 'application', label: 'Application' }],
+        disabled: locked, group: 'more', options: [{ value: 'poste', label: 'Poste' }, { value: 'application', label: 'Application' }],
         onChange: function (type, form) {
           var cible = form.control('target_name');
           if (!cible || locked) return;
           cible.setOptions(targetOptionsFor(type));
           cible.setMono(type !== 'application');
         } },
-      { name: 'target_name', label: 'Cible (poste ou application)', type: 'select', allowCustom: true, required: true,
-        disabled: locked, value: v.target_name, options: targetOptions, mono: v.target_type !== 'application',
-        placeholder: 'Nom du poste ou de l’application' },
-      { name: 'equipe', label: 'Équipe', type: 'select', allowCustom: true, value: v.equipe, options: sug.equipes,
-        hint: locked || v.id ? null : 'Vide : l’équipe de la cible dans l’export du mois.' },
-      { name: 'responsable', label: 'Responsable', type: 'text', value: v.responsable },
-      { name: 'action', label: 'Action', type: 'textarea', required: true, value: v.action },
-      { name: 'priorite', label: 'Priorité', type: 'select', value: v.priorite, options: Core.ACTION_PRIORITIES },
-      { name: 'status', label: 'Statut', type: 'select', required: true, value: v.status || 'À faire',
+      { name: 'status', label: 'Statut', type: 'select', required: true, value: v.status || 'À faire', group: 'more',
         options: Core.ACTION_STATUSES },
-      { name: 'deadline', label: 'Échéance', type: 'date', value: v.deadline },
-      { name: 'source_month', label: 'Mois source', type: 'month', value: v.source_month, options: months },
-      { name: 'date_created', label: 'Date de création', type: 'date', value: v.date_created },
-      { name: 'date_completed', label: 'Date de réalisation', type: 'date', value: v.date_completed,
+      { name: 'equipe', label: 'Équipe', type: 'select', allowCustom: true, value: v.equipe, options: sug.equipes, group: 'more',
+        hint: locked || v.id ? null : 'Vide : l’équipe de la cible dans l’export du mois.' },
+      { name: 'responsable', label: 'Responsable', type: 'text', value: v.responsable, group: 'more' },
+      { name: 'source_month', label: 'Mois source', type: 'month', value: v.source_month, options: months, group: 'more' },
+      { name: 'date_created', label: 'Date de création', type: 'date', value: v.date_created, group: 'more' },
+      { name: 'date_completed', label: 'Date de réalisation', type: 'date', value: v.date_completed, group: 'more',
         hint: 'Vide avec le statut « Terminé » : la date du jour.' },
-      { name: 'comment', label: 'Commentaire', type: 'textarea', value: v.comment }
+      { name: 'comment', label: 'Commentaire', type: 'textarea', value: v.comment, group: 'more' }
     ];
+  }
+
+  /** « Plus d’options » of the action form: closed for a new action, open when editing one. */
+  function actionGroups(existing) {
+    return [{ id: 'more', title: 'Plus d’options', open: !!existing,
+      hint: 'Statut, équipe, responsable, dates, commentaire' }];
   }
 
   /** Fills the derived values: completion date when closed as 'Terminé', équipe from the target. */
@@ -391,7 +430,8 @@
       existing: existing,
       trigger: opts.trigger,
       titles: ['Nouvelle action', 'Modifier l’action'],
-      wide: true,
+      createLabel: 'Créer l’action',
+      groups: actionGroups,
       fields: function (sug) {
         var initial = existing || Object.assign({ source_month: State.get().month, priorite: 'Moyenne', status: 'À faire',
           date_created: todayFr() }, opts.defaults || {},

@@ -46,7 +46,11 @@
  *   Core.normKey, in that order; unknown columns go to « Autres colonnes », open); a section holding a required
  *   field or a prefilled value opens. presentation: {column: extras | (md) -> extras} for text / non-strict
  *   columns (type:'textarea', tokens + options + hint, mono). Équipe / Bâtiment / Labo default to the single
- *   active filter value. Footer note: where the record goes (source, or the frozen month's history). Only
+ *   active filter value. Oui / Non columns are two buttons (UI.formFields 'yesno'); the « Conformité » section
+ *   counts its Oui; a closed section says what it holds. Under the title: the month and where the record goes
+ *   (source, or the frozen month's history). live(values) -> Node: a preview kept at the top (the applications'
+ *   score); again: {label, checked}: a footer box to open a fresh form after a success (postes); on postes,
+ *   an Équipe fills an empty Bâtiment / Labo (linkFields). Only
  *   non-blank values are sent to `api`; on success the record is added to the cache, the table refreshed, the
  *   row scrolled into view, toast(name, {live, hidden, month}) shown, focus back on `button`. fieldFallback: the
  *   field a VALIDATION error without a field is shown under.
@@ -526,12 +530,40 @@
   var OTHER_SECTION = 'autres';
   var NOTE_SECTION = 'conformite';   // the computed-columns note closes this section (else the first one)
 
-  /** Footer note of the form: where the new record is written. */
+  /** Line under the form title: the month and where the new record is written. */
   function whereNote(entity, month, live) {
     if (live) {
-      return 'Écrit dans le Google Sheet source' + (entity === 'applications' ? ' (Galink et IDP restent dans l’application).' : '.');
+      return Fmt.monthTitle(month) + ' · écrit dans le Google Sheet source' +
+        (entity === 'applications' ? ' (Galink et IDP restent dans l’application)' : '');
     }
-    return 'Mois figé : ajouté à l’historique de ' + Fmt.monthLong(month) + ' seulement, le Google Sheet source n’est pas modifié.';
+    return Fmt.monthTitle(month) + ' · mois figé : historique seulement, le Google Sheet source n’est pas modifié';
+  }
+
+  /** A strict Oui / Non list (in either order) is a yes/no field: two buttons instead of a dropdown. */
+  function isYesNo(options) {
+    if (!options || options.length !== 2) return false;
+    var o = options.map(Core.str).sort();
+    return o[0] === 'Non' && o[1] === 'Oui';
+  }
+
+  /** « OS, Version OS, Date d’achat… »: what a closed section holds. */
+  function sectionHint(fields) {
+    var names = fields.map(function (f) { return f.label || f.name; });
+    return names.slice(0, 4).join(', ') + (names.length > 4 ? '…' : '');
+  }
+
+  /** The value of `col` most often seen with `key` = `value` in `rows` ('' when none). */
+  function mostCommonWith(rows, key, value, col) {
+    var n = Object.create(null);
+    var best = '';
+    (rows || []).forEach(function (r) {
+      if (Core.normKey(r[key]) !== Core.normKey(value)) return;
+      var v = Core.str(r[col]);
+      if (!v) return;
+      n[v] = (n[v] || 0) + 1;
+      if (!best || n[v] > n[best]) best = v;
+    });
+    return best;
   }
 
   /** Équipe / Bâtiment / Labo: the value of the single active filter of that kind ('' otherwise). */
@@ -560,9 +592,13 @@
     var strictList = (col.kind === 'select' || col.kind === 'checkbox') && !!col.strict;
     if (col.kind === 'date') {
       f.type = 'date';
+    } else if (col.kind === 'checkbox' && (!options || isYesNo(options))) {
+      f.type = 'yesno';
     } else if (col.kind === 'checkbox') {
       f.type = 'select';
-      f.options = options || ['Oui', 'Non'];
+      f.options = options;
+    } else if (col.kind === 'select' && strictList && options && isYesNo(options)) {
+      f.type = 'yesno';
     } else if (col.kind === 'select' && strictList && options) {
       f.type = 'select';
       f.options = options;
@@ -615,6 +651,25 @@
     return 'Colonnes de l’historique de ' + Fmt.monthLong(month) + '.';
   }
 
+  /**
+   * Postes: picking an Équipe fills an empty Bâtiment / Labo with the one its postes use most this month
+   * (still editable).
+   */
+  function linkFields(fields, md, cfg) {
+    if (cfg.entity !== 'postes') return;
+    var team = fields.filter(function (f) { return Core.normKey(f.name) === Core.normKey('Équipe'); })[0];
+    var place = fields.filter(function (f) { return Core.normKey(f.name) === Core.normKey('Bâtiment / Labo'); })[0];
+    if (!team || !place || team.type !== 'select' || place.type !== 'select') return;
+    var before = team.onChange;
+    team.onChange = function (value, form) {
+      if (before) before(value, form);
+      var c = form.control(place.name);
+      if (!c || Core.str(c.getValue())) return;
+      var guess = mostCommonWith(md.postes, team.name, value, place.name);
+      if (guess) c.setValue(guess);
+    };
+  }
+
   /** {fields, groups, alert, meta} of UI.formPanel for a schema. */
   function buildForm(schema, md, cfg, month) {
     var sections = cfg.sections || [];
@@ -637,15 +692,18 @@
     var groups = sections.concat([{ id: OTHER_SECTION, title: 'Autres colonnes', open: true }]).map(function (sec) {
       var mine = fields.filter(function (f) { return f.group === sec.id; });
       var open = sec.open !== false || mine.some(function (f) { return f.required || Core.str(f.value) !== ''; });
-      return { id: sec.id, title: sec.title, open: open, count: mine.length };
+      return { id: sec.id, title: sec.title, open: open, count: mine.length, hint: sectionHint(mine),
+        tally: sec.id === NOTE_SECTION };
     }).filter(function (g) { return g.count > 0; });
+    linkFields(fields, md, cfg);
     if (computed.length && groups.length) {
       var target = groups.filter(function (g) { return g.id === NOTE_SECTION; })[0] || groups[0];
       target.note = computedNote(computed);
     }
     return {
       fields: fields,
-      groups: groups.map(function (g) { return { id: g.id, title: g.title, open: g.open, note: g.note || null }; }),
+      groups: groups.map(function (g) { return { id: g.id, title: g.title, open: g.open, note: g.note || null, hint: g.hint,
+        tally: g.tally }; }),
       alert: schema.origin === 'fallback' ? (schema.warning || 'Le Google Sheet source n’a pas pu être lu.') : null,
       meta: schemaMeta(schema, month)
     };
@@ -662,11 +720,14 @@
     var appOnly = Object.create(null);
     return UI.formPanel({
       title: cfg.title,
+      subtitle: whereNote(entity, month, live),
+      subtitleTone: live ? null : 'warn',
       className: 'entity-form',
       submitLabel: cfg.submitLabel,
-      note: whereNote(entity, month, live),
       reloadLabel: 'Relire les colonnes',
       open: ctx.drawer,
+      live: cfg.live || null,
+      again: cfg.again || null,
       load: function (o) {
         return State.loadFormSchema(entity, month, { force: !!(o && o.force) }).then(function (schema) {
           appOnly = Object.create(null);
@@ -699,6 +760,8 @@
       UI.toast(cfg.toast(name, { live: live, hidden: !ctx.isShown(created._id), month: month }), 'success');
       var row = ctx.rowNode(created._id);
       if (row && row.scrollIntoView) row.scrollIntoView({ block: 'nearest' });
+      // « Enchaîner avec un autre poste »: a fresh form right away (the box stays ticked).
+      if (cfg.again && cfg.again.checked) return openEntityForm(ctx, cfg).then(function () { return created; });
       var button = cfg.button;
       if (button && button.isConnected && document.activeElement !== button) {
         try { button.focus({ preventScroll: true }); } catch (e) { button.focus(); }

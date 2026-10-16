@@ -132,15 +132,22 @@ with the system fallbacks above. The stylesheet must not block the first paint (
 - **Modal / drawer**: the only elevated surfaces (shadow `0 12px 32px rgba(0,0,0,.18)`), 6px radius
   (drawer: none, full height, 1px left rule). Backdrop `rgba(22,24,27,.35)`, no blur.
 - **Form panel** (« Nouveau poste », « Nouvelle application »): a drawer, so the table stays in view. Title in
-  sans (« Nouveau poste — mai 2026 »). The fields come in collapsible sections: a hairline on top and the
-  small-caps label led by the same mono +/− marker as the dashboard's detail rows; two columns of fields when
-  the panel is wide enough, one at 390px. Required fields carry a `--ko` asterisk. Columns the Google Sheet
-  computes are no fields: one 12px `--ink-3` note names them. A fallback schema shows its warning as an
-  `alert-warning` line above the form; a 12px `--ink-3` line under it says where the columns were read, with a
-  quiet « Relire les colonnes ». Footer (fixed under the scrolling fields, hairline on top): a 12px `--ink-3`
-  note saying where the record goes, then « Annuler » (secondary) and the primary button; under 480px the note
-  takes its own line and the buttons stay right. Skeleton (label bars + 32px input outlines) while the
+  sans (« Nouveau poste »), and under it one 12px line with the month and where the record goes (« Mai 2026 ·
+  écrit dans le Google Sheet source »; a frozen month in `--warn`). The essentials first: Identification and
+  Conformité open, the other sections closed with a 12px `--ink-3` hint of what they hold. Sections: a hairline
+  on top and the small-caps label led by the same mono +/− marker as the dashboard's detail rows; two columns of
+  fields when the panel is wide enough, one at 390px. Oui / Non columns are two joined buttons (32px, pressed Oui
+  in `--ok` on `--ok-bg`, pressed Non in `--ko` on `--ko-bg`), and « Conformité » counts its Oui on the right of
+  its label. Required fields carry a `--ko` asterisk. Columns the Google Sheet computes are no fields: one 12px
+  `--ink-3` note names them. « Nouvelle application » keeps a « Score prévu » band at the top (`--paper-2`,
+  sticky): the score in 26px mono (`--ok` / `--ko`), the conformity mark, the five criteria as marks and the
+  required fields still empty. A fallback schema shows its warning as an `alert-warning` line above the form; a
+  12px `--ink-3` line under it says where the columns were read, with a quiet « Relire les colonnes ». Footer
+  (fixed under the scrolling fields, hairline on top): « Enchaîner avec un autre poste » (postes) on the left,
+  then « Annuler » (secondary) and the primary button. Skeleton (label bars + 32px input outlines) while the
   columns load. Closing with typed values asks first; while saving nothing closes the panel.
+- **Action form** (modal): Cible, Action, Priorité (three joined buttons, the pressed one in ink) and Échéance
+  (pill shortcuts under the field); « Plus d’options » (a closed section with its hint) holds the rest.
 - **Toasts**: bottom-left, ink background, white text, 3px radius, no icons; errors get a `--ko`
   left bar.
 - **Config screen**: left-aligned within the main column like any page: title "Source de données",

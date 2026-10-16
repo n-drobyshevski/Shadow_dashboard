@@ -1012,6 +1012,55 @@ details.form-section > .form { grid-template-columns: repeat(auto-fit, minmax(mi
 details.form-section[open] > .form-section-title::before { content: '−'; }
 .form-section-title:hover .form-section-label { color: var(--ink); }
 .form-section-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* What a closed section holds (hidden once open), and the Oui count of a section's yes/no fields. */
+.form-section-hint {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--ink-3);
+}
+details.form-section[open] > .form-section-title > .form-section-hint { display: none; }
+.form-section-tally { margin-left: auto; font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--ink-2); white-space: nowrap; }
+/* A short list in one click (form field types 'choice' and 'yesno'): the pressed one in ink; for Oui / Non,
+   Oui in the ok tone and Non in the ko tone. */
+.choice { display: inline-flex; align-self: flex-start; max-width: 100%; border: 1px solid var(--rule-2); border-radius: var(--radius); overflow: hidden; }
+.choice-btn {
+  min-width: 56px; min-height: var(--control-h); padding: 0 var(--s3); border: 0; border-right: 1px solid var(--rule-2);
+  background: var(--paper); font: inherit; font-size: 13px; color: var(--ink-2); cursor: pointer;
+}
+.choice-btn:last-child { border-right: 0; }
+.choice-btn:hover:not(:disabled) { color: var(--ink); background: var(--row-hover); }
+.choice-btn[aria-pressed="true"] { background: var(--ink); color: var(--on-ink); font-weight: 500; }
+.choice-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.choice-btn:disabled { cursor: not-allowed; opacity: .6; }
+.choice[aria-invalid="true"] { border-color: var(--ko); }
+.yesno-btn.is-yes[aria-pressed="true"] { background: var(--ok-bg); color: var(--ok); font-weight: 500; box-shadow: inset 0 0 0 1px var(--ok); }
+.yesno-btn.is-no[aria-pressed="true"] { background: var(--ko-bg); color: var(--ko); font-weight: 500; box-shadow: inset 0 0 0 1px var(--ko); }
+/* Date shortcuts under a date field (« Dans 1 semaine », « Fin du mois »…). */
+.date-quick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.date-quick-btn {
+  min-height: 28px; padding: 0 10px; border: 1px solid var(--rule); border-radius: 14px; background: var(--paper);
+  font: inherit; font-size: 12px; color: var(--ink-2); cursor: pointer;
+}
+.date-quick-btn:hover:not(:disabled) { color: var(--ink); border-color: var(--rule-2); }
+.date-quick-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Panel title + its one-line context (month, where the record goes). */
+.drawer-heading { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.drawer-subtitle { margin: 0; font-size: 12px; color: var(--ink-3); }
+.drawer-subtitle.is-warn { color: var(--warn); }
+.form-panel-again { display: inline-flex; align-items: center; gap: var(--s2); min-height: var(--control-h); font-size: 13px; color: var(--ink-2); cursor: pointer; }
+.form-panel-again input { accent-color: var(--ink); margin: 0; }
+/* Live preview at the top of a form panel (the score a new application would get). */
+.form-panel-live { position: sticky; top: calc(-1 * var(--s4)); z-index: 2; margin: calc(-1 * var(--s4)) calc(-1 * var(--s5)) 0;
+  padding: var(--s3) var(--s5); background: var(--paper-2); border-bottom: 1px solid var(--rule); }
+.form-panel-live[hidden] { display: none; }
+.form-panel-live:not([hidden]) + .form-sections > .form-alert:first-child + details.form-section { border-top: 0; }
+.score-preview { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s5); }
+.score-preview-main { display: flex; align-items: baseline; gap: var(--s3); }
+.score-preview-value { font-family: var(--font-mono); font-size: 26px; line-height: 1; }
+.score-preview-value.is-ok { color: var(--ok); }
+.score-preview-value.is-ko { color: var(--ko); }
+.score-preview-crit { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s3); margin: 0; padding: 0; list-style: none; font-size: 12px; }
+.score-preview-missing { flex-basis: 100%; margin: 0; }
+
 .form-section-note { margin: 0 0 var(--s2); font-size: 12px; color: var(--ink-3); }
 .form-panel-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--s3); margin: 0; font-size: 12px; color: var(--ink-3); }
 .form-panel-meta .btn-quiet { min-height: 28px; }
@@ -1096,6 +1145,7 @@ body.unconfigured .toast-root { left: var(--s4); }
   .etable-count { flex: 0 0 auto; }
   .toast-root { left: var(--s3); right: var(--s3); bottom: var(--s3); max-width: none; }
   .drawer-header, .drawer-body, .drawer-footer { padding-left: var(--s4); padding-right: var(--s4); }
+  .form-panel-live { margin-left: calc(-1 * var(--s4)); margin-right: calc(-1 * var(--s4)); padding-left: var(--s4); padding-right: var(--s4); }
   .modal-header, .modal-body, .modal-footer { padding-left: var(--s4); padding-right: var(--s4); }
 }
 @media (max-width: 480px) {

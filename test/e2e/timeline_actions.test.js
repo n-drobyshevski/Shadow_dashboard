@@ -362,7 +362,7 @@ describe('actions — remediation', () => {
       await page.click('#action-add');
       await page.waitForSelector('.modal [data-name="target_name"]');
       assert.equal((await page.textContent('.modal .modal-title')).trim(), 'Nouvelle action');
-      assert.equal((await page.textContent('.modal .modal-footer .btn-primary')).trim(), 'Enregistrer');
+      assert.equal((await page.textContent('.modal .modal-footer .btn-primary')).trim(), 'Créer l’action');
       const suggestions = await optionLabels(page, '.modal [data-name="target_name"]');
       assert.ok(suggestions.includes('LAB-TEX-03') && suggestions.includes('Figma'), 'current month postes + apps suggested');
       // Grouped under « Postes » / « Applications »; only poste identifiers in mono.
@@ -379,9 +379,15 @@ describe('actions — remediation', () => {
       await assertNoNativeControls(page, '.modal');
       await chooseOption(page, '.modal [data-name="target_name"]', 'LAB-CHA-02');
       await page.fill('.modal textarea[data-name="action"]', 'Mettre à jour le BIOS');
-      await page.fill('.modal input[data-name="responsable"]', 'Léa Dubois');
-      await chooseOption(page, '.modal [data-name="priorite"]', 'Haute');
+      // Priorité: three buttons; Échéance: typed (or a shortcut, below).
+      await page.click('.modal [data-field="priorite"] .choice-btn[data-value="Haute"]');
+      await page.click('.modal [data-field="deadline"] .date-quick-btn:has-text("Dans 1 semaine")');
+      assert.match(await page.inputValue('.modal [data-name="deadline"]'), /^\d{2}\/\d{2}\/\d{4}$/);
       await typeDate(page, '.modal [data-name="deadline"]', '31/12/2026');
+      // The rest under « Plus d’options »; the type followed the chosen poste.
+      await page.click('.modal details[data-group="more"] > summary');
+      assert.equal(await dropdownValue(page, '.modal [data-name="target_type"]'), 'poste');
+      await page.fill('.modal input[data-name="responsable"]', 'Léa Dubois');
 
       // Invalid date: refused under the field, nothing sent.
       await typeDate(page, '.modal [data-name="date_completed"]', '31/02/2026');
@@ -397,7 +403,7 @@ describe('actions — remediation', () => {
       await app.waitIdle();
       assert.match(await page.textContent('.modal .form-alert'), /Erreur : Feuille verrouillée\./);
       assert.equal(await page.inputValue('.modal textarea[data-name="action"]'), 'Mettre à jour le BIOS');
-      assert.equal(await dropdownValue(page, '.modal [data-name="priorite"]'), 'Haute');
+      assert.equal(await page.getAttribute('.modal [data-field="priorite"] .choice-btn[data-value="Haute"]', 'aria-pressed'), 'true');
       assert.equal((await tableIds(page, 'actions-table')).length, 3);
 
       // Busy submit while the call runs, then the modal closes.
@@ -488,6 +494,31 @@ describe('actions — remediation', () => {
       }]);
       assert.equal(await page.textContent('#toast-root .toast:last-child .toast-msg'), 'Action créée — Figma.');
       assert.deepEqual(await page.evaluate(() => window.__saved), { created: true });
+      assert.deepEqual(app.errors, []);
+    });
+  });
+});
+
+describe('actions — the quick form', () => {
+  test('an application as Cible sets the type; « Plus d’options » opens when editing', async () => {
+    await withApp({ page: 'actions' }, async (app) => {
+      const { page } = app;
+      await page.click('#action-add');
+      await page.waitForSelector('.modal [data-name="target_name"]');
+      assert.equal(await page.$eval('.modal details[data-group="more"]', (d) => d.open), false);
+      assert.match(await page.textContent('.modal details[data-group="more"] .form-section-hint'), /Statut, équipe, responsable/);
+      assert.equal(await page.getAttribute('.modal [data-field="priorite"] .choice-btn[data-value="Moyenne"]', 'aria-pressed'), 'true');
+      await chooseOption(page, '.modal [data-name="target_name"]', 'Figma');
+      assert.equal(await dropdownValue(page, '.modal [data-name="target_type"]'), 'application');
+      await chooseOption(page, '.modal [data-name="target_name"]', 'LAB-TEX-03');
+      assert.equal(await dropdownValue(page, '.modal [data-name="target_type"]'), 'poste');
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('.modal', { state: 'detached' });
+      // Editing: everything in view.
+      await page.click('#actions-table tr[data-id="a-0001"] td[data-col="target_name"]');
+      await page.waitForSelector('.modal [data-name="status"]');
+      assert.equal(await page.$eval('.modal details[data-group="more"]', (d) => d.open), true);
+      assert.equal((await page.textContent('.modal .modal-footer .btn-primary')).trim(), 'Enregistrer');
       assert.deepEqual(app.errors, []);
     });
   });

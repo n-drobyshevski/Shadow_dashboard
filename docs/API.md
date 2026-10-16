@@ -844,11 +844,16 @@ UI.formModal({title, fields:[{name, label, type:'text'|'textarea'|'select'|'date
               required?, placeholder?, allowCustom?}], submitLabel?}) -> Promise<values|null>
     type 'date' shows <input type=date> but the value in/out is 'DD/MM/YYYY' (Core.frToIso/isoToFr).
     'select' with allowCustom renders <input list> + <datalist>.
-UI.formFields({fields, groups?, onEnter?}) -> {form, control(name), values(), collect(), check(name), showError(err),
+UI.formFields({fields, groups?, onEnter?, onChange?}) -> {form, control(name), values(), collect(), check(name), showError(err),
               clearErrors(), isDirty(), focusFirst(), firstField(), setValues(values)}
-    The field loop of UI.formModal / UI.formPanel (same field types and keys, plus `group`). groups:
-    [{id, title, open?, note?}] -> one <details class="form-section" data-group=id> per group (summary.form-section-title
-    with the +/− marker, div.form of its fields, p.form-section-note); a group with no field and no note is left out.
+    The field loop of UI.formModal / UI.formPanel (same field types and keys, plus `group`). Extra types: 'yesno'
+    (two buttons Oui / Non in a labelled group, aria-pressed, Oui in the ok tone and Non in the ko tone; a second
+    click on the pressed one clears an optional field) and 'choice' (`options` as buttons, e.g. Basse / Moyenne /
+    Haute). Date fields take `quick: [{label, value:'DD/MM/YYYY'}]`: shortcut buttons under the field.
+    onChange(name) runs after any change (typing, a pick, a click). groups: [{id, title, open?, note?, hint?, tally?}]
+    -> one <details class="form-section" data-group=id> per group (summary.form-section-title with the +/− marker,
+    span.form-section-hint while closed (what it holds), span.form-section-tally « 3 sur 4 à Oui » of its yesno fields
+    when tally, div.form of its fields, p.form-section-note); a group with no field and no note is left out.
     collect() checks every field, opens the sections of the invalid ones and focuses the first (values | null);
     showError(err): err.field -> under that field (its section opened, the field focused), else an alert on top;
     isDirty(): a field's text differs from the one it was built with. UI.formModal is built on it.
@@ -856,11 +861,16 @@ UI.formFields({fields, groups?, onEnter?}) -> {form, control(name), values(), co
     'addEventListener' or 'submit' would shadow that member of the <form>), ids are counters (field-N); the name is
     on data-name (the focusable control) and data-field (div.form-field). values() / collect() return objects with
     no prototype (Object.create(null)): a column named '__proto__' is a key like the others.
-UI.drawer({title, body:Node, onClose?, footer?, canClose?, className?, initialFocus?}) -> {close, node, requestClose}
+UI.drawer({title, subtitle?, subtitleTone?, body:Node, onClose?, footer?, canClose?, className?, initialFocus?})
+         -> {close, node, requestClose}
+    subtitle: p.drawer-subtitle under the title (subtitleTone 'warn': the frozen-month tone).
     Right-side panel. footer: div.drawer-footer under the scrolling body. canClose() vetoes the user's closes (×,
     Escape, backdrop, requestClose) when it returns false (it may start its own confirm and call close() later);
     close() always closes. initialFocus: an element or a function returning one (default: the × button).
-UI.formPanel({title, className?, submitLabel?, note?, load, onSubmit?, open?, reloadLabel?}) -> Promise<values|null>
+UI.formPanel({title, subtitle?, subtitleTone?, className?, submitLabel?, note?, load, onSubmit?, open?, reloadLabel?,
+              live?, again?}) -> Promise<values|null>
+    live(values) -> Node|null: div.form-panel-live, sticky at the top of the form, rebuilt on every change.
+    again: {label, checked}: label.form-panel-again checkbox in the footer; its state is written back to again.checked.
     A creation form in a drawer (`open` = UI.drawer or a page's ctx.drawer). load({force}) -> Promise<{fields, groups?,
     alert?, meta?}>: skeleton meanwhile (submit disabled), error + « Réessayer » on failure; reloadLabel: a quiet button
     after `meta` that loads again with {force:true}, typed values kept. Footer: `note` left, « Annuler » + the primary
@@ -957,18 +967,24 @@ only declares its spec (columns, nouns, CSV, create buttons, drawer).
 button?})` (same file) is the creation form of both pages, in a `UI.formPanel` opened through `ctx.drawer`:
 - fields from `State.loadFormSchema(entity, month)` (api_getFormSchema): strict list → dropdown; other list →
   combobox (a list without options suggests `Core.uniqueSorted` of the month's values); date → `UI.dateField`;
-  checkbox → Oui / Non (or its options); text. `presentation` adds textarea, tokens (+ suggestions) and mono to
-  text / open-list columns;
+  checkbox or strict Oui / Non list → 'yesno' (two buttons); text. `presentation` adds textarea, tokens
+  (+ suggestions) and mono to text / open-list columns;
 - computed columns are no fields: « Score conformité, Niveau de risque, Statut : calculés par le Google Sheet. »
   closes the « Conformité » section (else the first one);
 - `sections` [{id, title, open, columns}] place the columns (by `Core.normKey`, in that order); unknown columns go
-  to « Autres colonnes » (open); a section holding a required field or a prefilled value opens; Équipe /
-  Bâtiment / Labo default to the single active filter value;
+  to « Autres colonnes » (open); a section holding a required field or a prefilled value opens; a closed one shows
+  its first fields as a hint; « Conformité » counts its Oui (« 2 sur 4 à Oui »); Équipe / Bâtiment / Labo default to
+  the single active filter value; postes: picking an Équipe fills an empty Bâtiment / Labo with the one its postes
+  use most this month (postes sections: Identification, Conformité open; Équipement, Visite, Suivi closed);
 - origin 'fallback': the schema's warning as an alert above the form; a meta line names where the columns come
   from, with « Relire les colonnes » (force, `fresh:true`);
-- footer note: « Écrit dans le Google Sheet source. » (applications: « … (Galink et IDP restent dans
-  l’application). »), past month « Mois figé : ajouté à l’historique de <mois> seulement, le Google Sheet source
-  n’est pas modifié. »;
+- title « Nouveau poste » / « Nouvelle application »; under it (`subtitle`) « Mai 2026 · écrit dans le Google Sheet
+  source » (applications: « … (Galink et IDP restent dans l’application) »), past month « Mai 2026 · mois figé :
+  historique seulement, le Google Sheet source n’est pas modifié » in the warn tone;
+- postes: `again` « Enchaîner avec un autre poste » (footer box): after a success, a fresh form opens, box still
+  ticked; applications: `live` « Score prévu » (`#app-score-preview`): `Core.scoreApplication` of the typed values
+  (`#app-score-value`, ok / ko against the threshold, « Conforme » / « Sous le seuil de 80 % »), the five criteria
+  (`[data-crit]`) and the required fields still empty (`#app-score-missing`);
 - only non-blank values are sent; on success `State.extendColumns` + `State.addRecord`, the table refreshed (rebuilt
   when a column was added), `toast(name, {live, hidden, month})`, the new row scrolled into view and the focus back
   on the button (several records in a row). The schema is prefetched when the pointer or the focus reaches the
@@ -1113,7 +1129,11 @@ created or completed inside the period and the replacements dated inside it; « 
 compares the first and last months by default.
 1. `Actions de remédiation`: filters (statut, type, équipe, search), counts per status, table (target, type,
    équipe, action, responsable, priorité, deadline (overdue → ko badge), statut badge, dates).
-   `➕ Nouvelle action` / row click → formModal edit → api_updateAction; delete with confirm.
+   `➕ Nouvelle action` / row click → formModal edit → api_updateAction; delete with confirm. The form puts first
+   Cible (its type follows a known poste / application), Action, Priorité (three buttons, 'choice') and Échéance
+   (shortcuts « Dans 1 semaine », « Fin du mois », « Dans 3 mois »); the rest under « Plus d’options » (data-group
+   'more': type, statut, équipe, responsable, mois source, dates, commentaire), closed for a new action, open when
+   editing; submit « Créer l’action » / « Enregistrer ».
    Quick status change select in-row is optional.
 2. `Remplacements de postes`: table + `➕ Remplacement` (formModal: old poste (datalist from postes of the
    current month), new poste, équipe, responsable, date, comment) + edit/delete.
