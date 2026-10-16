@@ -18,9 +18,27 @@
  *     removing someone from a group in Google applies within 1 h even for an account in daily use;
  *   - "not a member": fixed GROUP_CACHE_S seconds, so adding someone applies within 10 min;
  *   - group not readable (deleted, members hidden from the deployer, quota): fixed GROUP_ERROR_CACHE_S
- *     seconds, during which the group grants nothing (it is never treated as a membership);
+ *     seconds, during which the group grants nothing, except to a confirmed member (stale on error, below);
  *   - a cache failure (read or write) only means a live GroupsApp check, never an access granted.
  * Removing a group from the access list applies at once (the cache is only read for listed groups).
+ * Stale on error: every live check that confirms a membership also writes a long-lived "confirmed"
+ * entry (GROUP_OK_CACHE_S, 6 h after that check). When GroupsApp then fails for that group (any error:
+ * daily "Groups read" quota used up, group deleted, members hidden), the call is answered from it instead
+ * of denying, and the error is logged: a quota used up by others does not lock out every group-based
+ * user. It only ever answers on an error, and a live "not a member" removes it, so a removal from the
+ * group still applies within 1 h; only while GroupsApp fails can a removed member keep access, for at
+ * most 6 h after their last confirmed membership.
+ * No role at all: an account that gets nothing from its entry, the domain role or any listed group
+ * (every group answered "not a member", no error) is remembered GROUP_CACHE_S seconds in ONE entry keyed
+ * by the list of groups (any change to it is a new key), read in the same getAll as the groups: a refused
+ * caller does not walk every group again on each call.
+ *
+ * Throttle (throttle, called by apiWrap_ before anything else): at most THROTTLE_PER_MIN units per account
+ * and per minute, one per call and HEAVY_WEIGHT for the full-history reads (THROTTLE_WEIGHTS), counted in
+ * the script cache, then BUSY. It runs before the Script Properties are read, so an account, with or
+ * without a role, can neither spend the deployer's daily quotas without limit nor keep many executions
+ * busy at once. Best effort: the counter is not atomic (concurrent calls may count once) and a cache
+ * failure lets the call through.
  *
  * Load-order safe: the IIFE only defines values and functions; GAS services are touched lazily.
  */
@@ -31,8 +49,13 @@ var Access = (function () {
   var GROUP_DEPTH = 3;           // the group itself + 2 levels of sub-groups
   var GROUP_CACHE_S = 600;       // membership cache (seconds; sliding for "member")
   var GROUP_MAX_AGE_S = 3600;    // a cached "member" is re-verified at least this often (seconds)
-  var GROUP_ERROR_CACHE_S = 120; // an unreadable group is retried after this delay (denies meanwhile)
+  var GROUP_ERROR_CACHE_S = 120; // an unreadable group is retried after this delay (denies meanwhile, but stale on error)
   var MAX_GROUP_CHECKS = 30;     // GroupsApp calls per membership test at most (wide nested trees)
+  var GROUP_OK_CACHE_S = 21600;  // a confirmed membership answers for GroupsApp errors this long (6 h, cache max)
+  var THROTTLE_PER_MIN = 120;    // units per account and per minute (one per call, see THROTTLE_WEIGHTS)
+  var HEAVY_WEIGHT = 5;          // units of a full-history read
+  var THROTTLE_WEIGHTS = { api_getTimeline: HEAVY_WEIGHT, api_getDiff: HEAVY_WEIGHT, api_getImportLog: HEAVY_WEIGHT };
+  var MAX_KEY = 240;             // CacheService keys are limited to 250 characters
 
   function normEmail(v) {
     return typeof v === 'string' ? v.trim().toLowerCase() : '';
@@ -69,8 +92,69 @@ var Access = (function () {
     cachePut_(cache_(), key, value, ttlS);
   }
 
+  /** 32-bit FNV-1a of `s`, base 36: short, stable cache keys (not a security measure). */
+  function hash_(s) {
+    var h = 0x811c9dc5;
+    for (var i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(36);
+  }
+
+  /** `key` as is when CacheService accepts it, else its start and a hash of the whole (very long addresses). */
+  function cacheKey_(key) {
+    return key.length <= MAX_KEY ? key : key.slice(0, MAX_KEY - 10) + '#' + hash_(key);
+  }
+
   function groupKey_(group, email) {
-    return 'grp:' + group + '|' + email;
+    return cacheKey_('grp:' + group + '|' + email);
+  }
+
+  /** Long-lived entry written when a live check confirms the membership: '<ms of that check>'. */
+  function groupOkKey_(group, email) {
+    return cacheKey_('grpok:' + group + '|' + email);
+  }
+
+  /** "No role" entry of `email` for this list of groups: any change to the groups or their roles is a new key. */
+  function noRoleKey_(groups, email) {
+    var sig = (groups || []).map(function (g) { return normEmail(g.email) + '=' + g.role; }).sort().join(',');
+    return cacheKey_('nr:' + hash_(sig) + '|' + email);
+  }
+
+  function noIdentity_() {
+    return Core.makeError('FORBIDDEN', 'Identité Google non transmise. Ouvrez l’application avec un compte du ' +
+      'même domaine Google Workspace que son propriétaire.');
+  }
+
+  /**
+   * Per-account rate limit, called by apiWrap_ before the Script Properties are read: FORBIDDEN without
+   * an identity (as requireRole would), BUSY when the account has used THROTTLE_PER_MIN units in the
+   * current minute (`name` costs THROTTLE_WEIGHTS[name], else 1). The deployer is not limited (their own
+   * calls spend their own quotas, and they keep a way in). Costs one cache get and, when the call goes
+   * through, one put (a refused call writes nothing). A cache failure lets the call through (fail open).
+   */
+  function throttle(name) {
+    var email = activeEmail();
+    if (!email) throw noIdentity_();
+    if (email === ownerEmail()) return;
+    var cache = cache_();
+    if (!cache) return;
+    var key = cacheKey_('rl:' + Math.floor(Date.now() / 60000) + '|' + email);
+    var used;
+    try {
+      used = Number(cache.get(key)) || 0;
+    } catch (e) {
+      console.warn('Access: throttle cache not readable (' + (e && e.message) + '), call let through');
+      return;
+    }
+    var cost = THROTTLE_WEIGHTS[name] || 1;
+    if (used + cost > THROTTLE_PER_MIN) {
+      var err = Core.makeError('BUSY', 'Trop de requêtes. Réessayez dans une minute.');
+      err.throttled = true;
+      throw err;
+    }
+    cachePut_(cache, key, String(used + cost), 120);
   }
 
   /**
@@ -96,7 +180,8 @@ var Access = (function () {
    * Answer carried by a cached value at `now` (ms): true / false, or null when it cannot be used (absent,
    * unknown format such as an older version's value, or a "member" last verified GROUP_MAX_AGE_S ago or
    * more, or in the future): the group is then checked live.
-   * Values: 'm:<ms of the last live check>' member, 'n' not a member, 'e' group not readable (denies).
+   * Values: 'm:<ms of the last live check>' member, 'n' not a member, 'e' group not readable (denies;
+   * memberCached_ answers it from the "confirmed" entry first).
    */
   function cachedAnswer_(value, now) {
     if (value === 'n' || value === 'e') return false;
@@ -106,15 +191,34 @@ var Access = (function () {
     return age >= 0 && age < GROUP_MAX_AGE_S * 1000 ? true : null;
   }
 
+  /** True when a "confirmed" value ('<ms of a live check>') is usable at `now`: less than GROUP_OK_CACHE_S old. */
+  function confirmed_(value, now) {
+    if (!/^\d{1,15}$/.test(typeof value === 'string' ? value : '')) return false;
+    var age = now - Number(value);
+    return age >= 0 && age < GROUP_OK_CACHE_S * 1000;
+  }
+
+  /** Answer for a group that cannot be read: true from a confirmed membership, else false (and info.uncertain). */
+  function staleAnswer_(confirmedValue, now, info) {
+    if (confirmed_(confirmedValue, now)) return true;
+    if (info) info.uncertain = true;
+    return false;
+  }
+
   /**
    * Is `email` a member of `group` (normalised), using the values `cached` read beforehand
-   * (cachedGroups_) and checking live on a miss. A "member" hit renews its GROUP_CACHE_S lifetime, never
-   * beyond GROUP_MAX_AGE_S after its live check. Errors (group gone, members hidden from the deployer,
-   * quota) count as "not a member", are logged, never thrown, and are cached GROUP_ERROR_CACHE_S seconds.
+   * (cachedGroups_: the group's entry and its "confirmed" entry) and checking live on a miss. A "member"
+   * hit renews its GROUP_CACHE_S lifetime, never beyond GROUP_MAX_AGE_S after its live check. A live
+   * "member" also writes the "confirmed" entry (GROUP_OK_CACHE_S), a live "not a member" removes it.
+   * Errors (group gone, members hidden from the deployer, quota) are logged, never thrown, and cached
+   * GROUP_ERROR_CACHE_S seconds ('e'); they are answered from the "confirmed" entry when there is one
+   * (stale on error), else count as "not a member" and set `info.uncertain` (no "no role" entry then).
    */
-  function memberCached_(group, email, cache, cached) {
+  function memberCached_(group, email, cache, cached, info) {
     var key = groupKey_(group, email);
+    var okKey = groupOkKey_(group, email);
     var now = Date.now();
+    if (cached[key] === 'e') return staleAnswer_(cached[okKey], now, info);
     var hit = cachedAnswer_(cached[key], now);
     if (hit === true) {
       var left = Math.ceil((Number(cached[key].slice(2)) + GROUP_MAX_AGE_S * 1000 - now) / 1000);
@@ -126,19 +230,27 @@ var Access = (function () {
     try {
       member = memberOf_(GroupsApp.getGroupByEmail(group), email, GROUP_DEPTH, {}, budget);
     } catch (e) {
-      console.warn('Access: group ' + group + ' not readable (' + (e && e.message) + ')');
+      console.warn('Access: group ' + group + ' not readable (' + (e && e.message) + ')' +
+        (confirmed_(cached[okKey], now) ? ', answered from the last confirmed membership' : ''));
       cachePut_(cache, key, 'e', GROUP_ERROR_CACHE_S);
-      return false;
+      return staleAnswer_(cached[okKey], now, info);
     }
     cachePut_(cache, key, member ? 'm:' + now : 'n', GROUP_CACHE_S);
+    if (member) cachePut_(cache, okKey, String(now), GROUP_OK_CACHE_S);
+    else if (typeof cached[okKey] === 'string') cacheRemove_(cache, okKey);
     return member;
+  }
+
+  function cacheRemove_(cache, key) {
+    if (!cache) return;
+    try { cache.remove(key); } catch (e) { /* cache unavailable: the entry expires on its own */ }
   }
 
   /** Is `email` a member of `groupEmail` (directly or through sub-groups)? Cached, see memberCached_. */
   function isGroupMember(groupEmail, email) {
     var group = normEmail(groupEmail);
     var cache = cache_();
-    return memberCached_(group, email, cache, cachedGroups_(cache, [groupKey_(group, email)]));
+    return memberCached_(group, email, cache, cachedGroups_(cache, [groupKey_(group, email), groupOkKey_(group, email)]));
   }
 
   function memberOf_(group, email, depth, seen, budget) {
@@ -157,7 +269,9 @@ var Access = (function () {
 
   /**
    * Role of `email` for the given access list ('' = no access): the highest of the explicit entry,
-   * the groups (only checked when they can raise the role) and the domain role.
+   * the groups (only checked when they can raise the role) and the domain role. Without an entry or a
+   * domain role, the "no role" entry is read in the same getAll as the groups: on a hit no group is
+   * checked; it is written when every group answered "not a member" without an error.
    */
   function roleOf(email, owner, access) {
     if (!email) return '';
@@ -175,15 +289,20 @@ var Access = (function () {
     });
     if (!groups.length) return role;
     var cache = cache_();
-    var keys = [];
+    var noRole = role ? '' : noRoleKey_(access.groups, email);
+    var keys = noRole ? [noRole] : [];
     groups.forEach(function (g) {
-      var key = groupKey_(g.email, email);
-      if (keys.indexOf(key) < 0) keys.push(key);
+      [groupKey_(g.email, email), groupOkKey_(g.email, email)].forEach(function (key) {
+        if (keys.indexOf(key) < 0) keys.push(key);
+      });
     });
     var cached = cachedGroups_(cache, keys);
+    if (noRole && cached[noRole] === '1') return '';
+    var info = { uncertain: false };
     for (var i = 0; i < groups.length; i++) {
-      if (memberCached_(groups[i].email, email, cache, cached)) return groups[i].role;
+      if (memberCached_(groups[i].email, email, cache, cached, info)) return groups[i].role;
     }
+    if (noRole && !info.uncertain) cachePut_(cache, noRole, '1', GROUP_CACHE_S);
     return role;
   }
 
@@ -217,10 +336,7 @@ var Access = (function () {
    */
   function requireRole(minRole, access) {
     var user = currentUser(access);
-    if (!user.email) {
-      throw Core.makeError('FORBIDDEN', 'Identité Google non transmise. Ouvrez l’application avec un compte du ' +
-        'même domaine Google Workspace que son propriétaire.');
-    }
+    if (!user.email) throw noIdentity_();
     if (!user.role) {
       throw Core.makeError('FORBIDDEN', 'Accès refusé pour ' + user.email + '. Demandez l’accès à un administrateur.');
     }
@@ -256,6 +372,7 @@ var Access = (function () {
     roleOf: roleOf,
     currentUser: currentUser,
     requireRole: requireRole,
+    throttle: throttle,
     checkEmail: checkEmail,
     checkRole: checkRole,
     checkGroup: checkGroup,
@@ -265,6 +382,9 @@ var Access = (function () {
     GROUP_DEPTH: GROUP_DEPTH,
     GROUP_CACHE_S: GROUP_CACHE_S,
     GROUP_MAX_AGE_S: GROUP_MAX_AGE_S,
-    GROUP_ERROR_CACHE_S: GROUP_ERROR_CACHE_S
+    GROUP_ERROR_CACHE_S: GROUP_ERROR_CACHE_S,
+    GROUP_OK_CACHE_S: GROUP_OK_CACHE_S,
+    THROTTLE_PER_MIN: THROTTLE_PER_MIN,
+    THROTTLE_WEIGHTS: THROTTLE_WEIGHTS
   };
 })();

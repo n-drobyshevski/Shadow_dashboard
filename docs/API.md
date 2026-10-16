@@ -33,7 +33,7 @@ identifiers and comments are **English**.
 |---|---|---|
 | `src/Core.js` | `function CoreFactory_()` + `var Core = CoreFactory_();` | Pure logic, shared with client. **No GAS globals, no closures over outer scope.** |
 | `src/Config.js` | `var Config` | Script Properties + constants (tab names, schemas). |
-| `src/Access.js` | `var Access` | Caller identity (Session) and roles. Only module that reads `Session`. |
+| `src/Access.js` | `var Access` | Caller identity (Session), roles and the per-account throttle. Only module that reads `Session`. |
 | `src/Store.js` | `var Store` | Data spreadsheet repository. Only module that writes to the data spreadsheet. |
 | `src/Importer.js` | `var Importer` | Reads the live source spreadsheet, snapshots a month, writes the current month's edits back into the source. |
 | `src/Sync.js` | `var Sync` | Hourly synchronisation of the current month (trigger, status). Only module that uses `ScriptApp`. |
@@ -147,11 +147,16 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 - Free text from the client (record cells, names, action / replacement fields) longer than
   `Core.LIMITS.cellChars` characters → `VALIDATION` with the field (« Texte trop long pour « X » : 5000
   caractères au maximum. »), before the lock.
-- All wrapped by `apiWrap_(fn, name, minRole)` which first checks the caller's role
+- All wrapped by `apiWrap_(fn, name, minRole)` which first calls `Access.throttle(name)`, before any Script
+  Property is read: `FORBIDDEN` when the identity is not passed, `BUSY` « Trop de requêtes. Réessayez dans une
+  minute. » when the account (any account but the deployer, with or without a role) has used its 120 units of
+  the current minute (1 per call, 5 for `api_getTimeline`, `api_getDiff`, `api_getImportLog`). It then checks
+  the caller's role
   (`Access.requireRole(minRole)`: `FORBIDDEN` when the identity is not passed, the account has no access,
   or a lecteur calls an admin endpoint) and applies the effective threshold (`Core.setThreshold`), then
   catches errors: `err.code` in `Core.ERROR_CODES` → that code, else `INTERNAL`; message in French when
-  produced by us; `console.error` the stack. Every call ends with one timing line
+  produced by us; `console.error` the stack (`console.warn` and no stack for `FORBIDDEN` and throttle
+  refusals). Every call ends with one timing line
   `{api, ms, authMs, ok, code?}` (§4 Perf). Every call starts with empty per-execution read memos
   (`Store.clearMemo_()`, `Config.clearMemo_()`, §4): one call = one execution in Apps Script, and the
   reset keeps the test sandbox, which runs many calls in one context, honest.
@@ -233,10 +238,10 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 | `api_getSettings` | – | `{threshold, defaultThreshold:80, source:{id, url, title, tabsFound\|null}, dataUrl, access:AccessView, me:email, editing:Editing, sync:SyncStatus}` (`sync.enabled` checked against the real triggers). The live check of the app: opens the source (`tabsFound:null` = not accessible, `title` then the stored one); `url` / `dataUrl` are built from the ids, the data spreadsheet is not opened. | – |
 | `api_setThreshold` | `{threshold}` | `{threshold}` | `VALIDATION` (not an integer 1–100) |
 | `api_setEditing` | `{edit?:bool, create?:bool, delete?:bool}` (at least one) | `{editing:Editing}` — under the lock the stored switches are read again and the patch merged into them (the keys not sent are kept), one property write | `VALIDATION` (« Aucun réglage à enregistrer. », « Réglage inconnu : « k ». », « « k » doit valoir true ou false. »), `BUSY` |
-| `api_saveUser` | `{email, role:'admin'\|'lecteur'}` | `AccessView` (adds or changes the role) | `VALIDATION` (bad email / role, the owner, or the caller's own account) |
-| `api_addUsers` | `{emails:[string] (1–500), role}` | `{access:AccessView, added:[email], updated:[email] (role changed), skipped:[{email, reason}]}` — one write; invalid addresses, duplicates, the owner, the caller and accounts that already have that role are skipped with a reason | `VALIDATION` (role, empty / too long list, more than 2000 accounts) |
+| `api_saveUser` | `{email, role:'admin'\|'lecteur'}` | `AccessView` (adds or changes the role) | `VALIDATION` (bad email / role, the owner, or the caller's own account; the list would exceed `Config.MAX_ACCESS_CHARS`) |
+| `api_addUsers` | `{emails:[string] (1–500), role}` | `{access:AccessView, added:[email], updated:[email] (role changed), skipped:[{email, reason}]}` — one write; invalid addresses, duplicates, the owner, the caller and accounts that already have that role are skipped with a reason | `VALIDATION` (role, empty / too long list, more than 2000 accounts, a serialized list above `Config.MAX_ACCESS_CHARS` = 300000 characters: « La liste d’accès deviendrait trop volumineuse… », nothing written) |
 | `api_removeUser` | `{email}` | `AccessView` | `VALIDATION` (as above), `NOT_FOUND` |
-| `api_saveGroup` | `{email, role}` | `AccessView` (adds a Google Group or changes its role) | `VALIDATION` (bad role; group unknown or its members not visible to the owner; more than 50 groups; the change would remove the caller's admin role) |
+| `api_saveGroup` | `{email, role}` | `AccessView` (adds a Google Group or changes its role) | `VALIDATION` (bad role; group unknown or its members not visible to the owner; more than 50 groups; the change would remove the caller's admin role; the list would exceed `Config.MAX_ACCESS_CHARS`) |
 | `api_removeGroup` | `{email}` | `AccessView` | `NOT_FOUND`, `VALIDATION` (the caller would lose admin) |
 | `api_setDomainRole` | `{role:'none'\|'lecteur'}` | `AccessView` | `VALIDATION` |
 
@@ -289,7 +294,9 @@ Config.PROP_SCHEMA    = 'DATA_SCHEMA_VERSION'  (JSON {dataId, version}: the sche
                         so a new DATA_SPREADSHEET_ID never inherits it. Deleting it only costs one Meta read.)
 Config.PROP_THRESHOLD = 'COMPLIANCE_THRESHOLD'      (integer 1–100 as a string)
 Config.PROP_ACCESS    = 'ACCESS_JSON'  ({users:[{email, role, added_at, added_by}], domainRole} as JSON split in
-                        3000-char parts ACCESS_JSON_0.. with the count in ACCESS_JSON_N; Config.MAX_USERS = 2000)
+                        3000-char parts ACCESS_JSON_0.. with the count in ACCESS_JSON_N; Config.MAX_USERS = 2000;
+                        Config.MAX_ACCESS_CHARS = 300000: Config.setAccess throws VALIDATION, before writing
+                        anything, when the JSON is longer, so the list never fills the ~500 KB property store)
 Config.get({fresh?})         -> {dataId:''|id, sourceId:''|id, sourceTitle:''|title stored for sourceId
                                  (PROP_SOURCE_INFO), threshold:int (Core.THRESHOLD when unset),
                                  schemaVersion:''|version recorded for dataId (PROP_SCHEMA),
@@ -353,13 +360,34 @@ Access.isGroupMember(group, email) -> GroupsApp hasUser, sub-groups up to 3 leve
                                    at the latest (a removal from the group applies within 1 h);
                                  'n' not a member: 600 s, fixed (an addition applies within 10 min);
                                  'e' group not readable (gone, members hidden, quota): GROUP_ERROR_CACHE_S = 120 s,
-                                   fixed; denies (false) like the live error it stands for.
-                               Any other value is a miss. roleOf reads the entries of every group the call may
-                               need in ONE CacheService getAll; a cache failure (read or write) only means a live
-                               GroupsApp check, never an access granted.
+                                   fixed; answered like the live error it stands for (below).
+                               Any other value is a miss. Stale on error: a live "member" also writes
+                               'grpok:<group>|<email>' = '<ms of the check>' for GROUP_OK_CACHE_S = 21600 s (6 h,
+                               not renewed by cache hits); a live "not a member" removes it. A GroupsApp error
+                               (live, or 'e' cached) answers true when that entry is less than 6 h old (logged:
+                               « answered from the last confirmed membership »), else false. So a removal from
+                               the group applies within 1 h as long as GroupsApp answers; only while it fails can
+                               a removed member keep access, 6 h after the last confirmation at most.
+                               Keys longer than 240 characters are shortened with a hash (CacheService limit).
+                               roleOf reads the entries of every group the call may need (and their 'grpok:'
+                               entries) in ONE CacheService getAll; a cache failure (read or write) only means a
+                               live GroupsApp check, never an access granted.
+                               No role: when neither the entry nor the domain role gives one, roleOf also reads
+                               'nr:<hash of the listed groups and roles>|<email>' in that getAll: '1' answers ''
+                               without checking any group. Written (GROUP_CACHE_S = 600 s, fixed) when every group
+                               answered "not a member" without an error; any change to the list of groups or
+                               their roles is a new key, an explicit entry or the domain role applies at once.
 Access.checkGroup(v)         -> normalised group email, or VALIDATION if unknown / members hidden from the owner
 Access.currentUser(access?)  -> {email, role, isOwner, owner}
 Access.requireRole(minRole, access?) -> currentUser or FORBIDDEN
+Access.throttle(name)        -> per-account rate limit, called by apiWrap_ before Config.get: FORBIDDEN when
+                               activeEmail() is '' (same message as requireRole); nothing for the deployer; else
+                               'rl:<minute>|<email>' (minute = floor(Date.now() / 60000)) counts the units used
+                               this minute: THROTTLE_WEIGHTS[name] (5 for api_getTimeline, api_getDiff,
+                               api_getImportLog) or 1. Above THROTTLE_PER_MIN = 120: BUSY « Trop de requêtes.
+                               Réessayez dans une minute. » (err.throttled, logged as a warning), nothing written.
+                               One cache get + one put (120 s) per call that goes through; not atomic (concurrent
+                               calls may count once); a cache failure lets the call through (fail open).
 Access.checkEmail(v) / Access.checkRole(v, allowed?) -> normalised value or VALIDATION
 Access.cacheGet(key) -> string|null / Access.cachePut(key, value, ttlS) -> the script CacheService for other modules
                                (Importer.readFormSchema); best effort: a failing cache reads as a miss, a failed put is ignored
@@ -617,7 +645,7 @@ Perf.start(stage, fields?)       -> timer {lap(name), end(extra?)}: lap adds the
 ```
 | Line | Emitted by |
 |---|---|
-| `{api, ms, authMs, ok, code?}` | `apiWrap_`, every `api_*` call (`authMs` = `Config.get` + role check, `null` when refused) |
+| `{api, ms, authMs, ok, code?}` | `apiWrap_`, every `api_*` call (`authMs` = `Access.throttle` + `Config.get` + role check, `null` when refused) |
 | `{stage:'ensure', ms, open, ensureTabs, created}` | `Store.ensure`, first successful call of an execution |
 | `{stage:'sheet', tab, rows, ms}` | every full read of a data tab (`Store` `readTable_`; memoized reads log nothing) |
 | `{stage:'span', tab, rows, ms}` | every partial read of a data tab: one month's block (`Postes`, `Applications`, `Referentiel`), `ImportLog` rows read from the bottom or the one row of `latestImportInfo` |
@@ -1071,7 +1099,8 @@ elsewhere (poll, bootstrap reload).
   formulas (score, risk, status), array-formula columns and data validation rules (lists, Référentiel ranges, a date).
 - `test/helpers/gasFakes.js` — in-memory `SpreadsheetApp`, `PropertiesService`, `LockService`,
   `Utilities`, `HtmlService`, `Logger`, `GroupsApp`, `CacheService` (get / getAll / put / putAll with TTLs on the
-  `Date.now()` clock; `env.__state.cacheFaults.read / .write` make them throw); counters in `env.__state.calls`
+  `Date.now()` clock; `env.__state.cacheFaults.read / .write` make them throw; `env.__fault({method:
+  'getGroupByEmail', id: group, message?})` makes GroupsApp throw, e.g. the daily quota); counters in `env.__state.calls`
   (Sheets, Properties and Cache calls), `env.__state.opened` (ids passed to `openById`),
   `env.__state.propertyWrites` (keys written)
   and `env.__state.cells` (cells read per read method); `env.__state.reads` logs every range read
@@ -1087,6 +1116,9 @@ elsewhere (poll, bootstrap reload).
   writes, GroupsApp calls, source cells read, source reads made under the lock)
   of the main flows on a large generated data spreadsheet, bounded by today's numbers (`BASELINE`);
   `PERF_OUT=<file>` writes the measurement as JSON.
+- `test/integration/quota.test.js` — quota and abuse limits: the per-account throttle (counter per minute,
+  weights, BUSY message, fail open, no identity refused first), stale-on-error group answers and the one-entry
+  "no role" answer.
 - `test/helpers/render.js` — renders `src/index.html` (scriptlets `include`/`coreScript`, and
   `inlineBoot_`/`inlinePage_` run from the real `Code.js` over the `boot` envelope / `page` options, '' when
   left out) to static HTML; optional injection of `test/fixtures/mockRun.js` + data for the browser.

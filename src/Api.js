@@ -17,13 +17,15 @@
 // ------------------------------------------------------------------------------------ envelope
 
 /**
- * Wraps an implementation `fn(args, user) -> data` into the JSON envelope. The caller's role is
- * checked first (Access.requireRole, FORBIDDEN otherwise) and the effective compliance threshold is
+ * Wraps an implementation `fn(args, user) -> data` into the JSON envelope. Before anything is read,
+ * Access.throttle(name) refuses a call without identity (FORBIDDEN) and an account above its per-minute
+ * rate (BUSY), so neither reaches the Script Properties. The caller's role is then
+ * checked (Access.requireRole, FORBIDDEN otherwise) and the effective compliance threshold is
  * applied to Core for the duration of the call. Errors whose `.code` is one of Core.ERROR_CODES are
  * reported as-is (their messages are ours, in French), VALIDATION ones with their `.field` when they
  * name a form field; anything else becomes INTERNAL. The stack is
  * logged with console.error and never sent to the client. Every call ends with one timing line
- * (Perf.log): {api, ms, authMs (Config + role check), ok, code (failures only)}. Every call starts
+ * (Perf.log): {api, ms, authMs (throttle + Config + role check), ok, code (failures only)}. Every call starts
  * with empty read memos (Store, Config): in Apps Script each call is a new execution anyway, the
  * reset keeps the test sandbox (many calls in one context) honest.
  * @param {function(Object, Object): *} fn
@@ -40,6 +42,7 @@ function apiWrap_(fn, name, minRole) {
     try {
       Store.clearMemo_();
       Config.clearMemo_();
+      Access.throttle(name);
       var cfg = Config.get();
       var user = Access.requireRole(minRole || 'lecteur', cfg.access);
       authMs = Date.now() - t0;
@@ -54,7 +57,7 @@ function apiWrap_(fn, name, minRole) {
       var known = Core.ERROR_CODES.indexOf(e.code) >= 0 && e.code !== 'INTERNAL';
       code = known ? e.code : 'INTERNAL';
       var message = known ? String(e.message || code) : internalMessage_(e);
-      if (code === 'FORBIDDEN') console.warn('[' + (name || 'api') + '] ' + code + ': ' + message);
+      if (code === 'FORBIDDEN' || e.throttled) console.warn('[' + (name || 'api') + '] ' + code + ': ' + message);
       else console.error('[' + (name || 'api') + '] ' + code + ': ' + (e.stack || e.message || String(err)));
       var error = { code: code, message: message };
       // The form field a VALIDATION error is about (Core.makeError's third argument).

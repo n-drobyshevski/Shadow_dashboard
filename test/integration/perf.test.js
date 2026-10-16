@@ -30,6 +30,7 @@ const DATA_ID = '1PerfDataSpreadsheetId00000000000000000000000';
 const READER = 'lea.reader@decathlon.com';
 const ADMIN_GROUP = 'secu-admins@decathlon.com';
 const GROUP_ADMIN = 'chef@decathlon.com';
+const STRANGER = 'inconnu@decathlon.com';
 
 /**
  * Upper bounds = the numbers measured when they were last lowered (only ever lower them). History:
@@ -50,23 +51,36 @@ const GROUP_ADMIN = 'chef@decathlon.com';
  * The live-month save also reads the formulas of the source's header row and first data row (one more
  * getFormulas of 2 rows, 50 cells, under the lock), so that it refuses an edit in a column an array formula
  * fills: savePostesLive getFormulas 1 -> 2, sourceReadsLocked 3 -> 4, cellsRead and sourceCellsRead +50.
- * These are the only bounds ever raised, all for correctness.
+ * These were the only bounds raised for correctness (the throttle below raised the cache counts for quota protection).
  * The creation forms added getDataValidations (0 for every earlier flow) and three flows: the form schema
  * read cold (the source only: header block, key column, two formula blocks, the last row's rules and raw
  * values, one box of Référentiel lists; cached), warm (the cache alone: no spreadsheet opened) and a
  * live poste added from the form (the append reads + the new row read back after the write).
+ * The per-account throttle (Access.throttle, before the Script Properties are read) costs every call of an
+ * account other than the deployer one cache get and one put (the counter of the minute): cacheReads and
+ * cacheWrites of the three non-owner bootstraps went up by one each, for the quota protection. A live
+ * check that confirms a group membership also writes the 6 h "confirmed" entry (bootstrapGroupCold
+ * cacheWrites +1 more). The refused-account flows were added with them: cold (groups checked, "not a
+ * member" and the one "no role" entry written) and warm (the "no role" entry only: no GroupsApp call, no
+ * write but the counter); neither opens a spreadsheet.
  */
 const BASELINE = {
   bootstrapAdmin: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
     getDataRange: 0, propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
-  // An explicit lecteur: the admin groups are checked (they could raise the role), cold here.
+  // An explicit lecteur: the admin groups are checked (they could raise the role), cold here. + the throttle get / put.
   bootstrapLecteur: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
-    getDataRange: 0, propertiesReads: 2, cacheReads: 1, cacheWrites: 1, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
+    getDataRange: 0, propertiesReads: 2, cacheReads: 2, cacheWrites: 2, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  // Cold: the throttle get, one getAll; puts: the counter, the membership and its 6 h confirmation.
   bootstrapGroupCold: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
-    getDataRange: 0, propertiesReads: 2, cacheReads: 1, cacheWrites: 1, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
-  // Warm: one getAll, no GroupsApp call, one put (the sliding renewal).
+    getDataRange: 0, propertiesReads: 2, cacheReads: 2, cacheWrites: 3, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  // Warm: the throttle get, one getAll, no GroupsApp call; puts: the counter and the sliding renewal.
   bootstrapGroupWarm: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
-    getDataRange: 0, propertiesReads: 2, cacheReads: 1, cacheWrites: 1, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+    getDataRange: 0, propertiesReads: 2, cacheReads: 2, cacheWrites: 2, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  // No role at all (refused): no spreadsheet opened; warm, one getAll answers without any GroupsApp call.
+  deniedCold: { openById: 0, getValues: 0, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 0,
+    getDataRange: 0, propertiesReads: 1, cacheReads: 2, cacheWrites: 3, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  deniedWarm: { openById: 0, getValues: 0, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 0,
+    getDataRange: 0, propertiesReads: 1, cacheReads: 2, cacheWrites: 1, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   // doGet with the bootstrap inline: the admin bootstrap + the FAVICON_URL property, nothing else.
   doGetAdmin: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
     getDataRange: 0, propertiesReads: 3, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
@@ -247,6 +261,14 @@ function call(ctx, name, args) {
   return res.data;
 }
 
+/** Calls an api_* that must be refused with FORBIDDEN (no role). */
+function refused(ctx, name) {
+  const res = JSON.parse(ctx[name]('null'));
+  assert.equal(res.ok, false, name + ' should be refused');
+  assert.equal(res.error.code, 'FORBIDDEN', res.error.message);
+  return res.error;
+}
+
 /** A new execution over the shared env, as `email` (undefined = the deployer, an admin). */
 function execution(env, email) {
   env.__setActiveUser(email);
@@ -339,6 +361,16 @@ test('call counts of the main flows on a large data spreadsheet stay within the 
   ctx = execution(env, GROUP_ADMIN);
   m = measure(env, () => call(ctx, 'api_bootstrap'));
   results.bootstrapGroupWarm = m;
+
+  // An account of the domain without any role: refused. Cold, the groups are checked (the one listed group
+  // is admin); warm, the one "no role" entry answers (same getAll, no group walked, nothing written but the
+  // throttle counter).
+  ctx = execution(env, STRANGER);
+  m = measure(env, () => refused(ctx, 'api_bootstrap'));
+  results.deniedCold = m;
+  ctx = execution(env, STRANGER);
+  m = measure(env, () => refused(ctx, 'api_bootstrap'));
+  results.deniedWarm = m;
 
   ctx = execution(env);
   m = measure(env, () => call(ctx, 'api_getSettings'));

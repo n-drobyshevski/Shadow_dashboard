@@ -32,7 +32,8 @@
  * accessing document…", timeouts): env.__fault({method, id?, sheet?, times?, message?}) makes the
  * next `times` (default 1, Infinity allowed) matching calls throw. Supported methods: 'openById'
  * (matched on `id`), 'setValues' / 'setValue' (matched on the spreadsheet `id` and the target `sheet`
- * name), 'create'.
+ * name), 'create', 'getGroupByEmail' (matched on the lower-cased group address as `id`; pass a
+ * `message` such as 'Service invoked too many times for one day: groups.' for the daily quota).
  * env.__clearFaults() removes them. Utilities.sleep(ms) is a no-op recorded in __state.sleeps.
  *
  * Usage:
@@ -837,6 +838,7 @@ function createGasEnv(options) {
   const GroupsApp = {
     getGroupByEmail(email) {
       const key = String(email).toLowerCase();
+      maybeFail('getGroupByEmail', { id: key });
       if (!state.groups[key]) throw new Error('Exception: Invalid argument: ' + email);
       return makeGroup(key);
     },

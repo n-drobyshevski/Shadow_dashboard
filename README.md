@@ -163,7 +163,9 @@ synchronisation horaire ». Les mois déjà importés sont conservés.
   d'un Google Sheet, adresses séparées par virgules ou points-virgules, champ « À » d'un e-mail
   `Nom <adresse>`), affiche ce qui sera ajouté, modifié, ignoré ou invalide, puis enregistre tout en une
   fois (500 adresses par ajout, 2000 comptes au total ; au-delà, ouvrir plutôt au domaine en lecture).
-  Une recherche filtre la liste.
+  La liste enregistrée est aussi limitée à 300 000 caractères, pour ne jamais remplir les propriétés du
+  script : avec des adresses très longues, elle contient moins de 2000 comptes. Une recherche filtre la
+  liste.
 - **Groupes Google** : ajouter l'adresse d'un groupe (ex. `labo-industry@decathlon.com`) avec un rôle ;
   tous ses membres le reçoivent, sous-groupes compris (3 niveaux). Si un compte a plusieurs rôles
   (liste, groupes, domaine), le plus élevé l'emporte. L'appartenance est vérifiée avec le compte du
@@ -171,12 +173,20 @@ synchronisation horaire ». Les mois déjà importés sont conservés.
   cache : un compte membre le reste 10 minutes après sa dernière utilisation de l'application, mais
   l'appartenance est revérifiée au moins **toutes les heures** ; un compte retiré d'un groupe dans Google
   perd donc ce rôle sous 1 heure au plus (sous 10 minutes s'il n'utilise pas l'application), un compte
-  ajouté l'obtient sous 10 minutes. Un groupe devenu illisible (supprimé, membres masqués) ne donne
-  aucun rôle et n'est réessayé qu'après 2 minutes. Le retrait d'un groupe de la liste s'applique
+  ajouté l'obtient sous 10 minutes. Un groupe devenu illisible (supprimé, membres masqués, quota
+  Google Groups épuisé) n'est réessayé qu'après 2 minutes et ne donne aucun rôle, sauf aux comptes dont
+  l'appartenance a été confirmée dans les 6 dernières heures : un quota épuisé ne bloque donc pas tous
+  les membres, mais tant que l'erreur dure, un compte retiré du groupe garde son rôle jusqu'à 6 heures
+  après sa dernière vérification réussie. Le retrait d'un groupe de la liste s'applique
   immédiatement. Pour retirer un accès sur-le-champ, retirer le compte (ou le groupe) de la liste. Un administrateur ne peut pas retirer ni rétrograder le groupe qui
   lui donne ce rôle.
 - « Autres comptes du domaine » : *Aucun accès* (par défaut, seuls les comptes listés entrent) ou
   *Lecteur* (tout le domaine peut consulter).
+- **Limite d'appels** : chaque compte, sauf le propriétaire, a droit à 120 appels au serveur par minute ;
+  les lectures de tout l'historique (Évolution, comparaison de mois, journal des imports) comptent pour 5.
+  Au-delà, l'appel est refusé avec « Trop de requêtes. Réessayez dans une minute. ». Un usage normal en
+  reste loin : la limite protège les quotas Google du propriétaire. Elle vaut aussi pour les comptes sans
+  accès, et un appel au-delà est refusé avant toute lecture des réglages.
 - Un compte non autorisé voit « Accès refusé » avec son adresse, à transmettre à un administrateur.
 - La liste est stockée dans les propriétés du script (`ACCESS_JSON_N` et `ACCESS_JSON_0`, `_1`… : une
   propriété est limitée à 9 Ko), le seuil dans `COMPLIANCE_THRESHOLD` et les interrupteurs de saisie dans
@@ -364,10 +374,15 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
 - [ ] Cache des groupes : un membre d'un groupe autorisé entre ; le retirer du groupe dans Google
       Admin : il perd l'accès au plus tard 1 heure après la dernière vérification, même en utilisant
       l'application sans arrêt (10 minutes s'il ne l'utilise pas). L'ajouter à un groupe : accès sous
-      10 minutes. Un groupe aux membres masqués pour le propriétaire refuse l'accès sans erreur, et un
+      10 minutes. Un groupe aux membres masqués pour le propriétaire refuse l'accès sans erreur aux
+      comptes dont l'appartenance n'a pas été confirmée dans les 6 dernières heures (les autres gardent
+      leur rôle, l'avertissement se termine par « answered from the last confirmed membership »), et un
       seul avertissement « not readable » apparaît dans Exécutions par compte toutes les 2 minutes.
       Vérifier que `CacheService.getScriptCache().getAll` est disponible (ce que les faux services ne
       peuvent prouver).
+- [ ] Limite d'appels : en lecteur, parcourir toutes les pages et changer de période plusieurs fois de
+      suite sans jamais voir « Trop de requêtes. Réessayez dans une minute. » ; Exécutions montre alors des
+      lignes `code: "BUSY"` seulement pour un compte qui dépasse vraiment 120 appels par minute.
 - [ ] Interrupteurs de saisie, deux administrateurs : A ouvre Postes, B désactive « Créer des entrées »
       dans Paramètres. A clique « Nouveau poste » (ou enregistre le formulaire déjà ouvert) : le message
       « La création de postes et d’applications est désactivée dans les Paramètres. » s'affiche et les
@@ -491,13 +506,18 @@ switches for every admin and every month (edit / create / delete postes and appl
 refuses the call (actions, remplacements and the sync are not concerned). Unlisted domain accounts get no access by default,
 or lecteur if « Autres comptes du domaine » is set so. « Ajouter plusieurs comptes… » takes a pasted
 list in any common shape (Sheets column, comma/semicolon separated, `Name <address>`), previews it and
-saves it in one call (500 per batch, 2000 accounts max). Google Groups can be granted a role too:
+saves it in one call (500 per batch, 2000 accounts max, and at most 300,000 characters of serialized
+list so it can never fill the Script Properties store). Google Groups can be granted a role too:
 members (sub-groups included, 3 levels) get it, the highest role wins, memberships are checked with
 GroupsApp as the deployer (who must see the members) and cached: a membership slides 10 minutes past
 its last use but is re-verified at least every hour (a removal from a group in Google applies within
-1 h), a non-membership is cached 10 minutes, an unreadable group 2 minutes (it grants nothing), all of
-a call's group entries are read in one `CacheService.getAll`, and a cache failure only means a live
-check. After pulling this
+1 h), a non-membership is cached 10 minutes, an unreadable group 2 minutes (it grants nothing, except
+to an account whose membership a live check confirmed in the last 6 hours: an exhausted Groups quota
+does not lock every member out), an account with no role at all is remembered 10 minutes in one entry
+keyed by the list of groups, all of a call's group entries are read in one `CacheService.getAll`, and a
+cache failure only means a live check. Every account but the deployer is throttled to 120 calls a
+minute (full-history reads count 5) before any Script Property is read; above it, `BUSY` « Trop de
+requêtes. Réessayez dans une minute. ». After pulling this
 version, run `setup()` again to grant the new groups scope. The list lives in the `ACCESS_JSON_N` /
 `ACCESS_JSON_0..` script properties (split because one property holds 9 KB), the compliance threshold (default 80 %) in `COMPLIANCE_THRESHOLD`. For a personal Gmail
 deployer, set `"access": "MYSELF"` in `src/appsscript.json`.
