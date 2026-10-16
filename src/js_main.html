@@ -537,7 +537,11 @@
       actions.appendChild(run);
       if (syncing) UI.busy(run, true, 'Synchronisation…');
       actions.appendChild(el('button', { type: 'button', class: 'btn btn-link btn-sm', id: 'sync-journal',
-        onClick: function () { closeSyncPanel(); go('settings'); } }, 'Journal'));
+        onClick: function () {
+          closeSyncPanel();
+          if (pages().settings && pages().settings.showJournal) pages().settings.showJournal();
+          go('settings');
+        } }, 'Journal'));
     }
     if (actions.childNodes.length) box.appendChild(actions);
     return box;

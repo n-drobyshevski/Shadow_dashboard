@@ -1,8 +1,42 @@
 <style>
 /* Paramètres (admin only). Sections, dl.kv, ledger table, inline forms and buttons come from css.html;
    only the column widths of the forms and the access table are specific to this page. */
-.page-settings .settings-body { display: flex; flex-direction: column; gap: var(--s6); max-width: 880px; }
-.page-settings .section > .page-lede, .page-settings .section > .field-help, .page-settings .section > .lede { margin: 0; }
+/* Three tabs (Général · Saisie · Accès), each a stack of cards. */
+.page-settings .settings-body { display: flex; flex-direction: column; gap: var(--s5); max-width: 880px; }
+.page-settings .settings-tabs { display: flex; flex-wrap: wrap; gap: 0 var(--s6); border-bottom: 1px solid var(--rule-2); }
+.page-settings .settings-tab {
+  min-height: 40px; margin-bottom: -1px; padding: 0 2px; border: 0; border-bottom: 2px solid transparent; background: none;
+  font: inherit; font-size: 14px; color: var(--ink-2); cursor: pointer;
+}
+.page-settings .settings-tab:hover { color: var(--ink); }
+.page-settings .settings-tab[aria-selected="true"] { border-bottom-color: var(--ink); color: var(--ink); font-weight: 500; }
+.page-settings .settings-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.page-settings .settings-panel { display: flex; flex-direction: column; gap: var(--s4); }
+.page-settings .settings-panel[hidden] { display: none; }
+.page-settings .settings-card {
+  display: flex; flex-direction: column; gap: var(--s4); padding: var(--s5); border: 1px solid var(--rule); border-radius: var(--radius-overlay);
+}
+.page-settings .card-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4); min-height: var(--control-h); }
+.page-settings .card-head .card-title {
+  flex: 1 1 auto; font-size: 16px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--ink);
+}
+.page-settings .settings-card > .page-lede, .page-settings .settings-card > .field-help, .page-settings .settings-card > .lede { margin: 0; }
+.page-settings .card-head + .lede { margin-top: calc(-1 * var(--s3)); }
+/* Synchronisation: three figures, then the actions and the journal (opened on demand). */
+.page-settings .sync-figures { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr); gap: var(--s4); margin: 0; }
+.page-settings .sync-figures > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.page-settings .sync-figures dt { margin: 0; }
+.page-settings .sync-figures dd { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
+.page-settings .sync-figures dd#settings-sync-change { font-size: 13px; padding-top: 3px; }
+.page-settings .sync-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4); }
+.page-settings .sync-actions .form-actions { margin: 0; }
+/* Seuil: the explanation on the left, the field on the right. */
+.page-settings .threshold-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s3) var(--s5); }
+.page-settings .threshold-row > .lede { flex: 1 1 300px; align-self: center; }
+@media (max-width: 700px) {
+  .page-settings .settings-card { padding: var(--s4); }
+  .page-settings .sync-figures { grid-template-columns: minmax(0, 1fr); gap: var(--s3); }
+}
 .page-settings .access-body { display: flex; flex-direction: column; gap: var(--s4); }
 .page-settings .settings-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2) var(--s3); }
 .page-settings .settings-form .form-field { min-width: 0; }
@@ -27,9 +61,8 @@
 .page-settings .access-count { color: var(--ink-3); font-size: 12px; }
 .page-settings .access-tools .access-bulk-open { margin-left: auto; }
 .page-settings .access-nomatch { margin: 0; color: var(--ink-2); }
-.page-settings .access-body > .subsection-title { margin: var(--s3) 0 0; }
 .page-settings .access-groups { display: flex; flex-direction: column; gap: var(--s3); }
-.page-settings .access-groups > .lede { margin: 0; max-width: 72ch; }
+.page-settings .access-groups > .lede { margin: -4px 0 0; }
 /* Bulk add dialog */
 .access-bulk .access-bulk-text { width: 100%; min-height: 168px; font-family: var(--font-mono); font-size: 13px; }
 .access-bulk .access-bulk-role { max-width: 200px; }
@@ -47,7 +80,9 @@
 /**
  * Pages.settings — « Paramètres » (admin only; docs/API.md §3 settings endpoints).
  *
- * Five sections, each saved on its own:
+ * Three tabs (ARIA tabs: arrows / Home / End move between them; the last one stays selected while the app is
+ * open): « Général » (source, synchronisation, seuil), « Saisie » and « Accès ». Each section is a card (h2 title,
+ * an optional status or button on its right). Five sections, each saved on its own:
  *   - Source de données: current source spreadsheet, tabs found, data spreadsheet; change the source
  *     (App.applySource -> api_setConfig then a first synchronisation, the same path as the configuration screen).
  *   - Synchronisation: hourly trigger on / off (api_enableSync), last run, last change, error, « Synchroniser
@@ -77,7 +112,18 @@
   var syncView = null;    // the « Synchronisation » section (re-rendered when State.sync changes)
   var editingView = null; // the « Saisie dans l’application » section (follows State.editing)
   var unsubscribe = null;
+  var currentTab = 'general'; // selected tab, kept across visits
+  var journalOpen = false;    // the sync journal is open (kept across visits: a sync that adds a month re-mounts)
+  var journalWanted = false;  // Pages.settings.showJournal(): focus the journal toggle on the next render
   function alive() { return !!page && page.isConnected; }
+
+  /** One card: h2 title, `aside` on its right (a status, a button; null for none), then the content. */
+  function card(title, aside) {
+    var children = Array.prototype.slice.call(arguments, 2);
+    return el('section', { class: 'section settings-card' },
+      el('div', { class: 'card-head' }, el('h2', { class: 'section-title card-title' }, title), aside || null),
+      children);
+  }
 
   function roleLabel(role) { return (App.ROLE_LABELS || {})[role] || role; }
   function pct(n) { return n + UI.NNBSP + '%'; }
@@ -110,9 +156,10 @@
 
     var input = el('input', { type: 'text', class: 'input', id: 'settings-source', autocomplete: 'off',
       placeholder: 'https://docs.google.com/spreadsheets/d/…', 'aria-describedby': 'settings-source-help' });
-    var button = el('button', { type: 'submit', class: 'btn btn-secondary', id: 'settings-source-submit' },
-      src.id ? 'Changer de source' : 'Enregistrer la source');
-    var form = el('form', { class: 'settings-form', novalidate: true, onSubmit: function (e) {
+    var button = el('button', { type: 'submit', class: src.id ? 'btn btn-primary' : 'btn btn-secondary',
+      id: 'settings-source-submit' }, src.id ? 'Enregistrer' : 'Enregistrer la source');
+    var form = el('form', { class: 'settings-form', id: 'settings-source-form', novalidate: true, hidden: !!src.id,
+      onSubmit: function (e) {
       e.preventDefault();
       var value = input.value.trim();
       UI.fieldError(input, '');
@@ -135,7 +182,16 @@
 
     // The server refuses a source change from anyone but the owner (the deployer's rights open the file).
     var owner = !!(State.get().user || {}).isOwner;
-    return UI.section('Source de données',
+    // With a source, the form waits behind « Changer de source » (it is rarely changed); without one, it shows.
+    var toggle = owner && src.id ? el('button', { type: 'button', class: 'btn btn-secondary btn-sm', id: 'settings-source-toggle',
+      'aria-expanded': 'false', 'aria-controls': 'settings-source-form',
+      onClick: function () {
+        var open = form.hidden;
+        form.hidden = !open;
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        if (open) input.focus();
+      } }, 'Changer de source') : null;
+    return card('Source de données', toggle,
       UI.lede('Le classeur « ShadowIT_Industry », relu toutes les heures.',
         'Changer de source ne modifie pas les mois passés : seul le mois en cours suit la nouvelle source.',
         { id: 'settings-source-help' }),
@@ -149,22 +205,25 @@
   /** « 14:02 » / « 04/05 10:30 » in mono. */
   function stampNode(v) { return el('span', { class: 'mono' }, Fmt.stamp(v)); }
 
+  /** « ■ Active · toutes les heures » / « Inactive », on the right of the card title. */
+  function syncAutoMark(st) {
+    return st.enabled ? UI.statusMark('Active · toutes les heures', 'ok') : UI.statusMark('Inactive', 'neutral');
+  }
+
+  function figure(label, value, id) {
+    return el('div', null, el('dt', { class: 'label' }, label), el('dd', { id: id || null }, value));
+  }
+
   function syncStatusBlock(st) {
     var failed = st.lastError && (!st.lastOkAt || st.lastError.at >= st.lastOkAt);
-    var rows = [
-      el('dt', null, 'Automatique'),
-      el('dd', { id: 'settings-sync-auto' }, st.enabled ? UI.statusMark('Active · toutes les heures', 'ok') :
-        UI.statusMark('Inactive', 'neutral'), st.authError ? el('div', { class: 'field-error' }, st.authError) : null),
-      el('dt', null, 'Mois en cours'),
-      el('dd', null, Fmt.monthTitle(st.month || State.get().currentMonth)),
-      el('dt', null, 'Dernière réussite'),
-      el('dd', { id: 'settings-sync-last' }, st.lastOkAt ? stampNode(st.lastOkAt) : el('span', { class: 'field-help' }, 'Jamais.')),
-      el('dt', null, 'Dernière modification'),
-      el('dd', { id: 'settings-sync-change' }, st.lastChangeAt ? [stampNode(st.lastChangeAt), ' · ',
-        Fmt.syncChange(st.lastChange) || '—'] : el('span', { class: 'field-help' }, 'Aucune.'))
-    ];
     return [
-      el('dl', { class: 'kv', id: 'settings-sync-info' }, rows),
+      el('dl', { class: 'sync-figures', id: 'settings-sync-info' },
+        figure('Dernière réussite', st.lastOkAt ? stampNode(st.lastOkAt) : el('span', { class: 'field-help' }, 'Jamais.'),
+          'settings-sync-last'),
+        figure('Mois en cours', Fmt.monthTitle(st.month || State.get().currentMonth)),
+        figure('Dernière modification', st.lastChangeAt ? [stampNode(st.lastChangeAt), ' · ',
+          Fmt.syncChange(st.lastChange) || '—'] : el('span', { class: 'field-help' }, 'Aucune.'), 'settings-sync-change')),
+      st.authError ? el('p', { class: 'field-error', id: 'settings-sync-auth' }, st.authError) : null,
       failed ? el('p', { class: 'alert alert-error', id: 'settings-sync-error' }, 'Échec ',
         stampNode(st.lastError.at), ' : ' + st.lastError.message) : null,
       st.warnings && st.warnings.length && !failed ? el('div', { class: 'alert alert-warning' },
@@ -224,13 +283,27 @@
   }
 
   function syncSection(initial) {
+    var auto = el('span', { class: 'sync-auto', id: 'settings-sync-auto' });
     var statusBox = el('div', { class: 'settings-sync-status', id: 'settings-sync-status' });
     var actions = el('div', { class: 'form-actions' });
-    var logBox = el('div', { class: 'import-log', id: 'import-log' });
+    var logBox = el('div', { class: 'import-log', id: 'import-log', hidden: true });
+    var logLoaded = false;
     var st = initial || {};
+
+    // The journal costs a server read (and quota): loaded the first time it is opened.
+    var logToggle = el('button', { type: 'button', class: 'btn btn-link btn-sm', id: 'settings-sync-log-toggle',
+      'aria-expanded': 'false', 'aria-controls': 'import-log',
+      onClick: function () { setLogOpen(logBox.hidden); } }, 'Journal des synchronisations');
+    function setLogOpen(open) {
+      journalOpen = open;
+      logBox.hidden = !open;
+      logToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open && !logLoaded) { logLoaded = true; loadSyncLog(logBox); }
+    }
 
     function render(next) {
       st = next || {};
+      UI.clear(auto).appendChild(syncAutoMark(st));
       UI.clear(statusBox);
       syncStatusBlock(st).forEach(function (n) { if (n) statusBox.appendChild(n); });
       UI.clear(actions);
@@ -238,20 +311,24 @@
       var run = el('button', { type: 'button', class: enable ? 'btn btn-primary' : 'btn btn-secondary',
         id: enable ? 'settings-sync-enable' : 'settings-sync-now',
         onClick: function () {
-          App.syncNow(run, { enable: enable }).then(function (res) { if (res && alive()) loadSyncLog(logBox); });
+          App.syncNow(run, { enable: enable }).then(function (res) { if (res && alive() && logLoaded) loadSyncLog(logBox); });
         } }, enable ? 'Activer la synchronisation horaire' : 'Synchroniser maintenant');
       actions.appendChild(run);
     }
     render(st);
-    loadSyncLog(logBox);
+    if (journalOpen) setLogOpen(true);
+    if (journalWanted) {
+      journalWanted = false;
+      setTimeout(function () { if (logToggle.isConnected) logToggle.focus(); }, 0);
+    }
 
-    var section = UI.section('Synchronisation',
+    var section = card('Synchronisation', auto,
       UI.lede('Le mois en cours est relu toutes les heures depuis la source.', [
         'Le 1er du mois, le mois précédent est figé tel qu’à sa dernière synchronisation.',
         'Les modifications du mois en cours faites dans l’application sont écrites dans la source ; celles d’un ' +
           'mois passé ne changent que son historique.'], { id: 'settings-sync-help' }),
-      statusBox, actions,
-      el('h3', { class: 'subsection-title' }, 'Journal des synchronisations'),
+      statusBox,
+      el('div', { class: 'sync-actions' }, actions, logToggle),
       logBox);
     section.id = 'settings-sync';
     // The app bar (or another tab action) changed the status: show it, keeping what only Paramètres knows.
@@ -303,11 +380,12 @@
         el('span', { class: 'threshold-input' }, input, el('span', { class: 'unit', 'aria-hidden': 'true' }, '%'))),
       el('div', { class: 'form-actions' }, button, reset));
 
-    return UI.section('Seuil de conformité',
-      UI.lede('Score à atteindre pour être conforme. Par défaut : ' + pct(s.defaultThreshold) + '.',
-        'Vaut pour les postes et les applications, sur tous les mois : indicateurs, jauges, histogrammes et suivi temporel.',
-        { id: 'settings-threshold-help' }),
-      form);
+    return card('Seuil de conformité', null,
+      el('div', { class: 'threshold-row' },
+        UI.lede('Score à atteindre pour être conforme. Par défaut : ' + pct(s.defaultThreshold) + '.',
+          'Vaut pour les postes et les applications, sur tous les mois : indicateurs, jauges, histogrammes et suivi temporel.',
+          { id: 'settings-threshold-help' }),
+        form));
   }
 
   // ------------------------------------------------------------------------------ editing switches
@@ -344,7 +422,7 @@
         } });
       return toggles[sw.key];
     }));
-    var section = UI.section('Saisie dans l’application',
+    var section = card('Saisie dans l’application', null,
       UI.lede('Pour tous les administrateurs, sur tous les mois.',
         'Concerne les postes et les applications, mois en cours comme mois passés. Le suivi des actions et les ' +
           'remplacements restent modifiables.', { id: 'settings-editing-help' }),
@@ -453,6 +531,7 @@
 
   function accessSection(s) {
     var wrap = el('div', { class: 'access-body' });
+    var groupsWrap = el('div', { class: 'access-body' });
     var view = s.access;
     var query = '';
 
@@ -542,6 +621,7 @@
 
     function render() {
       UI.clear(wrap);
+      UI.clear(groupsWrap);
       var me = s.me;
       var rows = [{ email: view.owner, role: 'admin', owner: true }].concat(view.users);
       var tbl = UI.table({
@@ -607,13 +687,11 @@
       }
 
       wrap.appendChild(el('div', { class: 'settings-form' }, domain));
-      wrap.appendChild(el('h3', { class: 'subsection-title' }, 'Comptes'));
       wrap.appendChild(el('div', { class: 'access-tools' }, search, count, bulk));
       wrap.appendChild(tbl);
       wrap.appendChild(nomatch);
       wrap.appendChild(form);
-      wrap.appendChild(el('h3', { class: 'subsection-title', id: 'groups-title' }, 'Groupes Google'));
-      wrap.appendChild(groupsBlock());
+      groupsWrap.appendChild(groupsBlock());
       filter();
     }
 
@@ -623,7 +701,7 @@
       var block = el('div', { class: 'access-groups' });
       block.appendChild(UI.lede('Chaque membre reçoit le rôle du groupe ; le plus élevé l’emporte.', [
         'Sous-groupes compris. Le propriétaire du déploiement doit pouvoir voir les membres du groupe.',
-        'Un changement de membres dans Google est pris en compte sous 10 minutes.'], { id: 'groups-help', small: true }));
+        'Un changement de membres dans Google est pris en compte sous 10 minutes.'], { id: 'groups-help' }));
       if (groups.length) {
         block.appendChild(UI.table({
           id: 'groups-table',
@@ -663,13 +741,17 @@
     }
 
     render();
-    return UI.section('Accès',
+    var accounts = card('Comptes', null,
       UI.lede('Les administrateurs modifient données et paramètres ; les lecteurs consultent.', [
         'Le propriétaire du déploiement (' + view.owner + ') est toujours administrateur, et personne ne peut ' +
           'modifier son propre accès.',
         'Seuls les comptes Google du domaine Workspace peuvent ouvrir l’application : Google ne transmet pas ' +
           'l’adresse des autres.'], { id: 'access-help' }),
       wrap);
+    accounts.id = 'settings-access';
+    var groups = card('Groupes Google', null, groupsWrap);
+    groups.id = 'settings-groups';
+    return [accounts, groups];
   }
 
   // ------------------------------------------------------------------------------ page
@@ -679,16 +761,69 @@
       load: function () { return api.call('api_getSettings', null); },
       placeholder: function () { return UI.skeleton('lines', { label: 'Chargement des paramètres…', rows: 8 }); },
       render: function (s) {
-        body.appendChild(sourceSection(s, function () { load(body); }));
         syncView = syncSection(s.sync);
-        body.appendChild(syncView);
-        body.appendChild(thresholdSection(s));
         State.setEditing(s.editing);
         editingView = editingSection(s);
-        body.appendChild(editingView);
-        body.appendChild(accessSection(s));
+        tabbed(body, {
+          general: [sourceSection(s, function () { load(body); }), syncView, thresholdSection(s)],
+          saisie: [editingView],
+          acces: [accessSection(s)]
+        });
       }
     });
+  }
+
+  var TABS = [
+    { id: 'general', label: 'Général' },
+    { id: 'saisie', label: 'Saisie' },
+    { id: 'acces', label: 'Accès' }
+  ];
+
+  /**
+   * Tab list + one panel per tab (every panel stays in the DOM: switches and the sync status keep following State
+   * while hidden). Roving tabindex: Tab enters the selected tab, arrows / Home / End move and select.
+   */
+  function tabbed(body, panels) {
+    var buttons = {};
+    var nodes = {};
+    function select(id, focus) {
+      currentTab = id;
+      TABS.forEach(function (t) {
+        var on = t.id === id;
+        buttons[t.id].setAttribute('aria-selected', on ? 'true' : 'false');
+        buttons[t.id].tabIndex = on ? 0 : -1;
+        nodes[t.id].hidden = !on;
+      });
+      if (focus) buttons[id].focus();
+    }
+    var list = el('div', { class: 'settings-tabs', role: 'tablist', 'aria-label': 'Sections des paramètres',
+      onKeydown: function (e) {
+        var i = TABS.map(function (t) { return t.id; }).indexOf(currentTab);
+        var next = e.key === 'ArrowRight' ? i + 1 : e.key === 'ArrowLeft' ? i - 1 : e.key === 'Home' ? 0 :
+          e.key === 'End' ? TABS.length - 1 : null;
+        if (next === null) return;
+        e.preventDefault();
+        select(TABS[(next + TABS.length) % TABS.length].id, true);
+      } },
+      TABS.map(function (t) {
+        buttons[t.id] = el('button', { type: 'button', class: 'settings-tab', role: 'tab', id: 'settings-tab-' + t.id,
+          'aria-controls': 'settings-panel-' + t.id, onClick: function () { select(t.id); } }, t.label);
+        return buttons[t.id];
+      }));
+    body.appendChild(list);
+    TABS.forEach(function (t) {
+      nodes[t.id] = el('div', { class: 'settings-panel', role: 'tabpanel', id: 'settings-panel-' + t.id,
+        'aria-labelledby': 'settings-tab-' + t.id }, panels[t.id]);
+      body.appendChild(nodes[t.id]);
+    });
+    select(TABS.some(function (t) { return t.id === currentTab; }) ? currentTab : 'general');
+  }
+
+  /** The app bar's « Journal » link: next mount opens « Général » with the journal shown and focused. */
+  function showJournal() {
+    currentTab = 'general';
+    journalOpen = true;
+    journalWanted = true;
   }
 
   function mount(root) {
@@ -713,6 +848,6 @@
     unsubscribe = null;
   }
 
-  window.Pages.settings = { id: 'settings', title: 'Paramètres', mount: mount, unmount: unmount };
+  window.Pages.settings = { id: 'settings', title: 'Paramètres', mount: mount, unmount: unmount, showJournal: showJournal };
 })();
 </script>

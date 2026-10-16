@@ -1124,15 +1124,24 @@ compares the first and last months by default.
    exists); same for Applications (retirées / ajoutées / actions résolues).
 
 ### Paramètres (`settings`) — admin only
-Five sections, each saved on its own (`js_page_settings.html`): « Source de données », « Synchronisation »,
-« Seuil de conformité », « Saisie dans l’application » (`#settings-editing`), « Accès ». The editing section: intro
-« Ces réglages s’appliquent à tous les administrateurs et à tous les mois, en cours comme passés, pour les postes et
-les applications. Le suivi des actions et les remplacements ne sont pas concernés. », then three `UI.toggle`:
-`#settings-editing-edit` « Modifier les entrées », `#settings-editing-create` « Créer des entrées »,
-`#settings-editing-delete` « Supprimer des entrées » (each with its description). A toggle calls
-`api_setEditing({<key>: bool})` once, then `State.setEditing` and a toast (« Création d’entrées désactivée. »…);
-on failure the switch goes back and an error toast shows. The switches follow `state.editing` changes made
-elsewhere (poll, bootstrap reload).
+Three tabs (`js_page_settings.html`; ARIA tabs `#settings-tab-general|saisie|acces` → `#settings-panel-*`, roving
+tabindex, arrows / Home / End; the selected tab is kept while the app is open), each a stack of cards
+(`section.settings-card`: h2 `.card-title`, an optional status or button on its right, then `UI.lede` and the
+content), each saved on its own:
+- **Général**: « Source de données » (the form waits behind `#settings-source-toggle` « Changer de source » once a
+  source exists; shown at once without one; owner only), « Synchronisation » (`#settings-sync-auto` status beside the
+  title, three figures, « Synchroniser maintenant », and `#settings-sync-log-toggle` « Journal des synchronisations »:
+  `api_getImportLog` is read only when the journal is first opened; it stays open across visits;
+  `Pages.settings.showJournal()`, used by the sync panel's « Journal », opens Général with it shown and focused),
+  « Seuil de conformité ».
+- **Saisie**: « Saisie dans l’application » (`#settings-editing`): one line « Pour tous les administrateurs, sur tous
+  les mois. » (the rest behind « En savoir plus »), then three `UI.toggle`: `#settings-editing-edit` « Modifier les
+  entrées », `#settings-editing-create` « Créer des entrées », `#settings-editing-delete` « Supprimer des entrées »
+  (each with its description). A toggle calls `api_setEditing({<key>: bool})` once, then `State.setEditing` and a toast
+  (« Création d’entrées désactivée. »…); on failure the switch goes back and an error toast shows. The switches follow
+  `state.editing` changes made elsewhere (poll, bootstrap reload), hidden tab or not.
+- **Accès**: « Comptes » (`#settings-access`: domain role, search, table, add one, « Ajouter plusieurs comptes… ») and
+  « Groupes Google » (`#settings-groups`).
 
 ---------------------------------------------------------------------------------------------------
 ## 7. Tests
