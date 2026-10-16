@@ -40,7 +40,7 @@ function mockMain(FIX, OPTS) {
   var ERROR_CODES = ['NOT_CONFIGURED', 'MONTH_EXISTS', 'NOT_FOUND', 'BUSY', 'VALIDATION', 'SOURCE_ERROR',
     'FORBIDDEN', 'INTERNAL'];
   var LECTEUR_APIS = ['api_bootstrap', 'api_savePrefs', 'api_getMonthData', 'api_getSyncStatus', 'api_getImportLog',
-    'api_getTimeline', 'api_getActions', 'api_getDiff'];
+    'api_getTimeline', 'api_getActions', 'api_getDiff', 'api_notePages'];
   var PREF_VALUES = { sidebar: ['open', 'collapsed'] };
   var EDITING_KEYS = ['edit', 'create', 'delete'];
   // Same refusals as Api.js requireEditing_.
@@ -101,17 +101,41 @@ function mockMain(FIX, OPTS) {
   /** The month the hourly sync follows: OPTS.currentMonth or the real one. */
   function currentMonth() { return OPTS.currentMonth || Core().currentMonth(new Date()); }
 
+  // Visits over the last ten days, relative to now so that « Aujourd’hui » and the 30-day figures hold.
+  // Today's visits sit at fixed fractions of the time elapsed since midnight: always today, in the past.
+  function sampleAccessLog() {
+    function two(n) { return (n < 10 ? '0' : '') + n; }
+    function stamp(d) {
+      return d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate()) + ' ' + two(d.getHours()) + ':' + two(d.getMinutes());
+    }
+    var now = new Date();
+    var midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    function today(f) { return stamp(new Date(midnight.getTime() + Math.floor((now - midnight) * f / 60000) * 60000)); }
+    function ago(days, h, m) { return stamp(new Date(now.getFullYear(), now.getMonth(), now.getDate() - days, h, m)); }
+    var READER = 'lea.reader@decathlon.com';
+    var rows = [
+      [ago(9, 9, 10), READER, 'lecteur', ['dashboard', 'postes']],
+      [ago(5, 10, 0), 'inconnu@decathlon.com', 'refused', []],
+      [ago(3, 14, 22), 'marc.labo@decathlon.com', 'lecteur', ['dashboard', 'apps', 'timeline']],
+      [ago(1, 8, 30), READER, 'lecteur', ['dashboard', 'postes']],
+      [ago(1, 9, 0), OWNER, 'admin', ['dashboard', 'settings']],
+      [ago(1, 15, 2), READER, 'lecteur', ['actions']],
+      [today(0.2), OWNER, 'admin', ['dashboard']],
+      [today(0.3), READER, 'lecteur', ['dashboard']],
+      [today(0.5), 'inconnu@decathlon.com', 'refused', []],
+      [today(0.6), READER, 'lecteur', ['postes']],
+      [today(0.9), READER, 'lecteur', ['postes', 'actions']]
+    ];
+    return rows.map(function (r) { return { at: r[0], email: r[1], result: r[2], pages: r[3] }; });
+  }
+
   var db = {
     configured: !!OPTS.configured,
     sourceId: OPTS.configured ? FIX.SOURCE_ID : '',
     sourceTitle: OPTS.configured ? 'ShadowIT_Industry' : '',
     months: {},          // month -> {postes, applications, referentiel, columns}
     importLog: [],       // insertion order
-    accessLog: OPTS.empty ? [] : [   // insertion order
-      { at: '2026-05-12 08:41', email: 'lea.martin@decathlon.com', result: 'lecteur' },
-      { at: '2026-05-12 09:02', email: 'inconnu@decathlon.com', result: 'refused' },
-      { at: '2026-05-12 09:15', email: 'sam.durand@decathlon.com', result: 'admin' }
-    ],
+    accessLog: OPTS.empty ? [] : sampleAccessLog(),   // insertion order
     actions: OPTS.empty ? [] : clone(FIX.ACTIONS),
     replacements: OPTS.empty ? [] : clone(FIX.REPLACEMENTS),
     threshold: 80,
@@ -526,6 +550,22 @@ function mockMain(FIX, OPTS) {
         fail('VALIDATION', '« limit » doit être un entier entre 1 et 500.');
       }
       return clone(db.accessLog).reverse().slice(0, limit);
+    },
+
+    api_notePages: function (args) {
+      var pages = obj(args).pages;
+      var ids = ['dashboard', 'postes', 'apps', 'timeline', 'actions', 'settings'];
+      if (!Array.isArray(pages) || !pages.length || pages.length > ids.length ||
+        pages.some(function (p) { return ids.indexOf(p) < 0; })) {
+        fail('VALIDATION', '« pages » doit être une liste de pages de l’application.');
+      }
+      for (var i = db.accessLog.length - 1; i >= 0; i--) {
+        var row = db.accessLog[i];
+        if (row.email !== normEmail(db.email) || row.result === 'refused') continue;
+        pages.forEach(function (p) { if (row.pages.indexOf(p) < 0) row.pages.push(p); });
+        break;
+      }
+      return null;
     },
 
     api_savePostes: function (args) { requireEditing('edit'); return saveEntity('postes', KEY_POSTE, args); },

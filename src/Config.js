@@ -62,7 +62,7 @@ var Config = (function () {
       'recorded_at'],
     ImportLog: ['month', 'imported_at', 'source_id', 'counts_json', 'postes_headers_json', 'apps_headers_json',
       'warnings_json', 'changes_json'],
-    AccessLog: ['at', 'email', 'result'],
+    AccessLog: ['at', 'email', 'result', 'pages'],
     Meta: ['key', 'value']
   };
 

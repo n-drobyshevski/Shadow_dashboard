@@ -55,7 +55,7 @@ test('a bootstrap logs one visit; reloads within 30 min do not, a later one does
   sb.clock.now += 29 * 60 * 1000;
   ok(sb.ctx, 'api_bootstrap');
   assert.equal(sb.rows().length, 1);
-  assert.deepEqual(sb.rows()[0].slice(1), [READER, 'lecteur']);
+  assert.deepEqual(sb.rows()[0].slice(1), [READER, 'lecteur', '']);
   assert.match(String(sb.rows()[0][0]), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
   sb.clock.now += 2 * 60 * 1000;
   ok(sb.ctx, 'api_bootstrap');
@@ -73,7 +73,7 @@ test('a refused account is logged as refused; no identity is not logged', (t) =>
   fail(sb.ctx, 'api_getActions', null, 'FORBIDDEN');
   as(sb, '');
   fail(sb.ctx, 'api_bootstrap', null, 'FORBIDDEN');
-  assert.deepEqual(sb.rows().map((r) => r.slice(1)), [[STRANGER, 'refused']]);
+  assert.deepEqual(sb.rows().map((r) => r.slice(1, 3)), [[STRANGER, 'refused']]);
 });
 
 test('api_getAccessLog: newest first, admin only, limit validated', (t) => {
@@ -125,4 +125,36 @@ test('a refused visitor never makes an unconfigured app create its data spreadsh
   as(sb, STRANGER);
   fail(sb.ctx, 'api_bootstrap', null, 'FORBIDDEN');
   assert.equal(sb.ctx.Config.get().dataId, '');
+});
+
+test('api_notePages: merges into the caller\'s latest visit, once per page; refused rows are skipped', (t) => {
+  const sb = setup(t);
+  as(sb, READER);
+  ok(sb.ctx, 'api_bootstrap');
+  as(sb, STRANGER);
+  fail(sb.ctx, 'api_bootstrap', null, 'FORBIDDEN');
+  as(sb, READER);
+  assert.equal(ok(sb.ctx, 'api_notePages', { pages: ['dashboard', 'postes'] }), null);
+  ok(sb.ctx, 'api_notePages', { pages: ['postes', 'actions'] });
+  assert.deepEqual(sb.rows().map((r) => r.slice(1)), [[READER, 'lecteur', 'dashboard,postes,actions'], [STRANGER, 'refused', '']]);
+  as(sb, undefined);
+  const log = ok(sb.ctx, 'api_getAccessLog');
+  assert.deepEqual(log.map((e) => e.pages), [[], ['dashboard', 'postes', 'actions']]);
+});
+
+test('api_notePages: validated; no visit row or a busy lock is not an error', (t) => {
+  const sb = setup(t);
+  as(sb, READER);
+  for (const bad of [null, {}, { pages: [] }, { pages: 'postes' }, { pages: ['nope'] }, { pages: ['__proto__'] },
+    { pages: ['dashboard', 'postes', 'apps', 'timeline', 'actions', 'settings', 'dashboard'] }]) {
+    fail(sb.ctx, 'api_notePages', bad, 'VALIDATION');
+  }
+  assert.equal(ok(sb.ctx, 'api_notePages', { pages: ['postes'] }), null, 'no row yet');
+  assert.equal(sb.rows().length, 0);
+  ok(sb.ctx, 'api_bootstrap');
+  sb.env.__state.onWaitLock = () => { sb.env.__state.lockTimeout = true; };
+  assert.equal(ok(sb.ctx, 'api_notePages', { pages: ['postes'] }), null, 'busy lock');
+  sb.env.__state.lockTimeout = false;
+  assert.equal(sb.rows()[0][3], '');
+  assert.equal(sb.env.__state.lock.held, false);
 });

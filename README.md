@@ -204,9 +204,10 @@ synchronisation horaire ». Les mois déjà importés sont conservés.
   reste loin : la limite protège les quotas Google du propriétaire. Elle vaut aussi pour les comptes sans
   accès, et un appel au-delà est refusé avant toute lecture des réglages.
 - Un compte non autorisé voit « Accès refusé » avec son adresse, à transmettre à un administrateur.
-- **Dernières connexions** (Paramètres → Accès, administrateurs seulement) : qui a ouvert l'application et
-  quand, refus compris, une ligne par personne et par demi-heure. Stocké dans l'onglet `AccessLog` du
-  classeur de données ; les 1 000 dernières lignes sont gardées.
+- **Dernières connexions** (Paramètres → Accès, administrateurs seulement) : qui a ouvert l'application,
+  quand et quelles pages, refus compris, regroupé par jour et par personne (« Masquer mes visites » coché
+  par défaut), et une colonne « Dernière visite » dans la liste des accès. Une ligne par personne et par
+  demi-heure dans l'onglet `AccessLog` du classeur de données ; les 1 000 dernières sont gardées.
 - La liste est stockée dans les propriétés du script (`ACCESS_JSON_N` et `ACCESS_JSON_0`, `_1`… : une
   propriété est limitée à 9 Ko), le seuil dans `COMPLIANCE_THRESHOLD` et les interrupteurs de saisie dans
   `EDITING_JSON` (`{"edit":true,"create":false,"delete":true}`) : Éditeur Apps Script → Paramètres du

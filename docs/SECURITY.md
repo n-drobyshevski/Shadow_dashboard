@@ -104,7 +104,8 @@ This page records what was checked, what was fixed, and what is still open. Upda
 - **Browser storage:** localStorage holds only the sidebar-collapsed flag.
 - **Logs:** perf lines carry no emails or ids.
 - **Access log (AccessLog tab):** the one deliberate store of who opened the app.
-  - It keeps the time, the email and the result (admin, lecteur, refused) of each visit, at most one row per person per 30 min; nothing else (no IP, no page).
+  - It keeps the time, the email and the result (admin, lecteur, refused) of each visit, at most one row per person per 30 min, and the pages viewed during that visit; nothing else (no IP, no URL, no data).
+  - `api_notePages` is open to every role, but it only adds ids from a fixed list of 6 pages to the caller's own latest row (found by the session email), under the same best-effort tryLock.
   - Only admins read it (`api_getAccessLog`, weighted 5 by the throttle). It lives in the data spreadsheet, which is shared with nobody.
   - It is capped: past 1 100 rows the oldest are deleted down to 1 000.
   - A refused account is logged only once a data spreadsheet exists, so a stranger cannot make the app create one; its 30 min entry and the throttle bound how often it can write.

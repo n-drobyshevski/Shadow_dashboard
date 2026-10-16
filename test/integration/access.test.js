@@ -15,7 +15,7 @@ const READER = 'lea.reader@decathlon.com';
 const ADMIN2 = 'sam.admin@decathlon.com';
 
 const LECTEUR_APIS = ['api_bootstrap', 'api_savePrefs', 'api_getMonthData', 'api_getSyncStatus', 'api_getImportLog',
-  'api_getTimeline', 'api_getActions', 'api_getDiff'];
+  'api_getTimeline', 'api_getActions', 'api_getDiff', 'api_notePages'];
 
 function call(ctx, name, args) {
   const out = ctx[name](args === undefined ? 'null' : JSON.stringify(args));

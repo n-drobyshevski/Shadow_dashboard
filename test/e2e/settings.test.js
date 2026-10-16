@@ -376,25 +376,62 @@ describe('settings (admin)', () => {
     });
   });
 
-  test('« Dernières connexions »: loaded on first open only, newest first, refusals marked', async () => {
+  test('« Dernières connexions »: loaded when Accès opens, grouped by day and person, my visits hidden', async () => {
     await withApp({ page: 'settings' }, async (app) => {
       const { page } = app;
+      assert.equal((await callsNamed(app, 'api_getAccessLog')).length, 0, 'nothing read on Général');
       await tab(page, 'acces');
-      assert.ok(await page.isVisible('#settings-access-log'));
-      assert.equal(await page.isVisible('#access-log'), false);
-      assert.equal((await callsNamed(app, 'api_getAccessLog')).length, 0, 'nothing read before it is opened');
-      await page.click('#access-log-toggle');
-      await page.waitForSelector('#access-log .access-log-table tbody tr');
-      assert.equal(await page.getAttribute('#access-log-toggle', 'aria-expanded'), 'true');
-      const rows = await page.$$eval('#access-log tbody tr', (rs) => rs.map((r) =>
-        [r.dataset.result, ...[...r.cells].map((c) => c.textContent.trim())]));
-      assert.deepEqual(rows, [
-        ['admin', '12/05/2026 09:15', 'sam.durand@decathlon.com', 'Administrateur'],
-        ['refused', '12/05/2026 09:02', 'inconnu@decathlon.com', 'Refusé'],
-        ['lecteur', '12/05/2026 08:41', 'lea.martin@decathlon.com', 'Lecteur']]);
-      await page.click('#access-log-toggle');
-      await page.click('#access-log-toggle');
-      assert.equal((await callsNamed(app, 'api_getAccessLog')).length, 1, 'read once');
+      await page.waitForSelector('#access-log .visit-table');
+      const kpis = () => page.$$eval('#access-log [data-kpi]', (ns) => ns.map((n) =>
+        [n.dataset.kpi, n.querySelector('.metric-value').textContent.trim()]));
+      // Me hidden: the reader (6 visits) and the group member (1); one refused account.
+      assert.deepEqual(await kpis(), [['people', '2'], ['active', '2'], ['visits', '7'], ['refused', '1']]);
+      const today = await page.$$eval('#access-log .visit-table', (ts) => {
+        const t = ts[0];
+        return { caption: (t.closest('.table-scroll') || t).previousElementSibling.textContent.trim(), rows: [...t.tBodies[0].rows].map((r) =>
+          [r.dataset.email, r.dataset.result, r.cells[2].textContent.trim(), r.cells[3].textContent.includes('→'),
+            [...r.querySelectorAll('.visit-pg.is-on')].map((x) => x.textContent).join('')]) };
+      });
+      assert.equal(today.caption, 'Aujourd’hui');
+      assert.deepEqual(today.rows, [
+        ['lea.reader@decathlon.com', 'lecteur', '3', true, 'TPS'],
+        ['inconnu@decathlon.com', 'refused', '1', false, '']]);
+      assert.deepEqual((await page.$$eval('#access-log .visit-day', (cs) => cs.map((c) => c.textContent.trim()))).slice(0, 2),
+        ['Aujourd’hui', 'Hier']);
+      // « Dernière visite » in the people table.
+      const last = await page.$$eval('#access-table tbody tr', (rs) => rs.map((r) => [r.dataset.email || r.dataset.group, r.cells[3].textContent.trim()]));
+      assert.match(last.find((r) => r[0] === 'lea.reader@decathlon.com')[1], /^aujourd’hui \d\d:\d\d6 en 30 j$/);
+      assert.equal(last.find((r) => r[0] === 'sam.admin@decathlon.com')[1], 'jamais');
+      assert.equal(last.find((r) => r[0] === 'labo-industry@decathlon.com')[1], '—');
+      // My visits shown.
+      await page.click('label.cb:has(#access-log-hide-me)');
+      assert.equal(await page.isChecked('#access-log-hide-me'), false);
+      assert.deepEqual(await kpis(), [['people', '3'], ['active', '3'], ['visits', '9'], ['refused', '1']]);
+      // Back and forth between tabs: read once.
+      await tab(page, 'general');
+      await tab(page, 'acces');
+      assert.equal((await callsNamed(app, 'api_getAccessLog')).length, 1);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('pages viewed: a page counts after a second on screen, and is sent once per visit', async () => {
+    await withApp({}, async (app) => {
+      const { page } = app;
+      const sent = async () => (await callsNamed(app, 'api_notePages')).flatMap((c) => c.args.pages);
+      const settle = () => new Promise((r) => setTimeout(r, 4500));
+      await settle();
+      assert.deepEqual(await sent(), ['dashboard']);
+      // Suivi temporel, left in the same tick, does not count; Postes, kept, does.
+      await page.evaluate(() => { window.App.go('timeline'); window.App.go('postes'); });
+      await page.waitForSelector('.page-postes');
+      await settle();
+      assert.deepEqual(await sent(), ['dashboard', 'postes']);
+      // Back to a page already sent: nothing new.
+      await page.evaluate(() => window.App.go('dashboard'));
+      await settle();
+      assert.deepEqual(await sent(), ['dashboard', 'postes']);
+      assert.equal((await callsNamed(app, 'api_notePages')).length, 2, 'one call per batch');
       assert.deepEqual(app.errors, []);
     });
   });
@@ -536,7 +573,7 @@ describe('settings: « Saisie dans l’application »', () => {
       // Alone in its tab, between « Général » and « Accès ».
       assert.deepEqual(await page.$$eval('#settings-panel-saisie > .section', (ns) => ns.map((n) => n.id)), ['settings-editing']);
       assert.deepEqual(await page.$$eval('#settings-body select, #settings-body input[type=date], #settings-body input[type=month], ' +
-        '#settings-body input[list], #settings-body datalist, #settings-body [title], #settings-body input[type=checkbox]',
+        '#settings-body input[list], #settings-body datalist, #settings-body [title], #settings-body input[type=checkbox]:not(.cb-input)',
         (ns) => ns.map((n) => n.outerHTML.slice(0, 80))), [], 'no native controls');
       assert.deepEqual(app.errors, []);
     });

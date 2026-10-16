@@ -96,7 +96,8 @@ var ApiImpl_ = (function () {
   var DATE_FR_RE = /^\d{2}\/\d{2}\/\d{4}$/;
   var IMPORT_LOG_LIMIT = 12;
   var IMPORT_LOG_MAX_LIMIT = 500;
-  var ACCESS_LOG_LIMIT = 50;
+  var ACCESS_LOG_LIMIT = 500;
+  var PAGE_IDS = ['dashboard', 'postes', 'apps', 'timeline', 'actions', 'settings'];
   var SYNC_ERROR_GENERIC = 'La synchronisation a échoué. Un administrateur en voit le détail dans Paramètres.';
 
   var hasOwn = Object.prototype.hasOwnProperty;
@@ -410,6 +411,21 @@ var ApiImpl_ = (function () {
       throw invalid_('« limit » doit être un entier entre 1 et ' + IMPORT_LOG_MAX_LIMIT + '.');
     }
     return Store.recentAccessLog(limit);
+  }
+
+  // Pages the caller opened during this visit, sent once each by the client. Never fails on the write.
+  function notePages(args, user) {
+    var pages = args.pages;
+    if (!Array.isArray(pages) || !pages.length || pages.length > PAGE_IDS.length ||
+      pages.some(function (p) { return PAGE_IDS.indexOf(p) < 0; })) {
+      throw invalid_('« pages » doit être une liste de pages de l’application.');
+    }
+    try {
+      Store.noteAccessPages(user.email, pages);
+    } catch (e) {
+      console.warn('[access log] pages not written: ' + (e && e.code ? e.code : 'error'));
+    }
+    return null;
   }
 
   function getImportLog(args) {
@@ -995,6 +1011,7 @@ var ApiImpl_ = (function () {
     enableSync: enableSync,
     getImportLog: getImportLog,
     getAccessLog: getAccessLog,
+    notePages: notePages,
     savePostes: savePostes,
     addGenericPoste: addGenericPoste,
     addPoste: addPoste,
@@ -1035,6 +1052,7 @@ function api_syncNow(argsJson) { return apiWrap_(ApiImpl_.syncNow, 'api_syncNow'
 function api_enableSync(argsJson) { return apiWrap_(ApiImpl_.enableSync, 'api_enableSync', 'admin')(argsJson); }
 function api_getImportLog(argsJson) { return apiWrap_(ApiImpl_.getImportLog, 'api_getImportLog', 'lecteur')(argsJson); }
 function api_getAccessLog(argsJson) { return apiWrap_(ApiImpl_.getAccessLog, 'api_getAccessLog', 'admin')(argsJson); }
+function api_notePages(argsJson) { return apiWrap_(ApiImpl_.notePages, 'api_notePages', 'lecteur')(argsJson); }
 function api_savePostes(argsJson) { return apiWrap_(ApiImpl_.savePostes, 'api_savePostes', 'admin')(argsJson); }
 function api_addGenericPoste(argsJson) { return apiWrap_(ApiImpl_.addGenericPoste, 'api_addGenericPoste', 'admin')(argsJson); }
 function api_addPoste(argsJson) { return apiWrap_(ApiImpl_.addPoste, 'api_addPoste', 'admin')(argsJson); }

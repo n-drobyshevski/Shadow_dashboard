@@ -93,6 +93,34 @@
     }
   }
 
+  // Pages opened during this visit, for the access log in Paramètres. A page counts once it stayed on
+  // screen for a second (the boot passes through the default page). Each one is sent once, in one call a
+  // few seconds after the last new one, so it never competes with the boot calls.
+  var PAGE_SEEN_MS = 1000;
+  var PAGES_FLUSH_MS = 3000;
+  var pagesNoted = {};
+  var pagesQueue = [];
+  var pagesTimer = null;
+  var seenTimer = null;
+  var shownPage = null;
+  function pageShown(id) {
+    shownPage = id;
+    clearTimeout(seenTimer);
+    seenTimer = setTimeout(function () { if (shownPage === id) notePage(id); }, PAGE_SEEN_MS);
+  }
+
+  function notePage(id) {
+    if (pagesNoted[id]) return;
+    pagesNoted[id] = true;
+    pagesQueue.push(id);
+    clearTimeout(pagesTimer);
+    pagesTimer = setTimeout(function () {
+      var pages = pagesQueue;
+      pagesQueue = [];
+      api.call('api_notePages', { pages: pages }).then(null, function () {});
+    }, PAGES_FLUSH_MS);
+  }
+
   function mountPage() {
     var s = State.get();
     var info = navInfo(s.page) || visibleNav()[0];
@@ -104,6 +132,7 @@
     var root = el('div', { class: 'page page-' + info.id, dataset: { page: info.id } });
     main.appendChild(root);
     updateNavActive();
+    pageShown(info.id);
     if (!page || typeof page.mount !== 'function') {
       root.appendChild(UI.pageHeader({ title: info.title }));
       root.appendChild(UI.empty('Page indisponible.'));
