@@ -269,6 +269,24 @@ with the system fallbacks above. The stylesheet must not block the first paint (
   the new month is in; no blank page between two months.
 - **Timings are invisible**: boot and server-call durations go to `console.debug` and the Apps Script
   log only (docs/API.md §4 Perf), never to the interface. Judge loading changes on those numbers.
+- **Ghost logo**: while something loads (the splash, a month change, any `aria-busy` block in the page,
+  a sync started from this tab) the ghost in the sidebar, the top bar and the splash foot moves. Each
+  wait draws one of two loops at random (`html[data-ghost]`): it floats and blinks, or it looks left
+  and right and sways. It is still the rest of the time.
+
+## Motion
+Short and quiet: the interface answers a click without drawing attention. Tokens `--d1` 110 ms
+(hover, press, colour changes, popovers, tooltips), `--d2` 160 ms (backdrops, sections, toasts in),
+`--d3` 200 ms (dialogs); `--ease-out` on the way in, `--ease-in` on the way out. Only `transform` and
+`opacity` move.
+- Buttons, choice buttons, chips and date shortcuts go down 1px while pressed; their colours fade.
+- Dialogs: the backdrop fades in, the dialog rises 8px. The drawer slides in over 220 ms. Both close
+  at once, so the focus goes back without waiting.
+- Dropdowns and other popovers fade in from 4px on the side of their trigger; tooltips fade in.
+- Opening a form section, « En savoir plus » or a dashboard detail fades its content in from 4px.
+- A checked box draws its tick; a row just added in Accès starts a darker green and settles.
+- Toasts rise in and fade down out (110 ms) when they close.
+- `prefers-reduced-motion: reduce` turns all of it off, the ghost included.
 
 ## Accessibility
 Contrast ≥ 4.5:1 for text (all tokens above pass on `--paper`), visible focus ring on everything

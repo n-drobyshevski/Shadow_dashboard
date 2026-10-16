@@ -31,6 +31,10 @@
   --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
   --shadow-overlay: 0 12px 32px rgba(0, 0, 0, .18);
   --backdrop: rgba(22, 24, 27, .35);
+  /* Motion: short, ease-out on the way in. */
+  --d1: 110ms; --d2: 160ms; --d3: 200ms;
+  --ease-out: cubic-bezier(.22, .61, .36, 1);
+  --ease-in: cubic-bezier(.55, .06, .68, .19);
   --sidebar-w: 232px;
   --rail-w: 56px;
   --skel: #eeeeec;
@@ -559,7 +563,7 @@ details.more[open] > .more-summary::before { content: '−'; }
   min-height: var(--control-h); padding: 0 var(--s3); border-radius: var(--radius); border: 1px solid transparent;
   font: inherit; font-size: 13px; font-weight: 500; line-height: 1; cursor: pointer; white-space: nowrap;
   background: none; color: var(--ink); text-decoration: none;
-  transition: background-color .12s, border-color .12s, color .12s;
+  transition: background-color var(--d1), border-color var(--d1), color var(--d1), transform var(--d1) var(--ease-out);
 }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn.is-busy, .btn.is-busy:disabled { opacity: 1; cursor: progress; }
@@ -844,7 +848,7 @@ th.num .th-sort { flex-direction: row-reverse; }
 .drawer {
   position: absolute; top: 0; right: 0; bottom: 0; width: min(560px, 100%);
   background: var(--paper); border-left: 1px solid var(--rule-2); border-radius: 0; box-shadow: var(--shadow-overlay);
-  display: flex; flex-direction: column; transform: translateX(100%); transition: transform .18s ease-out;
+  display: flex; flex-direction: column; transform: translateX(100%); transition: transform 220ms cubic-bezier(.32, .72, 0, 1);
 }
 .drawer.open { transform: none; }
 .drawer-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s3); padding: var(--s5) var(--s5) var(--s3); border-bottom: 1px solid var(--ink); }
@@ -953,7 +957,7 @@ details.form-section[open] > .form-section-title > .form-section-hint { display:
 .toast {
   display: flex; align-items: flex-start; gap: var(--s3); padding: 10px var(--s2) 10px var(--s4);
   border-radius: var(--radius); background: var(--ink); color: var(--on-ink); box-shadow: var(--shadow-overlay);
-  font-size: 13px; animation: toast-in .16s ease-out;
+  font-size: 13px; animation: toast-in var(--d2) var(--ease-out);
 }
 .toast-error { box-shadow: inset 3px 0 0 var(--ko), var(--shadow-overlay); }
 .toast-msg { flex: 1 1 auto; overflow-wrap: anywhere; padding-top: 1px; }
@@ -965,6 +969,8 @@ details.form-section[open] > .form-section-title > .form-section-hint { display:
 .toast-close:focus-visible { opacity: 1; outline: 2px solid var(--on-ink); outline-offset: -2px; }
 body.unconfigured .toast-root { left: var(--s4); }
 @keyframes toast-in { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
+.toast.is-leaving { animation: toast-out var(--d1) var(--ease-in) forwards; pointer-events: none; }
+@keyframes toast-out { to { transform: translateY(4px); opacity: 0; } }
 
 .spinner {
   display: inline-block; width: 12px; height: 12px; border: 1.5px solid var(--rule-2); border-top-color: var(--ink);
@@ -1032,6 +1038,49 @@ body.unconfigured .toast-root { left: var(--s4); }
   .kv dt { border-bottom: 0; padding-bottom: 0; min-height: 0; }
   .drawer-footer-note { flex-basis: 100%; }
 }
+
+/* Motion */
+.btn:not(:disabled):active, .choice-btn:not(:disabled):active, .date-quick-btn:not(:disabled):active, .icon-btn:active,
+.page-settings .segmented-btn:not(:disabled):active, .page-settings .access-chip:active { transform: translateY(1px); }
+.choice-btn, .date-quick-btn, .icon-btn, .tab, .nav-link, .page-settings .segmented-btn, .page-settings .access-chip, .role-card {
+  transition: background-color var(--d1), border-color var(--d1), color var(--d1), box-shadow var(--d1), transform var(--d1) var(--ease-out);
+}
+.modal-overlay, .drawer-overlay { animation: fade-in var(--d2) var(--ease-out); }
+.modal { animation: modal-in var(--d3) var(--ease-out); }
+.tooltip { animation: fade-in var(--d1) var(--ease-out); }
+.popover { animation: pop-in var(--d1) var(--ease-out); }
+.popover[data-placement="top"] { animation-name: pop-in-up; }
+details.form-section[open] > :not(summary), details.more[open] > :not(summary), details.detail-item[open] > :not(summary) {
+  animation: reveal var(--d2) var(--ease-out);
+}
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes modal-in { from { opacity: 0; transform: translateY(8px); } }
+@keyframes pop-in { from { opacity: 0; transform: translateY(-4px); } }
+@keyframes pop-in-up { from { opacity: 0; transform: translateY(4px); } }
+@keyframes reveal { from { opacity: 0; transform: translateY(-4px); } }
+
+/* The ghost moves while data loads: the splash, a month change, a block loading, a sync.
+   data-ghost (js_main.html) picks floating or looking around for each wait; looking is the default. */
+.splash .brand-logo, body.is-syncing .brand-logo,
+.app:has(#main[aria-busy="true"], #main [aria-busy="true"]:not(button)) .brand-logo {
+  transform-origin: 50% 90%; animation: ghost-sway 2.4s ease-in-out infinite;
+}
+.splash .brand-logo .icon-fill, body.is-syncing .brand-logo .icon-fill,
+.app:has(#main[aria-busy="true"], #main [aria-busy="true"]:not(button)) .brand-logo .icon-fill {
+  transform-box: fill-box; animation: ghost-look 2.4s ease-in-out infinite;
+}
+html[data-ghost="float"] .splash .brand-logo, html[data-ghost="float"] body.is-syncing .brand-logo,
+html[data-ghost="float"] .app:has(#main[aria-busy="true"], #main [aria-busy="true"]:not(button)) .brand-logo {
+  animation: ghost-float 1.8s ease-in-out infinite;
+}
+html[data-ghost="float"] .splash .brand-logo .icon-fill, html[data-ghost="float"] body.is-syncing .brand-logo .icon-fill,
+html[data-ghost="float"] .app:has(#main[aria-busy="true"], #main [aria-busy="true"]:not(button)) .brand-logo .icon-fill {
+  transform-origin: center; animation: ghost-blink 3.6s ease-in-out infinite;
+}
+@keyframes ghost-sway { 0%, 100% { transform: none; } 35% { transform: rotate(-4deg); } 65% { transform: rotate(4deg); } }
+@keyframes ghost-float { 0%, 100% { transform: none; } 50% { transform: translateY(-12%); } }
+@keyframes ghost-blink { 0%, 44%, 52%, 100% { transform: none; } 48% { transform: scaleY(.1); } }
+@keyframes ghost-look { 0%, 15%, 85%, 100% { transform: none; } 30%, 45% { transform: translateX(-60%); } 60%, 75% { transform: translateX(60%); } }
 
 /* Reduced motion: the scroll-driven edge fades stay, since they track scroll position and nothing moves. */
 @media (prefers-reduced-motion: reduce) {
