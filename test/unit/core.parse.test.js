@@ -173,7 +173,165 @@ test('rowsToRecords: header row beyond maxScan (15) is not found', () => {
   assert.throws(() => Core.rowsToRecords({ display, keyField: 'Nom du poste' }), (e) => e.code === 'SOURCE_ERROR');
 });
 
+test('rowsToRecords: « _ » headers are ignored with a warning (never a record field, even "__proto__")', () => {
+  const display = [
+    ['Nom du poste', '_id', ' _updated_at', '__proto__', 'OS'],
+    ['P1', 'x', '2030-01-01T00:00:00.000Z', '{"a":1}', 'Linux'],
+  ];
+  const res = Core.rowsToRecords({ display, keyField: 'Nom du poste' });
+  assert.deepEqual(res.headers, ['Nom du poste', 'OS']);
+  assert.deepEqual(res.columns, [0, 4]);
+  assert.deepEqual(Object.keys(res.records[0]), ['Nom du poste', 'OS']);
+  assert.equal(Object.getPrototypeOf(res.records[0]), Object.prototype);
+  assert.deepEqual(res.warnings, ['Colonnes « _id », « _updated_at », « __proto__ » ignorées : les noms commençant par ' +
+    '« _ » sont réservés à l’application.']);
+  const one = Core.rowsToRecords({ display: [['Nom du poste', '_x'], ['P1', 'y']], keyField: 'Nom du poste' });
+  assert.deepEqual(one.warnings, ['Colonne « _x » ignorée : les noms commençant par « _ » sont réservés à l’application.']);
+  const many = Core.rowsToRecords({ display: [['Nom du poste', '_a', '_b', '_c', '_d', '_e', '_f', '_g'], ['P1']],
+    keyField: 'Nom du poste' });
+  assert.match(many.warnings[0], /^Colonnes « _a », « _b », « _c », « _d », « _e » et 2 autre\(s\) ignorées/);
+});
+
+test('rowsToRecords: duplicate headers are suffixed in linear time, with the same names as before', () => {
+  const display = [['Nom du poste', 'OS', 'OS (3)', 'OS', 'OS', 'OS (2)', 'OS'], ['P1', 'a', 'b', 'c', 'd', 'e', 'f']];
+  const res = Core.rowsToRecords({ display, keyField: 'Nom du poste' });
+  // The literal « OS (3) » is skipped; a literal « OS (2) » after the generated one is suffixed itself.
+  assert.deepEqual(res.headers, ['Nom du poste', 'OS', 'OS (3)', 'OS (2)', 'OS (4)', 'OS (2) (2)', 'OS (5)']);
+  // 500 identical headers (the width limit): suffixed 2..499 (the key column is the first header).
+  const wide = [['Nom du poste'].concat(Array(Core.LIMITS.sourceColumns - 1).fill('x')), ['P1']];
+  const t0 = Date.now();
+  const big = Core.rowsToRecords({ display: wide, keyField: 'Nom du poste' });
+  assert.ok(Date.now() - t0 < 500);
+  assert.equal(big.headers[1], 'x');
+  assert.equal(big.headers[2], 'x (2)');
+  assert.equal(big.headers[499], 'x (499)');
+  assert.equal(new Set(big.headers).size, 500);
+});
+
+test('rowsToRecords: more than LIMITS.sourceColumns non-blank headers -> SOURCE_ERROR naming the tab', () => {
+  const max = Core.LIMITS.sourceColumns;
+  const headers = ['Nom du poste'];
+  for (let i = 1; i < max; i++) headers.push('C' + i, '', ' '); // blank header cells do not count
+  assert.equal(Core.rowsToRecords({ display: [headers, ['P1']], keyField: 'Nom du poste' }).headers.length, max);
+  headers.push('_réservée'); // counted: it is a non-blank header cell
+  assert.throws(() => Core.rowsToRecords({ display: [headers, ['P1']], keyField: 'Nom du poste', tab: 'Suivi des postes' }),
+    (e) => e.code === 'SOURCE_ERROR' && e.message === 'Onglet « Suivi des postes » : ' + (max + 1) + ' colonnes ont un ' +
+      'en-tête, au plus ' + max + ' sont acceptées. Supprimez les colonnes inutiles du Google Sheet source.');
+  assert.throws(() => Core.rowsToRecords({ display: [headers, ['P1']], keyField: 'Nom du poste' }),
+    (e) => e.code === 'SOURCE_ERROR' && /^Ligne d’en-tête : 501 colonnes/.test(e.message));
+});
+
+test('rowsToRecords: more than LIMITS.sourceRecords records -> SOURCE_ERROR naming the tab', () => {
+  const max = Core.LIMITS.sourceRecords;
+  const display = [['Nom du poste']];
+  for (let i = 0; i < max; i++) display.push(['P' + i], [''], ['']); // blank rows do not count
+  assert.equal(Core.rowsToRecords({ display, keyField: 'Nom du poste' }).records.length, max);
+  display.push(['P' + max]);
+  assert.throws(() => Core.rowsToRecords({ display, keyField: 'Nom du poste', tab: 'Suivi des applications' }),
+    (e) => e.code === 'SOURCE_ERROR' &&
+      e.message === 'Onglet « Suivi des applications » : plus de 5000 lignes à importer, au plus 5000 sont acceptées.');
+});
+
+test('rowsToRecords: from LIMITS.sourceRecordsWarn records, a warning says the limit is near', () => {
+  const { sourceRecords, sourceRecordsWarn } = Core.LIMITS;
+  assert.ok(sourceRecordsWarn < sourceRecords);
+  const display = [['Nom du poste']];
+  for (let i = 0; i < sourceRecordsWarn - 1; i++) display.push(['P' + i]);
+  assert.deepEqual(Core.rowsToRecords({ display, keyField: 'Nom du poste', tab: 'Suivi des postes' }).warnings, []);
+  display.push(['P-last']);
+  assert.deepEqual(Core.rowsToRecords({ display, keyField: 'Nom du poste', tab: 'Suivi des postes' }).warnings,
+    ['Onglet « Suivi des postes » : ' + sourceRecordsWarn + ' lignes importées, la limite est de ' + sourceRecords +
+      ' : au-delà, la synchronisation sera refusée.']);
+});
+
+test('rowsToRecords: « Installé sur poste » beyond LIMITS.cellChars is cut after its last whole poste name', () => {
+  const max = Core.LIMITS.cellChars;
+  const names = [];
+  for (let i = 0; names.join(', ').length <= max + 200; i++) names.push('POSTE-' + String(i).padStart(5, '0'));
+  const list = names.join(', ');
+  const display = [['Nom du logiciel / service', 'Installé sur poste', 'Commentaires'], ['Minitab', list, list]];
+  const rec = Core.rowsToRecords({ display, keyField: 'Nom du logiciel / service' }).records[0];
+  const kept = rec['Installé sur poste'];
+  assert.ok(kept.length <= max && kept.length > max - 20, String(kept.length));
+  const keptNames = kept.split(',').map((s) => s.trim());
+  assert.deepEqual(keptNames, names.slice(0, keptNames.length), 'whole names only, none cut in the middle');
+  assert.equal(rec.Commentaires.length, max, 'another column is cut at the limit');
+  // A cut that falls just before a comma keeps the whole list up to it; one item longer than the limit is cut.
+  const exact = 'A'.repeat(max - 3) + ', B';
+  assert.equal(Core.rowsToRecords({ display: [['Nom du logiciel / service', 'Installé sur poste'],
+    ['X', 'A'.repeat(max) + ',B']], keyField: 'Nom du logiciel / service' }).records[0]['Installé sur poste'], 'A'.repeat(max));
+  assert.equal(Core.rowsToRecords({ display: [['Nom du logiciel / service', 'Installé sur poste'],
+    ['X', exact + 'B'.repeat(10)]], keyField: 'Nom du logiciel / service' }).records[0]['Installé sur poste'], 'A'.repeat(max - 3));
+  assert.equal(Core.rowsToRecords({ display: [['Nom du logiciel / service', 'Installé sur poste'],
+    ['X', 'L'.repeat(max + 5)]], keyField: 'Nom du logiciel / service' }).records[0]['Installé sur poste'], 'L'.repeat(max));
+  // The relation then only lists postes that exist.
+  const rel = Core.buildPosteAppsRelation([rec]);
+  assert.ok(rel.relations.every((r) => names.includes(r.poste)));
+});
+
+test('rowsToRecords: values beyond LIMITS.cellChars and headers beyond LIMITS.headerChars are truncated, with warnings', () => {
+  const { cellChars, headerChars } = Core.LIMITS;
+  const longHeader = 'H'.repeat(headerChars + 50);
+  const longKey = 'K'.repeat(cellChars + 1);
+  const display = [['Nom du poste', 'Notes', longHeader], ['P1', 'n'.repeat(cellChars + 1), 'ok'], [longKey, 'n', '']];
+  const res = Core.rowsToRecords({ display, keyField: 'Nom du poste' });
+  assert.deepEqual(res.headers, ['Nom du poste', 'Notes', 'H'.repeat(headerChars)]);
+  assert.equal(res.records[0].Notes, 'n'.repeat(cellChars));
+  assert.equal(res.records[1]['Nom du poste'], 'K'.repeat(cellChars));
+  assert.deepEqual(res.warnings, [
+    'En-tête(s) de colonne tronqué(s) à ' + headerChars + ' caractères : « ' + 'H'.repeat(60) + '… ».',
+    '« P1 », colonne « Notes » : valeur tronquée à ' + cellChars + ' caractères.',
+    '« ' + 'K'.repeat(60) + '… », colonne « Nom du poste » : valeur tronquée à ' + cellChars + ' caractères.',
+  ]);
+  // Exactly the limit is kept as is; beyond 5 truncated values, the others are counted.
+  const rows = [['Nom du poste', 'A', 'B']];
+  for (let i = 0; i < 4; i++) rows.push(['P' + i, 'a'.repeat(cellChars + 1), 'b'.repeat(cellChars + 1)]);
+  rows.push(['Q', 'a'.repeat(cellChars), '']);
+  const many = Core.rowsToRecords({ display: rows, keyField: 'Nom du poste' });
+  assert.equal(many.records[4].A.length, cellChars);
+  assert.equal(many.warnings.length, 6);
+  assert.equal(many.warnings[5], '3 autre(s) valeur(s) tronquée(s) à ' + cellChars + ' caractères.');
+  // Without keyField, the record is named by its sheet row.
+  const noKey = Core.rowsToRecords({ display: [['A'], ['x'.repeat(cellChars + 1)]], anchors: ['A'] });
+  assert.deepEqual(noKey.warnings, ['« ligne 2 », colonne « A » : valeur tronquée à ' + cellChars + ' caractères.']);
+});
+
 // ------------------------------------------------------------------------------------------ parseReferentiel
+test('parseReferentiel: limits on categories, values per category and lengths', () => {
+  const { refCategories, refValues, cellChars, headerChars } = Core.LIMITS;
+  const cats = Array.from({ length: refCategories }, (_, i) => 'C' + i);
+  assert.equal(Object.keys(Core.parseReferentiel([cats.concat(['C0']), cats.map(() => 'v')])).length, refCategories);
+  assert.throws(() => Core.parseReferentiel([cats.concat(['Une de trop']), ['v']]),
+    (e) => e.code === 'SOURCE_ERROR' && e.message === 'Onglet « Référentiel » : plus de ' + refCategories +
+      ' catégories, au plus ' + refCategories + ' sont acceptées.');
+
+  const col = [['OS', 'Équipe']];
+  for (let i = 0; i < refValues; i++) col.push(['v' + i, 'e'], ['v' + i, '']); // duplicates do not count
+  const none = [];
+  assert.equal(Core.parseReferentiel(col, none).OS.length, refValues);
+  assert.deepEqual(none, []);
+  // Beyond: the first refValues values are kept, one warning per category (the import goes on).
+  col.push(['v' + refValues, 'f'], ['v' + (refValues + 1), '']);
+  const warnings = [];
+  const ref = Core.parseReferentiel(col, warnings);
+  assert.equal(ref.OS.length, refValues);
+  assert.equal(ref.OS[refValues - 1], 'v' + (refValues - 1));
+  assert.deepEqual(ref['Équipe'], ['e', 'f']);
+  assert.deepEqual(warnings, ['Onglet « Référentiel » : la catégorie « OS » a plus de ' + refValues +
+    ' valeurs, seules les ' + refValues + ' premières sont gardées.']);
+  assert.equal(Core.parseReferentiel(col).OS.length, refValues, 'without a warnings array');
+
+  const wide = [Array.from({ length: Core.LIMITS.sourceColumns + 1 }, () => 'Même catégorie')];
+  assert.throws(() => Core.parseReferentiel(wide), (e) => e.code === 'SOURCE_ERROR' && /^Onglet « Référentiel » : 501 colonnes/.test(e.message));
+
+  const long = Core.parseReferentiel([['L'.repeat(headerChars + 1)], ['v'.repeat(cellChars + 9)], ['v'.repeat(cellChars)]]);
+  assert.deepEqual(long, { ['L'.repeat(headerChars)]: ['v'.repeat(cellChars)] });
+  // "__proto__" is an ordinary category and value.
+  const proto = Core.parseReferentiel([['__proto__'], ['__proto__'], ['constructor']]);
+  assert.deepEqual(Object.keys(proto), ['__proto__']);
+  assert.deepEqual(proto['__proto__'], ['__proto__', 'constructor']);
+});
+
 test('parseReferentiel on the fake source tab reproduces the référentiel', () => {
   const tab = buildSourceSpreadsheet('2026-05').sheets['Référentiel'];
   assert.deepEqual(Core.parseReferentiel(tab.display), data.REFERENTIEL);

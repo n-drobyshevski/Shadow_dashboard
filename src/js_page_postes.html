@@ -29,7 +29,7 @@
   function installedApps(rec, relation) {
     var name = Core.str(rec[KEY]);
     var out = [];
-    var index = {};
+    var index = Object.create(null);
     (relation.byPoste[name] || []).forEach(function (r) {
       var k = Core.normKey(r.application);
       if (Object.prototype.hasOwnProperty.call(index, k)) return;

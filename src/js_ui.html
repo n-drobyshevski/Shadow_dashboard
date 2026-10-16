@@ -15,6 +15,8 @@
  *   editableTable options also accept toolbarEnd:[Node] (placed at the right end, after search + count)
  *     and readOnly:bool (lecteurs: `editable` columns render as plain cells — no inline editor, no dotted
  *     underline, no dirty bar, no Enregistrer / Annuler; sorting, search, paging and onRowClick stay).
+ *   editableTable(...).lockColumns(keys) makes those columns read-only once the table is shown (their
+ *     unsaved values are dropped); true when a column changed.
  *   UI.fmtPctNode(n, digits?)           -> span.pct: same text as fmtPct, the space before % is set in the
  *                                           sans face so that it stays narrow inside mono figures.
  *   UI.cellMark(column, value)          -> read view of a ledger cell: Statut / Niveau de risque as marks,
@@ -68,8 +70,15 @@
 (function () {
   'use strict';
 
-  var UNSAFE_URL = /^\s*(javascript|data|vbscript)\s*:/i;
-  var URL_ATTRS = { href: 1, src: 1, action: 1, formaction: 1, xlinkHref: 1 };
+  // URL attributes keep relative URLs and these schemes only. Browsers ignore control characters and
+  // spaces inside a scheme ('java\tscript:'), so they are removed before the scheme is read.
+  var SAFE_SCHEMES = { http: 1, https: 1, mailto: 1, blob: 1 };
+  var URL_ATTRS = { href: 1, src: 1, action: 1, formaction: 1, xlinkhref: 1, 'xlink:href': 1, poster: 1,
+    data: 1, cite: 1, background: 1 };
+  function safeUrl(v) {
+    var m = /^([a-z][a-z0-9+.\-]*):/i.exec(String(v).replace(/[\u0000-\u0020\u007f-\u00a0]+/g, ''));
+    return !m || SAFE_SCHEMES[m[1].toLowerCase()] === 1;
+  }
   var uid = 0;
   function nextId(prefix) { uid++; return (prefix || 'ui') + '-' + uid; }
 
@@ -142,8 +151,8 @@
           node.addEventListener(k.slice(2).toLowerCase(), v);
         } else if (k === 'innerHTML' || k === 'outerHTML') {
           throw new Error('UI.el: ' + k + ' is not allowed');
-        } else if (URL_ATTRS[k] && UNSAFE_URL.test(String(v))) {
-          // dropped on purpose
+        } else if (/^on/i.test(k) || /^srcdoc$/i.test(k) || (URL_ATTRS[k.toLowerCase()] && !safeUrl(v))) {
+          // dropped on purpose: inline handlers as text, srcdoc markup, javascript:/data:/... URLs
         } else {
           node.setAttribute(k, v === true ? '' : String(v));
         }
@@ -715,9 +724,11 @@
     var opts = o || {};
     var fields = opts.fields || [];
     var groups = opts.groups || null;
-    var controls = {};
+    // Keyed by field name, i.e. by source column name (data): no prototype, so that a column named
+    // '__proto__' or 'constructor' is a field like any other.
+    var controls = Object.create(null);
     var names = [];
-    var initial = {};
+    var initial = Object.create(null);
     /** Passed to a select field's onChange(value, form): form.control(name) = another field's control. */
     var formApi = { control: function (name) { return controls[name] ? controls[name].control : null; } };
     var alertBox = el('div', { class: 'form-alert', hidden: true });
@@ -749,7 +760,10 @@
       var focusEl;   // element receiving focus / aria-invalid
       var get;
       var raw;       // the text as typed (isDirty)
-      var common = { id: id, name: f.name, class: ['input', f.mono ? 'mono' : null], required: !!f.required,
+      // No name attribute: a control named after a column ('addEventListener', 'submit', 'elements'…) would
+      // shadow that member of the <form> (named properties of HTMLFormElement). The id is a counter, the
+      // field name goes to data-name (control) and data-field (.form-field); values come from `controls`.
+      var common = { id: id, class: ['input', f.mono ? 'mono' : null], required: !!f.required,
         placeholder: f.placeholder || null, disabled: !!f.disabled };
       if (type === 'textarea') {
         control = focusEl = el('textarea', Object.assign(common, { rows: 3, value: value }));
@@ -758,7 +772,7 @@
       } else if (type === 'select') {
         var ops = normOptions(f.options);
         if (!f.allowCustom && value && !ops.some(function (op) { return op.value === value; })) ops.push({ value: value, label: value });
-        control = UI.dropdown({ id: id, name: f.name, labelledBy: labelId, options: ops, value: value,
+        control = UI.dropdown({ id: id, labelledBy: labelId, options: ops, value: value,
           combobox: !!f.allowCustom, tokens: !!(f.allowCustom && f.tokens), mono: !!f.mono, disabled: !!f.disabled,
           allowEmpty: !f.allowCustom && !f.required, emptyLabel: '—',
           placeholder: f.placeholder || (!f.allowCustom && f.required ? 'Choisir…' : null),
@@ -768,7 +782,7 @@
         raw = get;
       } else if (type === 'date' || type === 'month') {
         var maker = type === 'date' ? UI.dateField : UI.monthField;
-        control = maker({ id: id, name: f.name, labelledBy: labelId, value: value, required: !!f.required,
+        control = maker({ id: id, labelledBy: labelId, value: value, required: !!f.required,
           min: f.min, max: f.max, options: f.options, disabled: !!f.disabled,
           onValidate: function (msg) { UI.fieldError(control, msg); } });
         focusEl = control.control;
@@ -779,6 +793,7 @@
         get = function () { return String(control.value || '').trim(); };
         raw = function () { return String(control.value || ''); };
       }
+      focusEl.setAttribute('data-name', f.name);
       var label = el('label', { for: id, id: labelId, class: 'field-label' }, f.label || f.name,
         f.required ? el('span', { class: 'required', 'aria-hidden': 'true' }, ' *') : null);
       if (focusEl.tagName === 'BUTTON') {
@@ -826,7 +841,7 @@
     }
 
     function collect() {
-      var values = {};
+      var values = Object.create(null);
       var bad = null;
       names.forEach(function (name) {
         var r = check(name);
@@ -841,7 +856,7 @@
     }
 
     function values() {
-      var out = {};
+      var out = Object.create(null);
       names.forEach(function (name) { out[name] = controls[name].get(); });
       return out;
     }
@@ -1303,7 +1318,7 @@
 
   /**
    * UI.editableTable({columns, rows, rowKey='_id', search=true, pageSize=50, onSave?, onRowClick?,
-   *                   emptyText?, toolbar?, readOnly?}) -> {node, setRows(rows), getDirty()}
+   *                   emptyText?, toolbar?, readOnly?}) -> {node, setRows(rows), getDirty(), lockColumns(keys)}
    */
   function editableTable(o) {
     var opts = o || {};
@@ -1312,14 +1327,18 @@
     var readOnly = !!opts.readOnly;   // read-only mode (lecteur): no column is editable
     var pageSize = opts.pageSize || 50;
     var rows = (opts.rows || []).slice();
-    var dirty = {};          // id -> {colKey: newValue}
+    // id -> {colKey: newValue}. Keyed by record ids and column names (data): maps without a prototype
+    // (dirtyMap), so that an id or a column named '__proto__' is an entry, never Object.prototype.
+    var dirty = dirtyMap();
     var sortKey = null;
     var sortDir = 1;
     var query = '';
     var page = 0;
     var saving = false;
     var rowsReplaced = false;
+    var staleBody = false;   // lockColumns while a cell was being edited: the body re-renders when it closes
 
+    function dirtyMap() { return Object.create(null); }
     function idOf(row) { return row ? String(row[rowKey]) : ''; }
     function isEditable(col) { return !readOnly && !!col.editable; }
     function view(row) {
@@ -1336,7 +1355,7 @@
     function getDirty() {
       return Object.keys(dirty).map(function (id) {
         var original = rows.filter(function (r) { return idOf(r) === id; })[0];
-        return { id: original ? original[rowKey] : id, updates: Object.assign({}, dirty[id]) };
+        return { id: original ? original[rowKey] : id, updates: Object.assign(dirtyMap(), dirty[id]) };
       });
     }
 
@@ -1474,7 +1493,7 @@
       var id = idOf(row);
       var normalized = value === '' || value === undefined ? null : value;
       var original = row[key];
-      if (!dirty[id]) dirty[id] = {};
+      if (!dirty[id]) dirty[id] = dirtyMap();
       if (Core.str(normalized) === Core.str(original)) delete dirty[id][key];
       else dirty[id][key] = normalized;
       if (!Object.keys(dirty[id]).length) delete dirty[id];
@@ -1506,11 +1525,12 @@
       function finish(apply) {
         if (done) return;
         done = true;
-        if (apply) setDirty(row, col.key, getValue());
+        if (apply && isEditable(col)) setDirty(row, col.key, getValue());
         td.classList.remove('cell-editing');
         if (host.parentNode) host.parentNode.removeChild(host);
         // Re-render every cell of the row: computed columns (score, criteria...) follow the edit at once.
-        renderRow(td.parentNode, row);
+        if (staleBody) renderBody();
+        else renderRow(td.parentNode, row);
         if (td.isConnected) td.focus();
       }
 
@@ -1566,6 +1586,7 @@
     }
 
     function renderBody() {
+      staleBody = false;
       clear(tbody);
       var list = visibleRows();
       var pages = Math.max(1, Math.ceil(list.length / pageSize));
@@ -1652,7 +1673,7 @@
           // The page did not push fresh rows: apply the saved values locally.
           rows = rows.map(function (r) { return snapshot[idOf(r)] ? Object.assign({}, r, snapshot[idOf(r)]) : r; });
         }
-        dirty = {};
+        dirty = dirtyMap();
       }, function (err) {
         toast('Erreur : ' + errorText(err), 'error');
       }).then(function () {
@@ -1662,33 +1683,70 @@
     }
 
     function cancel() {
-      dirty = {};
+      dirty = dirtyMap();
       renderBody();
     }
 
     function setRows(newRows) {
       rows = (newRows || []).slice();
       rowsReplaced = true;
-      var ids = {};
+      var ids = dirtyMap();
       rows.forEach(function (r) { ids[idOf(r)] = true; });
       Object.keys(dirty).forEach(function (id) { if (!ids[id]) delete dirty[id]; });
       renderBody();
     }
 
+    /**
+     * Makes the columns whose key is in `keys` read-only from now on (found computed after the table was
+     * shown): their unsaved values are dropped, and a toast names those columns (the source would refuse
+     * them anyway), header and rows re-render (once a cell being edited closes). Returns true when a column
+     * changed.
+     */
+    function lockColumns(keys) {
+      var locked = columns.filter(function (col) { return col.editable && (keys || []).indexOf(col.key) >= 0; });
+      if (!locked.length) return false;
+      locked.forEach(function (col) { col.editable = false; });
+      var dropped = [];
+      Object.keys(dirty).forEach(function (id) {
+        locked.forEach(function (col) {
+          if (!Object.prototype.hasOwnProperty.call(dirty[id], col.key)) return;
+          delete dirty[id][col.key];
+          if (dropped.indexOf(col.label) < 0) dropped.push(col.label);
+        });
+        if (!Object.keys(dirty[id]).length) delete dirty[id];
+      });
+      if (dropped.length) {
+        toast('Modifications non enregistrées annulées dans ' + (dropped.length > 1 ? 'les colonnes « ' : 'la colonne « ') +
+          dropped.join(' », « ') + ' » : ' + (dropped.length > 1 ? 'elles sont calculées' : 'elle est calculée') +
+          ' par une formule dans le Google Sheet source.');
+      }
+      renderHead();
+      if (tbody.querySelector('.cell-editing')) {
+        staleBody = true;
+        updateDirtyBar();
+      } else {
+        renderBody();
+      }
+      return true;
+    }
+
     renderHead();
     renderBody();
-    return { node: node, setRows: setRows, getDirty: getDirty };
+    return { node: node, setRows: setRows, getDirty: getDirty, lockColumns: lockColumns };
   }
 
   // ------------------------------------------------------------------------------ CSV
 
+  /**
+   * Every field is quoted, headers included: a value such as 'x,=HYPERLINK(…),' must stay one cell when
+   * Excel splits on ',' (comma locales), where only its first character would have been escaped.
+   */
   function csvCell(v) {
-    if (v === null || v === undefined) return '';
-    var s = typeof v === 'string' ? Core.escapeFormula(v) : String(v);
-    return /[";\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    var s = v === null || v === undefined ? '' : typeof v === 'string' ? Core.escapeFormula(v) : String(v);
+    return '"' + s.replace(/"/g, '""') + '"';
   }
 
-  /** UI.downloadCsv(filename, columns, rows): ';'-separated, UTF-8 BOM (Excel friendly). */
+  /** UI.downloadCsv(filename, columns, rows): ';'-separated, every field quoted, UTF-8 BOM (Excel friendly). */
   function downloadCsv(filename, columns, rows) {
     var cols = columns || [];
     var lines = [cols.map(csvCell).join(';')];

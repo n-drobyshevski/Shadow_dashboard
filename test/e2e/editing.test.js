@@ -153,9 +153,9 @@ describe('editing switches: controls', () => {
 
       await app.goto('actions');
       await page.click('#action-add');
-      await page.waitForSelector('.modal [name="target_name"]');
-      await chooseOption(page, '.modal [name="target_name"]', 'LAB-CHA-02');
-      await page.fill('.modal [name="action"]', 'Installer l’EDR');
+      await page.waitForSelector('.modal [data-name="target_name"]');
+      await chooseOption(page, '.modal [data-name="target_name"]', 'LAB-CHA-02');
+      await page.fill('.modal [data-name="action"]', 'Installer l’EDR');
       await page.click('.modal .modal-footer .btn-primary');
       await page.waitForSelector('.modal', { state: 'detached' });
       await app.waitIdle();
@@ -210,8 +210,8 @@ describe('editing switches: turned off behind an open page', () => {
       await page.click('#postes-add');
       await page.waitForSelector(`${PANEL} .form-sections`);
       await app.waitIdle();
-      await page.fill(`${PANEL} [name="${KEY_POSTE}"]`, 'LAB-NEW-09');
-      await chooseOption(page, `${PANEL} [name="Équipe"]`, 'Labo Textile');
+      await page.fill(`${PANEL} [data-name="${KEY_POSTE}"]`, 'LAB-NEW-09');
+      await chooseOption(page, `${PANEL} [data-name="Équipe"]`, 'Labo Textile');
 
       await page.evaluate(() => { window.__mock.db.editing.create = false; });
       await page.click(`${PANEL} .drawer-footer button:has-text("Créer le poste")`);
@@ -219,7 +219,7 @@ describe('editing switches: turned off behind an open page', () => {
       await page.waitForSelector(`${PANEL} .form-alert .alert-error`);
       assert.equal((await page.textContent(`${PANEL} .form-alert .alert-error`)).trim(),
         'Erreur : La création de postes et d’applications est désactivée dans les Paramètres.');
-      assert.equal(await page.inputValue(`${PANEL} [name="${KEY_POSTE}"]`), 'LAB-NEW-09', 'values kept');
+      assert.equal(await page.inputValue(`${PANEL} [data-name="${KEY_POSTE}"]`), 'LAB-NEW-09', 'values kept');
       await page.waitForFunction(() => !document.getElementById('postes-add'));
       assert.deepEqual(await headerButtons(page), ['postes-export-csv']);
       assert.equal(await page.isVisible(PANEL), true, 'the panel stays open');

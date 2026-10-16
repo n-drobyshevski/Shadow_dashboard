@@ -434,14 +434,14 @@ describe('shell', () => {
       ] }));
       await page.waitForSelector('.modal form');
       assert.equal(await page.$('.modal select, .modal input[type=date], .modal datalist'), null);
-      assert.equal(await page.inputValue('.modal input[name=deadline]'), '15/03/2026');
+      assert.equal(await page.inputValue('.modal input[data-name=deadline]'), '15/03/2026');
       await page.click('.modal .btn-primary');
       assert.equal((await page.textContent('.modal .field-error:not([hidden])')).trim(), 'Ce champ est obligatoire.');
-      assert.equal(await page.evaluate(() => document.activeElement.name), 'action', 'first invalid field focused');
-      await page.fill('.modal input[name=action]', '  Installer EDR ');
-      await typeDate(page, '.modal input[name=deadline]', '30/04/2026');
-      await chooseOption(page, '.modal [name=status]', 'Terminé');
-      await chooseOption(page, '.modal input[name=poste]', 'Nouveau poste');
+      assert.equal(await page.evaluate(() => document.activeElement.dataset.name), 'action', 'first invalid field focused');
+      await page.fill('.modal input[data-name=action]', '  Installer EDR ');
+      await typeDate(page, '.modal input[data-name=deadline]', '30/04/2026');
+      await chooseOption(page, '.modal [data-name=status]', 'Terminé');
+      await chooseOption(page, '.modal input[data-name=poste]', 'Nouveau poste');
       await page.click('.modal .btn-primary');
       assert.deepEqual(await formPromise, { action: 'Installer EDR', deadline: '30/04/2026', status: 'Terminé', poste: 'Nouveau poste' });
 
@@ -481,7 +481,15 @@ describe('shell', () => {
         page.evaluate(() => UI.downloadCsv('export.csv', ['a', 'b'], [{ a: '=1+1', b: 'x;y' }, { a: null, b: 'é"t' }])),
       ]);
       const csv = fs.readFileSync(await download.path(), 'utf8');
-      assert.equal(csv, '﻿a;b\r\n\'=1+1;"x;y"\r\n;"é""t"');
+      // Every field quoted, headers too: 'x,=1+1,' stays one cell when Excel splits on ',' (comma locales).
+      assert.equal(csv, '﻿"a";"b"\r\n"\'=1+1";"x;y"\r\n"";"é""t"');
+      const HEAD = '=HYPERLINK("http://x.test")';
+      const [download2] = await Promise.all([
+        page.waitForEvent('download'),
+        page.evaluate((h) => UI.downloadCsv('export.csv', ['a', h], [{ a: 'x,=1+1,', [h]: -2 }, { a: '@SUM(A1)', [h]: '+1' }]), HEAD),
+      ]);
+      assert.equal(fs.readFileSync(await download2.path(), 'utf8'),
+        '﻿"a";"\'=HYPERLINK(""http://x.test"")"\r\n"x,=1+1,";"-2"\r\n"\'@SUM(A1)";"\'+1"');
       assert.deepEqual(app.errors, []);
     });
   });

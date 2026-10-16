@@ -326,6 +326,28 @@ test('the access list is capped at 2000 accounts', () => {
   fail(sb.ctx, 'api_saveUser', { email: 'one.more@decathlon.com', role: 'lecteur' }, 'VALIDATION');
   // Changing a role is still possible at the cap.
   ok(sb.ctx, 'api_saveUser', { email: 'a1@decathlon.com', role: 'admin' });
+  assert.ok(JSON.stringify(sb.ctx.Config.get().access).length < sb.ctx.Config.MAX_ACCESS_CHARS, '2000 usual addresses fit');
+});
+
+test('the serialized access list is capped (long addresses): VALIDATION, nothing written', () => {
+  const sb = imported();
+  assert.equal(sb.ctx.Config.MAX_ACCESS_CHARS, 300000);
+  // 250-character addresses: about 330 characters per entry, so 500 fit and 1000 do not.
+  const long = (i) => 'u' + String(i).padStart(4, '0') + '.' + 'x'.repeat(230) + '@decathlon.com';
+  const batch = (b) => Array.from({ length: 500 }, (_, i) => long(b * 500 + i));
+  assert.equal(ok(sb.ctx, 'api_addUsers', { role: 'lecteur', emails: batch(0) }).added.length, 500);
+  const store = sb.env.PropertiesService.getScriptProperties();
+  const before = JSON.stringify(store.getProperties());
+  const err = fail(sb.ctx, 'api_addUsers', { role: 'lecteur', emails: batch(1) }, 'VALIDATION');
+  assert.match(err.message, /La liste d’accès deviendrait trop volumineuse .*300000 au plus/);
+  assert.match(err.message, /groupe Google/);
+  assert.equal(JSON.stringify(store.getProperties()), before, 'nothing written');
+  assert.equal(ok(sb.ctx, 'api_getSettings').access.users.length, 500);
+  // Below the cap the list still grows; Config.setAccess refuses on its own as well.
+  ok(sb.ctx, 'api_saveUser', { email: 'court@decathlon.com', role: 'lecteur' });
+  const huge = { users: batch(1).concat(batch(2), batch(3)).map((email) => ({ email, role: 'lecteur' })), groups: [], domainRole: 'none' };
+  assert.throws(() => sb.ctx.Config.setAccess(huge), (e) => e.code === 'VALIDATION');
+  assert.equal(ok(sb.ctx, 'api_getSettings').access.users.length, 501);
 });
 
 // ---------------------------------------------------------------------------- Google Groups
@@ -396,13 +418,14 @@ test('groups: every group a call may need is read from the cache in ONE getAll',
   const count = (k) => calls[k] || 0;
   const before = { getAll: count('cacheGetAll'), get: count('cacheGet'), groups: sb.env.__state.groupCalls };
   ok(sb.ctx, 'api_getActions');
-  assert.equal(count('cacheGetAll') - before.getAll, 1, 'cold: one getAll for the 4 groups');
+  // + one getAll of the throttle counters (rate and running calls) per call.
+  assert.equal(count('cacheGetAll') - before.getAll, 2, 'cold: one getAll for the 4 groups');
   assert.ok(sb.env.__state.groupCalls > before.groups, 'cold: checked live');
   const warm = { getAll: count('cacheGetAll'), groups: sb.env.__state.groupCalls };
   assert.equal(ok(sb.ctx, 'api_bootstrap').user.role, 'lecteur');
-  assert.equal(count('cacheGetAll') - warm.getAll, 1, 'warm: one getAll');
+  assert.equal(count('cacheGetAll') - warm.getAll, 2, 'warm: one getAll');
   assert.equal(sb.env.__state.groupCalls, warm.groups, 'warm: no GroupsApp call');
-  assert.equal(count('cacheGet'), before.get, 'never one get per group');
+  assert.equal(count('cacheGet') - before.get, 2, 'never one get per group: only the throttle release, once per call');
 });
 
 test('groups: a cached membership slides with use but is re-verified after 1 h at most', (t) => {
@@ -485,9 +508,11 @@ test('groups: a failing or foreign cache falls back to the live check and never 
   st.cacheFaults.read = false;
   st.cacheFaults.write = false;
   // Values the code does not recognise (an older format, garbage, a time in the future) and a membership
-  // verified 1 h ago or more (whatever its remaining cache lifetime) are a miss.
+  // verified 1 h ago or more (whatever its remaining cache lifetime) are a miss. (The "no role" entry
+  // of the account is dropped first: it would answer without looking at the group entry.)
   const key = groupKey(LAB, 'nobody@decathlon.com');
   for (const v of ['1', 'm:', 'm:abc', 'yes', 'm:' + (Date.now() + 3600e3), 'm:' + (Date.now() - 3600e3)]) {
+    for (const k of [...st.cache.keys()]) if (k.startsWith('nr:')) st.cache.delete(k);
     st.cache.set(key, v);
     st.cacheExpiry.set(key, Date.now() + 600e3);
     as(sb, 'nobody@decathlon.com');

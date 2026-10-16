@@ -32,7 +32,8 @@
  * accessing document…", timeouts): env.__fault({method, id?, sheet?, times?, message?}) makes the
  * next `times` (default 1, Infinity allowed) matching calls throw. Supported methods: 'openById'
  * (matched on `id`), 'setValues' / 'setValue' (matched on the spreadsheet `id` and the target `sheet`
- * name), 'create'.
+ * name), 'create', 'getGroupByEmail' (matched on the lower-cased group address as `id`; pass a
+ * `message` such as 'Service invoked too many times for one day: groups.' for the daily quota).
  * env.__clearFaults() removes them. Utilities.sleep(ms) is a no-op recorded in __state.sleeps.
  *
  * Usage:
@@ -47,6 +48,7 @@
  *   reads [{spreadsheetId, sheet, method, a1, cells, lockHeld}] (one entry per range read, in order:
  *   which rows / columns a flow reads, and whether the script lock was held at that moment),
  *   lock {acquired, released, timeouts, held}, logs [], console [], lockTimeout (mutable),
+ *   userLock {acquired, held} (LockService.getUserLock, a lock of its own), userLockTimeout (mutable),
  *   opened [ids passed to openById, in order], propertyWrites [keys written by setProperty / setProperties].
  * state.onWaitLock = fn runs fn ONCE, at the start of the next waitLock / tryLock, before the lock is
  * taken: a test simulates another execution that takes the lock first (e.g. a save landing while an
@@ -440,6 +442,19 @@ function createGasEnv(options) {
       this._maxCols += howMany;
       return this;
     }
+
+    deleteColumns(columnPosition, howMany) {
+      count('deleteColumns');
+      if (columnPosition < 1 || howMany < 1 || columnPosition + howMany - 1 > this._maxCols) {
+        throw new Error('Those columns are out of bounds.');
+      }
+      if (this._maxCols - howMany < 1) throw new Error('Sorry, it is not possible to delete all columns.');
+      for (const grid of [this._vals, this._fmts, this._disp, this._rules]) {
+        for (const row of grid) if (row) row.splice(columnPosition - 1, howMany);
+      }
+      this._maxCols -= howMany;
+      return this;
+    }
   }
 
   // ------------------------------------------------------------------------------------ Range
@@ -785,9 +800,26 @@ function createGasEnv(options) {
     },
     hasLock() { return state.lock.held; },
   };
+  // The user lock (Access.throttle's counters) is another lock than the script lock (Store.withLock).
+  // state.userLockTimeout = true makes tryLock answer false.
+  state.userLock = { held: false, acquired: 0 };
+  const userLock = {
+    tryLock() {
+      count('userTryLock');
+      if (state.userLockTimeout) return false;
+      state.userLock.acquired++;
+      state.userLock.held = true;
+      return true;
+    },
+    waitLock() {
+      if (!this.tryLock()) throw new Error('Lock timeout: another process was holding the lock for too long.');
+    },
+    releaseLock() { count('userReleaseLock'); state.userLock.held = false; },
+    hasLock() { return state.userLock.held; },
+  };
   const LockService = {
     getScriptLock() { return lock; },
-    getUserLock() { return lock; },
+    getUserLock() { return userLock; },
     getDocumentLock() { return null; },
   };
 
@@ -824,6 +856,7 @@ function createGasEnv(options) {
   const GroupsApp = {
     getGroupByEmail(email) {
       const key = String(email).toLowerCase();
+      maybeFail('getGroupByEmail', { id: key });
       if (!state.groups[key]) throw new Error('Exception: Invalid argument: ' + email);
       return makeGroup(key);
     },

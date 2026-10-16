@@ -312,10 +312,12 @@ function mockMain(FIX, OPTS) {
   // ------------------------------------------------------------------------------ creation forms
   // Form columns as the server builds them (Core.snapshotFormColumns over the month's source headers).
   // In the current month the "live source" also has: formulas in Score conformité / Niveau de risque /
-  // Statut (computed), rejecting lists on the Oui/Non columns, Chiffrement disque, Données sensibles
+  // Statut (computed; the first two filled by an array formula, `arrayFormula`, Statut by the last row's
+  // own formula), rejecting lists on the Oui/Non columns, Chiffrement disque, Données sensibles
   // exposées and Criticité équipement, plus window.__mock.formSchema.columns[entity] (extra source
   // columns). window.__mock.formSchema.fallback = true answers as when the source cannot be read.
   var POSTE_COMPUTED = ['Score conformité', 'Niveau de risque', 'Statut'];
+  var POSTE_ARRAY_FORMULA = ['Score conformité', 'Niveau de risque'];
   var LIVE_LISTS = { 'Chiffrement disque': ['Oui', 'Non'], 'Données sensibles exposées': ['Oui', 'Non'] };
   var LIVE_STRICT = ['Criticité équipement'];
   var FALLBACK_WARNING = 'Le Google Sheet source n’a pas pu être lu : les champs et les listes viennent de la ' +
@@ -340,6 +342,7 @@ function mockMain(FIX, OPTS) {
     cols.forEach(function (c) {
       if (entity === 'postes' && POSTE_COMPUTED.indexOf(c.name) >= 0) {
         c.computed = true;
+        if (POSTE_ARRAY_FORMULA.indexOf(c.name) >= 0) c.arrayFormula = true;
         c.required = false;
         c.kind = 'text';
         c.options = null;
@@ -359,6 +362,7 @@ function mockMain(FIX, OPTS) {
     extra.forEach(function (x, i) {
       var c = { name: x.name, kind: x.kind || 'text', options: x.options || null, strict: !!x.strict, computed: !!x.computed,
         required: !!x.required };
+      if (x.arrayFormula) c.arrayFormula = true;
       if (x.rule) c.rule = x.rule;
       cols.splice(at + i, 0, c);
     });
@@ -894,7 +898,8 @@ function mockMain(FIX, OPTS) {
  *          prefs?:object, currentMonth?:string, sync?:object, formSchema?:object, delays?:object,
  *          editing?:object}} [options]
  *   formSchema: api_getFormSchema of the current month (window.__mock.formSchema): {columns:{postes:[col],
- *   applications:[col]} (extra source columns, {name, kind?, options?, strict?, computed?, required?, rule?}),
+ *   applications:[col]} (extra source columns, {name, kind?, options?, strict?, computed?, arrayFormula?, required?,
+ *   rule?}),
  *   fallback:true (origin 'fallback' + warning, no computed column), delayMs (extra answer delay)}.
  *   delays: extra answer delay per api name ({api_addPoste: 400}). failNext entries may carry a `field`.
  *   prefs: the visitor's stored

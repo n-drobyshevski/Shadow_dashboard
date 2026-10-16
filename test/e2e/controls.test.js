@@ -425,26 +425,26 @@ describe('controls', () => {
     });
     await page.waitForSelector('.modal form');
     // Initial focus on the first field; Enter in it validates (required fields).
-    await page.waitForFunction(() => document.activeElement && document.activeElement.name === 'action');
+    await page.waitForFunction(() => document.activeElement && document.activeElement.dataset.name === 'action');
     await page.keyboard.press('Enter');
-    assert.equal(await page.getAttribute('.modal input[name=action]', 'aria-invalid'), 'true');
-    assert.equal(await page.getAttribute('.modal [name=status]', 'aria-invalid'), 'true');
-    assert.equal(await page.evaluate(() => document.activeElement.name), 'action');
-    const errId = (await page.getAttribute('.modal [name=status]', 'aria-describedby')).split(' ').pop();
+    assert.equal(await page.getAttribute('.modal input[data-name=action]', 'aria-invalid'), 'true');
+    assert.equal(await page.getAttribute('.modal [data-name=status]', 'aria-invalid'), 'true');
+    assert.equal(await page.evaluate(() => document.activeElement.dataset.name), 'action');
+    const errId = (await page.getAttribute('.modal [data-name=status]', 'aria-describedby')).split(' ').pop();
     assert.equal((await page.textContent(`#${errId}`)).trim(), 'Ce champ est obligatoire.');
-    await page.fill('.modal input[name=action]', 'Installer EDR');
+    await page.fill('.modal input[data-name=action]', 'Installer EDR');
     // A dropdown opened inside the modal: Esc closes the list only.
-    await page.click('.modal [name=status]');
-    const listId = await page.getAttribute('.modal [name=status]', 'aria-controls');
+    await page.click('.modal [data-name=status]');
+    const listId = await page.getAttribute('.modal [data-name=status]', 'aria-controls');
     const z = await page.evaluate((id) => [getComputedStyle(document.getElementById(id).closest('.popover')).zIndex,
       getComputedStyle(document.querySelector('.modal-overlay')).zIndex], listId);
     assert.ok(Number(z[0]) > Number(z[1]), 'popover above the modal ' + z);
     await page.keyboard.press('Escape');
     await page.waitForSelector(`#${listId}`, { state: 'detached' });
     assert.ok(await page.isVisible('.modal'));
-    await chooseOption(page, '.modal [name=status]', 'Terminé');
-    await typeDate(page, '.modal input[name=deadline]', '30/04/2026');
-    await page.focus('.modal input[name=action]');
+    await chooseOption(page, '.modal [data-name=status]', 'Terminé');
+    await typeDate(page, '.modal input[data-name=deadline]', '30/04/2026');
+    await page.focus('.modal input[data-name=action]');
     await page.keyboard.press('Enter');
     // Busy: the submit button keeps its colours, shows a spinner, aria-busy; Annuler / × disabled.
     await page.waitForSelector('.modal .btn-primary[aria-busy="true"] .btn-spinner');
@@ -455,14 +455,14 @@ describe('controls', () => {
     // First error: shown at the top of the form, values kept.
     await page.waitForSelector('.modal .form-alert .alert-error');
     assert.equal((await page.textContent('.modal .form-alert')).trim(), 'Erreur : Le service ne répond pas.');
-    assert.equal(await page.inputValue('.modal input[name=action]'), 'Installer EDR');
-    assert.equal(await dropdownValue(page, '.modal [name=status]'), 'Terminé');
+    assert.equal(await page.inputValue('.modal input[data-name=action]'), 'Installer EDR');
+    assert.equal(await dropdownValue(page, '.modal [data-name=status]'), 'Terminé');
     // Second error: mapped to the field.
     await page.click('.modal .btn-primary');
-    await page.waitForFunction(() => document.querySelector('.modal input[name=target]').getAttribute('aria-invalid') === 'true');
-    assert.equal(await page.evaluate(() => document.activeElement.name), 'target');
+    await page.waitForFunction(() => document.querySelector('.modal input[data-name=target]').getAttribute('aria-invalid') === 'true');
+    assert.equal(await page.evaluate(() => document.activeElement.dataset.name), 'target');
     // Third attempt succeeds: the modal closes and resolves with the values.
-    await chooseOption(page, '.modal input[name=target]', 'LAB-TEX-01');
+    await chooseOption(page, '.modal input[data-name=target]', 'LAB-TEX-01');
     await page.click('.modal .btn-primary');
     assert.deepEqual(await result, { action: 'Installer EDR', status: 'Terminé', target: 'LAB-TEX-01', deadline: '30/04/2026', month: '2026-05' });
     await page.waitForSelector('.modal', { state: 'detached' });
@@ -522,5 +522,27 @@ describe('controls', () => {
     });
     assert.deepEqual(out, ['empty-state is-small', 'Aucune action.', 'status', 'Chargement…', 'alert',
       'Erreur : Erreur inconnue.Réessayer', 1, 'Erreur inconnue.', 'a lien']);
+  });
+
+  test('UI.el drops script URLs (scheme allowlist, control characters too), inline handlers as text, srcdoc', async () => {
+    const out = await page.evaluate(() => {
+      const href = (v) => UI.el('a', { href: v }).getAttribute('href');
+      return {
+        dropped: ['javascript:alert(1)', 'JAVASCRIPT:alert(1)', ' javascript:alert(1)', 'java\tscript:alert(1)',
+          'java\nscript:alert(1)', '\u0001javascript:alert(1)', 'data:text/html,<b>x</b>', 'vbscript:x',
+          'file:///etc/passwd'].map(href),
+        kept: ['https://docs.google.com/spreadsheets/d/x', 'http://intra', 'mailto:a@b.c', '#', '?page=postes',
+          'blob:https://x/1'].map(href),
+        img: UI.el('img', { src: 'javascript:alert(1)' }).getAttribute('src'),
+        xlink: UI.el('a', { 'xlink:href': 'javascript:alert(1)' }).getAttribute('xlink:href'),
+        onclick: UI.el('button', { onclick: 'alert(1)' }).getAttribute('onclick'),
+        onClickUpper: UI.el('button', { ONCLICK: 'alert(1)' }).getAttribute('onclick'),
+        srcdoc: UI.el('iframe', { srcdoc: '<script>alert(1)<\/script>' }).getAttribute('srcdoc'),
+      };
+    });
+    assert.deepEqual(out.dropped, out.dropped.map(() => null));
+    assert.deepEqual(out.kept, ['https://docs.google.com/spreadsheets/d/x', 'http://intra', 'mailto:a@b.c', '#',
+      '?page=postes', 'blob:https://x/1']);
+    assert.deepEqual([out.img, out.xlink, out.onclick, out.onClickUpper, out.srcdoc], [null, null, null, null, null]);
   });
 });

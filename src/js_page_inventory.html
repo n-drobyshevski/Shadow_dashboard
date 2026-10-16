@@ -16,7 +16,9 @@
  * « Exporter CSV » + the page's create button), filter note, one-line stat summary, optional sections,
  * then the « Inventaire » editable table over the filtered records of the month (key column first and
  * read-only, opening the drawer; computed columns right after it), the « Conformité » filter, inline
- * saves. update(['filters']) re-renders the body from the cache without re-mounting the page;
+ * saves; current month: the columns the source computes (State.peekFormSchema / the form's schema, `computed`) are
+ * read-only, also once the schema arrives after the table is shown (form opened, prefetch: ctx.lockComputed).
+ * update(['filters']) re-renders the body from the cache without re-mounting the page;
  * update(['editing']) also rebuilds the header. Paramètres › « Saisie dans l’application » gates the writes:
  * the create buttons need State.can('create'), the inline editors State.can('edit'); the admins' edit note
  * (p.edit-note[data-locked]) names the switches that are off. A write refused with FORBIDDEN (switch turned
@@ -32,7 +34,8 @@
  *   ctx: {month, columns, md() (current cached month), all() (globally filtered), visible() (+ conformity),
  *     refresh(), refreshPage(), rerenderPage() (body rebuilt from the cache: new columns), isShown(id) (the record
  *     is in the table as filtered now), rowNode(id), live(), table, openDrawer(id), drawer(UI.drawer opts),
- *     drawerOpen(), closeDrawer()}
+ *     drawerOpen(), closeDrawer(), lockComputed(schema) / lockComputedPage(schema) (this table / the page's
+ *     current one: the schema's computed columns become read-only, table.lockColumns)}
  *
  * window.EntityForm.open(ctx, {entity, keyField, title, submitLabel, api, sections, presentation?, toast,
  *     fieldFallback?, button?}) -> Promise<record|null> — the creation form of a poste / an application in a side
@@ -157,6 +160,20 @@
     { value: 'ko', label: 'Non conformes' }
   ];
 
+  /**
+   * {normKey(column): true} for the columns an array formula fills (`arrayFormula`: computed in every row)
+   * in a form schema read from the source for `month` (api_getFormSchema origin 'source': the current
+   * month); empty for anything else (none, a fallback, a past month, whose computed columns are ordinary
+   * snapshot fields). A column computed only by the sample row's own formula stays editable: the server
+   * checks the formula of each edited cell. No prototype: a column named « constructor » is an ordinary key.
+   */
+  function computedKeys(schema, month) {
+    var out = Object.create(null);
+    if (!schema || schema.origin !== 'source' || schema.month !== month) return out;
+    (schema.columns || []).forEach(function (c) { if (c && c.arrayFormula === true) out[Core.normKey(c.name)] = true; });
+    return out;
+  }
+
   function create(spec) {
     var p = spec.id;
     var conformity = 'all';   // kept across re-mounts (month / filter changes)
@@ -221,7 +238,14 @@
           onClick: function () { if (v.ctx) spec.secondary.run(v.ctx, buttons.secondary); } }, spec.secondary.label);
       }
       if (spec.primary && create) {
-        var prefetch = spec.primary.prefetch ? function () { if (v.ctx && State.can('create')) spec.primary.prefetch(v.ctx); } : null;
+        var prefetch = spec.primary.prefetch ? function () {
+          if (!v.ctx || !State.can('create')) return;
+          spec.primary.prefetch(v.ctx);
+          // The same request (kept by State): its computed columns become read-only in the table.
+          State.loadFormSchema(spec.entity, v.month).then(function (schema) {
+            if (v.ctx) v.ctx.lockComputedPage(schema);
+          }, function () {});
+        } : null;
         buttons.primary = el('button', { type: 'button', class: 'btn btn-primary', id: spec.primary.id, disabled: !ready,
           tooltip: spec.primary.tooltip || null, onPointerenter: prefetch, onFocus: prefetch,
           onClick: function () { if (v.ctx) spec.primary.run(v.ctx, buttons.primary); } }, spec.primary.label);
@@ -315,6 +339,14 @@
       ctx.closeDrawer = function () { if (drawerHandle) drawerHandle.close(); };
       /** Refreshes the table of the page as it is now (the body may have been re-rendered since). */
       ctx.refreshPage = function () { if (view && view.ctx) view.ctx.refresh(); };
+      /** The computed columns of a live form schema become read-only in this table (if it is still shown). */
+      ctx.lockComputed = function (schema) {
+        if (!ctx.live() || !ctx.table) return;
+        var keys = computedKeys(schema, month);
+        ctx.table.lockColumns(cols.filter(function (c) { return keys[Core.normKey(c)] === true; }));
+      };
+      /** Same, on the table of the page as it is now. */
+      ctx.lockComputedPage = function (schema) { if (view && view.ctx) view.ctx.lockComputed(schema); };
       /** Rebuilds the body of the page from the cache (the month gained a column). */
       ctx.rerenderPage = function () {
         var cur = view;
@@ -382,6 +414,10 @@
 
       var mono = spec.monoColumns || {};
       var numeric = spec.numericColumns || {};
+      // Current month: the columns the source computes (a formula, or an array formula filling the column)
+      // are not editable inline, the server refuses them. Known from the creation form's schema once it was
+      // read: here when State keeps it, else when the form (or its prefetch) reads it (ctx.lockComputed).
+      var computedCols = computedKeys(State.peekFormSchema(spec.entity, month), month);
       var columns = cols.map(function (c, i) {
         if (i === 0) {
           return { key: c, label: c, editable: false, width: 150, render: function (row) {
@@ -390,7 +426,7 @@
           } };
         }
         // Read view: Statut / Niveau de risque as status marks, « Non » criteria in --ko (the editor is unchanged).
-        return { key: c, label: c, editable: true, mono: !!mono[c], numeric: !!numeric[c],
+        return { key: c, label: c, editable: computedCols[Core.normKey(c)] !== true, mono: !!mono[c], numeric: !!numeric[c],
           options: Core.optionsForColumn(c, md.referentiel),
           render: numeric[c] ? function (row) {
             var n = Core.parseScore(row[c]);
@@ -508,7 +544,7 @@
   }
 
   function uniq(list) {
-    var seen = {};
+    var seen = Object.create(null);
     return list.filter(function (v) {
       var k = Core.normKey(v);
       if (!k || seen[k]) return false;
@@ -582,7 +618,7 @@
   /** {fields, groups, alert, meta} of UI.formPanel for a schema. */
   function buildForm(schema, md, cfg, month) {
     var sections = cfg.sections || [];
-    var place = {};   // normKey(column) -> {index (section), rank}
+    var place = Object.create(null);   // normKey(column) -> {index (section), rank}
     sections.forEach(function (sec, i) {
       (sec.columns || []).forEach(function (c, rank) { place[Core.normKey(c)] = { index: i, rank: rank }; });
     });
@@ -622,7 +658,8 @@
     var live = month === State.get().currentMonth;
     var created = null;
     var sent = null;
-    var appOnly = {};
+    // Keyed by column names (data), as the records sent: no prototype ('__proto__' is a column like any other).
+    var appOnly = Object.create(null);
     return UI.formPanel({
       title: cfg.title,
       className: 'entity-form',
@@ -632,8 +669,9 @@
       open: ctx.drawer,
       load: function (o) {
         return State.loadFormSchema(entity, month, { force: !!(o && o.force) }).then(function (schema) {
-          appOnly = {};
+          appOnly = Object.create(null);
           (schema.columns || []).forEach(function (c) { if (c && c.appOnly) appOnly[c.name] = true; });
+          ctx.lockComputedPage(schema);
           return buildForm(schema, ctx.md(), cfg, month);
         }, function (err) {
           State.afterWriteError(err);
@@ -641,7 +679,7 @@
         });
       },
       onSubmit: function (values) {
-        var record = {};
+        var record = Object.create(null);
         Object.keys(values).forEach(function (k) { if (Core.str(values[k]) !== '') record[k] = values[k]; });
         sent = record;
         return api.call(cfg.api, { month: month, record: record }).then(function (rec) { created = rec; }, function (err) {

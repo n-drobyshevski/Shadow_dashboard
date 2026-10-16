@@ -62,6 +62,10 @@ var Config = (function () {
   // parts of two versions, and parts left over from a longer list are ignored, then deleted.
   var ACCESS_CHUNK = 3000;
   var MAX_USERS = 2000;
+  // The Script Properties of a script hold about 500 KB in all: the serialized access list may take at
+  // most this many characters (2000 accounts with addresses of usual length fit; 2000 very long ones
+  // would not), so that it never fills the store that settings, sync state and preferences share.
+  var MAX_ACCESS_CHARS = 300000;
   var MAX_GROUPS = 50;
   var DATA_SPREADSHEET_NAME = 'ShadowIT_AppData';
 
@@ -271,12 +275,18 @@ var Config = (function () {
 
   /**
    * Writes the access list in one setProperties call, then drops the parts left over from a longer
-   * previous list. Call inside Store.withLock.
+   * previous list. Call inside Store.withLock. VALIDATION, before anything is written, when the list
+   * would take more than MAX_ACCESS_CHARS characters.
    * @param {{users: Object[], domainRole: string}} access
    */
   function setAccess(access) {
     var json = JSON.stringify({ users: access.users || [], groups: access.groups || [],
       domainRole: access.domainRole || 'none' });
+    if (json.length > MAX_ACCESS_CHARS) {
+      throw Core.makeError('VALIDATION', 'La liste d’accès deviendrait trop volumineuse pour être enregistrée (' +
+        json.length + ' caractères, ' + MAX_ACCESS_CHARS + ' au plus). Retirez des comptes, ou donnez l’accès ' +
+        'par un groupe Google ou par « Autres comptes du domaine ».');
+    }
     clearMemo_();
     var store = props_();
     var parts = {};
@@ -374,6 +384,7 @@ var Config = (function () {
     PREF_VALUES: PREF_VALUES,
     DEFAULT_FAVICON_URL: DEFAULT_FAVICON_URL,
     MAX_USERS: MAX_USERS,
+    MAX_ACCESS_CHARS: MAX_ACCESS_CHARS,
     MAX_GROUPS: MAX_GROUPS,
     DATA_SPREADSHEET_NAME: DATA_SPREADSHEET_NAME,
     TIME_ZONE: TIME_ZONE,

@@ -104,4 +104,18 @@ function sheetValues(env, spreadsheetId, tabName) {
   return sh.getDataRange().getValues();
 }
 
-module.exports = { loadGas, plain, sheetValues, timingLines, SRC_DIR };
+/**
+ * The event object of the project's hourly trigger, as Apps Script passes it to syncHourly(e): adds a
+ * syncHourly trigger to the fake ScriptApp when none exists (syncHourly ignores any other caller).
+ */
+function hourlyEvent(env) {
+  const st = env.__state;
+  let t = st.triggers.find((x) => x.handler === 'syncHourly');
+  if (!t) {
+    t = { id: 'trig-hourly', handler: 'syncHourly', everyHours: 1 };
+    st.triggers.push(t);
+  }
+  return { triggerUid: t.id, authMode: 'FULL' };
+}
+
+module.exports = { loadGas, plain, sheetValues, timingLines, hourlyEvent, SRC_DIR };

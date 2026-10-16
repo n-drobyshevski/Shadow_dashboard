@@ -1,0 +1,11 @@
+# osv-scanner configuration (SCA, .github/workflows/security.yml). Each ignore needs a reason and an end
+# date: past it, the finding fails the build again and must be looked at once more.
+
+[[IgnoredVulns]]
+id = "GHSA-vfj7-8cjw-p6xm"
+ignoreUntil = 2027-04-15
+reason = """
+braces 3.0.3 (via @google/clasp -> micromatch), dev-only: stack exhaustion from a deeply nested brace
+pattern. clasp only expands the patterns of our own .claspignore on the deployer's machine; no visitor
+input reaches it and nothing of it is deployed to Apps Script. No fixed braces release exists yet.
+"""

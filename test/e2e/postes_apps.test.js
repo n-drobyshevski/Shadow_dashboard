@@ -238,6 +238,51 @@ describe('postes page', () => {
     });
   });
 
+  test('a record whose _id is « __proto__ » is edited and saved like the others, Object.prototype untouched', async () => {
+    await withApp({}, async (app) => {
+      const { page } = app;
+      // Record ids are data: the mock's LAB-MEC-01 gets the id '__proto__', then the month is read again.
+      await page.evaluate((pid) => {
+        window.__mock.db.months['2026-05'].postes.find((p) => p._id === pid)._id = '__proto__';
+        window.State.invalidate();
+      }, posteId('LAB-MEC-01'));
+      await app.goto('postes');
+      const id = '__proto__';
+      await editCell(page, 'postes', id, 'Responsable', 'Zoé Lefèvre');
+      assert.equal(await page.evaluate(() => ({}).Responsable === undefined && Object.keys(Object.prototype).length === 0), true);
+      assert.equal((await page.textContent('#postes-table .etable-save')).trim(), 'Enregistrer (1)');
+      await saveTable(app, 'postes');
+
+      assert.deepEqual((await callsNamed(app, 'api_savePostes')).map((c) => c.args),
+        [{ month: MONTH, changes: [{ id, updates: { Responsable: 'Zoé Lefèvre' } }] }]);
+      assert.equal((await page.textContent(cellSel('postes', id, 'Responsable'))).trim(), 'Zoé Lefèvre');
+      assert.ok(await page.isHidden('#postes-table .etable-dirtybar'));
+      // State.patchRecords put the saved record in the cache (by id, '__proto__' included).
+      assert.equal(await page.evaluate(() =>
+        window.State.getMonthData('2026-05').postes.find((p) => p._id === '__proto__').Responsable), 'Zoé Lefèvre');
+      assert.equal(await page.evaluate(() => ({}).Responsable === undefined && Object.keys(Object.prototype).length === 0), true);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('a source column named « constructor » or « __proto__ » is editable like the others (no prototype lookup)', async () => {
+    await withApp({}, async (app) => {
+      const { page } = app;
+      await page.evaluate(() => {
+        const m = window.__mock.db.months['2026-05'];
+        m.columns.postes.push('constructor', '__proto__');
+        m.postes.forEach((p) => { p.constructor = 'c'; Object.defineProperty(p, '__proto__', { value: 'p', enumerable: true }); });
+        window.State.invalidate();
+      });
+      await app.goto('postes');
+      await page.waitForSelector('#postes-table');
+      const heads = await page.$$eval('#postes-table thead th.th-editable', (ths) => ths.map((th) => th.textContent.trim()));
+      assert.ok(heads.includes('constructor'), heads.join(' | '));
+      assert.ok(heads.includes('__proto__'), heads.join(' | '));
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
   test('conformity filter, global équipe filter and CSV export', async () => {
     await withApp({ page: 'postes' }, async (app) => {
       const { page } = app;
@@ -268,9 +313,9 @@ describe('postes page', () => {
       assert.equal(download.suggestedFilename(), 'postes_' + MONTH + '.csv');
       const csv = fs.readFileSync(await download.path(), 'utf8');
       const lines = csv.replace(/^﻿/, '').split('\r\n');
-      assert.equal(lines[0].split(';')[0], KEY_POSTE);
+      assert.equal(lines[0].split(';')[0], '"' + KEY_POSTE + '"');
       assert.equal(lines.length, 3);
-      assert.match(lines[1], /^LAB-TEX-01;/);
+      assert.match(lines[1], /^"LAB-TEX-01";/);
       assert.deepEqual(app.errors, []);
     });
   });
@@ -350,15 +395,15 @@ describe('postes page', () => {
       assert.deepEqual(await page.$$eval('.modal .form-field .field-label', (ls) => ls.map((l) => l.textContent.replace(' *', ''))), [
         'Type de cible', 'Cible (poste ou application)', 'Équipe', 'Responsable', 'Action', 'Priorité', 'Statut', 'Échéance',
         'Mois source', 'Date de création', 'Date de réalisation', 'Commentaire']);
-      assert.equal(await dropdownValue(page, '.modal [name="target_type"]'), 'poste');
-      assert.equal(await page.isDisabled('.modal [name="target_type"]'), true);
-      assert.equal(await page.inputValue('.modal [name="target_name"]'), 'LAB-MEC-01');
-      assert.equal(await page.isDisabled('.modal [name="target_name"]'), true);
-      assert.equal(await page.inputValue('.modal [name="action"]'), 'Isoler du réseau');   // prefilled
-      assert.equal(await page.inputValue('.modal [name="date_created"]'), todayFr());
-      assert.equal(await page.inputValue('.modal [name="source_month"]'), MONTH);
-      await page.fill('.modal [name="action"]', 'Migrer vers Ubuntu 24.04');
-      await chooseOption(page, '.modal [name="priorite"]', 'Haute');
+      assert.equal(await dropdownValue(page, '.modal [data-name="target_type"]'), 'poste');
+      assert.equal(await page.isDisabled('.modal [data-name="target_type"]'), true);
+      assert.equal(await page.inputValue('.modal [data-name="target_name"]'), 'LAB-MEC-01');
+      assert.equal(await page.isDisabled('.modal [data-name="target_name"]'), true);
+      assert.equal(await page.inputValue('.modal [data-name="action"]'), 'Isoler du réseau');   // prefilled
+      assert.equal(await page.inputValue('.modal [data-name="date_created"]'), todayFr());
+      assert.equal(await page.inputValue('.modal [data-name="source_month"]'), MONTH);
+      await page.fill('.modal [data-name="action"]', 'Migrer vers Ubuntu 24.04');
+      await chooseOption(page, '.modal [data-name="priorite"]', 'Haute');
 
       // Server error: the modal stays open (values kept), the error is shown inside it, no toast.
       await page.evaluate(() => { window.__mock.failNext.api_addAction = { code: 'BUSY', message: 'Verrou occupé' }; });
@@ -366,8 +411,8 @@ describe('postes page', () => {
       await app.waitIdle();
       await page.waitForSelector('.modal .form-alert .alert-error');
       assert.equal((await page.textContent('.modal .form-alert .alert-error')).trim(), 'Erreur : Verrou occupé');
-      assert.equal(await page.inputValue('.modal [name="action"]'), 'Migrer vers Ubuntu 24.04');
-      assert.equal(await dropdownValue(page, '.modal [name="priorite"]'), 'Haute');
+      assert.equal(await page.inputValue('.modal [data-name="action"]'), 'Migrer vers Ubuntu 24.04');
+      assert.equal(await dropdownValue(page, '.modal [data-name="priorite"]'), 'Haute');
       assert.equal((await toasts(page)).some((t) => /Verrou/.test(t)), false);
 
       await modalButton(page, 'Enregistrer');
@@ -474,19 +519,19 @@ describe('applications page', () => {
         await page.waitForSelector('.drawer.form-panel .form-sections');
         await app.waitIdle();
         assert.equal((await page.textContent('.form-panel .drawer-title')).trim(), 'Nouvelle application — mai 2026');
-        await page.fill(`.form-panel [name="${KEY_APP}"]`, name);
-        await page.fill('.form-panel [name="Éditeur"]', 'Salesforce');
-        await chooseOption(page, '.form-panel [name="Type"]', 'SaaS');            // combobox (free text allowed)
-        await chooseOption(page, '.form-panel [name="Équipe"]', 'R&D Vélo');
-        await chooseOption(page, '.form-panel [name="Installé sur poste"]', 'RD-VEL-01');   // multi-token combobox
+        await page.fill(`.form-panel [data-name="${KEY_APP}"]`, name);
+        await page.fill('.form-panel [data-name="Éditeur"]', 'Salesforce');
+        await chooseOption(page, '.form-panel [data-name="Type"]', 'SaaS');            // combobox (free text allowed)
+        await chooseOption(page, '.form-panel [data-name="Équipe"]', 'R&D Vélo');
+        await chooseOption(page, '.form-panel [data-name="Installé sur poste"]', 'RD-VEL-01');   // multi-token combobox
         await page.keyboard.press('Tab');   // the token list stays open for the next poste: Tab commits and closes it
-        await chooseOption(page, '.form-panel [name="Contrat"]', 'Oui');
-        await chooseOption(page, '.form-panel [name="SIP"]', 'Oui');
+        await chooseOption(page, '.form-panel [data-name="Contrat"]', 'Oui');
+        await chooseOption(page, '.form-panel [data-name="SIP"]', 'Oui');
         // A past month's snapshot has no list for this column (the live source has one): a text field here.
-        await page.fill('.form-panel [name="Données sensibles exposées"]', 'Non');
-        await chooseOption(page, '.form-panel [name="Niveau de risque"]', 'Faible');
-        await chooseOption(page, '.form-panel [name="Galink"]', 'Oui');
-        await chooseOption(page, '.form-panel [name="IDP"]', 'Non');
+        await page.fill('.form-panel [data-name="Données sensibles exposées"]', 'Non');
+        await chooseOption(page, '.form-panel [data-name="Niveau de risque"]', 'Faible');
+        await chooseOption(page, '.form-panel [data-name="Galink"]', 'Oui');
+        await chooseOption(page, '.form-panel [data-name="IDP"]', 'Non');
         await assertNoNativeControls(page);
         await page.click('.form-panel .drawer-footer button:has-text("Ajouter l’application")');
         await app.waitIdle();
@@ -511,12 +556,12 @@ describe('applications page', () => {
       // every typed value is kept.
       await fillForm('slack');
       await page.waitForSelector('.form-panel .field-error:not([hidden])');
-      const nameField = `.form-panel [name="${KEY_APP}"]`;
+      const nameField = `.form-panel [data-name="${KEY_APP}"]`;
       assert.equal(await page.getAttribute(nameField, 'aria-invalid'), 'true');
       assert.match(await page.textContent(`.form-panel .form-field[data-field="${KEY_APP}"] .field-error`), /existe déjà/);
       assert.equal(await page.inputValue(nameField), 'slack');
-      assert.equal(await page.inputValue('.form-panel [name="Type"]'), 'SaaS');
-      assert.equal(await dropdownValue(page, '.form-panel [name="Galink"]'), 'Oui');
+      assert.equal(await page.inputValue('.form-panel [data-name="Type"]'), 'SaaS');
+      assert.equal(await dropdownValue(page, '.form-panel [data-name="Galink"]'), 'Oui');
       assert.equal((await toasts(page)).some((t) => /^Erreur/.test(t)), false);
       // Typed values: « Annuler » asks first; « Abandonner » closes without saving.
       await page.click('.form-panel .drawer-footer button:has-text("Annuler")');
@@ -542,15 +587,15 @@ describe('applications page', () => {
       assert.match(await page.textContent('#app-drawer-postes'), /Aucun poste renseigné/);
       await page.click('#app-rename');
       await page.waitForSelector('.modal form');
-      assert.equal(await page.inputValue('.modal [name="newName"]'), 'Dropbox perso');
+      assert.equal(await page.inputValue('.modal [data-name="newName"]'), 'Dropbox perso');
       // A name already used is refused by the server: error under the field, modal kept open.
-      await page.fill('.modal [name="newName"]', 'Figma');
+      await page.fill('.modal [data-name="newName"]', 'Figma');
       await modalButton(page, 'Renommer');
       await app.waitIdle();
       await page.waitForSelector('.modal .field-error:not([hidden])');
       assert.match(await page.textContent('.modal .field-error:not([hidden])'), /existe déjà/);
-      assert.equal(await page.getAttribute('.modal [name="newName"]', 'aria-invalid'), 'true');
-      await page.fill('.modal [name="newName"]', 'Dropbox (perso)');
+      assert.equal(await page.getAttribute('.modal [data-name="newName"]', 'aria-invalid'), 'true');
+      await page.fill('.modal [data-name="newName"]', 'Dropbox (perso)');
       await modalButton(page, 'Renommer');
       await app.waitIdle();
       await page.waitForSelector('.modal', { state: 'detached' });

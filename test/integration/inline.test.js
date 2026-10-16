@@ -205,7 +205,7 @@ test('index.html <head> blocks nothing: Plotly only preloaded (same URL as Chart
   const index = fs.readFileSync(path.join(SRC_DIR, 'index.html'), 'utf8');
   const head = /<head>([\s\S]*?)<\/head>/.exec(index)[1];
   assert.doesNotMatch(head, /<script\b/i, 'no script in <head>');
-  const preload = /<link rel="preload" href="([^"]+)" as="script">/.exec(head);
+  const preload = /<link rel="preload" href="([^"]+)" as="script"[^>]*>/.exec(head);
   assert.ok(preload, 'Plotly preload');
   const charts = fs.readFileSync(path.join(SRC_DIR, 'js_charts.html'), 'utf8');
   assert.equal(/var PLOTLY_URL = '([^']+)';/.exec(charts)[1], preload[1]);

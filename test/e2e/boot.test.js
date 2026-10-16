@@ -8,7 +8,7 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const { ACCOUNTS, openApp } = require('./harness');
+const { ACCOUNTS, PLOTLY_CACHE, openApp } = require('./harness');
 const { bootstrapEnvelope } = require('../fixtures/mockRun');
 
 const CHARTS = ['chart-gauge-postes', 'chart-gauge-apps', 'chart-risk-postes', 'chart-risk-apps', 'chart-hist-postes',
@@ -275,6 +275,28 @@ describe('Plotly without blocking', () => {
       assert.ok(await page.$$eval('#main .chart-box', (bs) => bs.length > 0 &&
         bs.every((b) => b.textContent.trim() === 'Graphique indisponible')));
       assert.equal(app.plotlyRequests().length, requests, 'the failure is remembered');
+      assert.deepEqual(unexpected(app.errors), []);
+    });
+  });
+
+  test('Subresource Integrity: a modified Plotly file is refused (« Graphique indisponible »), never run', async () => {
+    await withApp({ boot: true, plotly: { sri: true, tampered: true } }, async (app) => {
+      const { page } = app;
+      assert.equal(await page.$eval('script[src*="plotly"]', (s) => s.integrity.slice(0, 7)), 'sha512-');
+      assert.equal(await page.$eval('link[rel=preload][href*="plotly"]', (l) => l.integrity.slice(0, 7)), 'sha512-');
+      assert.deepEqual(await page.$$eval('#main .chart-box', (bs) => bs.map((b) => b.textContent.trim())),
+        CHARTS.map(() => 'Graphique indisponible'));
+      assert.equal(await page.evaluate(() => typeof window.Plotly), 'undefined', 'the modified script never ran');
+      assert.ok(app.errors.some((e) => /integrity/i.test(e)), 'the browser reports the integrity failure');
+    });
+  });
+
+  test('Subresource Integrity: the real Plotly 2.35.3 build matches the hash and draws', { skip: !fs.existsSync(PLOTLY_CACHE) &&
+    'no cached .artifacts/plotly.min.js' }, async () => {
+    await withApp({ boot: true, plotly: { sri: true } }, async (app) => {
+      const { page } = app;
+      assert.equal(await page.evaluate(() => typeof window.Plotly.react), 'function');
+      assert.ok(await page.$$eval('#main .main-svg', (n) => n.length) > 0, 'Plotly drew SVG charts');
       assert.deepEqual(unexpected(app.errors), []);
     });
   });

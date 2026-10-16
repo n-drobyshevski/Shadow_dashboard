@@ -158,6 +158,21 @@ var Sync = (function () {
   }
 
   /** The hourly run: nothing to do without a source; errors are logged and rethrown (owner e-mail). */
+  /**
+   * True when `e` is the event of one of this project's hourly triggers. syncHourly is a public
+   * function, so google.script.run can call it from any visitor's browser; only a real trigger run
+   * carries the triggerUid of an existing trigger (ids never leave the server).
+   */
+  function isTriggerEvent(e) {
+    var uid = e && typeof e === 'object' && typeof e.triggerUid === 'string' ? e.triggerUid : '';
+    if (!uid) return false;
+    try {
+      return hourlyTriggers_().some(function (t) { return String(t.getUniqueId()) === uid; });
+    } catch (err) {
+      return false;
+    }
+  }
+
   function runFromTrigger() {
     if (!Config.get().sourceId) return null;
     try {
@@ -177,6 +192,7 @@ var Sync = (function () {
     requireScopes: requireScopes,
     enable: enable,
     run: run,
-    runFromTrigger: runFromTrigger
+    runFromTrigger: runFromTrigger,
+    isTriggerEvent: isTriggerEvent
   };
 })();

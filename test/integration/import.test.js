@@ -516,3 +516,135 @@ test('overwrite of a month left with Postes only (no applications, no log) carri
   assert.deepEqual(galinkIdp(ok(ctx, 'api_getMonthData', { month: '2026-05' }).applications, 'Minitab'),
     { Galink: 'Non', IDP: 'Non' });
 });
+
+// ------------------------------------------------------------------------ size limits, reserved columns
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Appends a column `header` to a source tab built by buildTab (row 0 banner, row 1 headers, then the
+ * records and the three ghost rows): value(i) for record i, '' elsewhere.
+ */
+function addColumn(def, tabName, header, value) {
+  const tab = def.sheets[tabName];
+  const records = tab.values.length - 2 - 3;
+  for (const grid of [tab.values, tab.display]) {
+    grid.forEach((row, r) => {
+      const i = r - 2;
+      row.push(r === 1 ? header : (i >= 0 && i < records ? String(value(i)) : ''));
+    });
+  }
+}
+
+test('import: « _ » source columns are ignored with a warning; ids and stamps only come from the Store', () => {
+  const { ctx, env } = configured();
+  const def = source('2026-04');
+  addColumn(def, 'Suivi des postes', '_id', () => '__proto__');
+  addColumn(def, 'Suivi des postes', ' _updated_at ', () => '2030-01-01T00:00:00.000Z');
+  addColumn(def, 'Suivi des applications', '__proto__', () => '{"polluted":true}');
+  swapSource(env, def);
+  const d = ok(ctx, 'api_importMonth', { month: '2026-04' });
+  assert.deepEqual(d.warnings, [
+    GHOST_WARNINGS[0],
+    'Colonnes « _id », « _updated_at » ignorées : les noms commençant par « _ » sont réservés à l’application.',
+    GHOST_WARNINGS[1],
+    'Colonne « __proto__ » ignorée : les noms commençant par « _ » sont réservés à l’application.',
+  ]);
+  const m = ok(ctx, 'api_getMonthData', { month: '2026-04' });
+  assert.equal(m.postes.length, 6);
+  for (const rec of m.postes.concat(m.applications)) {
+    assert.match(rec._id, UUID_RE);
+    assert.equal(rec._updated_at, '');
+    assert.equal(Object.prototype.hasOwnProperty.call(rec, '__proto__'), false);
+  }
+  assert.equal(new Set(m.postes.map((r) => r._id)).size, 6, 'one id per record');
+  const stored = plain(ctx.Store.getImportLog())[0];
+  assert.deepEqual(stored.postes_headers, data.POSTES_HEADERS, 'reserved columns are not headers');
+  assert.deepEqual(stored.apps_headers, data.APPS_HEADERS);
+
+  // The overwrite keeps the stored ids (keepIds_), whatever the source columns say.
+  const again = ok(ctx, 'api_importMonth', { month: '2026-04', overwrite: true });
+  assert.equal(again.overwritten, true);
+  assert.deepEqual(ok(ctx, 'api_getMonthData', { month: '2026-04' }).postes.map((r) => r._id), m.postes.map((r) => r._id));
+});
+
+test('import: a value longer than Core.LIMITS.cellChars is truncated, with a warning naming the record and column', () => {
+  const { ctx, env } = configured();
+  const max = ctx.Core.LIMITS.cellChars;
+  const def = source('2026-04');
+  addColumn(def, 'Suivi des postes', 'Notes', (i) => (i === 0 ? 'x'.repeat(max + 1000) : 'court'));
+  swapSource(env, def);
+  const first = data.MONTHS['2026-04'].postes[0][KEY_POSTE];
+  const d = ok(ctx, 'api_importMonth', { month: '2026-04' });
+  const warning = '« ' + first + ' », colonne « Notes » : valeur tronquée à ' + max + ' caractères.';
+  assert.ok(d.warnings.includes(warning), JSON.stringify(d.warnings));
+  assert.ok(ok(ctx, 'api_getImportLog')[0].warnings.includes(warning), 'kept in the journal');
+  const rec = byName(ok(ctx, 'api_getMonthData', { month: '2026-04' }).postes, KEY_POSTE, first);
+  assert.equal(rec.Notes, 'x'.repeat(max));
+});
+
+test('import: a record too large for one cell is SOURCE_ERROR naming it, and nothing is written', () => {
+  const { ctx, env } = configured();
+  const max = ctx.Core.LIMITS.cellChars;
+  const def = source('2026-04');
+  // Ten columns of max characters on one poste: each value fits, the record JSON (one cell) does not.
+  for (let k = 1; k <= 10; k++) addColumn(def, 'Suivi des postes', 'Note ' + k, (i) => (i === 2 ? 'y'.repeat(max) : ''));
+  swapSource(env, def);
+  ok(ctx, 'api_bootstrap'); // creates the data spreadsheet (its header writes)
+  const writes = env.__state.writes.length;
+  const e = fail(ctx, 'api_importMonth', { month: '2026-04' }, 'SOURCE_ERROR');
+  assert.ok(e.message.includes('« ' + data.MONTHS['2026-04'].postes[2][KEY_POSTE] + ' » est trop volumineuse'), e.message);
+  assert.match(e.message, /^Onglet « Suivi des postes »/);
+  // Checked before the first write: Applications (written first) and the ImportLog are untouched.
+  const dataId = ctx.Config.get().dataId;
+  assert.deepEqual(env.__state.writes.slice(writes).filter((w) => w.spreadsheetId === dataId), []);
+  assert.deepEqual(ok(ctx, 'api_bootstrap').months, []);
+  assert.equal(env.__state.lock.held, false);
+});
+
+test('import: a Référentiel category over LIMITS.refValues values keeps its first ones, with a warning; the sync goes on', () => {
+  const { ctx, env } = configured();
+  const lim = ctx.Core.LIMITS;
+  const def = source('2026-04');
+  const ref = def.sheets['Référentiel'];
+  const c = ref.display[0].length;
+  const rows = Math.max(ref.display.length, lim.refValues + 2);
+  for (const grid of [ref.values, ref.display]) {
+    for (let r = 0; r < rows; r++) {
+      if (!grid[r]) grid[r] = Array(c).fill('');
+      while (grid[r].length < c) grid[r].push('');
+      grid[r][c] = r === 0 ? 'Éditeurs' : 'Éditeur ' + r;
+    }
+  }
+  swapSource(env, def);
+  const d = ok(ctx, 'api_importMonth', { month: '2026-04' });
+  const warning = 'Onglet « Référentiel » : la catégorie « Éditeurs » a plus de ' + lim.refValues + ' valeurs, seules les ' +
+    lim.refValues + ' premières sont gardées.';
+  assert.ok(d.warnings.includes(warning), JSON.stringify(d.warnings));
+  assert.ok(d.counts.postes > 0 && d.counts.applications > 0, 'postes and applications imported');
+  const kept = ok(ctx, 'api_getMonthData', { month: '2026-04' }).referentiel['Éditeurs'];
+  assert.equal(kept.length, lim.refValues);
+  assert.equal(kept[0], 'Éditeur 1');
+});
+
+test('import: too many source columns / Référentiel categories -> SOURCE_ERROR naming the tab, before the lock', () => {
+  const { ctx, env } = configured();
+  const lim = ctx.Core.LIMITS;
+  const wide = source('2026-04');
+  const used = wide.sheets['Suivi des applications'].display[1].length;
+  for (let k = used; k <= lim.sourceColumns; k++) addColumn(wide, 'Suivi des applications', 'Colonne ' + k, () => '');
+  swapSource(env, wide);
+  const acquired = env.__state.lock.acquired;
+  const e1 = fail(ctx, 'api_importMonth', { month: '2026-04' }, 'SOURCE_ERROR');
+  assert.match(e1.message, /^Onglet « Suivi des applications » : 501 colonnes ont un en-tête, au plus 500/);
+
+  const ref = source('2026-04');
+  const cats = [];
+  for (let k = 0; k <= lim.refCategories; k++) cats.push('Catégorie ' + k);
+  ref.sheets['Référentiel'] = { values: [cats, cats.map(() => 'v')], display: [cats, cats.map(() => 'v')] };
+  swapSource(env, ref);
+  const e2 = fail(ctx, 'api_importMonth', { month: '2026-04' }, 'SOURCE_ERROR');
+  assert.match(e2.message, /^Onglet « Référentiel » : plus de 100 catégories/);
+  assert.equal(env.__state.lock.acquired, acquired, 'refused before the lock');
+  assert.deepEqual(ok(ctx, 'api_bootstrap').months, []);
+});

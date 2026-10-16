@@ -138,6 +138,16 @@ test('src/*.js only use the allowed Apps Script services (Session / GroupsApp / 
   }
 });
 
+test('apiWrap_ calls Access.throttle before it reads the Script Properties (Config.get) or checks the role', () => {
+  const { ctx } = loadGas();
+  const src = stripComments(ctx.apiWrap_.toString());
+  const at = src.indexOf('Access.throttle(name)');
+  assert.ok(at > 0, 'Access.throttle(name) missing from apiWrap_');
+  assert.ok(at < src.indexOf('Config.get('), 'throttle after Config.get');
+  assert.ok(at < src.indexOf('Access.requireRole('), 'throttle after the role check');
+  assert.equal(typeof ctx.Access.throttle, 'function');
+});
+
 test('appsscript.json: domain web app run as the deployer, with exactly the four scopes', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(SRC_DIR, 'appsscript.json'), 'utf8'));
   assert.deepEqual(manifest.webapp, { executeAs: 'USER_DEPLOYING', access: 'DOMAIN' });

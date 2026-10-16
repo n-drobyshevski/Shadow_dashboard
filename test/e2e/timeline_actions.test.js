@@ -360,13 +360,13 @@ describe('actions — remediation', () => {
 
       // --- add: one form (« Nouvelle action »), suggestions from the current month
       await page.click('#action-add');
-      await page.waitForSelector('.modal [name="target_name"]');
+      await page.waitForSelector('.modal [data-name="target_name"]');
       assert.equal((await page.textContent('.modal .modal-title')).trim(), 'Nouvelle action');
       assert.equal((await page.textContent('.modal .modal-footer .btn-primary')).trim(), 'Enregistrer');
-      const suggestions = await optionLabels(page, '.modal [name="target_name"]');
+      const suggestions = await optionLabels(page, '.modal [data-name="target_name"]');
       assert.ok(suggestions.includes('LAB-TEX-03') && suggestions.includes('Figma'), 'current month postes + apps suggested');
       // Grouped under « Postes » / « Applications »; only poste identifiers in mono.
-      await page.focus('.modal [name="target_name"]');
+      await page.focus('.modal [data-name="target_name"]');
       await page.keyboard.press('ArrowDown');
       await page.waitForSelector('.dd-popover [role=option]');
       assert.deepEqual(await page.$$eval('.dd-popover .dd-group', (ns) => ns.map((n) => n.textContent)), ['Postes', 'Applications']);
@@ -377,18 +377,18 @@ describe('actions — remediation', () => {
       await page.keyboard.press('Escape');
       await page.waitForSelector('.dd-popover', { state: 'detached' });
       await assertNoNativeControls(page, '.modal');
-      await chooseOption(page, '.modal [name="target_name"]', 'LAB-CHA-02');
-      await page.fill('.modal textarea[name="action"]', 'Mettre à jour le BIOS');
-      await page.fill('.modal input[name="responsable"]', 'Léa Dubois');
-      await chooseOption(page, '.modal [name="priorite"]', 'Haute');
-      await typeDate(page, '.modal [name="deadline"]', '31/12/2026');
+      await chooseOption(page, '.modal [data-name="target_name"]', 'LAB-CHA-02');
+      await page.fill('.modal textarea[data-name="action"]', 'Mettre à jour le BIOS');
+      await page.fill('.modal input[data-name="responsable"]', 'Léa Dubois');
+      await chooseOption(page, '.modal [data-name="priorite"]', 'Haute');
+      await typeDate(page, '.modal [data-name="deadline"]', '31/12/2026');
 
       // Invalid date: refused under the field, nothing sent.
-      await typeDate(page, '.modal [name="date_completed"]', '31/02/2026');
+      await typeDate(page, '.modal [data-name="date_completed"]', '31/02/2026');
       await page.click('.modal .modal-footer .btn-primary');
-      assert.equal(await page.getAttribute('.modal [name="date_completed"]', 'aria-invalid'), 'true');
+      assert.equal(await page.getAttribute('.modal [data-name="date_completed"]', 'aria-invalid'), 'true');
       assert.equal((await callsNamed(app, 'api_addAction')).length, 0);
-      await typeDate(page, '.modal [name="date_completed"]', '');
+      await typeDate(page, '.modal [data-name="date_completed"]', '');
 
       // Server error: the modal stays open with the error inline and the typed values kept.
       await page.evaluate(() => { window.__mock.failNext.api_addAction = { code: 'INTERNAL', message: 'Feuille verrouillée.' }; });
@@ -396,8 +396,8 @@ describe('actions — remediation', () => {
       await page.waitForSelector('.modal .form-alert .alert-error');
       await app.waitIdle();
       assert.match(await page.textContent('.modal .form-alert'), /Erreur : Feuille verrouillée\./);
-      assert.equal(await page.inputValue('.modal textarea[name="action"]'), 'Mettre à jour le BIOS');
-      assert.equal(await dropdownValue(page, '.modal [name="priorite"]'), 'Haute');
+      assert.equal(await page.inputValue('.modal textarea[data-name="action"]'), 'Mettre à jour le BIOS');
+      assert.equal(await dropdownValue(page, '.modal [data-name="priorite"]'), 'Haute');
       assert.equal((await tableIds(page, 'actions-table')).length, 3);
 
       // Busy submit while the call runs, then the modal closes.
@@ -423,11 +423,11 @@ describe('actions — remediation', () => {
 
       // --- edit (row click), close as 'Terminé'
       await page.click('#actions-table tr[data-id="a-0002"] td[data-col="target_name"]');
-      await page.waitForSelector('.modal [name="status"]');
+      await page.waitForSelector('.modal [data-name="status"]');
       assert.equal((await page.textContent('.modal .modal-title')).trim(), 'Modifier l’action');
-      assert.equal(await page.inputValue('.modal textarea[name="action"]'), 'Isoler du réseau');
-      assert.equal(await page.inputValue('.modal [name="deadline"]'), '31/05/2026');
-      await chooseOption(page, '.modal [name="status"]', 'Terminé');
+      assert.equal(await page.inputValue('.modal textarea[data-name="action"]'), 'Isoler du réseau');
+      assert.equal(await page.inputValue('.modal [data-name="deadline"]'), '31/05/2026');
+      await chooseOption(page, '.modal [data-name="status"]', 'Terminé');
       await submitModal(app);
       const updates = await callsNamed(app, 'api_updateAction');
       assert.deepEqual(updates.map((c) => c.args), [{ id: 'a-0002', updates: { status: 'Terminé', date_completed: today } }]);
@@ -436,7 +436,7 @@ describe('actions — remediation', () => {
 
       // --- edit without change: nothing sent
       await page.click('#actions-table tr[data-id="a-0001"] td[data-col="target_name"]');
-      await page.waitForSelector('.modal [name="status"]');
+      await page.waitForSelector('.modal [data-name="status"]');
       await submitModal(app);
       assert.equal((await callsNamed(app, 'api_updateAction')).length, 1);
       assert.equal(await page.textContent('#toast-root .toast:last-child .toast-msg'), 'Aucune modification.');
@@ -473,13 +473,13 @@ describe('actions — remediation', () => {
         window.ActionForm.open({ target: { type: 'application', name: 'Figma' }, defaults: { action: 'Signer le contrat' },
           onSaved: (rec, info) => { window.__saved = info; } });
       });
-      await page.waitForSelector('.modal [name="target_name"]');
+      await page.waitForSelector('.modal [data-name="target_name"]');
       assert.equal((await page.textContent('.modal .modal-title')).trim(), 'Nouvelle action');
-      assert.equal(await page.isDisabled('.modal [name="target_name"]'), true);
-      assert.equal(await page.isDisabled('.modal [name="target_type"]'), true);
-      assert.equal(await page.inputValue('.modal [name="target_name"]'), 'Figma');
-      assert.equal(await page.inputValue('.modal [name="equipe"]'), 'R&D Vélo');
-      assert.equal(await page.inputValue('.modal textarea[name="action"]'), 'Signer le contrat');
+      assert.equal(await page.isDisabled('.modal [data-name="target_name"]'), true);
+      assert.equal(await page.isDisabled('.modal [data-name="target_type"]'), true);
+      assert.equal(await page.inputValue('.modal [data-name="target_name"]'), 'Figma');
+      assert.equal(await page.inputValue('.modal [data-name="equipe"]'), 'R&D Vélo');
+      assert.equal(await page.inputValue('.modal textarea[data-name="action"]'), 'Signer le contrat');
       await submitModal(app);
       assert.deepEqual((await callsNamed(app, 'api_addAction')).map((c) => c.args), [{
         target_type: 'application', target_name: 'Figma', equipe: 'R&D Vélo', action: 'Signer le contrat',
@@ -505,14 +505,14 @@ describe('actions — replacements', () => {
       assert.equal(await page.textContent('#replacements-table tr[data-id="r-0001"] td[data-col="new_poste"]'), 'LAB-TEX-03');
 
       await page.click('#replacement-add');
-      await page.waitForSelector('.modal [name="old_poste"]');
-      const options = await optionLabels(page, '.modal [name="old_poste"]');
+      await page.waitForSelector('.modal [data-name="old_poste"]');
+      const options = await optionLabels(page, '.modal [data-name="old_poste"]');
       const expected = [...Core.uniqueSorted(data.MONTHS['2026-05'].postes, 'Nom du poste')]; // copy out of the vm realm
       assert.deepEqual(options, expected, 'suggestions = postes of the current month');
-      await chooseOption(page, '.modal [name="old_poste"]', 'LAB-MEC-01');
-      await chooseOption(page, '.modal [name="new_poste"]', 'LAB-MEC-02');
-      await page.fill('.modal input[name="responsable"]', 'Nathan Petit');
-      await page.fill('.modal textarea[name="comment"]', 'Fin de support Ubuntu 18.04');
+      await chooseOption(page, '.modal [data-name="old_poste"]', 'LAB-MEC-01');
+      await chooseOption(page, '.modal [data-name="new_poste"]', 'LAB-MEC-02');
+      await page.fill('.modal input[data-name="responsable"]', 'Nathan Petit');
+      await page.fill('.modal textarea[data-name="comment"]', 'Fin de support Ubuntu 18.04');
       await submitModal(app);
       assert.deepEqual((await callsNamed(app, 'api_addReplacement')).map((c) => c.args), [{
         old_poste: 'LAB-MEC-01', new_poste: 'LAB-MEC-02', equipe: 'Labo Mécanique', responsable: 'Nathan Petit',
@@ -526,13 +526,13 @@ describe('actions — replacements', () => {
 
       // Edit the comment only (row click opens the form); a server error keeps the modal open.
       await page.click('#replacements-table tr[data-id="r-0001"] td[data-col="old_poste"]');
-      await page.waitForSelector('.modal textarea[name="comment"]');
-      assert.equal(await page.inputValue('.modal [name="date_replacement"]'), '05/04/2026');
-      await page.fill('.modal textarea[name="comment"]', 'Windows 7 obsolète');
+      await page.waitForSelector('.modal textarea[data-name="comment"]');
+      assert.equal(await page.inputValue('.modal [data-name="date_replacement"]'), '05/04/2026');
+      await page.fill('.modal textarea[data-name="comment"]', 'Windows 7 obsolète');
       await page.evaluate(() => { window.__mock.failNext.api_updateReplacement = { code: 'INTERNAL', message: 'Erreur simulée' }; });
       await page.click('.modal .modal-footer .btn-primary');
       await page.waitForSelector('.modal .form-alert .alert-error');
-      assert.equal(await page.inputValue('.modal textarea[name="comment"]'), 'Windows 7 obsolète');
+      assert.equal(await page.inputValue('.modal textarea[data-name="comment"]'), 'Windows 7 obsolète');
       await submitModal(app);
       assert.deepEqual((await callsNamed(app, 'api_updateReplacement')).map((c) => c.args), [
         { id: 'r-0001', updates: { comment: 'Windows 7 obsolète' } }, { id: 'r-0001', updates: { comment: 'Windows 7 obsolète' } }]);

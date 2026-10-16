@@ -53,6 +53,18 @@ function CoreFactory_() {
   // Creation forms: fields a new record cannot do without, and column names that hold dates.
   var FORM_REQUIRED = { postes: [KEY_POSTE, 'Équipe'], applications: [KEY_APP] };
   var FORM_DATE_HINTS = ['Date visite', 'Prochaine revue', "Date d'achat", 'Deadline', 'Date'];
+  // Size limits of an import and of admin free text. A Sheets cell holds at most 50,000 characters and a
+  // stored record is ONE JSON cell of the data spreadsheet (its headers one ImportLog cell).
+  var LIMITS = {
+    cellChars: 5000,         // an imported value (truncated beyond) / an admin text value (refused beyond)
+    headerChars: 200,        // an imported header or Référentiel category (truncated beyond)
+    sourceColumns: 500,      // non-blank header cells of a source tab (SOURCE_ERROR beyond)
+    sourceRecords: 5000,     // records of a source entity tab (SOURCE_ERROR beyond)
+    sourceRecordsWarn: 4000, // records of a source entity tab from which the import warns (the limit is near)
+    refCategories: 100,      // Référentiel categories (SOURCE_ERROR beyond)
+    refValues: 500,          // values of one Référentiel category (the first ones kept, with a warning, beyond)
+    recordJsonChars: 45000   // JSON of one stored record, or of an entity's headers (SOURCE_ERROR from)
+  };
 
   // Field names used by several functions below.
   var F_EQUIPE = 'Équipe';
@@ -247,9 +259,12 @@ function CoreFactory_() {
     return /^[A-Za-z0-9_-]{20,}$/.test(s) ? s : null;
   }
 
-  /** Prevents formula injection when writing user strings to a sheet. */
+  /**
+   * Prevents formula injection when writing user strings to a sheet or a CSV export: text starting with
+   * = + - @, tab or carriage return (OWASP CSV injection list) gets a leading apostrophe.
+   */
   function escapeFormula(v) {
-    if (typeof v === 'string' && /^[=+\-@]/.test(v)) return "'" + v;
+    if (typeof v === 'string' && /^[=+\-@\t\r]/.test(v)) return "'" + v;
     return v;
   }
 
@@ -274,10 +289,56 @@ function CoreFactory_() {
     return -1;
   }
 
+  // Warnings name at most WARN_DETAILS items (the others are counted), each shortened to WARN_NAME_CHARS:
+  // they are stored in one ImportLog cell.
+  var WARN_DETAILS = 5;
+  var WARN_NAME_CHARS = 60;
+
+  /** « name » for a warning or an error message, shortened beyond WARN_NAME_CHARS. */
+  function quote_(s) {
+    var v = String(s);
+    return '« ' + (v.length > WARN_NAME_CHARS ? v.slice(0, WARN_NAME_CHARS) + '…' : v) + ' »';
+  }
+
+  /** '« a », « b » et 3 autre(s)': the first WARN_DETAILS names, quoted. */
+  function quoteList_(names) {
+    var shown = names.slice(0, WARN_DETAILS).map(quote_).join(', ');
+    return names.length > WARN_DETAILS ? shown + ' et ' + (names.length - WARN_DETAILS) + ' autre(s)' : shown;
+  }
+
+  /** SOURCE_ERROR when a header row has more than LIMITS.sourceColumns non-blank (cleaned) cells. */
+  function checkWidth_(row, where) {
+    var n = 0;
+    for (var c = 0; c < row.length; c++) if (cleanLabel_(row[c])) n++;
+    if (n > LIMITS.sourceColumns) {
+      throw makeError('SOURCE_ERROR', where + ' : ' + n + ' colonnes ont un en-tête, au plus ' + LIMITS.sourceColumns +
+        ' sont acceptées. Supprimez les colonnes inutiles du Google Sheet source.');
+    }
+  }
+
+  /**
+   * `value` cut to LIMITS.cellChars. In a list column (« Installé sur poste », comma-separated), the cut
+   * falls after the last whole item, so that no half poste name is kept (a single item longer than the
+   * limit is cut as it is).
+   */
+  function cutValue_(value, isList) {
+    var max = LIMITS.cellChars;
+    var cut = value.slice(0, max);
+    if (!isList) return cut;
+    var at = value.charAt(max) === ',' ? max : cut.lastIndexOf(',');
+    return at > 0 ? cut.slice(0, at).replace(/\s+$/, '') : cut;
+  }
+
   /**
    * Converts a sheet (display values + optional raw values) into records.
-   * opts = {display, raw?, anchors?, keyField?, fmtDate?}. Throws SOURCE_ERROR when no header row
-   * is found, or when keyField is given but no header matches it.
+   * opts = {display, raw?, anchors?, keyField?, fmtDate?, tab?} (tab: the sheet name, for messages).
+   * Throws SOURCE_ERROR when no header row is found, when keyField is given but no header matches it,
+   * when the header row has more than LIMITS.sourceColumns non-blank cells, or beyond
+   * LIMITS.sourceRecords records (from LIMITS.sourceRecordsWarn records, a warning says the limit is near).
+   * Headers starting with '_' (reserved for the app's own fields) are ignored; headers longer than
+   * LIMITS.headerChars and values longer than LIMITS.cellChars are truncated (cutValue_: « Installé sur
+   * poste » after its last whole item). Each case adds a warning. The write-back refuses to overwrite a
+   * source cell longer than LIMITS.cellChars (the snapshot holds only its start, see Importer.writeEdits).
    */
   function rowsToRecords(opts) {
     var o = opts || {};
@@ -286,6 +347,7 @@ function CoreFactory_() {
     var keyField = str(o.keyField);
     var anchors = toArray_(o.anchors).length ? toArray_(o.anchors) : (keyField ? [keyField] : []);
     var fmtDate = typeof o.fmtDate === 'function' ? o.fmtDate : fmtDDMMYYYY;
+    var where = str(o.tab) ? 'Onglet « ' + str(o.tab) + ' »' : 'Ligne d’en-tête';
 
     var headerIdx = findHeaderRow(display, anchors);
     if (headerIdx < 0) {
@@ -293,25 +355,40 @@ function CoreFactory_() {
         toArray_(anchors).map(str).join(' », « ') + ' »).');
     }
 
-    // Header cells -> cleaned unique names; blank headers are dropped (cols keeps their index).
+    // Header cells -> cleaned unique names; blank and reserved headers are dropped (cols keeps their index).
     var headerRow = display[headerIdx] || [];
+    checkWidth_(headerRow, where);
     var keyNorm = normKey(keyField);
     var headers = [];
     var cols = [];
     var keyHeader = null;
+    var taken = Object.create(null);      // names given so far
+    var nextSuffix = Object.create(null); // name -> first " (k)" worth trying (no rescan from 2)
+    var reserved = [];
+    var longHeaders = [];
     for (var c = 0; c < headerRow.length; c++) {
       var h = cleanLabel_(headerRow[c]);
       if (!h) continue;
+      if (h.charAt(0) === '_') {
+        reserved.push(h);
+        continue;
+      }
+      if (h.length > LIMITS.headerChars) {
+        h = h.slice(0, LIMITS.headerChars);
+        longHeaders.push(h);
+      }
       // The key column takes the canonical keyField spelling so that record[keyField] always works.
       if (keyField && keyHeader === null && normKey(h) === keyNorm) {
         h = keyField;
         keyHeader = h;
       }
-      if (headers.indexOf(h) >= 0) {
-        var k = 2;
-        while (headers.indexOf(h + ' (' + k + ')') >= 0) k++;
+      if (taken[h] === true) {
+        var k = nextSuffix[h] || 2;
+        while (taken[h + ' (' + k + ')'] === true) k++;
+        nextSuffix[h] = k + 1;
         h = h + ' (' + k + ')';
       }
+      taken[h] = true;
       headers.push(h);
       cols.push(c);
     }
@@ -322,11 +399,15 @@ function CoreFactory_() {
     var records = [];
     var rows = [];
     var missingKey = 0;
+    var cut = []; // {name, column} of the values truncated to LIMITS.cellChars
+    var installedNorm = normKey(F_INSTALLED_ON);
+    var isList = headers.map(function (name) { return normKey(name) === installedNorm; });
     for (var r = headerIdx + 1; r < display.length; r++) {
       var dRow = Array.isArray(display[r]) ? display[r] : [];
       var rRow = raw && Array.isArray(raw[r]) ? raw[r] : [];
       var rec = {};
       var allNull = true;
+      var cutCols = [];
       for (var i = 0; i < headers.length; i++) {
         var ci = cols[i];
         var rawCell = rRow[ci];
@@ -335,6 +416,10 @@ function CoreFactory_() {
           value = null;
         } else {
           allNull = false;
+          if (value.length > LIMITS.cellChars) {
+            value = cutValue_(value, isList[i]);
+            cutCols.push(headers[i]);
+          }
         }
         setOwn_(rec, headers[i], value);
       }
@@ -343,13 +428,40 @@ function CoreFactory_() {
         missingKey++;
         continue;
       }
+      if (records.length >= LIMITS.sourceRecords) {
+        throw makeError('SOURCE_ERROR', where + ' : plus de ' + LIMITS.sourceRecords + ' lignes à importer, au plus ' +
+          LIMITS.sourceRecords + ' sont acceptées.');
+      }
+      for (var j = 0; j < cutCols.length; j++) {
+        cut.push({ name: keyField ? rec[keyHeader] : 'ligne ' + (r + 1), column: cutCols[j] });
+      }
       records.push(rec);
       rows.push(r);
     }
 
     var warnings = [];
+    if (records.length >= LIMITS.sourceRecordsWarn) {
+      warnings.push(where + ' : ' + records.length + ' lignes importées, la limite est de ' + LIMITS.sourceRecords +
+        ' : au-delà, la synchronisation sera refusée.');
+    }
     if (missingKey > 0) {
       warnings.push(missingKey + ' ligne(s) sans « ' + keyField + ' » ignorée(s)');
+    }
+    if (reserved.length) {
+      warnings.push((reserved.length > 1 ? 'Colonnes ' : 'Colonne ') + quoteList_(reserved) +
+        (reserved.length > 1 ? ' ignorées' : ' ignorée') +
+        ' : les noms commençant par « _ » sont réservés à l’application.');
+    }
+    if (longHeaders.length) {
+      warnings.push('En-tête(s) de colonne tronqué(s) à ' + LIMITS.headerChars + ' caractères : ' +
+        quoteList_(longHeaders) + '.');
+    }
+    cut.slice(0, WARN_DETAILS).forEach(function (t) {
+      warnings.push(quote_(t.name) + ', colonne ' + quote_(t.column) + ' : valeur tronquée à ' + LIMITS.cellChars +
+        ' caractères.');
+    });
+    if (cut.length > WARN_DETAILS) {
+      warnings.push((cut.length - WARN_DETAILS) + ' autre(s) valeur(s) tronquée(s) à ' + LIMITS.cellChars + ' caractères.');
     }
     // rows[i] / columns[j] = grid indexes (0-based) of records[i] / headers[j], for writing back.
     return { headers: headers, records: records, warnings: warnings, headerRow: headerIdx, rows: rows, columns: cols };
@@ -358,8 +470,12 @@ function CoreFactory_() {
   /**
    * Parses the transposed Référentiel tab: first non-empty row = category names, each column below
    * holds the category values (ragged; blanks skipped; trimmed; de-duplicated preserving order).
+   * Category names are truncated to LIMITS.headerChars, values to LIMITS.cellChars. A category keeps its
+   * first LIMITS.refValues distinct values: beyond, the others are left out and a warning is pushed onto
+   * `warnings` (optional array). SOURCE_ERROR (naming the tab) beyond LIMITS.sourceColumns non-blank header
+   * cells or LIMITS.refCategories categories.
    */
-  function parseReferentiel(display) {
+  function parseReferentiel(display, warnings) {
     var out = {};
     if (!Array.isArray(display)) return out;
     var h = -1;
@@ -369,14 +485,43 @@ function CoreFactory_() {
     }
     if (h < 0) return out;
     var header = display[h];
+    var where = 'Onglet « ' + SOURCE_TABS.referentiel + ' »';
+    checkWidth_(header, where);
+    var seen = {}; // category -> {value: true}, for a linear de-duplication
+    var full = Object.create(null); // category -> true once LIMITS.refValues values are kept and more come
+    var cats = 0;
     for (var c = 0; c < header.length; c++) {
       var cat = cleanLabel_(header[c]);
       if (!cat) continue;
+      if (cat.length > LIMITS.headerChars) cat = cat.slice(0, LIMITS.headerChars);
       var values = getOwn_(out, cat);
-      if (!values) { values = []; setOwn_(out, cat, values); }
+      if (!values) {
+        if (++cats > LIMITS.refCategories) {
+          throw makeError('SOURCE_ERROR', where + ' : plus de ' + LIMITS.refCategories + ' catégories, au plus ' +
+            LIMITS.refCategories + ' sont acceptées.');
+        }
+        values = [];
+        setOwn_(out, cat, values);
+        setOwn_(seen, cat, Object.create(null));
+      }
+      var known = getOwn_(seen, cat);
       for (var r = h + 1; r < display.length; r++) {
         var v = str(Array.isArray(display[r]) ? display[r][c] : '');
-        if (v !== '' && values.indexOf(v) < 0) values.push(v);
+        if (v === '') continue;
+        if (v.length > LIMITS.cellChars) v = v.slice(0, LIMITS.cellChars);
+        if (known[v] === true) continue;
+        if (values.length >= LIMITS.refValues) {
+          if (full[cat] !== true) {
+            full[cat] = true;
+            if (Array.isArray(warnings)) {
+              warnings.push(where + ' : la catégorie ' + quote_(cat) + ' a plus de ' + LIMITS.refValues +
+                ' valeurs, seules les ' + LIMITS.refValues + ' premières sont gardées.');
+            }
+          }
+          continue;
+        }
+        known[v] = true;
+        values.push(v);
       }
     }
     return out;
@@ -990,6 +1135,7 @@ function CoreFactory_() {
     ERROR_CODES: freeze_(ERROR_CODES),
     FORM_REQUIRED: freeze_(FORM_REQUIRED),
     FORM_DATE_HINTS: freeze_(FORM_DATE_HINTS),
+    LIMITS: freeze_(LIMITS),
     // §2 functions
     normKey: normKey,
     isBlank: isBlank,

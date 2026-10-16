@@ -50,7 +50,13 @@ Les modifications du mois en cours faites dans l'application (cellules des Poste
 poste générique, ajout / renommage / suppression d'une application) sont **écrites dans le classeur
 source**, puis dans l'instantané : la synchronisation suivante les relit. Galink et IDP, absents de la
 source, restent dans l'application. Une cellule calculée par une formule dans la source n'est pas
-modifiable depuis l'application. Les modifications d'un mois passé ne changent que son historique.
+modifiable depuis l'application, pas plus qu'une colonne remplie par une formule matricielle
+(`ARRAYFORMULA`, `={…}`, `FILTER`, `QUERY`, `SORT`… ou une plage ouverte comme `A2:A`) ; la ligne qui
+porte une telle formule ne peut pas être supprimée depuis l'application. Une cellule de plus de 5 000
+caractères (tronquée dans l'application) ne peut être modifiée que dans le Google Sheet. Un nom présent
+sur plusieurs lignes de la source (« Minitab » et « MINITAB ») ne peut être ni modifié, ni renommé, ni
+supprimé tant que les doublons ne sont pas corrigés dans le Google Sheet puis synchronisés (la
+synchronisation les signale) ; Galink et IDP restent modifiables. Les modifications d'un mois passé ne changent que son historique.
 
 | Onglet | Contenu |
 |---|---|
@@ -75,9 +81,10 @@ visiteur par son adresse : Google ne transmet cette adresse que pour les comptes
 Workspace que le déployeur. Avec un compte Gmail personnel, seul le déployeur peut l'utiliser (voir
 « Accès » ci-dessous).
 
-1. **Installer les outils**
+1. **Installer les outils** : `npm ci` installe exactement les versions de `package-lock.json`, sans
+   le modifier (clasp envoie le code avec vos droits Google ; pas de version non relue).
    ```sh
-   npm install
+   npm ci
    ```
 2. **Activer l'API Apps Script** pour votre compte :
    <https://script.google.com/home/usersettings> → « API Google Apps Script » → Activé.
@@ -159,7 +166,9 @@ synchronisation horaire ». Les mois déjà importés sont conservés.
   d'un Google Sheet, adresses séparées par virgules ou points-virgules, champ « À » d'un e-mail
   `Nom <adresse>`), affiche ce qui sera ajouté, modifié, ignoré ou invalide, puis enregistre tout en une
   fois (500 adresses par ajout, 2000 comptes au total ; au-delà, ouvrir plutôt au domaine en lecture).
-  Une recherche filtre la liste.
+  La liste enregistrée est aussi limitée à 300 000 caractères, pour ne jamais remplir les propriétés du
+  script : avec des adresses très longues, elle contient moins de 2000 comptes. Une recherche filtre la
+  liste.
 - **Groupes Google** : ajouter l'adresse d'un groupe (ex. `labo-industry@decathlon.com`) avec un rôle ;
   tous ses membres le reçoivent, sous-groupes compris (3 niveaux). Si un compte a plusieurs rôles
   (liste, groupes, domaine), le plus élevé l'emporte. L'appartenance est vérifiée avec le compte du
@@ -167,12 +176,20 @@ synchronisation horaire ». Les mois déjà importés sont conservés.
   cache : un compte membre le reste 10 minutes après sa dernière utilisation de l'application, mais
   l'appartenance est revérifiée au moins **toutes les heures** ; un compte retiré d'un groupe dans Google
   perd donc ce rôle sous 1 heure au plus (sous 10 minutes s'il n'utilise pas l'application), un compte
-  ajouté l'obtient sous 10 minutes. Un groupe devenu illisible (supprimé, membres masqués) ne donne
-  aucun rôle et n'est réessayé qu'après 2 minutes. Le retrait d'un groupe de la liste s'applique
+  ajouté l'obtient sous 10 minutes. Un groupe devenu illisible (supprimé, membres masqués, quota
+  Google Groups épuisé) n'est réessayé qu'après 2 minutes et ne donne aucun rôle, sauf aux comptes dont
+  l'appartenance a été confirmée dans les 6 dernières heures : un quota épuisé ne bloque donc pas tous
+  les membres, mais tant que l'erreur dure, un compte retiré du groupe garde son rôle jusqu'à 6 heures
+  après sa dernière vérification réussie. Le retrait d'un groupe de la liste s'applique
   immédiatement. Pour retirer un accès sur-le-champ, retirer le compte (ou le groupe) de la liste. Un administrateur ne peut pas retirer ni rétrograder le groupe qui
   lui donne ce rôle.
 - « Autres comptes du domaine » : *Aucun accès* (par défaut, seuls les comptes listés entrent) ou
   *Lecteur* (tout le domaine peut consulter).
+- **Limite d'appels** : chaque compte, sauf le propriétaire, a droit à 120 appels au serveur par minute ;
+  les lectures de tout l'historique (Évolution, comparaison de mois, journal des imports) comptent pour 5.
+  Au-delà, l'appel est refusé avec « Trop de requêtes. Réessayez dans une minute. ». Un usage normal en
+  reste loin : la limite protège les quotas Google du propriétaire. Elle vaut aussi pour les comptes sans
+  accès, et un appel au-delà est refusé avant toute lecture des réglages.
 - Un compte non autorisé voit « Accès refusé » avec son adresse, à transmettre à un administrateur.
 - La liste est stockée dans les propriétés du script (`ACCESS_JSON_N` et `ACCESS_JSON_0`, `_1`… : une
   propriété est limitée à 9 Ko), le seuil dans `COMPLIANCE_THRESHOLD` et les interrupteurs de saisie dans
@@ -196,6 +213,7 @@ erreur d'autorisation.
 Pour publier une nouvelle version **sur la même URL**, réutiliser l'ID de déploiement de l'étape 7 :
 
 ```sh
+npm ci                              # après une mise à jour du dépôt : outils de package-lock.json
 export DEPLOYMENT_ID=AKfy...        # une fois par session (npm run deployments pour le retrouver)
 npm run deploy                      # clasp push -f, puis nouvelle version sur ce déploiement
 npm run open                        # ouvre l'application web
@@ -315,9 +333,24 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
 - [ ] Formulaires de création, limites connues : une liste à choix multiples (puces) accepte des valeurs
       séparées par des virgules, ce qui n'est qu'une hypothèse (aucune API ne dit si une liste autorise
       plusieurs valeurs) ; les dates sont écrites en texte `JJ/MM/AAAA`, donc pour une source en
-      paramètres régionaux français (comme les modifications de cellules) ; les modifications de
-      cellules dans le tableau ont le même angle mort sur les colonnes `ARRAYFORMULA` (noté pour plus
-      tard, non corrigé ici).
+      paramètres régionaux français (comme les modifications de cellules).
+- [ ] Écriture dans la source, colonnes calculées : dans une colonne `ARRAYFORMULA` (formule dans la
+      ligne d'en-tête ou la première ligne de données), modifier une cellule d'une autre ligne depuis le
+      tableau du mois en cours : refus « La colonne « … » est calculée par une formule dans le Google
+      Sheet source », la colonne reste intacte (pas de `#REF!`). Même essai avec un `FILTER(…)` ou un
+      `SORT(…)` en première ligne de données. Après ouverture du formulaire « Nouveau poste » (ou survol
+      du bouton), les colonnes remplies par une formule matricielle ne sont plus modifiables dans le
+      tableau (une valeur non enregistrée y est annulée avec un message) ; une colonne dont seule la
+      dernière ligne porte une formule reste modifiable.
+      Supprimer l'application dont la ligne porte la formule : refus, rien n'est supprimé.
+- [ ] Écriture dans la source, doublons : ajouter dans la source une ligne « MINITAB » (même nom à la
+      casse près qu'une ligne existante), synchroniser : le journal signale « Noms en double … ».
+      Modifier, renommer ou supprimer l'une ou l'autre depuis l'application : refus « … apparaît 2 fois
+      … », aucune ligne de la source ne change. Supprimer ensuite la ligne « MINITAB » dans la source
+      et, avant la synchronisation suivante, modifier ou supprimer « MINITAB » dans l'application : refus
+      « … apparaît 2 fois dans les données synchronisées … », la ligne « Minitab » reste. Renommer une
+      application avec un nom ajouté dans la source depuis la dernière synchronisation : refus « … existe
+      déjà dans l’onglet … ».
 - [ ] Le déclencheur `syncHourly` apparaît dans l'éditeur (Déclencheurs) et s'exécute toutes les
       heures (Exécutions) ; une synchronisation sans changement n'ajoute rien au journal.
 - [ ] Mesures : dans Exécutions, un appel (par exemple l'ouverture de l'application) montre ses lignes
@@ -351,10 +384,15 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
 - [ ] Cache des groupes : un membre d'un groupe autorisé entre ; le retirer du groupe dans Google
       Admin : il perd l'accès au plus tard 1 heure après la dernière vérification, même en utilisant
       l'application sans arrêt (10 minutes s'il ne l'utilise pas). L'ajouter à un groupe : accès sous
-      10 minutes. Un groupe aux membres masqués pour le propriétaire refuse l'accès sans erreur, et un
+      10 minutes. Un groupe aux membres masqués pour le propriétaire refuse l'accès sans erreur aux
+      comptes dont l'appartenance n'a pas été confirmée dans les 6 dernières heures (les autres gardent
+      leur rôle, l'avertissement se termine par « answered from the last confirmed membership »), et un
       seul avertissement « not readable » apparaît dans Exécutions par compte toutes les 2 minutes.
       Vérifier que `CacheService.getScriptCache().getAll` est disponible (ce que les faux services ne
       peuvent prouver).
+- [ ] Limite d'appels : en lecteur, parcourir toutes les pages et changer de période plusieurs fois de
+      suite sans jamais voir « Trop de requêtes. Réessayez dans une minute. » ; Exécutions montre alors des
+      lignes `code: "BUSY"` seulement pour un compte qui dépasse vraiment 120 appels par minute.
 - [ ] Interrupteurs de saisie, deux administrateurs : A ouvre Postes, B désactive « Créer des entrées »
       dans Paramètres. A clique « Nouveau poste » (ou enregistre le formulaire déjà ouvert) : le message
       « La création de postes et d’applications est désactivée dans les Paramètres. » s'affiche et les
@@ -387,6 +425,14 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
       `plotly.min.js` mette plus de 30 secondes) : « Graphique indisponible » s'affiche au bout de
       30 secondes, puis les graphiques du tableau de bord apparaissent d'eux-mêmes à la fin du
       téléchargement, sans clic ; Plotly n'est demandé qu'une fois.
+- [ ] Sécurité : le DevTools d'une autre page montre Plotly chargé avec `integrity` (aucune erreur
+      « Failed to find a valid digest »). Depuis un compte lecteur, une boucle
+      `google.script.run.api_getTimeline('{}')` reçoit « Trop de requêtes… » après quelques dizaines
+      d'appels, alors qu'un autre compte continue de travailler normalement, et l'ouverture normale de
+      l'application (deux onglets en même temps) n'est jamais refusée. Le verrou utilisateur du
+      compteur (`LockService.getUserLock`) ne ralentit pas visiblement les appels quand plusieurs
+      personnes utilisent l'application en même temps (exécution « en tant que moi »).
+      `google.script.run.setup()` depuis le navigateur d'un autre compte est refusé.
 
 ## Tests
 
@@ -403,6 +449,24 @@ nombres d'appels mesurés (ouvertures, lectures, cellules lues, propriétés et 
 `$PLAYWRIGHT_BROWSERS_PATH` (par défaut `/opt/pw-browsers`). Facultatif : `.artifacts/plotly.min.js`
 et `.artifacts/fonts/` (non versionnés) permettent des captures avec le vrai Plotly et les vraies
 polices ; sans eux, le harnais utilise des substituts.
+
+### Sécurité (SAST / SCA)
+
+`npm run security` lance localement les mêmes analyses que la CI (`.github/workflows/security.yml`) :
+Semgrep (règles du registre + `security/semgrep.yml`), gitleaks (historique complet) et osv-scanner
+(`package-lock.json`). Il faut `semgrep`, `gitleaks` et `osv-scanner` dans le `PATH` ; un outil
+absent est signalé et ignoré. Le script prend le `semgrep` trouvé dans le `PATH`, quelle que soit sa
+version ; pour celle de la CI (Semgrep et ses dépendances figés et vérifiés par SHA-256,
+`security/requirements-semgrep.txt`) :
+
+```sh
+python3.12 -m venv ~/.venv-semgrep
+~/.venv-semgrep/bin/pip install --require-hashes --no-deps --only-binary :all: -r security/requirements-semgrep.txt
+PATH="$HOME/.venv-semgrep/bin:$PATH" npm run security
+```
+
+Les règles propres au projet tournent aussi dans `npm test` (`test/integration/security.test.js`).
+Modèle de menace, résultats et exceptions : [docs/SECURITY.md](docs/SECURITY.md).
 
 ## Correspondance avec l'application Streamlit
 
@@ -431,6 +495,16 @@ polices ; sans eux, le harnais utilise des substituts.
   système.
 - Chaque mois ajoute une ligne par poste et par application au classeur de données (le mois en cours
   est réécrit, pas dupliqué) ; Google Sheets plafonne à 10 millions de cellules par classeur.
+- **Taille du classeur source** : au plus 500 colonnes avec un en-tête et 5 000 lignes par onglet de
+  suivi (un avertissement dès 4 000), 100 catégories dans le Référentiel ; au-delà, la synchronisation
+  est refusée (« Onglet « … » : … ») sans rien écrire. Une catégorie du Référentiel garde ses 500
+  premières valeurs, avec un avertissement. Une cellule de plus de 5 000 caractères (200 pour un
+  en-tête) est tronquée, avec un avertissement dans le journal des synchronisations (« Installé sur
+  poste » après le dernier nom de poste entier), et ne peut plus être modifiée depuis l'application ;
+  une ligne dont
+  l'ensemble dépasse 45 000 caractères est refusée en la nommant. Les colonnes dont le nom commence par
+  « _ » sont réservées à l'application et ignorées. Dans l'application, un texte saisi est limité à
+  5 000 caractères.
 
 ---
 
@@ -444,7 +518,7 @@ app's own `ShadowIT_AppData` spreadsheet (tabs `Postes`, `Applications`, `Refere
 `Replacements`, `ImportLog`, `Meta`); past months stay frozen. Edits of the current month made in the app
 are written into the source first, so the next sync reads them back (Galink / IDP stay app-only).
 
-First deployment: `npm install`; enable the Apps Script API at
+First deployment: `npm ci` (exactly the versions in `package-lock.json`); enable the Apps Script API at
 <https://script.google.com/home/usersettings>; `npm run login`; create a project (in the browser, or
 with `clasp create-script --type webapp` run in an empty directory, since it refuses an existing
 `.clasp.json` and pulls default files into `rootDir`) and put its `scriptId` in `.clasp.json`;
@@ -462,13 +536,19 @@ switches for every admin and every month (edit / create / delete postes and appl
 refuses the call (actions, remplacements and the sync are not concerned). Unlisted domain accounts get no access by default,
 or lecteur if « Autres comptes du domaine » is set so. « Ajouter plusieurs comptes… » takes a pasted
 list in any common shape (Sheets column, comma/semicolon separated, `Name <address>`), previews it and
-saves it in one call (500 per batch, 2000 accounts max). Google Groups can be granted a role too:
+saves it in one call (500 per batch, 2000 accounts max, and at most 300,000 characters of serialized
+list so it can never fill the Script Properties store). Google Groups can be granted a role too:
 members (sub-groups included, 3 levels) get it, the highest role wins, memberships are checked with
 GroupsApp as the deployer (who must see the members) and cached: a membership slides 10 minutes past
 its last use but is re-verified at least every hour (a removal from a group in Google applies within
-1 h), a non-membership is cached 10 minutes, an unreadable group 2 minutes (it grants nothing), all of
-a call's group entries are read in one `CacheService.getAll`, and a cache failure only means a live
-check. After pulling this
+1 h), a non-membership is cached 10 minutes, an unreadable group 2 minutes (it grants nothing, except
+to an account whose membership a live check confirmed in the last 6 hours: an exhausted Groups quota
+does not lock every member out), an account with no role at all is remembered 10 minutes in one entry
+keyed by the list of groups, all of a call's group entries are read in one `CacheService.getAll`, and a
+cache failure only means a live check. Every account but the deployer is throttled to 120 calls a
+minute (full-history reads count 5) and 10 calls running at once, before any Script Property is read
+(page loads included); above it, `BUSY` « Trop de requêtes. Réessayez dans une minute. » / « Trop de
+requêtes en cours. … ». After pulling this
 version, run `setup()` again to grant the new groups scope. The list lives in the `ACCESS_JSON_N` /
 `ACCESS_JSON_0..` script properties (split because one property holds 9 KB), the compliance threshold (default 80 %) in `COMPLIANCE_THRESHOLD`. For a personal Gmail
 deployer, set `"access": "MYSELF"` in `src/appsscript.json`.

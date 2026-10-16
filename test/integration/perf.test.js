@@ -16,7 +16,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
-const { loadGas, timingLines } = require('../helpers/gasSandbox');
+const { loadGas, timingLines, hourlyEvent } = require('../helpers/gasSandbox');
 const data = require('../fixtures/data');
 
 const TODAY = '2026-05-15';
@@ -30,6 +30,7 @@ const DATA_ID = '1PerfDataSpreadsheetId00000000000000000000000';
 const READER = 'lea.reader@decathlon.com';
 const ADMIN_GROUP = 'secu-admins@decathlon.com';
 const GROUP_ADMIN = 'chef@decathlon.com';
+const STRANGER = 'inconnu@decathlon.com';
 
 /**
  * Upper bounds = the numbers measured when they were last lowered (only ever lower them). History:
@@ -47,23 +48,46 @@ const GROUP_ADMIN = 'chef@decathlon.com';
  * A month span also reads the row on each side of the month's block (same getValues), so that a month
  * that grew or moved past the block while it was read outside the lock is detected: cellsRead of the
  * flows that read spans went up by those rows (getMonthData +16, savePostesLive +6, syncNoChange +16).
- * These are the only bounds ever raised, both for correctness.
+ * The live-month save also reads the formulas of the source's header row and first data row (one more
+ * getFormulas of 2 rows, 50 cells, under the lock), so that it refuses an edit in a column an array formula
+ * fills: savePostesLive getFormulas 1 -> 2, sourceReadsLocked 3 -> 4, cellsRead and sourceCellsRead +50.
+ * These were the only bounds raised for correctness (the throttle below raised the cache counts for quota protection).
  * The creation forms added getDataValidations (0 for every earlier flow) and three flows: the form schema
  * read cold (the source only: header block, key column, two formula blocks, the last row's rules and raw
  * values, one box of Référentiel lists; cached), warm (the cache alone: no spreadsheet opened) and a
  * live poste added from the form (the append reads + the new row read back after the write).
+ * The per-account throttle (Access.throttle, before the Script Properties are read) costs every call of an
+ * account other than the deployer one cache get and one put (the counter of the minute): cacheReads and
+ * cacheWrites of the three non-owner bootstraps went up by one each, for the quota protection. A live
+ * check that confirms a group membership also writes the 6 h "confirmed" entry (bootstrapGroupCold
+ * cacheWrites +1 more). The refused-account flows were added with them: cold (groups checked, "not a
+ * member" and the one "no role" entry written) and warm (the "no role" entry only: no GroupsApp call, no
+ * write but the counter); neither opens a spreadsheet.
+ * The throttle then also capped the calls of an account running at once: its counters are read in one getAll
+ * and written in one putAll (as before), and the end of every call removes it from the running ones (one get
+ * and one put): cacheReads and cacheWrites of every non-owner flow +1, for the quota protection. The live-month
+ * save also reads the display values of the edited rows (one more getDisplayValues of the edited row, 25 cells,
+ * under the lock), so that it never overwrites a source cell the import truncated: savePostesLive
+ * getDisplayValues 2 -> 3, sourceReadsLocked 4 -> 5, cellsRead and sourceCellsRead +25.
  */
 const BASELINE = {
   bootstrapAdmin: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
     getDataRange: 0, propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
-  // An explicit lecteur: the admin groups are checked (they could raise the role), cold here.
+  // An explicit lecteur: the admin groups are checked (they could raise the role), cold here. + the throttle
+  // getAll / putAll and the release get / put.
   bootstrapLecteur: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
-    getDataRange: 0, propertiesReads: 2, cacheReads: 1, cacheWrites: 1, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
+    getDataRange: 0, propertiesReads: 2, cacheReads: 3, cacheWrites: 3, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  // Cold: the throttle get, one getAll; puts: the counter, the membership and its 6 h confirmation.
   bootstrapGroupCold: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
-    getDataRange: 0, propertiesReads: 2, cacheReads: 1, cacheWrites: 1, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
-  // Warm: one getAll, no GroupsApp call, one put (the sliding renewal).
+    getDataRange: 0, propertiesReads: 2, cacheReads: 3, cacheWrites: 4, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  // Warm: the throttle get, one getAll, no GroupsApp call; puts: the counter and the sliding renewal.
   bootstrapGroupWarm: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
-    getDataRange: 0, propertiesReads: 2, cacheReads: 1, cacheWrites: 1, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+    getDataRange: 0, propertiesReads: 2, cacheReads: 3, cacheWrites: 3, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  // No role at all (refused): no spreadsheet opened; warm, one getAll answers without any GroupsApp call.
+  deniedCold: { openById: 0, getValues: 0, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 0,
+    getDataRange: 0, propertiesReads: 1, cacheReads: 3, cacheWrites: 4, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  deniedWarm: { openById: 0, getValues: 0, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 0,
+    getDataRange: 0, propertiesReads: 1, cacheReads: 3, cacheWrites: 2, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   // doGet with the bootstrap inline: the admin bootstrap + the FAVICON_URL property, nothing else.
   doGetAdmin: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
     getDataRange: 0, propertiesReads: 3, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
@@ -77,8 +101,8 @@ const BASELINE = {
   getImportLog: { openById: 1, getValues: 1, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 96,
     getDataRange: 0, propertiesReads: 1, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   // The write-back reads the source under the lock by design (it writes there next).
-  savePostesLive: { openById: 2, getValues: 4, getDisplayValues: 2, getFormulas: 1, getDataValidations: 0, cellsRead: 15307,
-    getDataRange: 1, propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 700, sourceReadsLocked: 3 },
+  savePostesLive: { openById: 2, getValues: 4, getDisplayValues: 3, getFormulas: 2, getDataValidations: 0, cellsRead: 15382,
+    getDataRange: 1, propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 775, sourceReadsLocked: 5 },
   formSchemaCold: { openById: 1, getValues: 1, getDisplayValues: 3, getFormulas: 2, getDataValidations: 1, cellsRead: 812,
     getDataRange: 1, propertiesReads: 1, cacheReads: 1, cacheWrites: 1, groupCalls: 0, sourceCellsRead: 812, sourceReadsLocked: 0 },
   formSchemaWarm: { openById: 0, getValues: 0, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 0,
@@ -244,6 +268,14 @@ function call(ctx, name, args) {
   return res.data;
 }
 
+/** Calls an api_* that must be refused with FORBIDDEN (no role). */
+function refused(ctx, name) {
+  const res = JSON.parse(ctx[name]('null'));
+  assert.equal(res.ok, false, name + ' should be refused');
+  assert.equal(res.error.code, 'FORBIDDEN', res.error.message);
+  return res.error;
+}
+
 /** A new execution over the shared env, as `email` (undefined = the deployer, an admin). */
 function execution(env, email) {
   env.__setActiveUser(email);
@@ -337,6 +369,16 @@ test('call counts of the main flows on a large data spreadsheet stay within the 
   m = measure(env, () => call(ctx, 'api_bootstrap'));
   results.bootstrapGroupWarm = m;
 
+  // An account of the domain without any role: refused. Cold, the groups are checked (the one listed group
+  // is admin); warm, the one "no role" entry answers (same getAll, no group walked, nothing written but the
+  // throttle counter).
+  ctx = execution(env, STRANGER);
+  m = measure(env, () => refused(ctx, 'api_bootstrap'));
+  results.deniedCold = m;
+  ctx = execution(env, STRANGER);
+  m = measure(env, () => refused(ctx, 'api_bootstrap'));
+  results.deniedWarm = m;
+
   ctx = execution(env);
   m = measure(env, () => call(ctx, 'api_getSettings'));
   assert.deepEqual(Object.values(m.value.source.tabsFound), [true, true, true]);
@@ -369,7 +411,7 @@ test('call counts of the main flows on a large data spreadsheet stay within the 
 
   // The hourly trigger run when the source has not changed since the last sync.
   ctx = execution(env);
-  m = measure(env, () => ctx.syncHourly());
+  m = measure(env, () => ctx.syncHourly(hourlyEvent(env)));
   assert.deepEqual(m.lines.filter((l) => l.stage === 'sync').map((l) => [l.ok, l.changed]), [[true, false]]);
   results.syncNoChange = m;
   // Neither the month view nor the no-change sync reads a whole data tab (only the month's rows).

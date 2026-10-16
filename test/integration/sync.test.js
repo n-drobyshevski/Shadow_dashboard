@@ -9,7 +9,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { loadGas, plain, timingLines } = require('../helpers/gasSandbox');
+const { loadGas, plain, timingLines, hourlyEvent } = require('../helpers/gasSandbox');
 const { buildSourceSpreadsheet, SOURCE_ID } = require('../fixtures/source');
 
 const KEY_POSTE = 'Nom du poste';
@@ -206,15 +206,34 @@ test('errors are recorded in the status until the next successful run; BUSY is n
 test('syncHourly (the trigger handler): nothing without a source, a sync with one', () => {
   const sb = loadGas({ sources: [source('2026-05')] });
   sb.ctx.Config.today = () => '2026-05-15';
-  assert.doesNotThrow(() => sb.ctx.syncHourly({ triggerUid: 't1' }));
+  assert.doesNotThrow(() => sb.ctx.syncHourly(hourlyEvent(sb.env)));
   assert.equal(sb.ctx.Store.listMonths().length, 0);
   ok(sb.ctx, 'api_setConfig', { source: SOURCE_ID });
-  sb.ctx.syncHourly({ triggerUid: 't1' });
+  sb.ctx.syncHourly(hourlyEvent(sb.env));
   assert.deepEqual(plain(sb.ctx.Store.listMonths()), ['2026-05']);
   // A failing hourly run throws (Google e-mails the owner) after recording the error.
   sb.env.__fault({ method: 'openById', id: SOURCE_ID });
-  assert.throws(() => sb.ctx.syncHourly({ triggerUid: 't1' }));
+  assert.throws(() => sb.ctx.syncHourly(hourlyEvent(sb.env)));
   assert.equal(ok(sb.ctx, 'api_getSyncStatus').lastError.code, 'SOURCE_ERROR');
+});
+
+test('syncHourly and setup ignore or refuse a call from google.script.run (any visitor)', () => {
+  const sb = loadGas({ sources: [source('2026-05')] });
+  sb.ctx.Config.today = () => '2026-05-15';
+  ok(sb.ctx, 'api_setConfig', { source: SOURCE_ID });
+  const event = hourlyEvent(sb.env);
+  // No event, a made-up uid, a uid of no trigger, a non-object: nothing is synchronised.
+  for (const e of [undefined, null, {}, { triggerUid: 'trig-x' }, { triggerUid: 1 }, 'trig-hourly']) {
+    sb.ctx.syncHourly(e);
+    assert.equal(sb.ctx.Store.listMonths().length, 0, JSON.stringify(e));
+  }
+  sb.ctx.syncHourly(event);
+  assert.deepEqual(plain(sb.ctx.Store.listMonths()), ['2026-05']);
+  // setup: only the deployer (active user = effective user), never a visitor of the web app.
+  for (const active of ['lecteur@decathlon.com', '']) {
+    sb.env.__state.session.active = active;
+    assert.throws(() => sb.ctx.setup(), /réservé au compte qui a déployé/);
+  }
 });
 
 test('the sync adds « Poste générique Decathlon » when an application names it', () => {
@@ -671,23 +690,32 @@ test('a live save reads the header block, the key column and the edited rows onl
 
   let reads = edit(['POSTE-020']);
   assert.ok(reads.every((r) => r.lockHeld));
-  assert.deepEqual(reads.map((r) => r.method), ['getDisplayValues', 'getDisplayValues', 'getFormulas']);
+  // + the display values of the edited row (a source cell longer than Core.LIMITS.cellChars is never overwritten).
+  assert.deepEqual(reads.map((r) => r.method), ['getDisplayValues', 'getDisplayValues', 'getFormulas', 'getFormulas',
+    'getDisplayValues']);
   assert.equal(reads[0].a1, 'A1:' + lastCol + '15', 'the header block');
   assert.match(reads[1].a1, /^([A-Z])3:\1\d+$/, 'one column: the key, from the first row below the header');
   const row = sourceRow(env, 'POSTE-020');
-  assert.deepEqual(formulaRows(reads), ['A' + row + ':' + lastCol + row]);
+  // The header row and the first data row (array formulas), then the edited row.
+  const head = 'A2:' + lastCol + '3';
+  assert.deepEqual(formulaRows(reads), [head, 'A' + row + ':' + lastCol + row]);
   const height = sourceSheet(env, POSTES_TAB).getDataRange().getNumRows();
-  assert.deepEqual(reads.map((r) => r.cells), [15 * width, height - 2, width], 'not the whole tab twice (' + 2 * height * width + ' cells)');
+  assert.deepEqual(reads[4].a1, 'A' + row + ':' + lastCol + row);
+  assert.deepEqual(reads.map((r) => r.cells), [15 * width, height - 2, 2 * width, width, width],
+    'not the whole tab twice (' + 2 * height * width + ' cells)');
   assert.equal(byName(sourceRecords(sb.ctx, 'postes'), KEY_POSTE, 'POSTE-020').Commentaires, 'Vu');
 
-  // Nearby rows: one block; scattered rows: one call each up to 3, then one block from first to last.
+  // Nearby rows: one block; scattered rows: one call each up to 3, then one block from first to last. The
+  // header block is read on its own (joined to the first block only when it is near), never stretched down.
   const r10 = sourceRow(env, 'POSTE-010');
   assert.deepEqual(formulaRows(edit(['POSTE-012', 'POSTE-010', 'POSTE-014'])),
-    ['A' + r10 + ':' + lastCol + (r10 + 4)]);
-  assert.deepEqual(formulaRows(edit(['POSTE-001', 'POSTE-020', 'POSTE-039'])).length, 3);
+    [head, 'A' + r10 + ':' + lastCol + (r10 + 4)]);
+  assert.deepEqual(formulaRows(edit(['POSTE-001', 'POSTE-020', 'POSTE-039'])).length, 4);
   const r1 = sourceRow(env, 'POSTE-001');
   assert.deepEqual(formulaRows(edit(['POSTE-001', 'POSTE-010', 'POSTE-020', 'POSTE-030', 'POSTE-040'])),
-    ['A' + r1 + ':' + lastCol + sourceRow(env, 'POSTE-040')]);
+    [head, 'A' + r1 + ':' + lastCol + sourceRow(env, 'POSTE-040')]);
+  const first = sourceGrid(env, POSTES_TAB)[2][grid[1].indexOf(KEY_POSTE)];
+  assert.deepEqual(formulaRows(edit([first])), [head], 'the first data row: one block with the header row');
 
   // Galink-like fields without a source column: nothing to check, no formula read, no write.
   const writes = env.__state.writes.filter((w) => w.spreadsheetId === SOURCE_ID).length;

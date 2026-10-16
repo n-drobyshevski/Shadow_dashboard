@@ -17,13 +17,16 @@
 // ------------------------------------------------------------------------------------ envelope
 
 /**
- * Wraps an implementation `fn(args, user) -> data` into the JSON envelope. The caller's role is
- * checked first (Access.requireRole, FORBIDDEN otherwise) and the effective compliance threshold is
+ * Wraps an implementation `fn(args, user) -> data` into the JSON envelope. Before anything is read,
+ * Access.throttle(name) refuses a call without identity (FORBIDDEN) and an account above its per-minute
+ * rate or with too many calls running (BUSY), so neither reaches the Script Properties; the release it
+ * returns runs in `finally` (the call no longer counts as running). The caller's role is then
+ * checked (Access.requireRole, FORBIDDEN otherwise) and the effective compliance threshold is
  * applied to Core for the duration of the call. Errors whose `.code` is one of Core.ERROR_CODES are
  * reported as-is (their messages are ours, in French), VALIDATION ones with their `.field` when they
  * name a form field; anything else becomes INTERNAL. The stack is
  * logged with console.error and never sent to the client. Every call ends with one timing line
- * (Perf.log): {api, ms, authMs (Config + role check), ok, code (failures only)}. Every call starts
+ * (Perf.log): {api, ms, authMs (throttle + Config + role check), ok, code (failures only)}. Every call starts
  * with empty read memos (Store, Config): in Apps Script each call is a new execution anyway, the
  * reset keeps the test sandbox (many calls in one context) honest.
  * @param {function(Object, Object): *} fn
@@ -37,9 +40,11 @@ function apiWrap_(fn, name, minRole) {
     var authMs = null;
     var ok = false;
     var code = null;
+    var release = null;
     try {
       Store.clearMemo_();
       Config.clearMemo_();
+      release = Access.throttle(name);
       var cfg = Config.get();
       var user = Access.requireRole(minRole || 'lecteur', cfg.access);
       authMs = Date.now() - t0;
@@ -54,13 +59,14 @@ function apiWrap_(fn, name, minRole) {
       var known = Core.ERROR_CODES.indexOf(e.code) >= 0 && e.code !== 'INTERNAL';
       code = known ? e.code : 'INTERNAL';
       var message = known ? String(e.message || code) : internalMessage_(e);
-      if (code === 'FORBIDDEN') console.warn('[' + (name || 'api') + '] ' + code + ': ' + message);
+      if (code === 'FORBIDDEN' || e.throttled) console.warn('[' + (name || 'api') + '] ' + code + ': ' + message);
       else console.error('[' + (name || 'api') + '] ' + code + ': ' + (e.stack || e.message || String(err)));
       var error = { code: code, message: message };
       // The form field a VALIDATION error is about (Core.makeError's third argument).
       if (code === 'VALIDATION' && typeof e.field === 'string' && e.field !== '') error.field = e.field;
       return JSON.stringify({ ok: false, error: error });
     } finally {
+      if (release) release();
       var line = { api: name || 'api', ms: Date.now() - t0, authMs: authMs, ok: ok };
       if (code) line.code = code;
       Perf.log(line);
@@ -155,10 +161,18 @@ var ApiImpl_ = (function () {
     return !!v && typeof v === 'object' && !Array.isArray(v);
   }
 
-  /** A cell value coming from the client -> string | null. Objects / arrays are refused. */
+  /** VALIDATION (with the field) for a text longer than Core.LIMITS.cellChars, else the text. */
+  function maxLength_(s, field) {
+    if (s.length > Core.LIMITS.cellChars) {
+      throw invalid_('Texte trop long pour « ' + field + ' » : ' + Core.LIMITS.cellChars + ' caractères au maximum.', field);
+    }
+    return s;
+  }
+
+  /** A cell value coming from the client -> string | null. Objects / arrays and too long texts are refused. */
   function cellValue_(v, field) {
     if (v === null || v === undefined) return null;
-    if (typeof v === 'string') return Core.isBlank(v) ? null : v;
+    if (typeof v === 'string') return Core.isBlank(v) ? null : maxLength_(v, field);
     if (typeof v === 'number') return isFinite(v) ? String(v) : null;
     if (typeof v === 'boolean') return String(v);
     throw invalid_('Valeur invalide pour « ' + field + ' ».', field);
@@ -219,9 +233,10 @@ var ApiImpl_ = (function () {
     return s;
   }
 
+  /** A free-text argument -> trimmed string ('' for null); non-scalars and too long texts are refused. */
   function stringField_(v, field) {
     if (v === null || v === undefined) return '';
-    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return Core.str(v);
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return maxLength_(Core.str(v), field);
     throw invalid_('Valeur invalide pour « ' + field + ' ».');
   }
 
@@ -451,6 +466,15 @@ var ApiImpl_ = (function () {
     return month === Sync.currentMonth();
   }
 
+  /**
+   * How many records of `list` (a stored month) share the key of `rec` (normKey): passed to the
+   * write-back (Importer snapshotCount), which refuses a name the snapshot holds more than once.
+   */
+  function snapshotCount_(list, rec, keyField) {
+    var k = Core.normKey(rec[keyField]);
+    return list.filter(function (r) { return Core.normKey(r[keyField]) === k; }).length;
+  }
+
   function saveEntities_(tab, entity, keyField, enrich, args) {
     requireEditing_('edit');
     var month = requireMonth_(args.month);
@@ -464,7 +488,7 @@ var ApiImpl_ = (function () {
         Importer.writeEdits(entity, changes.map(function (c) {
           var rec = findById_(stored, c.id);
           if (!rec) throw notFound_(entity === 'postes' ? 'Poste' : 'Application');
-          return { name: Core.str(rec[keyField]), fields: c.updates };
+          return { name: Core.str(rec[keyField]), fields: c.updates, snapshotCount: snapshotCount_(stored, rec, keyField) };
         }));
       }
       return { updated: enrich(Store.updateEntityRows(tab, month, changes)), sourceUpdated: live };
@@ -652,22 +676,32 @@ var ApiImpl_ = (function () {
     return out;
   }
 
+  /**
+   * Current month: the source row goes first (Importer.deleteRecord refuses a name several source rows or
+   * several records of the month's snapshot share, and a row holding an array formula), then the snapshot row.
+   */
   function deleteApplication(args) {
     requireEditing_('delete');
     var month = requireMonth_(args.month);
     var id = requireId_(args.id);
     return Store.withLock(function () {
       if (isLive_(month)) {
-        var rec = findById_(Store.readEntityMonth(Config.TABS.applications, month), id);
+        var apps = Store.readEntityMonth(Config.TABS.applications, month);
+        var rec = findById_(apps, id);
         if (!rec) throw notFound_('Application');
-        Importer.deleteRecord('applications', Core.str(rec[Core.KEY_APP]));
+        Importer.deleteRecord('applications', Core.str(rec[Core.KEY_APP]),
+          { snapshotCount: snapshotCount_(apps, rec, Core.KEY_APP) });
       }
       if (!Store.deleteEntityRow(Config.TABS.applications, month, id)) throw notFound_('Application');
       return { deleted: true, id: id };
     });
   }
 
-  /** Renames an application and the target_name of every Action pointing to its old name. */
+  /**
+   * Renames an application and the target_name of every Action pointing to its old name. Current month:
+   * the source key cell first (Importer.writeEdits also refuses a name another source row has, and an old
+   * name several source rows or several records of the month's snapshot share).
+   */
   function renameApplication(args) {
     requireEditing_('edit');
     var month = requireMonth_(args.month);
@@ -685,7 +719,10 @@ var ApiImpl_ = (function () {
 
       var upd = {};
       upd[Core.KEY_APP] = newName;
-      if (isLive_(month)) Importer.writeEdits('applications', [{ name: oldName, fields: upd }]);
+      if (isLive_(month)) {
+        Importer.writeEdits('applications', [{ name: oldName, fields: upd,
+          snapshotCount: snapshotCount_(apps, current, Core.KEY_APP) }]);
+      }
       var updated = Store.updateEntityRows(Config.TABS.applications, month, [{ id: id, updates: upd }])[0];
       var n = Store.updateRowsWhere(Config.TABS.actions,
         function (a) { return a.target_type === 'application' && a.target_name === oldName; },

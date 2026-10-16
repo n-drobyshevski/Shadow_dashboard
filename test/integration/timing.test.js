@@ -7,7 +7,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { loadGas, timingLines } = require('../helpers/gasSandbox');
+const { loadGas, timingLines, hourlyEvent } = require('../helpers/gasSandbox');
 const { buildSourceSpreadsheet, SOURCE_ID } = require('../fixtures/source');
 const data = require('../fixtures/data');
 
@@ -140,7 +140,7 @@ test('Importer + Sync: import laps, a no-change run writes nothing, a failed run
 
   // The hourly trigger path, nothing changed: no `writes` lap.
   const next = nextExecution(sb.env);
-  lines = linesDuring(sb.env, () => next.ctx.syncHourly());
+  lines = linesDuring(sb.env, () => next.ctx.syncHourly(hourlyEvent(sb.env)));
   imp = lines.filter((l) => l.stage === 'importMonth');
   assert.equal(imp[0].changed, false);
   assert.equal('writes' in imp[0], false);

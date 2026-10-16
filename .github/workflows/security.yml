@@ -1,0 +1,117 @@
+# SAST, secrets and SCA (docs/SECURITY.md). Every job blocks the PR on a finding; triaged false
+# positives are excluded by rule id below, each with its reason.
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 5 * * 1' # Mondays: new advisories against unchanged code
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests (incl. security pins)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # No install: the unit and integration tests only use Node built-ins.
+      - run: npm test
+
+  semgrep:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # Semgrep and every transitive dependency, pinned by version and SHA-256, wheels only (no build
+      # step). The set is complete (pip check passes), hence --no-deps. To change the version: edit
+      # security/requirements-semgrep.in, then, with pip-tools installed for Python 3.12 on Linux, run
+      # the command in the header of security/requirements-semgrep.txt.
+      - run: 'pip install --require-hashes --no-deps --only-binary :all: -r security/requirements-semgrep.txt'
+      - run: semgrep --version
+      # The browser code lives in <script> blocks of src/*.html: copied out (same line numbers) so the
+      # JavaScript rules can parse it. Server code (src/*.js) is scanned as is.
+      - run: |
+          node security/extract-client-js.js "$RUNNER_TEMP/scan/src"
+          cp src/*.js "$RUNNER_TEMP/scan/src/"
+      # Excluded after triage (docs/SECURITY.md, "Semgrep false positives"):
+      #   node_timing_attack: compares in-page render tokens, never a secret;
+      #   generic_error_disclosure: console.error of a client exception, in the visitor's own console;
+      #   regex_dos: the flagged regexes are linear (no nested quantifiers).
+      - working-directory: ${{ runner.temp }}/scan
+        run: >-
+          semgrep scan --metrics=off --error
+          --config p/javascript --config p/security-audit --config p/secrets --config p/xss --config p/nodejsscan
+          --config "$GITHUB_WORKSPACE/security/semgrep.yml"
+          --exclude-rule ajinabraham.njsscan.crypto.timing_attack_node.node_timing_attack
+          --exclude-rule ajinabraham.njsscan.generic.error_disclosure.generic_error_disclosure
+          --exclude-rule ajinabraham.njsscan.dos.regex_dos.regex_dos
+          src
+
+  secrets:
+    name: Secrets (gitleaks, full history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: |
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+      - run: '"$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose .'
+
+  sca:
+    name: Dependencies (osv-scanner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OSV_VERSION: 2.7.0
+      OSV_SHA256: 160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          curl -sSfL -o "$RUNNER_TEMP/osv-scanner" \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SHA256}  $RUNNER_TEMP/osv-scanner" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/osv-scanner"
+      # package-lock.json: the clasp toolchain (dev only, nothing of it is deployed). Plotly, the only
+      # library the deployed app loads, is pinned by version + SRI and checked by test/integration/security.test.js.
+      - run: '"$RUNNER_TEMP/osv-scanner" scan source --config osv-scanner.toml -L package-lock.json'
+      - name: Plotly 2.35.3 has no known advisory
+        run: |
+          out=$(curl -sSf -X POST https://api.osv.dev/v1/query \
+            -d '{"package":{"name":"plotly.js","ecosystem":"npm"},"version":"2.35.3"}')
+          echo "$out"
+          test "$out" = "{}"
