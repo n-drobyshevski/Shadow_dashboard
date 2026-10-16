@@ -62,20 +62,34 @@ var Importer = (function () {
     return { raw: range.getValues(), display: range.getDisplayValues() };
   }
 
-  /** Records of an entity tab, or null when the tab does not exist. Logs {stage:'sourceSheet', tab, rows, ms}. */
+  /** Copy of a record without its `_` fields: ids and stamps never come from the source. */
+  function sourceFields_(rec) {
+    var out = {};
+    Object.keys(rec || {}).forEach(function (k) { if (k.charAt(0) !== '_') out[k] = rec[k]; });
+    return out;
+  }
+
+  /**
+   * Records of an entity tab, or null when the tab does not exist. Logs {stage:'sourceSheet', tab, rows, ms}.
+   * Core.rowsToRecords applies the size limits (Core.LIMITS) and drops the `_` columns; the records are
+   * stripped of `_` fields once more (defence in depth: `_id` / `_updated_at` are the Store's).
+   */
   function readEntityTab_(ss, tabName, keyField, fmtDate) {
     var sheet = findTab(ss, tabName);
     if (!sheet) return null;
     var t0 = Date.now();
     var grid = readGrid_(sheet);
     Perf.log({ stage: 'sourceSheet', tab: tabName, rows: grid.raw.length, ms: Date.now() - t0 });
-    return Core.rowsToRecords({
+    var parsed = Core.rowsToRecords({
       display: grid.display,
       raw: grid.raw,
       anchors: [keyField],
       keyField: keyField,
-      fmtDate: fmtDate
+      fmtDate: fmtDate,
+      tab: tabName
     });
+    parsed.records = parsed.records.map(sourceFields_);
+    return parsed;
   }
 
   /**
@@ -92,7 +106,8 @@ var Importer = (function () {
   }
 
   /**
-   * Reads the whole configured source.
+   * Reads the whole configured source. Outside the lock: a source over the size limits (Core.LIMITS:
+   * columns, records, Référentiel categories / values) is SOURCE_ERROR before any lock is taken.
    * @return {{sourceId, title, postes:{headers,records,warnings}|null, applications:{...}|null,
    *           referentiel:Object<string,string[]>|null}}
    */
@@ -123,24 +138,54 @@ var Importer = (function () {
 
   /**
    * Gives each new record the `_id` of the stored record with the same key (normKey), so that a
-   * re-import keeps record identities stable for the client (open drawers, pending edits).
+   * re-import keeps record identities stable for the client (open drawers, pending edits). The ids
+   * only ever come from `previous` (the stored records): incoming `_` fields are dropped first.
    */
   function keepIds_(records, previous, keyField) {
-    var byKey = {};
+    var byKey = Object.create(null); // keys such as "__proto__" are ordinary keys here
     (previous || []).forEach(function (p) {
       var k = Core.normKey(p[keyField]);
-      if (k !== '' && !Object.prototype.hasOwnProperty.call(byKey, k)) byKey[k] = p._id;
+      if (k !== '' && !(k in byKey)) byKey[k] = p._id;
     });
-    var used = {};
+    var used = Object.create(null);
     return records.map(function (rec) {
-      var k = Core.normKey(rec[keyField]);
-      var id = Object.prototype.hasOwnProperty.call(byKey, k) ? byKey[k] : '';
-      if (!id || used[id]) return rec;
-      used[id] = true;
-      var out = {};
-      Object.keys(rec).forEach(function (f) { out[f] = rec[f]; });
-      out._id = id;
+      var out = sourceFields_(rec);
+      var k = Core.normKey(out[keyField]);
+      var id = k in byKey ? Core.str(byKey[k]) : '';
+      if (id && !used[id]) {
+        used[id] = true;
+        out._id = id;
+      }
       return out;
+    });
+  }
+
+  /** Characters of the JSON of a record's data fields, as Store stores it (one cell). */
+  function recordJsonLength_(rec) {
+    var data = {};
+    Object.keys(rec || {}).forEach(function (k) {
+      if (k.charAt(0) !== '_') data[k] = rec[k] === undefined ? null : rec[k];
+    });
+    return JSON.stringify(data).length;
+  }
+
+  /**
+   * SOURCE_ERROR unless every record JSON and the headers JSON (one ImportLog cell) stay under
+   * Core.LIMITS.recordJsonChars: a cell over the Sheets limit (50,000 characters) would make the import
+   * fail half-way through its writes. Called before the first write.
+   */
+  function checkSizes_(records, headers, keyField, tabName) {
+    var max = Core.LIMITS.recordJsonChars;
+    if (JSON.stringify(headers || []).length >= max) {
+      throw Core.makeError('SOURCE_ERROR', 'Onglet « ' + tabName + ' » : les en-têtes de colonnes sont trop longs ' +
+        '(plus de ' + max + ' caractères en tout). Raccourcissez-les ou supprimez les colonnes inutiles du Google Sheet source.');
+    }
+    records.forEach(function (rec) {
+      if (recordJsonLength_(rec) < max) return;
+      var name = Core.str(rec[keyField]);
+      throw Core.makeError('SOURCE_ERROR', 'Onglet « ' + tabName + ' » : la ligne « ' +
+        (name.length > 60 ? name.slice(0, 60) + '…' : name) + ' » est trop volumineuse (plus de ' + max +
+        ' caractères en tout). Raccourcissez le texte de ses cellules dans le Google Sheet source.');
     });
   }
 
@@ -242,7 +287,10 @@ var Importer = (function () {
    *     import is incomplete (no ImportLog entry, e.g. it failed half-way) or has no applications,
    *     fields still blank are then filled from that earlier month too;
    *   - write order: Applications, Référentiel, Postes, then the ImportLog entry, which marks the
-   *     import as complete.
+   *     import as complete;
+   *   - sizes are checked before the first write (checkSizes_: each record's JSON and each entity's
+   *     headers under Core.LIMITS.recordJsonChars), the other limits by readSource: an import that
+   *     cannot be stored in full writes nothing.
    * With opts.skipUnchanged, an overwrite that would change nothing (records, headers, référentiel)
    * writes nothing at all, not even the ImportLog entry: `changed` is then false.
    * Logs {stage:'importMonth', ms, readSource, lockWait, rereadSource, dataReads, compare, writes, flush,
@@ -356,6 +404,10 @@ var Importer = (function () {
         changed: changed, changes: changes };
       t.lap('compare');
       if (!changed && o.skipUnchanged) return result;
+
+      // ---- size checks, before the first write: a failed import writes nothing.
+      if (appRecords) checkSizes_(appRecords, appsHeaders, Core.KEY_APP, Core.SOURCE_TABS.applications);
+      if (posteRecords) checkSizes_(posteRecords, postesHeaders, Core.KEY_POSTE, Core.SOURCE_TABS.postes);
 
       // ---- writes (Applications first, ImportLog last = completion marker). Moving the stamp first
       // (out-of-order guard) also covers a run that fails half-way through its writes.

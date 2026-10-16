@@ -24,7 +24,9 @@
  *     that block (monthSpan_). ImportLog is read from the bottom (latestImportInfo, recentImportLog);
  *   - a mutation is committed with at most ONE setValues(): commit_() diffs the new rows against
  *     the rows just read and only rewrites the smallest contiguous block that changed (plus one
- *     clearContent() when the tab shrank). No per-row API calls in loops;
+ *     deleteRows() of the leftover rows when the tab shrank). No per-row API calls in loops;
+ *   - new tabs are trimmed to their schema width (trimColumns_), so that the rows inserted later
+ *     are not 26 columns wide.
  *   - reads are memoized for the current execution (memo_), see below.
  *
  * Load-order safe: the IIFE only defines functions; Config / Core / GAS services are used lazily.
@@ -44,7 +46,7 @@ var Store = (function () {
   var sourceWritten_ = false; // the current withLock wrote into the source spreadsheet (noteSourceWrite)
   /**
    * Read memo, tab -> {table: readTable_ result | null, col: column A | null, spans: {month: span}}.
-   * A tab's entry is dropped by every write primitive on that tab (writeBlock_, the clearContent of
+   * A tab's entry is dropped by every write primitive on that tab (writeBlock_, the row removal of
    * commit_, deleteSheetRow_), and the whole memo when withLock acquires the lock (a read-modify-write
    * under the lock never starts from rows read before it), when ensure() maps the tabs, by
    * resetCache_ and by clearMemo_ (start of every api_* call and of the hourly trigger run). Memoized
@@ -219,8 +221,10 @@ var Store = (function () {
   /**
    * Persists `newRows` for a table read by readSheet_ (complete list of data rows) or for a month span
    * (monthSpan_: the rows of its block, same length only), writing only the smallest contiguous block
-   * that differs from what was read (ONE setValues) and clearing the leftover rows when the table
-   * shrank (ONE clearContent).
+   * that differs from what was read (ONE setValues) and removing the leftover rows when the table
+   * shrank: ONE deleteRows (they are the last rows of the data range, so nothing below them moves and
+   * the sheet does not keep growing). Sheets refuses to delete every non-frozen row: when nothing
+   * else is left, the last leftover row is cleared (clearContent) instead.
    * @return {number} number of rows written
    */
   function commit_(table, newRows) {
@@ -237,7 +241,11 @@ var Store = (function () {
     if (end > start) writeBlock_(table.sheet, 2 + table.base + start, newRows.slice(start, end));
     if (old.length > newRows.length) {
       forgetSheet_(table.sheet);
-      table.sheet.getRange(2 + newRows.length, 1, old.length - newRows.length, table.schema.length).clearContent();
+      var first = 2 + newRows.length;
+      var count = old.length - newRows.length;
+      var del = Math.min(count, table.sheet.getMaxRows() - 2); // Sheets keeps one non-frozen row
+      if (del > 0) table.sheet.deleteRows(first, del);
+      if (count > del) table.sheet.getRange(first, 1, count - del, table.schema.length).clearContent();
     }
     table.raw = newRows;
     return end - start;
@@ -334,6 +342,16 @@ var Store = (function () {
     return withLock(function () { return repairTabs_(ss, id, created); });
   }
 
+  /**
+   * Deletes the columns past `width` (a new sheet has 26), so that the rows ensureSize_ inserts later
+   * are only as wide as the schema. Only when nothing is written past `width` (getLastColumn): a column
+   * typed in by hand is kept.
+   */
+  function trimColumns_(sheet, width) {
+    var max = sheet.getMaxColumns();
+    if (max > width && sheet.getLastColumn() <= width) sheet.deleteColumns(width + 1, max - width);
+  }
+
   /** Slow path of ensureTabs_ (caller holds the lock); records the schema version in Meta and in the property. */
   function repairTabs_(ss, id, created) {
     var names = Object.keys(Config.SCHEMAS);
@@ -350,6 +368,7 @@ var Store = (function () {
         if (spare) { sh = spare.setName(name); spare = null; }
         else sh = ss.insertSheet(name);
       }
+      trimColumns_(sh, Config.SCHEMAS[name].length);
       ensureHeader_(sh, Config.SCHEMAS[name]);
       out[name] = sh;
     });
@@ -701,21 +720,28 @@ var Store = (function () {
     return byMonth;
   }
 
+  /** `_id` kept by replaceEntityMonth: uuid-shaped only (never "__proto__", "constructor", a source value…). */
+  var ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  /** `_updated_at` kept by replaceEntityMonth: an ISO stamp as updateEntityRows writes it. */
+  var STAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
+
   /**
-   * Replaces the snapshot of one month (other months untouched). Keeps an existing `_id` /
-   * `_updated_at`, otherwise assigns a new uuid; `_order` = index, `_key` = str(rec[keyField]).
+   * Replaces the snapshot of one month (other months untouched). Keeps an existing `_id` (uuid-shaped
+   * and not used by an earlier record, else a new Config.uuid()) and `_updated_at` (an ISO stamp, else
+   * ''); `_order` = index, `_key` = str(rec[keyField]).
    * @return {Object[]} the stored records
    */
   function replaceEntityMonth(tab, month, records, keyField) {
     checkMonth_(month);
     var kf = keyField || entityKeyField_(tab);
     var table = readTable_(tab);
-    var usedIds = {};
+    var usedIds = Object.create(null);
     var fresh = (records || []).map(function (rec, i) {
       var id = Core.str(rec && rec._id);
-      if (!id || hasOwn_(usedIds, id)) id = Config.uuid();
+      if (!ID_RE.test(id) || usedIds[id] === true) id = Config.uuid();
       usedIds[id] = true;
-      return entityRow_(month, rec, kf, i, id, rec && rec._updated_at);
+      var stamp = Core.str(rec && rec._updated_at);
+      return entityRow_(month, rec, kf, i, id, STAMP_RE.test(stamp) ? stamp : '');
     });
     replaceMonthRows_(table, month, fresh);
     return fresh.map(entityRecord_);

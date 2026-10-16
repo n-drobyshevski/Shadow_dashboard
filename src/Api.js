@@ -155,10 +155,18 @@ var ApiImpl_ = (function () {
     return !!v && typeof v === 'object' && !Array.isArray(v);
   }
 
-  /** A cell value coming from the client -> string | null. Objects / arrays are refused. */
+  /** VALIDATION (with the field) for a text longer than Core.LIMITS.cellChars, else the text. */
+  function maxLength_(s, field) {
+    if (s.length > Core.LIMITS.cellChars) {
+      throw invalid_('Texte trop long pour « ' + field + ' » : ' + Core.LIMITS.cellChars + ' caractères au maximum.', field);
+    }
+    return s;
+  }
+
+  /** A cell value coming from the client -> string | null. Objects / arrays and too long texts are refused. */
   function cellValue_(v, field) {
     if (v === null || v === undefined) return null;
-    if (typeof v === 'string') return Core.isBlank(v) ? null : v;
+    if (typeof v === 'string') return Core.isBlank(v) ? null : maxLength_(v, field);
     if (typeof v === 'number') return isFinite(v) ? String(v) : null;
     if (typeof v === 'boolean') return String(v);
     throw invalid_('Valeur invalide pour « ' + field + ' ».', field);
@@ -219,9 +227,10 @@ var ApiImpl_ = (function () {
     return s;
   }
 
+  /** A free-text argument -> trimmed string ('' for null); non-scalars and too long texts are refused. */
   function stringField_(v, field) {
     if (v === null || v === undefined) return '';
-    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return Core.str(v);
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return maxLength_(Core.str(v), field);
     throw invalid_('Valeur invalide pour « ' + field + ' ».');
   }
 

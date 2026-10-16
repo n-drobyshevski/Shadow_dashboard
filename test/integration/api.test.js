@@ -351,6 +351,26 @@ test('addApplication: created with every column, duplicates rejected', () => {
   ok(ctx, 'api_addApplication', { month: '2026-04', record: { [KEY_APP]: 'Slack' } });
 });
 
+test('free text longer than Core.LIMITS.cellChars is refused as VALIDATION with the field, nothing written', () => {
+  const { ctx, env } = imported();
+  const max = ctx.Core.LIMITS.cellChars;
+  const lab = byName(monthData(ctx, '2026-04').postes, KEY_POSTE, 'LAB-TEX-01');
+  const writes = env.__state.writes.length;
+  const e1 = fail(ctx, 'api_savePostes', { month: '2026-04', changes: [{ id: lab._id, updates: { Commentaires: 'c'.repeat(max + 1) } }] },
+    'VALIDATION');
+  assert.equal(e1.field, 'Commentaires');
+  assert.equal(e1.message, 'Texte trop long pour « Commentaires » : ' + max + ' caractères au maximum.');
+  const e2 = fail(ctx, 'api_addApplication', { month: '2026-04', record: { [KEY_APP]: 'n'.repeat(max + 1) } }, 'VALIDATION');
+  assert.equal(e2.field, KEY_APP);
+  const e3 = fail(ctx, 'api_addAction', { target_type: 'poste', target_name: 'LAB-TEX-01', action: 'Y', comment: 'z'.repeat(max + 1) },
+    'VALIDATION');
+  assert.equal(e3.field, 'comment');
+  assert.equal(env.__state.writes.length, writes, 'refused before any write');
+  // Exactly the limit is accepted.
+  const saved = ok(ctx, 'api_savePostes', { month: '2026-04', changes: [{ id: lab._id, updates: { Commentaires: 'c'.repeat(max) } }] });
+  assert.equal(saved.updated[0].Commentaires.length, max);
+});
+
 test('renameApplication cascades to actions; deleteApplication', () => {
   const { ctx } = imported();
   const dropbox = byName(monthData(ctx, '2026-05').applications, KEY_APP, 'Dropbox perso');

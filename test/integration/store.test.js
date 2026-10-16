@@ -728,6 +728,70 @@ test('Store grows the sheet beyond its default 1000 rows', () => {
   assert.equal(back[1204][KEY_POSTE], 'P-1204');
 });
 
+test('new data tabs are as wide as their schema; rows inserted later too', () => {
+  const sb = boot();
+  for (const tab of TAB_NAMES) assert.equal(sb.ss.getSheetByName(tab).getMaxColumns(), sb.Config.SCHEMAS[tab].length, tab);
+  const many = Array.from({ length: 1205 }, (_, i) => ({ [KEY_POSTE]: 'P-' + i }));
+  sb.Store.replaceEntityMonth('Postes', '2026-05', many, KEY_POSTE);
+  assert.equal(sb.ss.getSheetByName('Postes').getMaxColumns(), sb.Config.SCHEMAS.Postes.length);
+
+  // A repair (here: a tab deleted) re-creates the tab trimmed, and trims the other tabs too, unless
+  // something is written past their schema width.
+  sb.ss.deleteSheet(sb.ss.getSheetByName('Replacements'));
+  const swap = (tab) => {
+    const sh = sb.ss.insertSheet(tab + '_new'); // 26 columns
+    sb.ss.deleteSheet(sb.ss.getSheetByName(tab));
+    return sh.setName(tab);
+  };
+  swap('Actions');
+  swap('Referentiel').getRange(5, 20).setValue('à la main');
+  sb.Store.resetCache_();
+  sb.Store.ensure();
+  assert.equal(sb.ss.getSheetByName('Replacements').getMaxColumns(), sb.Config.SCHEMAS.Replacements.length);
+  assert.equal(sb.ss.getSheetByName('Actions').getMaxColumns(), sb.Config.SCHEMAS.Actions.length);
+  assert.equal(sb.ss.getSheetByName('Referentiel').getMaxColumns(), 26, 'a column typed in by hand is kept');
+  assert.equal(sb.ss.getSheetByName('Referentiel').getRange(5, 20).getValue(), 'à la main');
+});
+
+test('replaceEntityMonth keeps only uuid-shaped ids and ISO stamps; anything else is replaced', () => {
+  const sb = boot();
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  const good = '0f8fad5b-d9cb-469f-a165-70867728950e';
+  const stamp = '2026-05-03T10:00:00.000Z';
+  const recs = ['__proto__', 'constructor', 'prototype', 'p1', ' ' + good + 'x', good, good].map((id, i) =>
+    ({ _id: id, _updated_at: i === 5 ? stamp : 'n’importe quoi', [KEY_POSTE]: 'P' + i }));
+  const stored = sb.Store.replaceEntityMonth('Postes', '2026-05', recs, KEY_POSTE);
+  assert.equal(stored[5]._id, good, 'a uuid is kept');
+  assert.equal(stored[5]._updated_at, stamp, 'an ISO stamp is kept');
+  for (const [i, rec] of stored.entries()) {
+    assert.match(rec._id, UUID_RE, 'record ' + i);
+    if (i !== 5) assert.equal(rec._updated_at, '', 'record ' + i);
+  }
+  assert.notEqual(stored[6]._id, good, 'a duplicate id gets a new one');
+  assert.equal(new Set(stored.map((r) => r._id)).size, recs.length);
+  assert.deepEqual(plain(sb.Store.readEntityMonth('Postes', '2026-05').map((r) => r._id)), plain(stored.map((r) => r._id)));
+});
+
+test('a table that shrinks loses its leftover rows (deleteRows), or has them cleared when no row would be left', () => {
+  const sb = boot();
+  const sh = sb.ss.getSheetByName('Postes');
+  const many = Array.from({ length: 1205 }, (_, i) => ({ [KEY_POSTE]: 'P-' + i }));
+  sb.Store.replaceEntityMonth('Postes', '2026-05', many, KEY_POSTE);
+  assert.equal(sh.getMaxRows(), 1206);
+  sb.Store.replaceEntityMonth('Postes', '2026-05', many.slice(0, 10), KEY_POSTE);
+  assert.equal(sh.getMaxRows(), 11, 'the sheet shrank with the table');
+  assert.equal(sh.getLastRow(), 11);
+  assert.equal(sb.Store.readEntityMonth('Postes', '2026-05').length, 10);
+
+  // Every data row gone from a sheet without spare rows: Sheets keeps one non-frozen row, cleared.
+  sb.Store.replaceEntityMonth('Postes', '2026-05', [], KEY_POSTE);
+  assert.equal(sh.getMaxRows(), 2);
+  assert.equal(sh.getLastRow(), 1);
+  assert.deepEqual(plain(sb.Store.listMonths()), []);
+  sb.Store.replaceEntityMonth('Postes', '2026-05', many.slice(0, 3), KEY_POSTE);
+  assert.equal(sb.Store.readEntityMonth('Postes', '2026-05').length, 3);
+});
+
 test('months listing: ImportLog ∪ Postes ∪ Applications, ascending', () => {
   const sb = boot();
   assert.deepEqual(plain(sb.Store.listMonths()), []);

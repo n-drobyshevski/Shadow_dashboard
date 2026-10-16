@@ -440,6 +440,19 @@ function createGasEnv(options) {
       this._maxCols += howMany;
       return this;
     }
+
+    deleteColumns(columnPosition, howMany) {
+      count('deleteColumns');
+      if (columnPosition < 1 || howMany < 1 || columnPosition + howMany - 1 > this._maxCols) {
+        throw new Error('Those columns are out of bounds.');
+      }
+      if (this._maxCols - howMany < 1) throw new Error('Sorry, it is not possible to delete all columns.');
+      for (const grid of [this._vals, this._fmts, this._disp, this._rules]) {
+        for (const row of grid) if (row) row.splice(columnPosition - 1, howMany);
+      }
+      this._maxCols -= howMany;
+      return this;
+    }
   }
 
   // ------------------------------------------------------------------------------------ Range

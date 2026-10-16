@@ -79,6 +79,10 @@ Core.SOURCE_TABS         = { postes:'Suivi des postes', applications:'Suivi des 
 Core.ERROR_CODES         = ['NOT_CONFIGURED','MONTH_EXISTS','NOT_FOUND','BUSY','VALIDATION','SOURCE_ERROR','FORBIDDEN','INTERNAL']
 Core.FORM_REQUIRED       = { postes:['Nom du poste','Équipe'], applications:['Nom du logiciel / service'] }  // creation forms
 Core.FORM_DATE_HINTS     = ['Date visite','Prochaine revue',"Date d'achat",'Deadline','Date']  // date columns by name
+Core.LIMITS              = { cellChars:5000, headerChars:200, sourceColumns:500, sourceRecords:5000,
+                             refCategories:100, refValues:500, recordJsonChars:45000 }
+                           // import sizes (rowsToRecords, parseReferentiel, Importer.importMonth) and admin
+                           // free text (cellChars, api_*): a Sheets cell holds at most 50 000 characters
 ```
 
 ## 2. Core functions (pure; identical on server and client)
@@ -100,8 +104,8 @@ All functions are **total**: they never throw on null/undefined/blank input unle
 | `extractSpreadsheetId(urlOrId)` | Accepts a full Sheets URL (`/spreadsheets/d/<ID>/...`) or a bare ID (`[A-Za-z0-9-_]{20,}`) → ID string, else `null`. |
 | `escapeFormula(v)` | If `v` is a string beginning with `=`, `+`, `-` or `@` → `"'" + v`; otherwise `v` unchanged. |
 | `findHeaderRow(rows, anchors, maxScan=15)` | `rows` = 2D array. Returns the index of the first row (within `maxScan`) where some cell's `normKey` equals the `normKey` of any anchor; `-1` if none. |
-| `rowsToRecords(opts)` | `opts = {display, raw, anchors, keyField, fmtDate}`. `display`/`raw` are same-shape 2D arrays (`raw` may be omitted). Finds header row via `findHeaderRow(display, anchors)`; if `-1` throws `makeError('SOURCE_ERROR', ...)`. Headers = `str(cell)` (NBSP→space, trimmed); columns with blank headers are dropped; duplicate headers get suffix `" (2)"`, `" (3)"`. For each data row: value = if `raw` cell is a `Date` → `fmtDate(rawCell)` (fallback `Core.fmtDDMMYYYY`), else `str(displayCell)`, with `''` stored as `null`. Rows where **all** values are null are dropped silently. Rows whose `keyField` is blank are dropped and counted. Returns `{headers:[...], records:[{header:value|null}], warnings:[string]}`; warning text (French) e.g. `"3 ligne(s) sans « Nom du poste » ignorée(s)"`. |
-| `parseReferentiel(display)` | Transposed sheet: first non-empty row = category names; each column below = values (ragged, blanks skipped, trimmed, de-duplicated preserving order). Returns `{category:[values]}` (category key = trimmed header). |
+| `rowsToRecords(opts)` | `opts = {display, raw, anchors, keyField, fmtDate, tab}` (`tab`: the sheet name, for messages). `display`/`raw` are same-shape 2D arrays (`raw` may be omitted). Finds header row via `findHeaderRow(display, anchors)`; if `-1` throws `makeError('SOURCE_ERROR', ...)`. More than `LIMITS.sourceColumns` non-blank header cells → `SOURCE_ERROR` (`'Onglet « <tab> » : 612 colonnes ont un en-tête, au plus 500 sont acceptées. …'`). Headers = `str(cell)` (NBSP→space, trimmed); columns with blank headers are dropped; headers starting with `_` (reserved for the app's `_id`, `_updated_at`…) are dropped with a warning (`'Colonne « _id » ignorée : les noms commençant par « _ » sont réservés à l’application.'`); headers longer than `LIMITS.headerChars` are truncated (warning); duplicate headers get suffix `" (2)"`, `" (3)"` (smallest free suffix, linear time). For each data row: value = if `raw` cell is a `Date` → `fmtDate(rawCell)` (fallback `Core.fmtDDMMYYYY`), else `str(displayCell)`, with `''` stored as `null`; a value longer than `LIMITS.cellChars` is truncated (warning `'« <key> », colonne « <col> » : valeur tronquée à 5000 caractères.'`, the first 5, then a count). Rows where **all** values are null are dropped silently. Rows whose `keyField` is blank are dropped and counted. More than `LIMITS.sourceRecords` records → `SOURCE_ERROR`. Returns `{headers:[...], records:[{header:value|null}], warnings:[string], headerRow, rows, columns}`; warning text (French) e.g. `"3 ligne(s) sans « Nom du poste » ignorée(s)"`; names in warnings are cut at 60 characters. |
+| `parseReferentiel(display)` | Transposed sheet: first non-empty row = category names; each column below = values (ragged, blanks skipped, trimmed, de-duplicated preserving order). Returns `{category:[values]}` (category key = trimmed header). Categories are truncated to `LIMITS.headerChars`, values to `LIMITS.cellChars`. `SOURCE_ERROR` naming the « Référentiel » tab beyond `LIMITS.sourceColumns` non-blank header cells, `LIMITS.refCategories` categories or `LIMITS.refValues` distinct values in one category. |
 | `scoreApplication(rec)` | `{score, criteria:{contrat, sip, idp, galink, champs}}` — each criterion boolean, 20 pts each: `str(Contrat)==='Oui'`, `str(SIP)==='Oui'`, `str(IDP)==='Oui'`, `str(Galink)==='Oui'`, all of `APP_REQUIRED_FIELDS` non-blank. |
 | `enrichPostes(list)` | returns **new** objects: `{...rec, _score: parseScore(rec['Score conformité']), _conforme: _score !== null && _score >= 80}` |
 | `enrichApplications(list)` | returns **new** objects: `{...rec, _score, _conforme: _score >= 80, _criteria}` from `scoreApplication`. |
@@ -140,6 +144,9 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 - Return value is `JSON.stringify({ok:true, data})` or `JSON.stringify({ok:false, error:{code, message, field?}})`.
   `error.field` (a non-empty string) only on `VALIDATION` errors that are about one form field
   (`Core.makeError(code, message, field)`): the creation forms show the message under that field.
+- Free text from the client (record cells, names, action / replacement fields) longer than
+  `Core.LIMITS.cellChars` characters → `VALIDATION` with the field (« Texte trop long pour « X » : 5000
+  caractères au maximum. »), before the lock.
 - All wrapped by `apiWrap_(fn, name, minRole)` which first checks the caller's role
   (`Access.requireRole(minRole)`: `FORBIDDEN` when the identity is not passed, the account has no access,
   or a lecteur calls an admin endpoint) and applies the effective threshold (`Core.setThreshold`), then
@@ -170,7 +177,7 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 
 ### Record shapes
 - **Poste / Application record** (as returned by the API): every source column (string or `null`) plus
-  `_id` (uuid string), `_key` (string, value of the key column), `_order` (int, row order within the
+  `_id` (uuid string, assigned by the Store: a source column named `_…` is never imported), `_key` (string, value of the key column), `_order` (int, row order within the
   month), `_updated_at` (ISO string or `''`), and **enrichment**: `_score` (number|null),
   `_conforme` (bool); applications additionally `_criteria` (`{contrat,sip,idp,galink,champs}`) and
   always have `Galink` and `IDP` keys (`'Oui'|'Non'|null`). Records are returned sorted by `_order`.
@@ -378,13 +385,16 @@ ends on the last row column A had), or when a block ending on the last row of th
 to check) saw the sheet gain rows during its read (`getMaxRows()` asked again after it), the whole tab is
 read instead. Column A itself (`getLastRow()` + one narrow read) falls back to the whole tab when rows
 were deleted between the two calls (the narrow range would run past the end of a sheet without blank
-rows); `ImportLog` is read from the bottom, with the same fallback. Writes: the smallest contiguous changed block with one `setValues()` (+ one `clearContent()` when
-a tab shrinks).
+rows); `ImportLog` is read from the bottom, with the same fallback. Writes: the smallest contiguous changed block with one `setValues()` (+ one `deleteRows()` of the
+leftover rows when a tab shrinks, so that the sheet does not keep growing; when that would delete every
+non-frozen row, which Sheets refuses, the last one is cleared with `clearContent()` instead). Tabs are
+created (and trimmed by a repair, when nothing is written past the schema width) with exactly their
+schema's columns, not the 26 of a new sheet, so the rows inserted later are as narrow.
 
 **Read memo (per execution).** Whole-tab reads, column A and month blocks are memoized per tab for the
 current execution and shared with the callers, who copy before changing anything (`readTab` returns new
 objects, records are parsed anew). A tab's memo is dropped by every write primitive on it (block write,
-`clearContent`, row deletion), and the whole memo when `withLock` acquires the lock (another execution
+row removal or `clearContent` by a shrinking table, row deletion), and the whole memo when `withLock` acquires the lock (another execution
 may have written while this one waited), when `ensure()` maps the tabs, by `resetCache_()` and by
 `clearMemo_()` (start of every `api_*` call and of `syncHourly`).
 
@@ -429,8 +439,10 @@ Store.readEntityMonth(tab, month)       -> [record] parsed from _json + {_id,_ke
                                            _order; reads that month's block only
 Store.readEntityAll(tab)                -> {month:[record]} for all months (whole tab: api_getTimeline)
 Store.replaceEntityMonth(tab, month, records, keyField)
-                                        -> [record] stored (keeps other months' rows; assigns _id via
-                                           Config.uuid() if missing, _order = index, _key = str(rec[keyField]))
+                                        -> [record] stored (keeps other months' rows; keeps a uuid-shaped _id
+                                           not used by an earlier record, else assigns Config.uuid() — an id
+                                           such as '__proto__', 'constructor' or 'p1' is replaced; keeps an
+                                           ISO _updated_at, else ''; _order = index, _key = str(rec[keyField]))
 Store.updateEntityRows(tab, month, changes)   changes=[{id, updates}] -> [record] updated;
                                            unknown id -> NOT_FOUND (nothing written). Sets _updated_at.
                                            Reads and rewrites within the month's block only.
@@ -468,7 +480,11 @@ Importer.readSource()       -> {sourceId, title, postes:{headers,records,warning
                                 applications:{...}|null, referentiel:{cat:[v]}|null}
                                Per tab: one getDataRange() then getValues() + getDisplayValues();
                                Date cells formatted 'dd/MM/yyyy' in ss.getSpreadsheetTimeZone().
-                               Missing postes AND applications tab -> SOURCE_ERROR.
+                               Missing postes AND applications tab -> SOURCE_ERROR. The size limits of
+                               Core.LIMITS (rowsToRecords, parseReferentiel: columns, records,
+                               Référentiel categories / values) are SOURCE_ERROR here, outside the lock;
+                               `_` columns are dropped by rowsToRecords and every `_` field of the
+                               records again here (ids and stamps only ever come from the Store).
 Importer.importMonth(month, overwrite, {skipUnchanged?}) -> SyncResult (see §3). Notes
                                Config.sourceStamp(), reads the source (readSource) OUTSIDE the lock,
                                then takes Store.withLock (BUSY after 20 s, as before) to read the stored
@@ -501,7 +517,13 @@ Importer.importMonth(month, overwrite, {skipUnchanged?}) -> SyncResult (see §3)
                                fills the fields still blank from (b) (warning 'L’import précédent du
                                mois X était incomplet : Galink/IDP repris de Y…' when incomplete).
                                Write order: Applications, Référentiel, Postes, then the ImportLog
-                               entry (= completion marker).
+                               entry (= completion marker). Before the first write, every record's JSON
+                               (data fields, one cell) and each entity's headers JSON (one ImportLog
+                               cell) must stay under Core.LIMITS.recordJsonChars, else SOURCE_ERROR
+                               naming the tab and the record ('… la ligne « X » est trop volumineuse …'):
+                               an import that cannot be stored in full writes nothing. On overwrite,
+                               the stored `_id`s are matched by key (normKey); incoming `_` fields are
+                               ignored.
 Importer.writeEdits(entity, [{name, fields}]) -> cells written. entity 'postes'|'applications'; locates
                                each row by key (normKey) in the source tab, checks every cell first (row
                                found -> else SOURCE_ERROR; no formula -> else VALIDATION), then setValue per

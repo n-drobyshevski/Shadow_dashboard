@@ -440,6 +440,13 @@ Semgrep (règles du registre + `security/semgrep.yml`), gitleaks (historique com
   système.
 - Chaque mois ajoute une ligne par poste et par application au classeur de données (le mois en cours
   est réécrit, pas dupliqué) ; Google Sheets plafonne à 10 millions de cellules par classeur.
+- **Taille du classeur source** : au plus 500 colonnes avec un en-tête et 5 000 lignes par onglet de
+  suivi, 100 catégories de 500 valeurs au plus dans le Référentiel ; au-delà, la synchronisation est
+  refusée (« Onglet « … » : … ») sans rien écrire. Une cellule de plus de 5 000 caractères (200 pour un
+  en-tête) est tronquée, avec un avertissement dans le journal des synchronisations ; une ligne dont
+  l'ensemble dépasse 45 000 caractères est refusée en la nommant. Les colonnes dont le nom commence par
+  « _ » sont réservées à l'application et ignorées. Dans l'application, un texte saisi est limité à
+  5 000 caractères.
 
 ---
 
