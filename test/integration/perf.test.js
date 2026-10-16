@@ -69,28 +69,33 @@ const STRANGER = 'inconnu@decathlon.com';
  * save also reads the display values of the edited rows (one more getDisplayValues of the edited row, 25 cells,
  * under the lock), so that it never overwrites a source cell the import truncated: savePostesLive
  * getDisplayValues 2 -> 3, sourceReadsLocked 4 -> 5, cellsRead and sourceCellsRead +25.
+ * The access log keeps one row per person per 30 min: every bootstrap reads that visit entry and, for a
+ * new visit, writes it (cacheReads and cacheWrites +1 on each bootstrap flow, doGetAdmin included). A
+ * refused bootstrap is logged too, so deniedCold now opens the data spreadsheet to append its row
+ * (openById 0 -> 1); deniedWarm is within the 30 min, so it only reads the visit entry.
  */
 const BASELINE = {
   bootstrapAdmin: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
-    getDataRange: 0, propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+    getDataRange: 0, propertiesReads: 2, cacheReads: 1, cacheWrites: 1, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   // An explicit lecteur: the admin groups are checked (they could raise the role), cold here. + the throttle
   // getAll / putAll and the release get / put.
   bootstrapLecteur: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
-    getDataRange: 0, propertiesReads: 2, cacheReads: 3, cacheWrites: 3, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
+    getDataRange: 0, propertiesReads: 2, cacheReads: 4, cacheWrites: 4, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
   // Cold: the throttle get, one getAll; puts: the counter, the membership and its 6 h confirmation.
   bootstrapGroupCold: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
-    getDataRange: 0, propertiesReads: 2, cacheReads: 3, cacheWrites: 4, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
+    getDataRange: 0, propertiesReads: 2, cacheReads: 4, cacheWrites: 5, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
   // Warm: the throttle get, one getAll, no GroupsApp call; puts: the counter and the sliding renewal.
   bootstrapGroupWarm: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
-    getDataRange: 0, propertiesReads: 2, cacheReads: 3, cacheWrites: 3, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
-  // No role at all (refused): no spreadsheet opened; warm, one getAll answers without any GroupsApp call.
-  deniedCold: { openById: 0, getValues: 0, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 0,
-    getDataRange: 0, propertiesReads: 1, cacheReads: 3, cacheWrites: 4, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
+    getDataRange: 0, propertiesReads: 2, cacheReads: 4, cacheWrites: 3, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+  // No role at all (refused): cold opens the data spreadsheet for the access log row; warm, one getAll
+  // answers without any GroupsApp call.
+  deniedCold: { openById: 1, getValues: 0, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 0,
+    getDataRange: 0, propertiesReads: 1, cacheReads: 4, cacheWrites: 5, groupCalls: 1, sourceCellsRead: 0, sourceReadsLocked: 0 },
   deniedWarm: { openById: 0, getValues: 0, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 0,
-    getDataRange: 0, propertiesReads: 1, cacheReads: 3, cacheWrites: 2, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+    getDataRange: 0, propertiesReads: 1, cacheReads: 4, cacheWrites: 2, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   // doGet with the bootstrap inline: the admin bootstrap + the FAVICON_URL property, nothing else.
   doGetAdmin: { openById: 1, getValues: 3, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 12801,
-    getDataRange: 0, propertiesReads: 3, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
+    getDataRange: 0, propertiesReads: 3, cacheReads: 1, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   // Paramètres opens the source (the live check), not the data spreadsheet (its URL is built from the id).
   getSettings: { openById: 1, getValues: 0, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 0,
     getDataRange: 0, propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },

@@ -107,6 +107,11 @@ function mockMain(FIX, OPTS) {
     sourceTitle: OPTS.configured ? 'ShadowIT_Industry' : '',
     months: {},          // month -> {postes, applications, referentiel, columns}
     importLog: [],       // insertion order
+    accessLog: OPTS.empty ? [] : [   // insertion order
+      { at: '2026-05-12 08:41', email: 'lea.martin@decathlon.com', result: 'lecteur' },
+      { at: '2026-05-12 09:02', email: 'inconnu@decathlon.com', result: 'refused' },
+      { at: '2026-05-12 09:15', email: 'sam.durand@decathlon.com', result: 'admin' }
+    ],
     actions: OPTS.empty ? [] : clone(FIX.ACTIONS),
     replacements: OPTS.empty ? [] : clone(FIX.REPLACEMENTS),
     threshold: 80,
@@ -513,6 +518,14 @@ function mockMain(FIX, OPTS) {
       return clone(db.importLog).reverse().slice(0, limit).map(function (e) {
         return { month: e.month, imported_at: e.imported_at, counts: e.counts, warnings: e.warnings, changes: e.changes || null };
       });
+    },
+
+    api_getAccessLog: function (args) {
+      var limit = obj(args).limit === undefined || obj(args).limit === null ? 50 : obj(args).limit;
+      if (typeof limit !== 'number' || Math.floor(limit) !== limit || limit < 1 || limit > 500) {
+        fail('VALIDATION', '« limit » doit être un entier entre 1 et 500.');
+      }
+      return clone(db.accessLog).reverse().slice(0, limit);
     },
 
     api_savePostes: function (args) { requireEditing('edit'); return saveEntity('postes', KEY_POSTE, args); },

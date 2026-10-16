@@ -62,7 +62,7 @@ describe('settings (admin)', () => {
       const titles = (id) => page.$$eval('#settings-panel-' + id + ' .card-title', (ns) => ns.map((n) => n.textContent.trim()));
       assert.deepEqual(await titles('general'), ['Source de données', 'Synchronisation', 'Seuil de conformité']);
       assert.deepEqual(await titles('saisie'), ['Saisie dans l’application']);
-      assert.deepEqual(await titles('acces'), ['Personnes et groupes']);
+      assert.deepEqual(await titles('acces'), ['Personnes et groupes', 'Dernières connexions']);
       assert.equal(await page.isVisible('#settings-panel-saisie'), false);
       assert.equal(await page.isVisible('#settings-panel-acces'), false);
       assert.equal((await page.textContent('#settings-source-link')).trim(), 'ShadowIT_Industry');
@@ -372,6 +372,29 @@ describe('settings (admin)', () => {
       assert.ok(await page.isVisible('#access-nomatch'));
       await page.click('#access-filter-all');
       assert.deepEqual(await visible(), [ACCOUNTS.ADMIN2]);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('« Dernières connexions »: loaded on first open only, newest first, refusals marked', async () => {
+    await withApp({ page: 'settings' }, async (app) => {
+      const { page } = app;
+      await tab(page, 'acces');
+      assert.ok(await page.isVisible('#settings-access-log'));
+      assert.equal(await page.isVisible('#access-log'), false);
+      assert.equal((await callsNamed(app, 'api_getAccessLog')).length, 0, 'nothing read before it is opened');
+      await page.click('#access-log-toggle');
+      await page.waitForSelector('#access-log .access-log-table tbody tr');
+      assert.equal(await page.getAttribute('#access-log-toggle', 'aria-expanded'), 'true');
+      const rows = await page.$$eval('#access-log tbody tr', (rs) => rs.map((r) =>
+        [r.dataset.result, ...[...r.cells].map((c) => c.textContent.trim())]));
+      assert.deepEqual(rows, [
+        ['admin', '12/05/2026 09:15', 'sam.durand@decathlon.com', 'Administrateur'],
+        ['refused', '12/05/2026 09:02', 'inconnu@decathlon.com', 'Refusé'],
+        ['lecteur', '12/05/2026 08:41', 'lea.martin@decathlon.com', 'Lecteur']]);
+      await page.click('#access-log-toggle');
+      await page.click('#access-log-toggle');
+      assert.equal((await callsNamed(app, 'api_getAccessLog')).length, 1, 'read once');
       assert.deepEqual(app.errors, []);
     });
   });

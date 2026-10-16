@@ -8,6 +8,9 @@ var Store = (function () {
   var PLAIN_TEXT_FORMAT = '@';
   var META_SCHEMA_VERSION_KEY = 'schema_version';
   var IMPORT_LOG_TAIL = 30;
+  var ACCESS_LOG_MAX = 1000;      // rows kept in AccessLog
+  var ACCESS_LOG_SLACK = 100;     // trimmed in one deleteRows once the tab is this much over
+  var VISIT_LOCK_MS = 500;
 
   // Per-execution caches.
   var ss_ = null;
@@ -732,8 +735,7 @@ var Store = (function () {
   }
 
   // Newest first, read from the bottom in doubling blocks while blank rows leave too few entries.
-  function recentImportLog(limit) {
-    var tab = Config.TABS.importLog;
+  function recentRows_(tab, limit, entryOf) {
     var n = Math.max(0, Math.floor(Number(limit) || 0));
     var end = sheet_(tab).getLastRow() - 1;
     var chunk = n;
@@ -750,12 +752,43 @@ var Store = (function () {
         end = 0;
       }
       for (var i = rows.length - 1; i >= 0 && out.length < n; i--) {
-        if (!isEmptyRow_(rows[i])) out.push(importLogEntry_(rows[i]));
+        if (!isEmptyRow_(rows[i])) out.push(entryOf(rows[i]));
       }
       end -= k;
       chunk *= 2;
     }
     return out;
+  }
+
+  function recentImportLog(limit) {
+    return recentRows_(Config.TABS.importLog, limit, importLogEntry_);
+  }
+
+  // Best effort: a boot never waits behind a sync, so the visit is dropped when the lock is busy.
+  // Returns true when the row was written.
+  function appendAccessLog(entry) {
+    var lock = LockService.getScriptLock();
+    if (!lock.tryLock(VISIT_LOCK_MS)) return false;
+    try {
+      var tab = Config.TABS.accessLog;
+      appendRows_(tab, [[toText_(entry.at || Config.nowStamp()), toText_(entry.email), toText_(entry.result)]]);
+      var sheet = sheet_(tab);
+      var rows = sheet.getLastRow() - 1;
+      if (rows > ACCESS_LOG_MAX + ACCESS_LOG_SLACK) {
+        forgetSheet_(sheet);
+        sheet.deleteRows(2, rows - ACCESS_LOG_MAX);
+      }
+      SpreadsheetApp.flush();
+      return true;
+    } finally {
+      lock.releaseLock();
+    }
+  }
+
+  function recentAccessLog(limit) {
+    return recentRows_(Config.TABS.accessLog, limit, function (row) {
+      return { at: row[0], email: row[1], result: row[2] };
+    });
   }
 
   function appendImportLog(entry) {
@@ -886,6 +919,10 @@ var Store = (function () {
     getImportLog: getImportLog,
     recentImportLog: recentImportLog,
     appendImportLog: appendImportLog,
+    appendAccessLog: appendAccessLog,
+    recentAccessLog: recentAccessLog,
+    ACCESS_LOG_MAX: ACCESS_LOG_MAX,
+    ACCESS_LOG_SLACK: ACCESS_LOG_SLACK,
     latestImportInfo: latestImportInfo,
     listRows: listRows,
     insertRow: insertRow,

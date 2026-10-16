@@ -103,6 +103,12 @@ This page records what was checked, what was fixed, and what is still open. Upda
   - there is no `window.open` and no `postMessage` listener.
 - **Browser storage:** localStorage holds only the sidebar-collapsed flag.
 - **Logs:** perf lines carry no emails or ids.
+- **Access log (AccessLog tab):** the one deliberate store of who opened the app.
+  - It keeps the time, the email and the result (admin, lecteur, refused) of each visit, at most one row per person per 30 min; nothing else (no IP, no page).
+  - Only admins read it (`api_getAccessLog`, weighted 5 by the throttle). It lives in the data spreadsheet, which is shared with nobody.
+  - It is capped: past 1 100 rows the oldest are deleted down to 1 000.
+  - A refused account is logged only once a data spreadsheet exists, so a stranger cannot make the app create one; its 30 min entry and the throttle bound how often it can write.
+  - Writing is best effort under a 500 ms tryLock: a busy lock or a failure drops the row, never the call, and the warning it logs names no email.
 - **Secrets:** gitleaks finds nothing in the full history. `.clasprc*.json` is ignored by git.
 - **Plotly 2.35.3:** no OSV advisory. The old prototype-pollution CVE (CVE-2023-46308) was fixed in 2.25.2.
 

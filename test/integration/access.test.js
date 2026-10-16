@@ -97,7 +97,7 @@ test('lecteur: read endpoints work, every write endpoint is FORBIDDEN, links are
   ok(sb.ctx, 'api_getDiff', { oldMonth: '2026-05', newMonth: '2026-05' });
 
   const writes = apiNames(sb.ctx).filter((n) => !LECTEUR_APIS.includes(n));
-  assert.equal(writes.length, 27); // 26 admin endpoints + the test-only api_importMonth
+  assert.equal(writes.length, 28); // 27 admin endpoints + the test-only api_importMonth
   const poste = md.postes[0];
   for (const name of writes) {
     const err = fail(sb.ctx, name, { month: '2026-05', id: poste._id, changes: [], email: ADMIN2, role: 'admin',
@@ -425,7 +425,8 @@ test('groups: every group a call may need is read from the cache in ONE getAll',
   assert.equal(ok(sb.ctx, 'api_bootstrap').user.role, 'lecteur');
   assert.equal(count('cacheGetAll') - warm.getAll, 2, 'warm: one getAll');
   assert.equal(sb.env.__state.groupCalls, warm.groups, 'warm: no GroupsApp call');
-  assert.equal(count('cacheGet') - before.get, 2, 'never one get per group: only the throttle release, once per call');
+  // The bootstrap also checks the access log's 30 min visit entry.
+  assert.equal(count('cacheGet') - before.get, 3, 'never one get per group: the throttle release per call and the visit check');
 });
 
 test('groups: a cached membership slides with use but is re-verified after 1 h at most', (t) => {

@@ -14,7 +14,9 @@ var Access = (function () {
   var GROUP_OK_CACHE_S = 21600;  // 6 h, the CacheService maximum
   var THROTTLE_PER_MIN = 120;
   var HEAVY_WEIGHT = 5;          // cost of a full-history read
-  var THROTTLE_WEIGHTS = { api_getTimeline: HEAVY_WEIGHT, api_getDiff: HEAVY_WEIGHT, api_getImportLog: HEAVY_WEIGHT };
+  var THROTTLE_WEIGHTS = { api_getTimeline: HEAVY_WEIGHT, api_getDiff: HEAVY_WEIGHT, api_getImportLog: HEAVY_WEIGHT,
+    api_getAccessLog: HEAVY_WEIGHT };
+  var VISIT_GAP_S = 1800;        // the access log keeps one row per person per 30 min
   var THROTTLE_IN_FLIGHT = 10;   // a boot sends about 5 calls, so this allows two tabs
   var IN_FLIGHT_MAX_S = 360;     // the 6 min execution limit
   var THROTTLE_LOCK_MS = 3000;
@@ -63,6 +65,15 @@ var Access = (function () {
 
   function cacheKey_(key) {
     return key.length <= MAX_KEY ? key : key.slice(0, MAX_KEY - 10) + '#' + hash_(key);
+  }
+
+  // True the first time an email is seen in VISIT_GAP_S, so reloads do not fill the access log.
+  function noteVisit_(email) {
+    if (!email) return false;
+    var key = cacheKey_('al:' + email);
+    if (cacheGet(key)) return false;
+    cachePut(key, '1', VISIT_GAP_S);
+    return true;
   }
 
   function groupKey_(group, email) {
@@ -364,6 +375,8 @@ var Access = (function () {
     isGroupMember: isGroupMember,
     cacheGet: cacheGet,
     cachePut: cachePut,
+    noteVisit_: noteVisit_,
+    VISIT_GAP_S: VISIT_GAP_S,
     GROUP_DEPTH: GROUP_DEPTH,
     GROUP_CACHE_S: GROUP_CACHE_S,
     GROUP_MAX_AGE_S: GROUP_MAX_AGE_S,

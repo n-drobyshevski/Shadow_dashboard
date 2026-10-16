@@ -104,10 +104,10 @@ test('bootstrap before configuration: creates the data spreadsheet, configured=f
   const ss = env.SpreadsheetApp.openById(dataId);
   assert.equal(ss.getName(), 'ShadowIT_AppData');
   assert.deepEqual(ss.getSheets().map((s) => s.getName()).sort(),
-    ['Actions', 'Applications', 'ImportLog', 'Meta', 'Postes', 'Referentiel', 'Replacements']);
-  // The first-run creation is a write: it ran under the lock.
-  assert.equal(env.__state.lock.acquired, 1);
-  assert.equal(env.__state.lock.released, 1);
+    ['AccessLog', 'Actions', 'Applications', 'ImportLog', 'Meta', 'Postes', 'Referentiel', 'Replacements']);
+  // The first-run creation is a write: it ran under the lock, then the access log row took it once more.
+  assert.equal(env.__state.lock.acquired, 2);
+  assert.equal(env.__state.lock.released, 2);
   // Idempotent: same spreadsheet on the next call.
   assert.equal(ok(ctx, 'api_bootstrap').dataUrl, d.dataUrl);
   assert.equal(env.__state.calls.create, 1);

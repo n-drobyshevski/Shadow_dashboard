@@ -887,7 +887,57 @@
           'l’adresse des autres.'], { id: 'access-help' }),
       wrap);
     list.id = 'settings-access';
-    return [domainBox, list];
+    return [domainBox, list, accessLogCard()];
+  }
+
+  var ACCESS_LOG_ROWS = 50;
+  var ACCESS_RESULT = { admin: ['Administrateur', 'neutral'], lecteur: ['Lecteur', 'neutral'], refused: ['Refusé', 'ko'] };
+
+  // Who opened the app. Loaded on first open, since it costs a server read.
+  function accessLogCard() {
+    var box = el('div', { class: 'access-log', id: 'access-log', hidden: true });
+    var loaded = false;
+    var toggle = el('button', { type: 'button', class: 'btn btn-link btn-sm', id: 'access-log-toggle',
+      'aria-expanded': 'false', 'aria-controls': 'access-log', onClick: function () {
+        var open = box.hidden;
+        box.hidden = !open;
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        toggle.textContent = open ? 'Masquer le journal' : 'Afficher le journal';
+        if (open && !loaded) { loaded = true; loadAccessLog(box); }
+      } }, 'Afficher le journal');
+    var section = card('Dernières connexions', toggle,
+      UI.lede('Qui a ouvert l’application, refus compris. Une ligne par personne et par demi-heure.', null,
+        { small: true }),
+      box);
+    section.id = 'settings-access-log';
+    return section;
+  }
+
+  function loadAccessLog(box) {
+    UI.asyncBlock(box, {
+      load: function () { return api.call('api_getAccessLog', { limit: ACCESS_LOG_ROWS }); },
+      placeholder: function () { return UI.loading('Chargement du journal…', { small: true }); },
+      small: true,
+      error: { prefix: 'Journal indisponible' },
+      live: alive,
+      render: function (log) {
+        if (!log || !log.length) { box.appendChild(UI.empty('Aucune connexion enregistrée.', { small: true })); return; }
+        box.appendChild(UI.table({
+          className: 'access-log-table',
+          columns: [
+            { label: 'Quand', mono: true, cell: function (e) { return Fmt.dateTime(e.at); } },
+            { label: 'Personne', mono: true, cell: function (e) { return e.email; } },
+            { label: 'Accès', cell: function (e) {
+              var r = ACCESS_RESULT[e.result] || [e.result, 'neutral'];
+              return UI.statusMark(r[0], r[1]);
+            } }
+          ],
+          rows: log,
+          rowAttrs: function (e) { return { dataset: { result: e.result } }; }
+        }));
+        box.appendChild(el('p', { class: 'field-help' }, 'Les ' + UI.fmtNum(1000) + ' dernières connexions sont gardées.'));
+      }
+    });
   }
 
   // Page

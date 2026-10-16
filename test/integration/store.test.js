@@ -14,7 +14,7 @@ const { loadGas, plain, sheetValues, timingLines, SRC_DIR } = require('../helper
 const { createGasEnv } = require('../helpers/gasFakes');
 const data = require('../fixtures/data');
 
-const TAB_NAMES = ['Postes', 'Applications', 'Referentiel', 'Actions', 'Replacements', 'ImportLog', 'Meta'];
+const TAB_NAMES = ['Postes', 'Applications', 'Referentiel', 'Actions', 'Replacements', 'ImportLog', 'AccessLog', 'Meta'];
 
 /** Fresh sandbox with the data spreadsheet already created. */
 function boot(opts) {

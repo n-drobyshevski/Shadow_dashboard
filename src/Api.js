@@ -36,6 +36,7 @@ function apiWrap_(fn, name, minRole) {
       code = known ? e.code : 'INTERNAL';
       // Google's error text can name a spreadsheet id, so only admins see it.
       var message = known ? String(e.message || code) : internalMessage_(e, !!user && user.role === 'admin');
+      if (code === 'FORBIDDEN' && name === 'api_bootstrap' && !e.throttled) logVisit_(Access.activeEmail(), 'refused');
       if (code === 'FORBIDDEN' || e.throttled) console.warn('[' + (name || 'api') + '] ' + code + ': ' + message);
       else console.error('[' + (name || 'api') + '] ' + code + ': ' + (e.stack || e.message || String(err)));
       var error = { code: code, message: message };
@@ -48,6 +49,18 @@ function apiWrap_(fn, name, minRole) {
       Perf.log(line);
     }
   };
+}
+
+// One row per person per 30 min in AccessLog. Never fails the call that triggered it.
+function logVisit_(email, result) {
+  if (!email) return;
+  try {
+    // A refused visitor must not make the app create its data spreadsheet.
+    if (result === 'refused' && !Config.get().dataId) return;
+    if (Access.noteVisit_(email)) Store.appendAccessLog({ email: email, result: result });
+  } catch (e) {
+    console.warn('[access log] not written: ' + (e && e.code ? e.code : 'error'));
+  }
 }
 
 function parseArgs_(argsJson) {
@@ -83,6 +96,7 @@ var ApiImpl_ = (function () {
   var DATE_FR_RE = /^\d{2}\/\d{2}\/\d{4}$/;
   var IMPORT_LOG_LIMIT = 12;
   var IMPORT_LOG_MAX_LIMIT = 500;
+  var ACCESS_LOG_LIMIT = 50;
   var SYNC_ERROR_GENERIC = 'La synchronisation a échoué. Un administrateur en voit le détail dans Paramètres.';
 
   var hasOwn = Object.prototype.hasOwnProperty;
@@ -280,6 +294,7 @@ var ApiImpl_ = (function () {
     var cfg = Config.get();
     var admin = user.role === 'admin';
     Store.ensure();
+    logVisit_(user.email, user.role);
 
     var months = Store.listMonths();
     // The spreadsheets are private to the deployer, so links only help admins. Neither file is opened here.
@@ -387,6 +402,14 @@ var ApiImpl_ = (function () {
       },
       importInfo: info ? { imported_at: info.imported_at, warnings: info.warnings || [] } : null
     };
+  }
+
+  function getAccessLog(args) {
+    var limit = args.limit === undefined || args.limit === null ? ACCESS_LOG_LIMIT : args.limit;
+    if (typeof limit !== 'number' || Math.floor(limit) !== limit || limit < 1 || limit > IMPORT_LOG_MAX_LIMIT) {
+      throw invalid_('« limit » doit être un entier entre 1 et ' + IMPORT_LOG_MAX_LIMIT + '.');
+    }
+    return Store.recentAccessLog(limit);
   }
 
   function getImportLog(args) {
@@ -971,6 +994,7 @@ var ApiImpl_ = (function () {
     syncNow: syncNow,
     enableSync: enableSync,
     getImportLog: getImportLog,
+    getAccessLog: getAccessLog,
     savePostes: savePostes,
     addGenericPoste: addGenericPoste,
     addPoste: addPoste,
@@ -1010,6 +1034,7 @@ function api_getSyncStatus(argsJson) { return apiWrap_(ApiImpl_.getSyncStatus, '
 function api_syncNow(argsJson) { return apiWrap_(ApiImpl_.syncNow, 'api_syncNow', 'admin')(argsJson); }
 function api_enableSync(argsJson) { return apiWrap_(ApiImpl_.enableSync, 'api_enableSync', 'admin')(argsJson); }
 function api_getImportLog(argsJson) { return apiWrap_(ApiImpl_.getImportLog, 'api_getImportLog', 'lecteur')(argsJson); }
+function api_getAccessLog(argsJson) { return apiWrap_(ApiImpl_.getAccessLog, 'api_getAccessLog', 'admin')(argsJson); }
 function api_savePostes(argsJson) { return apiWrap_(ApiImpl_.savePostes, 'api_savePostes', 'admin')(argsJson); }
 function api_addGenericPoste(argsJson) { return apiWrap_(ApiImpl_.addGenericPoste, 'api_addGenericPoste', 'admin')(argsJson); }
 function api_addPoste(argsJson) { return apiWrap_(ApiImpl_.addPoste, 'api_addPoste', 'admin')(argsJson); }

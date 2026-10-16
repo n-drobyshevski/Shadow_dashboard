@@ -150,7 +150,7 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 - All wrapped by `apiWrap_(fn, name, minRole)` which first calls `Access.throttle(name)`, before any Script
   Property is read: `FORBIDDEN` when the identity is not passed, `BUSY` « Trop de requêtes. Réessayez dans une
   minute. » when the account (any account but the deployer, with or without a role) has used its 120 units of
-  the current minute (1 per call, 5 for `api_getTimeline`, `api_getDiff`, `api_getImportLog`), `BUSY` « Trop de
+  the current minute (1 per call, 5 for `api_getTimeline`, `api_getDiff`, `api_getImportLog`, `api_getAccessLog`), `BUSY` « Trop de
   requêtes en cours. Réessayez dans quelques instants. » when 10 calls of the account are already running (the
   release `Access.throttle` returns runs in `finally`). `doGet` goes through the same throttle (`'doGet'`, before
   the template is rendered and `FAVICON_URL` read) and answers a refusal with a short static page. It then checks
@@ -226,6 +226,7 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 | `api_syncNow` | – | `{status:SyncStatus, result:SyncResult}` — synchronises the current month now. `SyncResult = {month, counts:{postes, applications, referentiel}, overwritten:bool, carriedOver:n, warnings:[...], changed:bool, changes:Changes}`; nothing is written when `changed` is false. | `NOT_CONFIGURED`, `SOURCE_ERROR`, `BUSY` (recorded in `lastError`, except `BUSY`) |
 | `api_enableSync` | – | as `api_syncNow`, after creating the hourly trigger if it is missing | `NOT_CONFIGURED` (ScriptApp not authorised: the deployer must run `setup` in the editor), then as `api_syncNow` |
 | `api_getImportLog` | `{limit?}` (integer 1–500, default 12) | `[{month, imported_at, counts, warnings, changes}]`: the `limit` latest ImportLog entries, newest first, with the fields the « Journal des synchronisations » shows only (no `source_id`, no headers). Read from the bottom of the tab (`Store.recentImportLog`). | `VALIDATION` (bad `limit`) |
+| `api_getAccessLog` | `{limit?}` (integer 1–500, default 50) | `[{at:'YYYY-MM-DD HH:mm', email, result:'admin'\|'lecteur'\|'refused'}]`: the `limit` latest AccessLog rows, newest first (`Store.recentAccessLog`). **Admin only.** | `VALIDATION` (bad `limit`) |
 | `api_savePostes` | `{month, changes:[{id, updates:{col:value}}]}` | `{updated:[rec], sourceUpdated:bool}` (`true` = current month, written into the source) | `FORBIDDEN` (switch `edit` off), `VALIDATION` (keys starting with `_` or the key column are rejected; a source cell computed by a formula, or in a column an array formula fills; a value refused by the source cell's data validation), `NOT_FOUND`, `SOURCE_ERROR` (row not found in the source: renamed or deleted since the last sync; a name several source rows share: « « X » apparaît 2 fois dans l’onglet « … » du Google Sheet source : corrigez d’abord les doublons dans le Google Sheet, puis synchronisez. »; a name several records of the month's snapshot share — one of the rows removed from the source since the last sync —: « « X » apparaît 2 fois dans les données synchronisées (onglet « … ») : corrigez les doublons dans le Google Sheet source, synchronisez, puis réessayez. », nothing written). Also `VALIDATION` with the field for a source cell longer than `Core.LIMITS.cellChars` (truncated by the import: « « X », colonne « Y » : la cellule du Google Sheet source a plus de 5000 caractères et l’application n’en a que le début : modifiez-la dans le Google Sheet source. »). An edit made only of fields without a source column (`Galink` / `IDP`) does not look the source row up: it is saved even for a duplicated name. |
 | `api_addGenericPoste` | `{month}` | `{created:bool, record:rec}` (existing record if already present; current month: also appended to the source with `Importer.appendRecord(…, {strict:false})`: no rule enforced, computed columns left to their formulas and their values read back into the record) | `FORBIDDEN` (switch `create` off), `NOT_FOUND` |
 | `api_getFormSchema` | `{entity:'postes'\|'applications', month, fresh?:bool}` | `FormSchema = {entity, month, live:bool, origin:'source'\|'fallback'\|'snapshot', keyField, readAt:'YYYY-MM-DD HH:mm'\|'', warning?:string, columns:[FormColumn]}` — the fields of a creation form. Current month (`live`): read from the source OUTSIDE the lock (`Importer.readFormSchema`, cached 5 min per entity and source; `fresh:true` reads again), `origin:'source'`, applications completed with `Galink` / `IDP` (`appOnly`) when the source has no such column; when the source is not configured or cannot be read: the snapshot's columns (`Core.snapshotFormColumns` over the month's ImportLog headers and Référentiel, nothing cached), `origin:'fallback'` with a French `warning` (never fails). Past month: `Core.snapshotFormColumns` (`origin:'snapshot'`), the source is never opened. `readAt` = when the source was read (`'source'`) or the month synchronised. | `FORBIDDEN` (switch `create` off), `VALIDATION` (`entity`, month), `NOT_FOUND` (past month not imported) |
@@ -272,7 +273,7 @@ optional fields, no sheet computes them) and only Oui/Non lists are strict.
 
 The **complete list** of public API functions (used by the contract test) is exactly:
 `api_bootstrap, api_savePrefs, api_setConfig, api_getMonthData, api_getSyncStatus, api_syncNow, api_enableSync,
-api_getImportLog, api_savePostes,
+api_getImportLog, api_getAccessLog, api_savePostes,
 api_addGenericPoste, api_addPoste, api_getFormSchema, api_saveApplications, api_addApplication, api_deleteApplication,
 api_renameApplication, api_getTimeline, api_getActions, api_addAction, api_updateAction,
 api_deleteAction, api_addReplacement, api_updateReplacement, api_deleteReplacement, api_getDiff,
@@ -288,7 +289,8 @@ Config.PROP_DATA_ID   = 'DATA_SPREADSHEET_ID'
 Config.PROP_SOURCE_ID = 'SOURCE_SPREADSHEET_ID'
 Config.DATA_SPREADSHEET_NAME = 'ShadowIT_AppData'
 Config.TABS = { postes:'Postes', applications:'Applications', referentiel:'Referentiel',
-                actions:'Actions', replacements:'Replacements', importLog:'ImportLog', meta:'Meta' }
+                actions:'Actions', replacements:'Replacements', importLog:'ImportLog', accessLog:'AccessLog',
+                meta:'Meta' }
 Config.SCHEMAS = {
   Postes:       ['_month','_id','_key','_order','_json','_updated_at'],
   Applications: ['_month','_id','_key','_order','_json','_updated_at'],
@@ -298,6 +300,7 @@ Config.SCHEMAS = {
   Replacements: ['id','old_poste','new_poste','equipe','responsable','date_replacement','comment','recorded_at'],
   ImportLog:    ['month','imported_at','source_id','counts_json','postes_headers_json','apps_headers_json','warnings_json',
                  'changes_json'],
+  AccessLog:    ['at','email','result']   (one row per person per 30 min, ~1 000 rows kept)
   Meta:         ['key','value']
 }
 Config.SCHEMA_VERSION = '2'   (2: ImportLog.changes_json)
@@ -397,7 +400,7 @@ Access.throttle(name)        -> release function. Per-account limits, called by 
                                Config.get: FORBIDDEN when activeEmail() is '' (same message as requireRole);
                                nothing for the deployer (release = no-op); else 'rl:<minute>|<email>' (minute =
                                floor(Date.now() / 60000)) counts the units used this minute: THROTTLE_WEIGHTS[name]
-                               (5 for api_getTimeline, api_getDiff, api_getImportLog) or 1, and 'if:<email>' holds
+                               (5 for api_getTimeline, api_getDiff, api_getImportLog, api_getAccessLog) or 1, and 'if:<email>' holds
                                the start times (ms) of the account's running calls. Above THROTTLE_PER_MIN = 120:
                                BUSY « Trop de requêtes. Réessayez dans une minute. »; with THROTTLE_IN_FLIGHT = 10
                                calls running: BUSY « Trop de requêtes en cours. Réessayez dans quelques
@@ -505,6 +508,10 @@ Store.recentImportLog(limit)            -> the `limit` latest entries, newest fi
                                            blocks twice as large while blank rows left fewer entries (a
                                            block past the end of the sheet -> whole tab)
 Store.appendImportLog(entry)            -> void
+Store.appendAccessLog({at?, email, result}) -> bool: one AccessLog row under a 500 ms tryLock (false and nothing
+                                           written when the lock is busy, so a boot never waits behind a sync);
+                                           past 1 100 rows the oldest are deleted down to 1 000 in one deleteRows
+Store.recentAccessLog(limit)            -> [{at, email, result}] newest first, read like recentImportLog
 Store.latestImportInfo(month)           -> last ImportLog entry for month or null, parsing that row only: the
                                            last 30 rows first unless column A is already memoized, then column
                                            A from the bottom and that one row (last rows past the end of the
@@ -1225,6 +1232,9 @@ content), each saved on its own:
   tabs `#add-tab-one|many|group` (`#add-email` → `api_saveUser`; `#bulk-emails` with the `#bulk-preview` →
   `api_addUsers`; `#add-group` → `api_saveGroup`), role radios `#add-role-lecteur|admin`; Enter in a field
   submits; a refusal shows on the field (`#<field>-err`) and keeps the dialog open. Added rows get `.is-new`.
+  Last, « Dernières connexions » (`#settings-access-log`): `#access-log-toggle` « Afficher le journal » opens
+  `#access-log` and reads `api_getAccessLog` (50 rows) the first time only; a table Quand / Personne / Accès,
+  rows `data-result`, « Refusé » as a ko mark.
 
 ---------------------------------------------------------------------------------------------------
 ## 7. Tests
