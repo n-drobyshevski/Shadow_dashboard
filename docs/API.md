@@ -151,7 +151,7 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
   Property is read: `FORBIDDEN` when the identity is not passed, `BUSY` « Trop de requêtes. Réessayez dans une
   minute. » when the account (any account but the deployer, with or without a role) has used its 120 units of
   the current minute (1 per call, 5 for `api_getTimeline`, `api_getDiff`, `api_getImportLog`), `BUSY` « Trop de
-  requêtes en cours. Réessayez dans quelques instants. » when 6 calls of the account are already running (the
+  requêtes en cours. Réessayez dans quelques instants. » when 10 calls of the account are already running (the
   release `Access.throttle` returns runs in `finally`). `doGet` goes through the same throttle (`'doGet'`, before
   the template is rendered and `FAVICON_URL` read) and answers a refusal with a short static page. It then checks
   the caller's role
@@ -393,7 +393,7 @@ Access.throttle(name)        -> release function. Per-account limits, called by 
                                floor(Date.now() / 60000)) counts the units used this minute: THROTTLE_WEIGHTS[name]
                                (5 for api_getTimeline, api_getDiff, api_getImportLog) or 1, and 'if:<email>' holds
                                the start times (ms) of the account's running calls. Above THROTTLE_PER_MIN = 120:
-                               BUSY « Trop de requêtes. Réessayez dans une minute. »; with THROTTLE_IN_FLIGHT = 6
+                               BUSY « Trop de requêtes. Réessayez dans une minute. »; with THROTTLE_IN_FLIGHT = 10
                                calls running: BUSY « Trop de requêtes en cours. Réessayez dans quelques
                                instants. » (err.throttled, logged as a warning), nothing written. A start time
                                older than 360 s (an execution killed before its finally) no longer counts. Both

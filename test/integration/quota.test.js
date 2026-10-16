@@ -223,6 +223,8 @@ test('doGet: throttled like the api_* calls; refused, a static page with the mes
   assert.match(sb.ctx.doGet({}).getContent(), /Identité Google non transmise/);
   assert.equal(propertyReads(sb), reads);
   assert.equal((st.calls.cacheGet || 0) + (st.calls.cacheGetAll || 0), cache);
+  // The message is printed escaped (an escaping template scriptlet, never concatenated markup).
+  assert.equal(sb.ctx.refusedPage_('<b>x</b> & "y"').getContent().includes('<b>'), false);
   // Within the limits, the page load counts one call and frees its place at the end.
   sb.clock.now += 60 * 1000;
   as(sb, READER);

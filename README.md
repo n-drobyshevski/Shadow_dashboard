@@ -425,6 +425,14 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
       `plotly.min.js` mette plus de 30 secondes) : « Graphique indisponible » s'affiche au bout de
       30 secondes, puis les graphiques du tableau de bord apparaissent d'eux-mêmes à la fin du
       téléchargement, sans clic ; Plotly n'est demandé qu'une fois.
+- [ ] Sécurité : le DevTools d'une autre page montre Plotly chargé avec `integrity` (aucune erreur
+      « Failed to find a valid digest »). Depuis un compte lecteur, une boucle
+      `google.script.run.api_getTimeline('{}')` reçoit « Trop de requêtes… » après quelques dizaines
+      d'appels, alors qu'un autre compte continue de travailler normalement, et l'ouverture normale de
+      l'application (deux onglets en même temps) n'est jamais refusée. Le verrou utilisateur du
+      compteur (`LockService.getUserLock`) ne ralentit pas visiblement les appels quand plusieurs
+      personnes utilisent l'application en même temps (exécution « en tant que moi »).
+      `google.script.run.setup()` depuis le navigateur d'un autre compte est refusé.
 
 ## Tests
 
@@ -538,7 +546,7 @@ to an account whose membership a live check confirmed in the last 6 hours: an ex
 does not lock every member out), an account with no role at all is remembered 10 minutes in one entry
 keyed by the list of groups, all of a call's group entries are read in one `CacheService.getAll`, and a
 cache failure only means a live check. Every account but the deployer is throttled to 120 calls a
-minute (full-history reads count 5) and 6 calls running at once, before any Script Property is read
+minute (full-history reads count 5) and 10 calls running at once, before any Script Property is read
 (page loads included); above it, `BUSY` « Trop de requêtes. Réessayez dans une minute. » / « Trop de
 requêtes en cours. … ». After pulling this
 version, run `setup()` again to grant the new groups scope. The list lives in the `ACCESS_JSON_N` /

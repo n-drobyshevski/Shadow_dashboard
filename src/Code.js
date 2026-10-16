@@ -26,11 +26,15 @@ function doGet(e) {
   }
 }
 
-/** Minimal static page for a refused page load: the message as text, nothing else read or rendered. */
+/**
+ * Minimal static page for a refused page load: the message as text (printed by an escaping <?= ?>
+ * scriptlet), nothing else read or rendered.
+ */
 function refusedPage_(message) {
-  var text = String(message).replace(/[&<>"']/g, function (ch) { return '&#' + ch.charCodeAt(0) + ';'; });
-  return HtmlService.createHtmlOutput('<!doctype html><meta charset="utf-8"><p style="font-family:sans-serif;' +
-    'margin:2rem">' + text + '</p>').setTitle('Shadow IT — Tableau de bord');
+  var template = HtmlService.createTemplate(
+    '<!doctype html><meta charset="utf-8"><p style="font-family:sans-serif;margin:2rem"><?= message ?></p>');
+  template.message = String(message);
+  return template.evaluate().setTitle('Shadow IT — Tableau de bord');
 }
 
 function renderIndex_(e) {
