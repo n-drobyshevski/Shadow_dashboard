@@ -84,7 +84,8 @@ Workspace que le déployeur. Avec un compte Gmail personnel, seul le déployeur 
 1. **Installer les outils** : `npm ci` installe exactement les versions de `package-lock.json`, sans
    le modifier (clasp envoie le code avec vos droits Google ; pas de version non relue). `npm audit`
    doit indiquer 0 vulnérabilité : `braces` (utilisé par clasp) est remplacé par la copie corrigée de
-   `vendor/braces` (voir son README et docs/SECURITY.md).
+   `vendor/braces` (voir son README et docs/SECURITY.md). Aucun avertissement « deprecated » non plus :
+   `gaxios` est fixé à 7.3.1 et `node-domexception` remplacé par `vendor/node-domexception`.
    ```sh
    npm ci
    ```
