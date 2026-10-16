@@ -1,21 +1,13 @@
 <script>
-/**
- * window.App — router, sidebar, configuration screen and boot (docs/API.md §5). Included last.
- *
- * Mounting: each page receives a fresh container appended to the cleared #main. A page whose async
- * work completes after the user navigated away therefore writes into a detached node instead of
- * polluting the next page.
- */
+// window.App: router, sidebar, app bar, configuration screen and boot. Included last.
+// Each page mounts into a fresh container in the cleared #main, so a late async response
+// lands in a detached node instead of the next page.
 (function () {
   'use strict';
 
   var el = UI.el;
 
-  /**
-   * Navigation order + labels. The shell owns the labels: each one is the page title (docs/DESIGN.md
-   * « Copy »), whatever the page registers. Each link leads with a 16px line icon (ICONS), the only thing
-   * left visible in the collapsed rail.
-   */
+  // The shell owns the labels: each one is the page title, whatever the page registers.
   var NAV = [
     { id: 'dashboard', title: 'Tableau de bord' },
     { id: 'postes', title: 'Postes' },
@@ -25,10 +17,7 @@
     { id: 'settings', title: 'Paramètres', admin: true }
   ];
 
-  /**
-   * « Trait » icons: 16×16 grid, 1.5px stroke, square caps and mitred joins (the hairlines and status
-   * squares of the ledger). Each entry = [tag, attributes]; `fill: true` marks the solid parts.
-   */
+  // 16×16 line icons as [tag, attributes] parts, where fill: true marks a solid part.
   var ICONS = {
     dashboard: [['path', { d: 'M2.5 11.5a5.5 5.5 0 0 1 11 0' }], ['path', { d: 'M8 11.5l2.5-4' }], ['path', { d: 'M1.75 13.75h12.5' }]],
     postes: [['rect', { x: 2, y: 2.75, width: 12, height: 8.25 }], ['path', { d: 'M8 11v2.5M5 13.75h6' }]],
@@ -43,7 +32,7 @@
     expand: [['rect', { x: 2, y: 2.5, width: 12, height: 11 }], ['path', { d: 'M6 2.5v11' }], ['path', { d: 'M9 6l2 2-2 2' }]]
   };
   var ROLE_LABELS = { admin: 'Administrateur', lecteur: 'Lecteur' };
-  /** Ghost logo, 24×24 grid (same drawing as the inline copy in the mobile top bar, index.html). */
+  // 24×24 ghost logo, also drawn inline in the mobile top bar of index.html.
   var LOGO = [
     ['path', { d: 'M5 19.5V11a7 7 0 0 1 14 0v8.5c-1.17 1.6-2.33 1.6-3.5 0s-2.33-1.6-3.5 0-2.33 1.6-3.5 0-2.33-1.6-3.5 0z' }],
     ['circle', { cx: 9.75, cy: 11, r: 1.25, fill: true }],
@@ -60,19 +49,18 @@
   var booted = false;
   var currentPage = null;
   var filtersBox = null;
-  var filterOptionsMonth = null;   // month whose options are rendered in the filters box
-  var suppressFilterRender = false; // filters changed by the app bar widgets themselves
-  var filtersPage = null;           // page the filters box was rendered for (Bâtiment disabled on actions)
-  var monthSwap = 0;                // bumped by every mount: a month swap only mounts if nothing else did
+  var filterOptionsMonth = null;   // month the filter options were built for
+  var suppressFilterRender = false; // set while the app bar widgets change the filters themselves
+  var filtersPage = null;           // page the filters were rendered for
+  var monthSwap = 0;                // bumped on every mount, so a stale month swap does not mount
 
   function pages() { return window.Pages || {}; }
-  /** Pages the current user may open (Paramètres is admin only). */
   function visibleNav() { return NAV.filter(function (n) { return !n.admin || State.canEdit(); }); }
   function navInfo(id) { return visibleNav().filter(function (n) { return n.id === id; })[0]; }
   function has(list, key) { return list.indexOf(key) >= 0; }
   function historyApi() { return window.google && google.script && google.script.history; }
 
-  // ------------------------------------------------------------------------------ routing
+  // Routing
 
   function go(pageId, opts) {
     var id = navInfo(pageId) ? pageId : 'dashboard';
@@ -92,7 +80,7 @@
     mountPage();
   }
 
-  /** Paramètres is reachable before a source is configured (admins only). */
+  // Admins can open Paramètres before a source is configured.
   function onSettings() { return State.get().page === 'settings' && State.canEdit(); }
 
   function unmountCurrent() {
@@ -132,7 +120,7 @@
     if (main.scrollTo) main.scrollTo(0, 0);
   }
 
-  // ------------------------------------------------------------------------------ sidebar
+  // Sidebar
 
   function setNavOpen(open) {
     document.body.classList.toggle('nav-open', !!open);
@@ -143,8 +131,7 @@
     }
   }
 
-  /** Collapsed rail (wide screens only): remembered per browser, never required to work. */
-  /** Inline SVG from [tag, attributes] parts (aria-hidden: a visible or sr-only label names it). */
+  // aria-hidden because a visible or sr-only label always names the icon.
   function svgFrom(parts, cls, box, size) {
     var NS = 'http://www.w3.org/2000/svg';
     var svg = document.createElementNS(NS, 'svg');
@@ -167,14 +154,8 @@
 
   function icon(name) { return svgFrom(ICONS[name] || [], 'icon icon-' + name, 16, 16); }
 
-  /** The ghost (« Doux »: rounded dome, wavy hem, round eyes) — brought back from the Streamlit 👻. */
-  function logo() { return svgFrom(LOGO, 'brand-logo', 24, 28); }
-
-  /**
-   * Collapsed rail (wide screens only), remembered twice: in localStorage (read at once, before the
-   * server answers) and per Google account on the server (api_savePrefs / bootstrap.prefs), because the
-   * Apps Script frame loses localStorage whenever the browser blocks third-party storage.
-   */
+  // The collapsed rail is stored in localStorage, read at once, and per account on the server,
+  // because the Apps Script frame loses localStorage when the browser blocks third-party storage.
   function readLocalSidebar() {
     try {
       var v = window.localStorage.getItem(COLLAPSE_KEY);
@@ -182,7 +163,7 @@
     } catch (e) { return null; }
   }
   function writeLocalSidebar(v) {
-    try { window.localStorage.setItem(COLLAPSE_KEY, v); } catch (e) { /* storage refused: the server copy remains */ }
+    try { window.localStorage.setItem(COLLAPSE_KEY, v); } catch (e) { /* storage refused, the server copy remains */ }
   }
   function isCollapsed() { return document.body.classList.contains('nav-collapsed'); }
 
@@ -192,7 +173,6 @@
     syncRailTooltips();
   }
 
-  /** User toggle: apply, then remember in both places (a failed save only logs: the state is cosmetic). */
   function setCollapsed(on) {
     var v = on ? 'collapsed' : 'open';
     applyCollapsed(on);
@@ -204,7 +184,7 @@
     api.call('api_savePrefs', patch).catch(function (err) { console.warn('Préférence non enregistrée : ' + UI.errorText(err)); });
   }
 
-  /** After bootstrap: the account's stored state wins (latest choice, any browser); a local-only one is uploaded. */
+  // The account's stored choice wins over this browser's; a local-only choice is uploaded.
   function syncSidebarPref() {
     var server = (State.get().prefs || {}).sidebar;
     var local = readLocalSidebar();
@@ -225,7 +205,7 @@
     b.querySelector('.nav-collapse-label').textContent = on ? 'Ouvrir le menu' : 'Réduire le menu';
   }
 
-  /** In the rail the labels are hidden: each link gets its title as a tooltip (removed when expanded). */
+  // Labels are hidden in the rail, so each link gets its title as a tooltip.
   function syncRailTooltips() {
     if (!sidebar) return;
     var on = isCollapsed();
@@ -248,11 +228,7 @@
     });
   }
 
-  /**
-   * "lea.reader@decathlon.com" over "Lecteur · lecture seule" at the foot of the sidebar. For an admin the role
-   * is a toggle button: one click shows the app as a lecteur sees it (State.setReaderView), the next one
-   * comes back to the admin view.
-   */
+  // For an admin the role is a button that toggles the lecteur preview.
   function userLine(user) {
     if (!user || !user.email) return null;
     var role = ROLE_LABELS[user.role] || user.role;
@@ -272,9 +248,9 @@
       el('span', { class: 'side-user-email mono' }, user.email), roleNode);
   }
 
-  /** Flips the lecteur preview; the shell re-renders, so focus goes back to the control (by id) that did it. */
+  // The shell re-renders, so focus goes back by id to the control that was used.
   function toggleReaderView(focusId) {
-    UI.tooltip(document.getElementById('side-user-role'), null); // its node is replaced: no stale tooltip left
+    UI.tooltip(document.getElementById('side-user-role'), null); // the node is replaced, drop its tooltip first
     State.setReaderView(!State.get().readerView);
     var back = document.getElementById(focusId) || document.getElementById('side-user-role');
     if (back) back.focus();
@@ -282,16 +258,13 @@
 
   function brand() {
     return el('div', { class: 'brand' },
-      logo(),
+      svgFrom(LOGO, 'brand-logo', 24, 28),
       el('div', { class: 'brand-text' },
         el('span', { class: 'brand-name' }, BRAND),
         el('span', { class: 'brand-sub' }, BRAND_SUB)));
   }
 
-  /**
-   * Right-aligned mono counts next to Postes / Applications (filtered data of the selected month), and the
-   * « 3 postes sur 7 » line of the app bar while a filter is active.
-   */
+  // Also fills the « 3 postes sur 7 » line of the app bar while a filter is active.
   function updateNavCounts() {
     var s = State.get();
     var md = s.month ? State.getMonthData(s.month) : null;
@@ -325,8 +298,7 @@
           counted ? el('span', { class: 'nav-count', dataset: { count: n.id } }) : null));
       })));
 
-    // Spreadsheet links are only sent to admins (the sheets are private to the deployer), so the lecteur
-    // view hides them too.
+    // Sheet links are only sent to admins, so the lecteur preview hides them too.
     var links = !s.readerView;
     var footer = el('div', { class: 'sidebar-footer' },
       syncChip(),
@@ -349,14 +321,8 @@
     updateNavCounts();
   }
 
-  // ------------------------------------------------------------------------------ app bar (période + filtres)
-
-  /**
-   * Sticky bar above every page, on one row: « ‹ Avr. – oct. 2026 › » (a month or a range of months, panel
-   * below the button; the « Période » label is for screen readers), the Équipe / Bâtiment filters, then
-   * « 3 postes sur 7 » while a filter is active. When the bar is too narrow for the filters (container
-   * query in css.html), they fold into a panel under a « Filtres » button, its summary beside it.
-   */
+  // App bar
+  // When the bar is too narrow, a container query in css.html folds the filters under « Filtres ».
   function renderAppbar() {
     var s = State.get();
     UI.clear(appbar);
@@ -384,7 +350,7 @@
     appbar.appendChild(el('div', { class: 'filters-anchor', id: 'filters-anchor' }, toggle, filtersBox));
     appbar.appendChild(el('p', { class: 'filters-summary', id: 'filters-summary', 'aria-hidden': 'true' }));
     appbar.appendChild(el('p', { class: 'appbar-count', id: 'appbar-count', role: 'status', hidden: true }));
-    // Lecteur preview: said here too, where it shows at every width (the sidebar may be a rail or closed).
+    // Repeated here because the sidebar may be a rail or closed.
     if (s.readerView) {
       appbar.appendChild(el('button', { type: 'button', class: 'btn btn-secondary btn-sm reader-view-exit', id: 'reader-view-exit',
         onClick: function () { toggleReaderView('reader-view-exit'); } }, 'Vue lecteur · revenir en admin'));
@@ -395,27 +361,19 @@
     renderFilters();
   }
 
-  // ------------------------------------------------------------------------------ synchronisation (app bar)
-
-  /**
-   * The current month follows the source spreadsheet: the server re-reads it every hour (Sync.js). A
-   * status button (« ■ 14:02 ») at the top of the sidebar footer (in the top bar below 900px) opens a panel
-   * that tells when the last synchronisation ran,
-   * what it changed, and — for admins — « Synchroniser maintenant ». The status is polled every
-   * SYNC_POLL_MS (and when the tab comes back): when the server synchronised changes since the data on
-   * screen was loaded, the button says « Nouvelles données » and the panel offers « Actualiser ».
-   */
+  // Synchronisation
+  // The server re-reads the current month every hour (Sync.js). The status is polled so the chip
+  // can say « Nouvelles données » once the server holds newer data than the screen.
   var SYNC_POLL_MS = 10 * 60 * 1000;
   var pollingStarted = false;
-  var syncing = false;        // « Synchroniser maintenant » in progress (this tab)
-  var seenChangeAt = null;    // lastChangeAt of the data on screen (null = not known yet)
+  var syncing = false;        // a sync started from this tab is running
+  var seenChangeAt = null;    // lastChangeAt of the data on screen, null until known
   var newData = false;
   var lastPoll = 0;
   var syncPop = null;
 
   function syncStatus() { return State.get().sync || {}; }
 
-  /** busy | ko (last run failed) | new (newer data on the server) | off (never ran) | warn | ok */
   function syncTone(st) {
     if (syncing) return 'busy';
     if (st.lastError && (!st.lastOkAt || st.lastError.at >= st.lastOkAt)) return 'ko';
@@ -424,7 +382,7 @@
     return st.warnings && st.warnings.length ? 'warn' : 'ok';
   }
 
-  /** « à 14:02 » today, « le 04/05 à 10:30 » otherwise. */
+  // « à 14:02 » today, « le 04/05 à 10:30 » otherwise.
   function syncWhen(stamp) {
     var t = Fmt.stamp(stamp);
     var i = t.lastIndexOf(' ');
@@ -455,7 +413,7 @@
       el('span', { class: 'sync-chip-mark', 'aria-hidden': 'true' }), el('span', { class: 'sync-chip-text' }));
   }
 
-  /** Wide screens: top of the sidebar footer; below 900px (sidebar folded behind « Menu »): the top bar. */
+  // Below 900px the sidebar folds behind « Menu », so the chip moves to the top bar.
   var narrowQuery = window.matchMedia ? window.matchMedia('(max-width: 900px)') : null;
   function placeSyncChip() {
     var chip = document.getElementById('sync-chip');
@@ -482,7 +440,7 @@
       var tone = syncTone(st);
       chip.dataset.tone = tone;
       chip.setAttribute('aria-label', 'Synchronisation : ' + syncSentence(st, tone) + '. Afficher le détail.');
-      // Collapsed rail: only the mark shows, the sentence is its tooltip.
+      // In the rail only the mark shows, so the sentence becomes its tooltip.
       UI.tooltip(chip, isCollapsed() && !chip.closest('.topbar') ? syncSentence(st, tone) : null, { placement: 'right' });
       chip.querySelector('.sync-chip-text').textContent = syncChipText(st, tone);
       var mark = chip.querySelector('.sync-chip-mark');
@@ -490,7 +448,7 @@
       if (tone === 'busy') mark.appendChild(UI.spinner());
     }
     if (syncPop && syncPop.isOpen()) {
-      // Re-render the open panel; keyboard focus stays on the same control.
+      // Re-render the open panel and keep focus on the same control.
       var focused = syncPop.node.contains(document.activeElement) ? document.activeElement.id : '';
       UI.clear(syncPop.node).appendChild(syncPanel());
       syncPop.reposition();
@@ -560,13 +518,12 @@
     if (syncPop && syncPop.isOpen()) syncPop.close('api');
   }
 
-  /** Status from the server; marks « Nouvelles données » when it synchronised changes since the screen loaded. */
   function refreshSyncStatus() {
     lastPoll = Date.now();
     return api.call('api_getSyncStatus', null).then(function (st) {
       if (seenChangeAt !== null && st.lastChangeAt && st.lastChangeAt !== seenChangeAt) newData = true;
       State.set({ sync: st });
-      // The poll also brings the editing switches another admin may have changed in Paramètres.
+      // The poll also brings editing switches another admin may have changed.
       State.setEditing(st.editing);
       updateSyncChip();
       return st;
@@ -584,7 +541,7 @@
     });
   }
 
-  /** Newer data on the server: drop the caches, reload the bootstrap (a new month may exist), re-mount. */
+  // Reloads the bootstrap too, since a new month may exist.
   function reloadData() {
     newData = false;
     var before = State.get().month;
@@ -592,16 +549,12 @@
     return State.refreshBootstrap().then(function (s) {
       seenChangeAt = (s.sync || {}).lastChangeAt || '';
       updateSyncChip();
-      // A changed month re-mounts through onStateChange; the same month has to be re-mounted here.
+      // Only a changed month re-mounts through onStateChange, so the same month is re-mounted here.
       if (s.month === before) refresh();
     });
   }
 
-  /**
-   * « Synchroniser maintenant » (and « Activer… », opts.enable: creates the hourly trigger first). Shared by
-   * the app bar panel, Paramètres and the empty dashboard; `button` (optional) shows the busy state.
-   * @return {Promise<Object|null>} {status, result} or null on error (reported in a toast)
-   */
+  // Also used by Paramètres and the empty dashboard. Resolves {status, result}, or null after an error toast.
   function syncNow(button, opts) {
     if (syncing) return Promise.resolve(null);
     syncing = true;
@@ -624,8 +577,6 @@
     });
   }
 
-  /** ‹ / › move to the previous / next imported month (months are sorted ascending). */
-  /** At boot: the period shortcut remembered for this account (bootstrap.prefs.period), if any. */
   function applySavedPeriod() {
     var s = State.get();
     var key = (s.prefs || {}).period;
@@ -641,7 +592,6 @@
     if (months.indexOf(p.to) >= 0 && to && from) State.setPeriod(from, to, '');
   }
 
-  /** The period button's label and the ‹ › limits (the whole period moves by one synchronised month). */
   function syncPeriodButton() {
     var s = State.get();
     var p = State.period();
@@ -657,13 +607,8 @@
     if (next) next.disabled = s.months.indexOf(p.to) < 0 || s.months.indexOf(p.to) >= s.months.length - 1;
   }
 
-  // ------------------------------------------------------------------------------ period panel
-
-  /**
-   * Panel of the period button: shortcuts on the left (apply at once and are remembered per account,
-   * api_savePrefs period), a 12-month grid on the right (first click = start, second = end; only the
-   * synchronised months can be picked) with « Appliquer ».
-   */
+  // Period panel
+  // Shortcuts apply at once and are remembered per account. The month grid waits for « Appliquer ».
   var periodPop = null;
   var PRESET_LABELS = { month: 'Mois en cours', last3: '3 derniers mois', last6: '6 derniers mois', all: 'Tout l’historique' };
 
@@ -765,10 +710,8 @@
     if (first) first.focus();
   }
 
-  /**
-   * Narrow bar: the filters fold into a panel under the « Filtres » button. It closes on a click outside
-   * (the multiselect lists, portalled to <body>, count as inside) and on Escape once no list is open.
-   */
+  // The folded filters panel closes on an outside click and on Escape once no list is open.
+  // Multiselect lists are portalled to <body>, so a click in a popover counts as inside.
   function setFiltersOpen(open) {
     document.body.classList.toggle('filters-open', !!open);
     var t = document.getElementById('filters-toggle');
@@ -801,27 +744,20 @@
     var c = document.getElementById('filters-toggle-count');
     if (c) c.textContent = n ? String(n) : '';
     var summary = document.getElementById('filters-summary');
-    if (summary) {
-      var text = n ? (f.equipes || []).concat(f.batiments || []).join(' · ') : '';
-      summary.textContent = text;
-    }
+    if (summary) summary.textContent = n ? (f.equipes || []).concat(f.batiments || []).join(' · ') : '';
     var reset = document.getElementById('filters-reset');
     if (reset) reset.hidden = !n;
   }
 
-  /**
-   * Équipe / Bâtiment multiselects; options come from the selected month's postes. On Suivi des actions
-   * only the Équipe filter applies (actions and replacements carry an équipe, no bâtiment): the Bâtiment
-   * filter is disabled there, with a visible « Non applicable ici » note.
-   */
+  // Options come from the selected month's postes. Bâtiment is disabled on Suivi des actions,
+  // because actions carry an équipe but no bâtiment.
   function renderFilters() {
     if (!filtersBox) return;
     var s = State.get();
     var md = s.month ? State.getMonthData(s.month) : null;
     if (s.month && !md) {
-      // Load once, then render the options (the page usually triggers the same cached request).
       var month = s.month;
-      // Month change: the current filters stay (dimmed) until the new month's options are in.
+      // Keep the current filters, dimmed, until the new month's options are in.
       if (filterOptionsMonth) filtersBox.classList.add('is-stale');
       else UI.clear(filtersBox).appendChild(el('p', { class: 'field-help', role: 'status' }, UI.spinner(), 'Chargement des filtres…'));
       State.loadMonth(month).then(function () {
@@ -856,8 +792,7 @@
     }));
     filtersBox.lastChild.id = 'filter-batiment';
     if (s.page === 'actions') disableFilter(filtersBox.lastChild, 'filter-batiment-na');
-    // Always present (hidden when unused) so that toggling it never forces a re-render of the
-    // multiselects while the user is ticking boxes.
+    // Always present, so showing it never re-renders the multiselects while boxes are being ticked.
     filtersBox.appendChild(el('button', { type: 'button', class: 'btn btn-quiet btn-sm', id: 'filters-reset',
       hidden: !hasActiveFilters(f),
       onClick: function () { State.set({ filters: { equipes: [], batiments: [] } }); } },
@@ -865,11 +800,7 @@
     syncFilterBadges(f);
   }
 
-
-  /**
-   * Disables every control of a filter widget (never colour only): the trigger reads « Non applicable »
-   * and the full reason is its accessible description and tooltip.
-   */
+  // Disables every control, not just the look, and gives the reason as description and tooltip.
   function disableFilter(node, noteId) {
     node.classList.add('is-disabled');
     node.setAttribute('aria-disabled', 'true');
@@ -894,14 +825,14 @@
     var next = { equipes: (f.equipes || []).slice(), batiments: (f.batiments || []).slice() };
     Object.keys(patch).forEach(function (k) { next[k] = patch[k]; });
     syncFilterBadges(next);
-    // The widgets already show the new values: do not re-render them (keeps the open list in place).
+    // The widgets already show the new values, and a re-render would close the open list.
     suppressFilterRender = true;
     State.set({ filters: next });
     suppressFilterRender = false;
     updateNavCounts();
   }
 
-  // ------------------------------------------------------------------------------ configuration
+  // Configuration and access screens
 
   function sourceErrorText(err) {
     if (err && err.code === 'VALIDATION') return 'URL ou identifiant invalide. Collez l’URL complète du Google Sheet source.';
@@ -917,7 +848,7 @@
     return missing.length ? 'Onglet(s) introuvable(s) : ' + missing.join(', ') : '';
   }
 
-  /** Saves the source (the server creates the hourly trigger), then synchronises the current month at once. */
+  // The server also creates the hourly trigger; the first sync runs right after.
   function applySource(source) {
     return api.call('api_setConfig', { source: source }).then(function (res) {
       UI.toast('Source configurée — ' + (res.sourceTitle || res.sourceId) + '.', 'success');
@@ -929,7 +860,6 @@
     });
   }
 
-  /** Bare shell for the screens without navigation (configuration, access refused). */
   function bareShell() {
     unmountCurrent();
     document.body.classList.add('unconfigured');
@@ -941,10 +871,7 @@
     UI.clear(main);
   }
 
-  /**
-   * App without source, for anyone but the owner (only the owner may choose it, see ApiImpl_.setConfig):
-   * nothing to do but wait. An admin can still open Paramètres (accesses, threshold).
-   */
+  // Only the owner may choose the source (ApiImpl_.setConfig), so anyone else waits here.
   function renderWaitingScreen() {
     bareShell();
     var u = State.get().user || {};
@@ -960,7 +887,7 @@
         el('button', { type: 'button', class: 'btn btn-secondary', onClick: reboot }, 'Actualiser'))));
   }
 
-  /** FORBIDDEN on boot: no identity, unknown account. The server message names the account. */
+  // FORBIDDEN at boot. The server message names the account.
   function renderDeniedScreen(err) {
     bareShell();
     main.appendChild(el('div', { class: 'page page-config page-denied', dataset: { page: 'denied' } },
@@ -984,7 +911,6 @@
       'aria-describedby': 'config-help config-error' });
     var error = el('p', { id: 'config-error', class: 'field-error', role: 'alert', hidden: true });
     var button = el('button', { type: 'submit', class: 'btn btn-primary', id: 'config-submit' }, 'Enregistrer la source');
-    // Invalid field: red border (aria-invalid) + the message under the field, as in every form.
     function showError(msg) {
       error.textContent = msg || '';
       error.hidden = !msg;
@@ -1018,7 +944,7 @@
     setTimeout(function () { input.focus(); }, 0);
   }
 
-  // ------------------------------------------------------------------------------ boot
+  // State changes and boot
 
   function renderAll() {
     var s = State.get();
@@ -1033,7 +959,7 @@
     if (!booted) return;
     if (has(changed, 'configured') || has(changed, 'user') || has(changed, 'readerView')) { renderAll(); return; }
     if (!s.configured) {
-      // Before the first source: only Paramètres <-> configuration screen.
+      // Before the first source only Paramètres and the configuration screen exist.
       if (has(changed, 'page')) renderAll();
       return;
     }
@@ -1053,16 +979,12 @@
     if (has(changed, 'page')) mountPage();
     else if (has(changed, 'month') || has(changed, 'from')) swapMonth(s.month);
     else if (has(changed, 'filters')) updatePage(changed);
-    // Editing switches: Postes / Applications show or hide their controls in place (Paramètres follows
-    // them itself; no other page has such controls).
+    // Only Postes and Applications show editing controls. Paramètres follows the switches itself.
     if (has(changed, 'editing') && !has(changed, 'page') && !has(changed, 'month') && !has(changed, 'from') &&
         (s.page === 'postes' || s.page === 'apps')) updatePage(['editing']);
   }
 
-  /**
-   * Filter change: a page that can re-render its data from the cache does it in place (page.update(changed)
-   * returns true: header, scroll position and the open drawer stay); the others are mounted again.
-   */
+  // A page whose update(changed) returns true re-rendered in place, keeping scroll and any open drawer.
   function updatePage(changed) {
     var handled = false;
     if (currentPage && typeof currentPage.update === 'function') {
@@ -1071,11 +993,7 @@
     if (!handled) mountPage();
   }
 
-  /**
-   * Month change on the page being read: while the new month loads, the current page stays in place,
-   * dimmed (.is-stale, not interactive) with the app bar progress line; then the page re-mounts from
-   * the cache. A month already in cache mounts at once.
-   */
+  // The current page stays, dimmed, while the new month loads, then re-mounts from the cache.
   function swapMonth(month) {
     if (!month || State.getMonthData(month)) { mountPage(); return; }
     var current = main.querySelector('.page');
@@ -1089,15 +1007,12 @@
     State.loadMonth(month).then(finish, finish);
   }
 
-  /** A page id of NAV, else null (the user, and so the admin-only pages, may not be known yet: mountPage falls back). */
+  // Checks NAV, not visibleNav, because the user may not be known yet. mountPage falls back if needed.
   function knownPage(p) {
     return p && NAV.some(function (n) { return n.id === p; }) ? p : null;
   }
 
-  /**
-   * Initial page from the Apps Script URL (?page=xxx): the one doGet rendered into the page (#boot-page,
-   * read once), else google.script.url.getLocation with a short timeout outside Apps Script.
-   */
+  // ?page= as doGet inlined it (#boot-page), else getLocation, with a timeout for outside Apps Script.
   function initialPage() {
     var inline = State.takeInline('boot-page');
     if (inline !== undefined) return Promise.resolve(knownPage(inline));
@@ -1115,13 +1030,7 @@
     });
   }
 
-  // ------------------------------------------------------------------------------ boot timing
-
-  /**
-   * Performance marks 'shadow:boot' (boot() starts) and 'shadow:ready' (first page rendered, splash
-   * fading), then one console.debug line: `[boot] ready <ms>ms (boot <ms>ms, first paint <ms>ms)`, all
-   * counted from the navigation of the app frame. Never throws.
-   */
+  // Marks boot start and first render, then logs one [boot] line. Never throws.
   var bootTiming = {
     start: function () {
       try { performance.mark('shadow:boot'); } catch (e) { /* no User Timing API */ }
@@ -1140,13 +1049,7 @@
     }
   };
 
-  // ------------------------------------------------------------------------------ startup splash
-
-  /**
-   * #splash (static in index.html, so it paints before any script): team logo, an indeterminate bar and
-   * the current boot step; after SLOW_MS a note explains the Apps Script cold start; on failure the bar
-   * gives way to the error and « Réessayer ». done() fades it out without ever blocking clicks.
-   */
+  // #splash is static in index.html so it paints before any script runs.
   var SLOW_MS = 8000;
   var SLOW_NOTE = 'Le serveur Google démarre, cela peut prendre jusqu’à 30 secondes au premier accès de la journée.';
   var splash = (function () {
@@ -1195,25 +1098,21 @@
     };
   })();
 
-  /** Pages that compare the period's last month with its first one: they load both months. */
+  // Pages that compare the period's last month with its first, so they need both.
   var FROM_MONTH_PAGES = ['dashboard', 'postes', 'apps'];
 
-  /**
-   * Boot, once the bootstrap is in: the other data the first page will ask for, requested together with
-   * the selected month instead of after the splash (latest month first). Not awaited: the page picks up
-   * the same requests (State shares pending requests) and shows their errors itself.
-   */
+  // Not awaited: the page reuses the pending requests through State and shows their errors itself.
   function prefetchLanding() {
     var info = navInfo(State.get().page) || visibleNav()[0];
     var per = State.period();
     function ignore() { return null; }
     if (!per.single && FROM_MONTH_PAGES.indexOf(info.id) >= 0) State.loadMonth(per.from).catch(ignore);
-    // The dashboard draws the period's sparklines from the history; the timeline page is the history.
+    // The dashboard draws its sparklines from the timeline.
     if ((info.id === 'dashboard' && !per.single) || info.id === 'timeline') State.loadTimeline().catch(ignore);
   }
 
   function boot() {
-    // Plotly downloads while the bootstrap and the first month load (charts wait for it, nothing else does).
+    // Start the Plotly download now; only charts wait for it.
     Charts.ready();
     sidebar = document.getElementById('sidebar');
     appbar = document.getElementById('appbar');
@@ -1236,13 +1135,13 @@
     bootTiming.start();
     splash.show();
     splash.step('Vérification de l’accès…');
-    // The first boot answers from the bootstrap doGet put into the page when there is one (no server call).
+    // The first boot uses the bootstrap doGet inlined into the page, saving a server call.
     Promise.all([State.refreshBootstrap({ useInline: true }), initialPage()]).then(function (res) {
       if (res[1]) State.set({ page: res[1] });
       applySavedPeriod();
       var s = State.get();
       if (!s.configured || !s.month) return null;
-      // Warm the month cache behind the splash: the first page then mounts with its data, no skeleton.
+      // Load the month behind the splash so the first page mounts without a skeleton.
       splash.step('Chargement de ' + Fmt.monthLong(s.month) + '…');
       var first = State.loadMonth(s.month).catch(function () { return null; }); // the page shows its own error
       prefetchLanding();
@@ -1273,8 +1172,7 @@
     ROLE_LABELS: ROLE_LABELS
   };
 
-  // The scripts close <body>: everything boot() touches is already parsed, so it need not wait for
-  // DOMContentLoaded (kept as a fallback should the shell ever come after the scripts).
+  // The scripts close <body>, so the shell is already parsed. DOMContentLoaded is only a fallback.
   if (document.getElementById('main') || document.readyState !== 'loading') boot();
   else document.addEventListener('DOMContentLoaded', boot);
 })();
