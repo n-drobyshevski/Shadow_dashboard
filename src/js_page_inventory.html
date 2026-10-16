@@ -542,7 +542,7 @@
   }
 
   function uniq(list) {
-    var seen = {};
+    var seen = Object.create(null);
     return list.filter(function (v) {
       var k = Core.normKey(v);
       if (!k || seen[k]) return false;
@@ -616,7 +616,7 @@
   /** {fields, groups, alert, meta} of UI.formPanel for a schema. */
   function buildForm(schema, md, cfg, month) {
     var sections = cfg.sections || [];
-    var place = {};   // normKey(column) -> {index (section), rank}
+    var place = Object.create(null);   // normKey(column) -> {index (section), rank}
     sections.forEach(function (sec, i) {
       (sec.columns || []).forEach(function (c, rank) { place[Core.normKey(c)] = { index: i, rank: rank }; });
     });
@@ -656,7 +656,8 @@
     var live = month === State.get().currentMonth;
     var created = null;
     var sent = null;
-    var appOnly = {};
+    // Keyed by column names (data), as the records sent: no prototype ('__proto__' is a column like any other).
+    var appOnly = Object.create(null);
     return UI.formPanel({
       title: cfg.title,
       className: 'entity-form',
@@ -666,7 +667,7 @@
       open: ctx.drawer,
       load: function (o) {
         return State.loadFormSchema(entity, month, { force: !!(o && o.force) }).then(function (schema) {
-          appOnly = {};
+          appOnly = Object.create(null);
           (schema.columns || []).forEach(function (c) { if (c && c.appOnly) appOnly[c.name] = true; });
           ctx.lockComputedPage(schema);
           return buildForm(schema, ctx.md(), cfg, month);
@@ -676,7 +677,7 @@
         });
       },
       onSubmit: function (values) {
-        var record = {};
+        var record = Object.create(null);
         Object.keys(values).forEach(function (k) { if (Core.str(values[k]) !== '') record[k] = values[k]; });
         sent = record;
         return api.call(cfg.api, { month: month, record: record }).then(function (rec) { created = rec; }, function (err) {

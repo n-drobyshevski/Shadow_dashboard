@@ -448,7 +448,7 @@
   }
 
   function splitTokens(text) {
-    var seen = {};
+    var seen = Object.create(null);
     return String(text || '').split(',').map(function (t) { return t.trim(); }).filter(function (t) {
       if (!t || seen[fold(t)]) return false;
       seen[fold(t)] = true;
@@ -526,7 +526,7 @@
     }
     function labelOf(v) { var op = findOption(v); return op ? op.label : v; }
     function orderSelection(list) {
-      var wanted = {};
+      var wanted = Object.create(null);
       list.forEach(function (v) { wanted[v] = true; });
       var out = options.filter(function (op) { return wanted[op.value]; }).map(function (op) { return op.value; });
       list.forEach(function (v) { if (out.indexOf(v) < 0) out.push(v); });

@@ -46,7 +46,7 @@ async function openForm(app, button = '#postes-add') {
   await app.waitIdle();
 }
 
-const field = (name) => `${PANEL} [name="${name}"]`;
+const field = (name) => `${PANEL} [data-name="${name}"]`;
 
 /** [{id, title, open}] of the sections of the open form. */
 function sections(page) {
@@ -69,7 +69,7 @@ async function assertNoNativeControls(page) {
 }
 
 function activeName(page) {
-  return page.evaluate(() => document.activeElement && document.activeElement.getAttribute('name'));
+  return page.evaluate(() => document.activeElement && document.activeElement.getAttribute('data-name'));
 }
 
 async function waitPanelGone(page) {
@@ -112,7 +112,7 @@ describe('« Nouveau poste »: the panel', () => {
       // Strict lists are dropdowns, open lists comboboxes, dates date fields, comments a textarea.
       assert.equal(await page.getAttribute(field('Criticité équipement'), 'aria-haspopup'), 'listbox');
       assert.equal(await page.getAttribute(field('Équipe'), 'role'), 'combobox');
-      assert.ok(await page.$(`${PANEL} .datefield [name="Date d'achat"]`));
+      assert.ok(await page.$(`${PANEL} .datefield [data-name="Date d'achat"]`));
       assert.equal(await page.$eval(field('Commentaires'), (n) => n.tagName), 'TEXTAREA');
       assert.ok(await page.$(`${field(KEY_POSTE)}.mono`));
 
@@ -120,7 +120,7 @@ describe('« Nouveau poste »: the panel', () => {
       assert.deepEqual(await page.$$eval(`${PANEL} .drawer-footer button`, (bs) => bs.map((b) => b.textContent.trim())),
         ['Annuler', 'Créer le poste']);
       assert.match(await page.textContent(`${PANEL} .form-panel-meta`), /^Colonnes lues dans le Google Sheet source à \d\d:\d\d\.Relire les colonnes$/);
-      await page.waitForFunction(() => document.activeElement && document.activeElement.getAttribute('name') === 'Nom du poste');
+      await page.waitForFunction(() => document.activeElement && document.activeElement.getAttribute('data-name') === 'Nom du poste');
       await assertNoNativeControls(page);
       // A collapsed section opens on a click on its label.
       await page.click(`${PANEL} details[data-group="visite"] > summary`);
@@ -414,6 +414,42 @@ describe('« Nouveau poste »: schema variants', () => {
         { [KEY_POSTE]: 'LAB-NEW-06', 'Équipe': 'Labo Textile', 'Numéro de série': 'SN-0042' });
       const id = await page.evaluate(() => window.State.getMonthData('2026-05').postes.find((p) => p['Nom du poste'] === 'LAB-NEW-06')._id);
       assert.equal((await page.textContent(`#postes-table tbody tr[data-id="${id}"] td[data-col="Numéro de série"]`)).trim(), 'SN-0042');
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('columns named after form members or __proto__: the panel renders and submits (no DOM clobbering)', async () => {
+    // A control named 'addEventListener' would shadow form.addEventListener (named properties of
+    // HTMLFormElement) and the panel would never render: column names are no name / id attributes.
+    const NAMES = ['addEventListener', 'querySelectorAll', 'submit', 'elements', '__proto__'];
+    await withApp({ ...LIVE, formSchema: { columns: { postes: NAMES.map((name) => ({ name })) } } }, async (app) => {
+      const { page } = app;
+      await openForm(app);
+      assert.deepEqual(await fieldsOf(page, 'autres'), NAMES);
+      assert.equal(await page.$$eval(`${PANEL} form [name], ${PANEL} form [id]`, (ns, names) => ns.filter((n) =>
+        names.indexOf(n.getAttribute('name')) >= 0 || names.indexOf(n.id) >= 0).length, NAMES), 0);
+      assert.equal(await page.$eval(`${PANEL} form`, (f) => typeof f.addEventListener === 'function' &&
+        typeof f.querySelectorAll === 'function' && typeof f.submit === 'function'), true);
+      await page.fill(field(KEY_POSTE), 'LAB-NEW-07');
+      await chooseOption(page, field('Équipe'), 'Labo Textile');
+      for (const [i, name] of NAMES.entries()) await page.fill(field(name), 'v' + i);
+      await footerButton(page, 'Créer le poste');
+      // '__proto__' is a key of the record like the others (the values map has no prototype): the server
+      // refuses it as any '_' column, and the panel stays open with the message.
+      await page.waitForSelector(`${PANEL} .form-alert:not([hidden])`);
+      assert.match(await page.textContent(`${PANEL} .form-alert`), /Champ non modifiable\s:\s«\s__proto__\s»/);
+      await page.fill(field('__proto__'), '');
+      await footerButton(page, 'Créer le poste');
+      await waitPanelGone(page);
+      await app.waitIdle();
+      // As sent (JSON parsed in Node: '__proto__' is an own key there too).
+      const sent = JSON.parse(await page.evaluate(() =>
+        JSON.stringify(window.__calls.filter((c) => c.name === 'api_addPoste').map((c) => c.args.record))));
+      const record = { [KEY_POSTE]: 'LAB-NEW-07', 'Équipe': 'Labo Textile', addEventListener: 'v0', querySelectorAll: 'v1',
+        submit: 'v2', elements: 'v3' };
+      assert.deepEqual(sent, [JSON.parse(JSON.stringify(record).replace(/\}$/, ',"__proto__":"v4"}')), record]);
+      assert.ok((await toasts(page)).includes('Poste « LAB-NEW-07 » créé dans le Google Sheet source.'));
+      assert.equal(await page.evaluate(() => Object.getPrototypeOf({}) === Object.prototype && ({}).submit === undefined), true);
       assert.deepEqual(app.errors, []);
     });
   });

@@ -782,6 +782,10 @@ UI.formFields({fields, groups?, onEnter?}) -> {form, control(name), values(), co
     collect() checks every field, opens the sections of the invalid ones and focuses the first (values | null);
     showError(err): err.field -> under that field (its section opened, the field focused), else an alert on top;
     isDirty(): a field's text differs from the one it was built with. UI.formModal is built on it.
+    Field names are often source column names (data): no control gets a name attribute (a column named
+    'addEventListener' or 'submit' would shadow that member of the <form>), ids are counters (field-N); the name is
+    on data-name (the focusable control) and data-field (div.form-field). values() / collect() return objects with
+    no prototype (Object.create(null)): a column named '__proto__' is a key like the others.
 UI.drawer({title, body:Node, onClose?, footer?, canClose?, className?, initialFocus?}) -> {close, node, requestClose}
     Right-side panel. footer: div.drawer-footer under the scrolling body. canClose() vetoes the user's closes (×,
     Escape, backdrop, requestClose) when it returns false (it may start its own confirm and call close() later);
@@ -804,6 +808,8 @@ UI.editableTable({columns, rows, rowKey='_id', search=true, pageSize=50, onSave?
                sortValue?:(row)=>any}]
     Click on an editable cell -> inline <select> (options + current value + '' ) or <input>; edits are
     kept as dirty until "Enregistrer (n)" -> onSave(changes:[{id, updates}]) (Promise); "Annuler" reverts.
+    The dirty map (id -> {column: value}) and `updates` have no prototype: an id or a column named '__proto__'
+    is an entry, never Object.prototype.
     Sorting by header click, text search across visible columns, pagination. lockColumns(keys): those columns
     become read-only once the table is shown (`editable` set to false, their unsaved values dropped, header and
     rows re-rendered — after the cell being edited closes, if any); true when a column changed.
@@ -815,6 +821,8 @@ UI.toggle({id, label, description?, checked, onChange?(checked) -> Promise|void,
     getValue(), setValue(bool) (no onChange), setDisabled(bool), .control (the button). (js_controls.html)
 UI.spinner()              -> Element
 UI.downloadCsv(filename, columns:[string], rows:[object])   (client-side CSV export, ';' separator, BOM)
+    Every field is quoted, headers included, after Core.escapeFormula: a value such as 'x,=HYPERLINK(…),' stays
+    one cell in Excel set to a ',' list separator.
 ```
 
 ### `window.Charts` (`js_charts.html`)

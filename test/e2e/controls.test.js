@@ -425,26 +425,26 @@ describe('controls', () => {
     });
     await page.waitForSelector('.modal form');
     // Initial focus on the first field; Enter in it validates (required fields).
-    await page.waitForFunction(() => document.activeElement && document.activeElement.name === 'action');
+    await page.waitForFunction(() => document.activeElement && document.activeElement.dataset.name === 'action');
     await page.keyboard.press('Enter');
-    assert.equal(await page.getAttribute('.modal input[name=action]', 'aria-invalid'), 'true');
-    assert.equal(await page.getAttribute('.modal [name=status]', 'aria-invalid'), 'true');
-    assert.equal(await page.evaluate(() => document.activeElement.name), 'action');
-    const errId = (await page.getAttribute('.modal [name=status]', 'aria-describedby')).split(' ').pop();
+    assert.equal(await page.getAttribute('.modal input[data-name=action]', 'aria-invalid'), 'true');
+    assert.equal(await page.getAttribute('.modal [data-name=status]', 'aria-invalid'), 'true');
+    assert.equal(await page.evaluate(() => document.activeElement.dataset.name), 'action');
+    const errId = (await page.getAttribute('.modal [data-name=status]', 'aria-describedby')).split(' ').pop();
     assert.equal((await page.textContent(`#${errId}`)).trim(), 'Ce champ est obligatoire.');
-    await page.fill('.modal input[name=action]', 'Installer EDR');
+    await page.fill('.modal input[data-name=action]', 'Installer EDR');
     // A dropdown opened inside the modal: Esc closes the list only.
-    await page.click('.modal [name=status]');
-    const listId = await page.getAttribute('.modal [name=status]', 'aria-controls');
+    await page.click('.modal [data-name=status]');
+    const listId = await page.getAttribute('.modal [data-name=status]', 'aria-controls');
     const z = await page.evaluate((id) => [getComputedStyle(document.getElementById(id).closest('.popover')).zIndex,
       getComputedStyle(document.querySelector('.modal-overlay')).zIndex], listId);
     assert.ok(Number(z[0]) > Number(z[1]), 'popover above the modal ' + z);
     await page.keyboard.press('Escape');
     await page.waitForSelector(`#${listId}`, { state: 'detached' });
     assert.ok(await page.isVisible('.modal'));
-    await chooseOption(page, '.modal [name=status]', 'Terminé');
-    await typeDate(page, '.modal input[name=deadline]', '30/04/2026');
-    await page.focus('.modal input[name=action]');
+    await chooseOption(page, '.modal [data-name=status]', 'Terminé');
+    await typeDate(page, '.modal input[data-name=deadline]', '30/04/2026');
+    await page.focus('.modal input[data-name=action]');
     await page.keyboard.press('Enter');
     // Busy: the submit button keeps its colours, shows a spinner, aria-busy; Annuler / × disabled.
     await page.waitForSelector('.modal .btn-primary[aria-busy="true"] .btn-spinner');
@@ -455,14 +455,14 @@ describe('controls', () => {
     // First error: shown at the top of the form, values kept.
     await page.waitForSelector('.modal .form-alert .alert-error');
     assert.equal((await page.textContent('.modal .form-alert')).trim(), 'Erreur : Le service ne répond pas.');
-    assert.equal(await page.inputValue('.modal input[name=action]'), 'Installer EDR');
-    assert.equal(await dropdownValue(page, '.modal [name=status]'), 'Terminé');
+    assert.equal(await page.inputValue('.modal input[data-name=action]'), 'Installer EDR');
+    assert.equal(await dropdownValue(page, '.modal [data-name=status]'), 'Terminé');
     // Second error: mapped to the field.
     await page.click('.modal .btn-primary');
-    await page.waitForFunction(() => document.querySelector('.modal input[name=target]').getAttribute('aria-invalid') === 'true');
-    assert.equal(await page.evaluate(() => document.activeElement.name), 'target');
+    await page.waitForFunction(() => document.querySelector('.modal input[data-name=target]').getAttribute('aria-invalid') === 'true');
+    assert.equal(await page.evaluate(() => document.activeElement.dataset.name), 'target');
     // Third attempt succeeds: the modal closes and resolves with the values.
-    await chooseOption(page, '.modal input[name=target]', 'LAB-TEX-01');
+    await chooseOption(page, '.modal input[data-name=target]', 'LAB-TEX-01');
     await page.click('.modal .btn-primary');
     assert.deepEqual(await result, { action: 'Installer EDR', status: 'Terminé', target: 'LAB-TEX-01', deadline: '30/04/2026', month: '2026-05' });
     await page.waitForSelector('.modal', { state: 'detached' });

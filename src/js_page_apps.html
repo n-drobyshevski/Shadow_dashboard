@@ -66,7 +66,7 @@
     var crit = rec._criteria || Core.scoreApplication(rec).criteria;
     var missing = Core.APP_REQUIRED_FIELDS.filter(function (f) { return Core.isBlank(rec[f]); });
     var postes = Core.buildPosteAppsRelation([rec]).byApp[name] || [];
-    var posteIndex = {};
+    var posteIndex = Object.create(null);   // poste names are data: no prototype
     md.postes.forEach(function (p) { posteIndex[Core.normKey(p[KEY_POSTE])] = p; });
     var closed = false;
 

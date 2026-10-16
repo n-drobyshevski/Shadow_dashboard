@@ -118,7 +118,7 @@
   function patchRecords(month, entity, records) {
     var md = monthCache[month];
     if (!md || !md[entity]) return;
-    var byId = {};
+    var byId = Object.create(null);   // record ids are data: no prototype ('__proto__' is an id like any other)
     (records || []).forEach(function (r) { if (r && r._id) byId[r._id] = r; });
     md[entity] = enrich(entity, md[entity].map(function (r) { return byId[r._id] || r; }));
     dropTimeline();
