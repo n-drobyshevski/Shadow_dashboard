@@ -18,12 +18,15 @@
   },
   "devDependencies": {
     "@google/clasp": "^3.4.1",
-    "braces": "file:vendor/braces"
+    "braces": "file:vendor/braces",
+    "node-domexception": "file:vendor/node-domexception"
   },
   "engines": {
     "node": ">=20"
   },
   "overrides": {
-    "braces": "$braces"
+    "braces": "$braces",
+    "node-domexception": "$node-domexception",
+    "gaxios": "7.3.1"
   }
 }

@@ -1,0 +1,11 @@
+{
+  "name": "@shadow-dashboard/node-domexception",
+  "version": "1.0.0-shadow.1",
+  "description": "Native DOMException, in place of the deprecated node-domexception (see README.md)",
+  "private": true,
+  "license": "MIT",
+  "main": "index.js",
+  "engines": {
+    "node": ">=17"
+  }
+}

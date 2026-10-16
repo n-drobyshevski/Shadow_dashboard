@@ -29,7 +29,7 @@ test('vendored braces: unchanged results for ordinary patterns', () => {
 test('the clasp toolchain resolves braces to the vendored copy (package.json override)', () => {
   const pkg = require(path.join(ROOT, 'package.json'));
   assert.equal(pkg.devDependencies.braces, 'file:vendor/braces');
-  assert.deepEqual(pkg.overrides, { braces: '$braces' });
+  assert.equal(pkg.overrides.braces, '$braces');
   const lock = require(path.join(ROOT, 'package-lock.json'));
   assert.deepEqual(lock.packages['node_modules/braces'], { resolved: 'vendor/braces', link: true });
   assert.equal(lock.packages['vendor/braces'].name, '@shadow-dashboard/braces');
