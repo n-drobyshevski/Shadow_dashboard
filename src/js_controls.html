@@ -1,103 +1,6 @@
 <script>
-/**
- * Form controls of the ledger UI (extends window.UI; loaded right after js_ui.html).
- * Visual language: docs/DESIGN.md. Styles: css_controls.html. No native <select>, no datalist, no native
- * date/month pickers and no title= tooltips anywhere in the app: use the controls below.
- *
- * ------------------------------------------------------------------------------------------------
- * PUBLIC API
- * ------------------------------------------------------------------------------------------------
- * UI.popover({anchor, content, className?, id?, role?, ariaLabel?, labelledBy?, returnFocus?, ignore?,
- *             matchWidth=true, maxHeight=320, align='start'|'end', keepOnTab=false, onClose?(reason)})
- *     -> {node, anchor, close(reason?, {restoreFocus=true}?), reposition(), isOpen()}
- *   Overlay surface portalled to <body> (position: fixed, z-index above modal and drawer), placed under the
- *   anchor (flips above when there is no room), min-width = anchor width, repositioned on scroll/resize.
- *   Closes on outside pointerdown ('outside'), Esc ('escape', focus back to returnFocus || anchor), Tab
- *   inside the panel ('tab', unless the keydown was defaultPrevented; with keepOnTab, Tab moves between the
- *   panel's controls and only focus leaving the panel closes it), anchor scrolled out ('scroll').
- *   Only one popover is open at a time: opening one closes the previous one ('replaced').
- *   UI.popover.current() -> the open popover or null; UI.popover.closeAll().
- *
- * UI.dropdown({id?, name?, label?, ariaLabel?, labelledBy?, options, value, onChange?, onClose?(reason),
- *              placeholder?, emptyLabel='—', allowEmpty?, searchable?, size='md'|'sm', disabled?, mono?,
- *              multiple?, combobox?, tokens?, className?}) -> Element (div.dd)
- *   options: [string | {value, label?, hint?, group?, disabled?, mono?}]. Replaces <select>. group: rows
- *     under a small-caps group label; mono: that row's label in IBM Plex Mono (identifiers). When any row
- *     sets mono, the rows decide (the dropdown's own mono then only applies to the trigger).
- *   - single (default): trigger <button id=id aria-haspopup=listbox>; value is a string.
- *   - allowEmpty: adds a first option '' labelled emptyLabel. placeholder: text shown while value is ''.
- *   - searchable: filter box at the top of the list (default: automatic above 8 options).
- *   - multiple: value is an array; rows carry the drawn checkbox; footer « Effacer la sélection »; the
- *     trigger summarises the selection « Labo Textile + 1 » (placeholder, default « Toutes », when empty).
- *   - combobox: the trigger is a text <input id=id role=combobox>; free text allowed, the list filters as
- *     you type, its last row is « Utiliser « … » ». onChange(text) fires on commit (option, Enter, Tab, blur).
- *   - tokens: comma-separated multi-token combobox (« POSTE-01, POSTE-02 »); suggestions complete the
- *     token being typed; value is the normalised « a, b » string.
- *   - size 'sm': 28px trigger for table cells. mono: identifiers / months in IBM Plex Mono.
- *   Element methods: getValue(), setValue(v) (no onChange), setOptions(opts), setDisabled(bool),
- *   setMono(bool), focus(), open(), close(), isOpen(); properties: .control (the trigger: button or input), .value (get/set).
- *   The trigger (button) also exposes .value (get/set), so document.getElementById(id).value works.
- *   onClose(reason): 'select' | 'escape' | 'outside' | 'tab' | 'toggle' | 'replaced' | 'scroll' | ...
- *   Keyboard: ArrowDown/ArrowUp/Enter/Space open; arrows move; Home/End; PageUp/PageDown; type-ahead;
- *   Enter/Space select (toggle in multiple mode); Esc closes and restores focus; Tab closes (and commits
- *   combobox text; in multiple mode Tab first reaches « Effacer la sélection »).
- *   The listbox (role=listbox, id = id + '-listbox', options role=option + aria-selected) only exists while
- *   open; aria-controls / aria-activedescendant point at it.
- *
- * UI.dateField({id?, name?, value 'DD/MM/YYYY', onChange?(value), onValidate?(message), required?, min?, max?,
- *               size='md'|'sm', ariaLabel?, labelledBy?, placeholder='JJ/MM/AAAA', className?}) -> div.dd-field
- *   Mono text input (id = id) with a JJ/MM/AAAA mask (« 12032026 » -> « 12/03/2026 », « 1/3/2026 » ->
- *   « 01/03/2026 », ISO paste converted), validated with Core.frToIso + a real-calendar check + min/max
- *   ('DD/MM/YYYY'). The caret button (or ArrowDown / Alt+ArrowDown) opens a calendar in a UI.popover: French
- *   month/day names, Monday first, today marked, arrows/Home/End/PageUp/PageDown (+Shift = year), Enter
- *   selects, « Aujourd’hui » / « Effacer ». On blur: aria-invalid set, onValidate(message|'') called,
- *   onChange(value) when the valid value changed. Methods: getValue() ('DD/MM/YYYY' normalised, '' when
- *   empty or invalid), getText() (raw text), setValue(v), validate() -> '' | message, setDisabled(b),
- *   focus(), open(), close(); property .control (the input).
- *
- * UI.monthField({id?, name?, value 'YYYY-MM', options?:[known months], onChange?, onValidate?, required?,
- *                size?, ariaLabel?, labelledBy?, placeholder='AAAA-MM', className?}) -> div.dd-field
- *   Same pattern for months: mono input with an AAAA-MM mask validated by Core.validateMonth, and a year /
- *   12-month grid popover (known months marked « importé »). Same methods as dateField.
- *
- * UI.checkbox({checked, label, onChange?(checked), id?, name?, value?, disabled?}) -> label.cb
- *   Custom-drawn checkbox (ink square, 2px radius) over a real visually-hidden <input type=checkbox>.
- *   Methods: getValue(), setValue(bool), setDisabled(bool); property .input.
- *
- * UI.toggle({id, label, description?, checked, onChange?(checked) -> Promise | void, disabled?}) -> div.toggle-row
- *   On / off switch of a setting saved at once: the label (and its description) on the left, on the right a
- *   <button id=id role=switch aria-checked> holding a drawn track and thumb (aria-hidden) and the state word
- *   « Activé » / « Désactivé » (the state is never told by colour alone). Named by the label
- *   (aria-labelledby id-label), described by the description (aria-describedby id-desc). Space / Enter (native
- *   button) and a click on the button or on the label switch it. The new state shows at once; while the
- *   promise returned by onChange runs the button is busy (aria-busy, aria-disabled: it keeps the focus, further
- *   presses are ignored) and on rejection it goes back to the previous state (the caller reports the error).
- *   Methods: getValue(), setValue(bool) (never calls onChange), setDisabled(bool); property .control (the button).
- *
- * UI.tooltip(target, text | Node, {focusable?, placement?}?) -> target
- *   Ink tooltip (white Plex 12px, 3px radius), above the target (below when there is no room), or beside it
- *   with placement:'right' (collapsed sidebar rail). Shows after 300 ms of hover and at once on keyboard focus;
- *   Esc dismisses; touch: tap toggles. Wires aria-describedby to a hidden description node. Calling it again
- *   on the same target replaces the text; UI.tooltip(target, null) removes it. focusable:true adds
- *   tabindex=0 to a non-focusable target. UI.el(tag, {tooltip: '…'}) calls it for you (never use title=).
- *
- * UI.searchField({id?, value?, placeholder='Rechercher…', ariaLabel?, onInput?(value), className?,
- *                 inputClass?}) -> div.search-field
- *   <input type=search> without the native decorations, plus a 24px « × » clear button (aria-label
- *   « Effacer la recherche ») shown when the field has text; Esc clears. Methods: getValue(), setValue(v,
- *   emit?), focus(); property .input.
- *
- * UI.busy(button, promise | true | false, label?) -> Promise (same result) | restore function (true)
- *   Busy state of a button while `promise` runs: spinner + label, colours and width kept, aria-busy and
- *   aria-disabled set, clicks swallowed. busy(btn, true) starts it manually and returns the restore
- *   function; busy(btn, false) stops it.
- *
- * UI.fieldError(control, message) -> the .field-error node
- *   Unified validation display: red 12px message under the field, --ko border, aria-invalid and
- *   aria-describedby. control: an input / textarea / dropdown / dateField / monthField (its .control is
- *   used). An empty message clears the error.
- * ------------------------------------------------------------------------------------------------
- */
+// Form controls added to window.UI (loaded right after js_ui.html; styles in css_controls.html).
+// The app uses these instead of native <select>, datalist, date/month inputs and title= tooltips.
 (function () {
   'use strict';
 
@@ -126,9 +29,9 @@
   }
   function isPrintable(e) { return e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey; }
 
-  // ============================================================================== popover
+  // Popover
 
-  var openPop = null;
+  var openPop = null; // only one popover is open at a time
   var GAP = 4;
   var EDGE = 8;
 
@@ -157,7 +60,7 @@
       close('escape');
     }
     function onPanelKey(e) { if (e.key === 'Tab' && !e.defaultPrevented && !opts.keepOnTab) close('tab'); }
-    // keepOnTab (a panel with several controls): Tab moves inside; leaving the panel closes it.
+    // With keepOnTab, Tab moves between the panel's controls and only focus leaving the panel closes it.
     function onFocusOut(e) {
       if (opts.keepOnTab && e.relatedTarget instanceof Node && !inside(e.relatedTarget)) close('tab', { restoreFocus: false });
     }
@@ -223,9 +126,8 @@
   popover.current = function () { return openPop; };
   popover.closeAll = function () { if (openPop) openPop.close('api', { restoreFocus: false }); };
 
-  // ============================================================================== checkbox
+  // Checkbox
 
-  /** UI.checkbox({checked, label, onChange, id?, name?, value?, disabled?}) -> label.cb */
   function checkbox(o) {
     var opts = o || {};
     var input = el('input', { type: 'checkbox', class: 'cb-input', id: opts.id || null, name: opts.name || null,
@@ -235,7 +137,7 @@
       el('span', { class: 'cb-box', 'aria-hidden': 'true' }),
       opts.label !== undefined && opts.label !== null && opts.label !== '' ? el('span', { class: 'cb-label' }, opts.label) : null);
     input.addEventListener('change', function () { if (opts.onChange) opts.onChange(input.checked); });
-    root.input = input;   // (label.control natively returns the input too)
+    root.input = input;
     root.getValue = function () { return input.checked; };
     root.setValue = function (b) { input.checked = !!b; };
     root.setDisabled = function (b) { input.disabled = !!b; root.classList.toggle('is-disabled', !!b); };
@@ -243,9 +145,8 @@
     return root;
   }
 
-  // ============================================================================== toggle
+  // Toggle
 
-  /** UI.toggle({id, label, description?, checked, onChange?, disabled?}): see the header. */
   function toggle(o) {
     var opts = o || {};
     var id = opts.id || nextId('toggle');
@@ -290,6 +191,7 @@
       var p;
       try { p = opts.onChange ? opts.onChange(value) : null; } catch (e) { p = Promise.reject(e); }
       if (!p || typeof p.then !== 'function') return;
+      // aria-disabled rather than disabled keeps the focus on the button; a rejection reverts the switch.
       setBusy(true);
       p.then(function () { setBusy(false); }, function () {
         setBusy(false);
@@ -306,7 +208,7 @@
     return root;
   }
 
-  // ============================================================================== tooltip
+  // Tooltip
 
   var tipStore = null;
   var tipBubble = null;
@@ -319,7 +221,7 @@
       tipStore = el('div', { class: 'tooltip-store', id: 'tooltip-store', hidden: true });
       document.body.appendChild(tipStore);
     }
-    // Drop the descriptions of targets that left the document (not of targets built but not inserted yet).
+    // Drop descriptions of targets that left the document, but not of targets not inserted yet.
     Array.prototype.slice.call(tipStore.children).forEach(function (d) {
       if (!d.__target) return;
       if (d.__target.isConnected) d.__seen = true;
@@ -377,7 +279,7 @@
   }, true);
   window.addEventListener('scroll', function () { if (tipTarget) hideTip(); }, true);
 
-  /** UI.tooltip(target, text|Node|null, {focusable?, placement?}?) -> target */
+  // Empty content removes the tooltip; calling it again on the same target replaces the text.
   function tooltip(target, content, o) {
     if (!target) return target;
     var opts = o || {};
@@ -410,6 +312,7 @@
       });
       target.addEventListener('focusin', function () {
         if (!target.__tooltip) return;
+        // Show on keyboard focus only, not when a click focuses the target.
         var kb = false;
         try { kb = target.matches(':focus-visible') || (document.activeElement && document.activeElement.matches(':focus-visible')); } catch (e) { kb = true; }
         if (kb) showTip(target);
@@ -433,7 +336,7 @@
     return target;
   }
 
-  // ============================================================================== dropdown
+  // Dropdown
 
   function normOptions(list) {
     return (list || []).map(function (o) {
@@ -456,7 +359,7 @@
     });
   }
 
-  /** UI.dropdown(options) -> div.dd (see the API block above). */
+  // The listbox exists only while open. setValue never calls onChange.
   function dropdown(o) {
     var opts = o || {};
     var multiple = !!opts.multiple;
@@ -519,7 +422,6 @@
       }
     }
 
-    // ---- value helpers
     function findOption(v) {
       for (var i = 0; i < options.length; i++) if (options[i].value === v) return options[i];
       return null;
@@ -544,6 +446,10 @@
       return op.value === value;
     }
 
+    function isSearchable() {
+      return opts.searchable === undefined || opts.searchable === null ? options.length > 8 : !!opts.searchable;
+    }
+
     function display() {
       if (combo) return;
       var text;
@@ -562,7 +468,6 @@
       root.classList.toggle('has-value', multiple ? value.length > 0 : value !== '');
     }
 
-    // ---- list rendering
     function allOptions() {
       var list = options.slice();
       if (!multiple && !combo && opts.allowEmpty && !findOption('')) {
@@ -664,17 +569,16 @@
       return false;
     }
 
-    // ---- open / close
     function open(how) {
       if (trigger.disabled || pop) return;
       var h = how || {};
       query = h.query !== undefined ? h.query : '';
       typeBuf = '';
-      var searchable = !combo && (opts.searchable === undefined || opts.searchable === null ? options.length > 8 : !!opts.searchable);
+      var searchable = !combo && isSearchable();
       listbox = el('div', { id: listId, role: 'listbox', class: 'dd-list', tabindex: '-1',
         'aria-multiselectable': multiple ? 'true' : null,
         'aria-labelledby': nameRef || null, 'aria-label': nameRef ? null : (opts.ariaLabel || 'Options') });
-      listbox.addEventListener('mousedown', function (e) { e.preventDefault(); });
+      listbox.addEventListener('mousedown', function (e) { e.preventDefault(); }); // keep the focus where it is
       listbox.addEventListener('mousemove', function (e) {
         var row = e.target.closest && e.target.closest('[role=option]');
         if (row && Number(row.dataset.index) !== active) setActive(Number(row.dataset.index), false);
@@ -710,7 +614,7 @@
         content.appendChild(el('div', { class: 'dd-footer' }, footerBtn));
       }
       pop = popover({ anchor: anchor, content: content, returnFocus: trigger, onClose: onPopClose,
-        // Options that set their own mono flag decide row by row (e.g. postes in mono, applications in sans).
+        // Rows that set their own mono flag decide row by row.
         className: ['dd-popover', 'dd-popover-' + size,
           opts.mono && !options.some(function (op) { return op.mono; }) ? 'dd-mono' : null].filter(Boolean).join(' ') });
       trigger.setAttribute('aria-expanded', 'true');
@@ -745,7 +649,6 @@
     }
     function closePop(reason, restore) { if (pop) pop.close(reason, { restoreFocus: restore !== false }); }
 
-    // ---- selection
     function emit() { if (opts.onChange) opts.onChange(multiple ? value.slice() : value); }
     function commitText() {
       var v = normalizeText(trigger.value);
@@ -804,7 +707,6 @@
       emit();
     }
 
-    // ---- keyboard
     function onListKey(e) {
       var inSearch = e.target === searchInput;
       if (!isPrintable(e)) typeBuf = '';
@@ -865,7 +767,6 @@
             commitText();
             closePop('tab', false);
             break;
-          default:
         }
       });
       trigger.addEventListener('blur', function (e) {
@@ -894,14 +795,12 @@
           open({ at: e.key === 'Home' ? 'first' : 'last' });
         } else if (isPrintable(e)) {
           e.preventDefault();
-          var searchable = opts.searchable === undefined || opts.searchable === null ? options.length > 8 : !!opts.searchable;
-          if (searchable) open({ query: e.key });
+          if (isSearchable()) open({ query: e.key });
           else open({ typeahead: e.key });
         }
       });
     }
 
-    // ---- public surface
     root.control = trigger;
     root.trigger = trigger;
     root.getValue = function () {
@@ -934,7 +833,7 @@
       root.classList.toggle('is-disabled', !!b);
       if (b) closePop('disabled', false);
     };
-    /** Trigger / typed text in mono (identifiers) or not; rows with their own mono flag keep it. */
+    // Rows with their own mono flag keep it.
     root.setMono = function (b) {
       opts.mono = !!b;
       root.classList.toggle('dd-mono', !!b);
@@ -946,18 +845,18 @@
     root.isOpen = function () { return !!pop; };
     var accessor = {
       configurable: true,
-      get: function () { return multiple ? root.getValue() : root.getValue(); },
+      get: function () { return root.getValue(); },
       set: function (v) { root.setValue(v); }
     };
     Object.defineProperty(root, 'value', accessor);
-    if (!combo) Object.defineProperty(trigger, 'value', accessor);
+    if (!combo) Object.defineProperty(trigger, 'value', accessor); // so getElementById(id).value works
 
     root.setValue(opts.value);
     if (opts.disabled) root.setDisabled(true);
     return root;
   }
 
-  // ============================================================================== dates
+  // Date and month fields
 
   var MONTHS = Fmt.MONTHS;
   var MONTHS_SHORT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
@@ -974,7 +873,7 @@
     return new Date(t.getFullYear(), t.getMonth(), Math.min(d.getDate(), last));
   }
   function sameDay(a, b) { return !!a && !!b && isoOf(a) === isoOf(b); }
-  /** 'D/M/YYYY' -> Date (local midnight) when it is a real calendar day, else null. */
+  // Null unless the text is a real calendar day.
   function parseFr(s) {
     var iso = Core.frToIso(str(s));
     if (!iso) return null;
@@ -984,10 +883,7 @@
     return d;
   }
 
-  /**
-   * Seven digits that do not read as JJ/MM/AAA… (day > 31 or month > 12), e.g. « 1032026 »: tries
-   * J/MM/AAAA, then JJ/M/AAAA, and returns the first real calendar day as 'DD/MM/YYYY' ('' otherwise).
-   */
+  // Seven digits that cannot be JJMMAAA…, e.g. « 1032026 »: tries J/MM/AAAA, then JJ/M/AAAA.
   function sevenDigits(raw) {
     var d = String(raw).replace(/\D/g, '');
     if (d.length !== 7) return '';
@@ -1002,7 +898,7 @@
     return '';
   }
 
-  /** Progressive JJ/MM/AAAA mask (typing at the end of the field). */
+  // Applied only while typing at the end of the field.
   function maskDate(raw) {
     var iso = /^\s*(\d{4})-(\d{2})-(\d{2})\s*$/.exec(raw);
     if (iso) return Core.isoToFr(iso[1] + '-' + iso[2] + '-' + iso[3]) || raw;
@@ -1027,7 +923,6 @@
     if ((i === 0 && f[0].length === 2) || (i === 1 && f[1].length === 2)) out += '/';
     return out;
   }
-  /** Progressive AAAA-MM mask. */
   function maskMonth(raw) {
     var fr = /^\s*(\d{1,2})[/.\- ](\d{4})\s*$/.exec(raw);
     if (fr) return fr[2] + '-' + pad2(Number(fr[1]));
@@ -1036,16 +931,13 @@
     return d.slice(0, 4) + '-' + d.slice(4);
   }
 
-  /**
-   * Shared shell of dateField / monthField: input + caret button, mask, blur validation, popover.
-   * spec: {kind, mask(raw), normalize(text) -> value|'' , check(text) -> message, buildPicker(api) -> {node, focus()}}
-   */
+  // Shared by dateField and monthField; spec supplies the mask, normalize, check and buildPicker.
   function maskedField(o, spec) {
     var opts = o || {};
     var id = opts.id || nextId(spec.kind);
     var size = opts.size === 'sm' ? 'sm' : 'md';
     var hintId = id + '-hint';
-    // The input itself announces the picker (role=combobox + aria-haspopup=dialog) and how to open it.
+    // The caret button is out of the tab order, so the input itself announces the picker.
     var input = el('input', { type: 'text', id: id, name: opts.name || null, class: ['input', 'dd-input', 'mono', spec.kind + '-input'],
       role: 'combobox', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', 'aria-autocomplete': 'none',
       'aria-describedby': hintId,
@@ -1096,10 +988,8 @@
       }
       if (input.getAttribute('aria-invalid') === 'true' && !validate()) setInvalid('');
     });
-    input.addEventListener('blur', function (e) {
-      if (e.relatedTarget && pop && pop.node.contains(e.relatedTarget)) return;
-      if (pop) return;
-      commit();
+    input.addEventListener('blur', function () {
+      if (!pop) commit();
     });
     input.addEventListener('keydown', function (e) {
       if (e.key === 'ArrowDown' && !pop) { e.preventDefault(); openPicker(); }
@@ -1154,7 +1044,7 @@
     return root;
   }
 
-  /** Tab cycling inside a picker panel (a small dialog): the panel keeps the focus. */
+  // The picker is a small dialog, so Tab cycles inside it.
   function trapTab(node) {
     node.addEventListener('keydown', function (e) {
       if (e.key !== 'Tab') return;
@@ -1327,7 +1217,6 @@
     return { node: node, focus: focusActive };
   }
 
-  /** UI.dateField({value 'DD/MM/YYYY', onChange, required?, min?, max?, ...}) */
   function dateField(o) {
     return maskedField(o, {
       kind: 'datefield',
@@ -1342,7 +1231,7 @@
       check: function (text, opts) {
         var d = parseFr(sevenDigits(text) || text);
         if (!d) {
-          // Well-formed but not a calendar day (31/02/2026, 00/13/2026): say so, not « format ».
+          // Well-formed but not a calendar day, e.g. 31/02/2026: say so rather than blame the format.
           var m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(text);
           if (m) return 'Date inexistante : ' + pad2(Number(m[1])) + '/' + pad2(Number(m[2])) + '/' + m[3] + '.';
           return 'Date invalide : format JJ/MM/AAAA.';
@@ -1357,7 +1246,6 @@
     });
   }
 
-  /** UI.monthField({value 'YYYY-MM', options?, onChange, ...}) */
   function monthField(o) {
     return maskedField(o, {
       kind: 'monthfield',
@@ -1374,9 +1262,8 @@
     });
   }
 
-  // ============================================================================== search field
+  // Search field
 
-  /** UI.searchField({id?, value?, placeholder?, ariaLabel?, onInput?, className?, inputClass?}) */
   function searchField(o) {
     var opts = o || {};
     var input = el('input', { type: 'search', id: opts.id || null, class: ['input', 'search-input', opts.inputClass],
@@ -1404,14 +1291,15 @@
     return root;
   }
 
-  // ============================================================================== busy, field errors
+  // Busy buttons and field errors
 
+  // aria-disabled does not block clicks, so busy buttons swallow them here.
   document.addEventListener('click', function (e) {
     var b = e.target && e.target.closest ? e.target.closest('[aria-busy="true"]') : null;
     if (b && (b.tagName === 'BUTTON' || b.classList.contains('btn'))) { e.preventDefault(); e.stopImmediatePropagation(); }
   }, true);
 
-  /** UI.busy(button, promise|true|false, label?) */
+  // busy(btn, true) returns the restore function, busy(btn, false) stops it, a promise restores when settled.
   function busy(button, task, label) {
     if (!button) return task === true ? function () {} : Promise.resolve(task);
     if (task === false) { if (button.__busyRestore) button.__busyRestore(); return Promise.resolve(); }
@@ -1442,7 +1330,7 @@
     return Promise.resolve(task).then(function (r) { restore(); return r; }, function (e) { restore(); throw e; });
   }
 
-  /** UI.fieldError(control, message) -> p.field-error */
+  // An empty message clears the error.
   function fieldError(control, message) {
     if (!control) return null;
     var host = control;
@@ -1453,7 +1341,7 @@
     var err = document.getElementById(errId) || (scope && scope.querySelector ? scope.querySelector('[id="' + errId + '"]') : null);
     if (!err) {
       err = el('p', { class: 'field-error', id: errId, hidden: true });
-      // Inside a labelled control wrapper (UI.select / UI.dropdown with a label: div.dd.field), else after it.
+      // Inside a labelled wrapper such as div.dd.field, else right after the control.
       if (host.classList && host.classList.contains('field') && host !== target) host.appendChild(err);
       else if (host.parentNode) host.parentNode.insertBefore(err, host.nextSibling);
     }

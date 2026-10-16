@@ -1,72 +1,7 @@
 <script>
-/**
- * window.UI — DOM builder and UI components (docs/API.md §5).
- *
- * Security rule: every piece of text goes through textContent (UI.el); innerHTML is never used.
- * URL-bearing attributes (href, src, action, formaction) reject javascript:/data:/vbscript: URLs.
- *
- * Visual language: docs/DESIGN.md ("audit ledger"). No emoji in component chrome. Additions to the
- * API.md §5 surface (documented at the top of css.html too):
- *   UI.statusMark(text, tone)            -> span.mark.mark-<tone>: 6px square + coloured text.
- *                                           tone: ok|ko|warn|info|neutral or a risk level.
- *   UI.kpiStrip([{key?, title, value, sub?, tone?}]) -> div.kpi-strip of UI.card cells (data-kpi = key).
- *   UI.pageHeader({title, kicker?, kickerId?, actions?:[Node]}) -> header.page-header.
- *   editableTable columns also accept {numeric?:bool, mono?:bool} (right-aligned mono / identifier cells);
- *   editableTable options also accept toolbarEnd:[Node] (placed at the right end, after search + count)
- *     and readOnly:bool (lecteurs: `editable` columns render as plain cells — no inline editor, no dotted
- *     underline, no dirty bar, no Enregistrer / Annuler; sorting, search, paging and onRowClick stay).
- *   editableTable(...).lockColumns(keys) makes those columns read-only once the table is shown (their
- *     unsaved values are dropped); true when a column changed.
- *   UI.fmtPctNode(n, digits?)           -> span.pct: same text as fmtPct, the space before % is set in the
- *                                           sans face so that it stays narrow inside mono figures.
- *   UI.cellMark(column, value)          -> read view of a ledger cell: Statut / Niveau de risque as marks,
- *                                           Oui/Non criteria with « Non » in --ko; null for other columns.
- *   UI.NNBSP                            -> '\u202f' (narrow no-break space: before %, inside « »).
- *   UI.el(tag, {tooltip: text|Node})    -> custom tooltip (UI.tooltip, js_controls.html); never use title=.
- *   UI.empty(text, action? | {action?, small?})  -> one line of ink-2 text ("no data" only).
- *   UI.loading(text='Chargement…', {small?})     -> spinner + text (role=status). Small, user-triggered waits.
- *   UI.asyncBlock(box, {load, render, placeholder?, error?, small?, errorId?, live?}) -> Promise: placeholder +
- *                                           aria-busy, then render(data) or an error line with « Réessayer »;
- *                                           stale results (page left, block reloaded) are dropped. Replaces the
- *                                           hand-written « token » checks. UI.monthError(month) = its month error.
- *   UI.monthHeader({title, month, kickerId, actions?}) -> page header with the « Mai 2026 · Export » kicker.
- *   UI.noData(id) / UI.filterNote(scope) / UI.plural(n, one, many) / UI.errorToast(err, context?).
- *   UI.skeleton(kind, {label, columns?, rows?}) -> div.skeleton (role=status, aria-busy, sr-only label): the
- *                                           grey silhouette of a page body while its data loads.
- *     kind 'dashboard' (KPI strip + two gauges), 'table' (columns: [labels] or a count; rows=6),
- *     'chart' (one plot block), 'lines' (rows text bars), 'form' (two sections of field labels + input
- *     outlines: UI.formPanel). Sizes match the real blocks: nothing jumps.
- *   UI.errorState(err|text, {retry?, prefix='Erreur', small?}) -> alert-error line « Erreur : message »
- *                                           (role=alert) + optional « Réessayer » text button.
- *   UI.errorText(err)                   -> err.message || 'Erreur inconnue.' (one fallback spelling).
- *   UI.modal(...) also accepts {initialFocus?: Element}; it returns {close, node, buttons, setBusy(bool)}.
- *     An action whose onClick returns a Promise keeps the dialog open with UI.busy on that button.
- *     Dialogs with a danger action open with the focus on the non-destructive button (Annuler).
- *   UI.confirm(message, {..., onConfirm?: () => Promise}) -> Promise<boolean>; with onConfirm the dialog
- *     stays open (busy button) until the promise settles; a rejection is shown inline, dialog kept open.
- *   UI.formModal({..., onSubmit?: (values) => Promise}) -> Promise<values|null>: with onSubmit the modal
- *     stays open (busy submit button) until the promise resolves; on rejection the error is shown inline
- *     (err.field = a field name -> under that field, else an alert at the top) and the values are kept.
- *     Field types: text | textarea | select (UI.dropdown) | select+allowCustom (combobox; tokens:true =
- *     comma-separated multi-token) | date (UI.dateField, 'DD/MM/YYYY') | month (UI.monthField, options =
- *     known months). Extra field keys: hint (help line), min/max (date), mono (identifiers), disabled.
- *   UI.formFields({fields, groups?, onEnter?}) -> {form, control(name), values(), collect(), check(name),
- *     showError(err), clearErrors(), isDirty(), focusFirst(), firstField(), setValues(values)}: the field loop of
- *     formModal / formPanel; groups [{id, title, open?, note?}] -> collapsible <details class="form-section">.
- *   UI.drawer(...) also accepts {footer?, canClose?, className?, initialFocus?}; it returns {close (forced), node,
- *     requestClose} and the × goes through canClose too.
- *   UI.formPanel({title, className?, submitLabel?, note?, load, onSubmit?, open?, reloadLabel?}) -> Promise<values|null>:
- *     a creation form in a drawer (skeleton while load() runs, footer note + « Annuler » + submit, busy lock,
- *     « Abandonner la saisie ? » before losing typed values).
- *   UI.select({..., id?, disabled?, mono?, searchable?, placeholder?}) / UI.multiSelect({..., id?}) build a
- *     UI.dropdown (js_controls.html); the returned element has getValue/setValue/setOptions/setDisabled.
- *   UI.editableTable: the search box is a UI.searchField (input.etable-search, « × » clear button, Esc
- *     clears). Inline editors are laid over the cell (the column never changes width): columns with
- *     `options` -> UI.dropdown size sm opened at once (select commits, Esc / outside click cancel);
- *     date columns (label containing Date / Deadline / Prochaine revue / Échéance, or col.type 'date')
- *     -> UI.dateField sm (Enter commits a valid date, an invalid one is refused); others -> text input.
- *     « Enregistrer (n) » shows UI.busy while onSave runs.
- */
+// window.UI: DOM builder and shared UI components.
+// Text only ever goes in through textContent (UI.el), never innerHTML, and URL attributes reject
+// javascript:, data: and other unsafe schemes.
 (function () {
   'use strict';
 
@@ -82,8 +17,6 @@
   var uid = 0;
   function nextId(prefix) { uid++; return (prefix || 'ui') + '-' + uid; }
 
-  // ------------------------------------------------------------------------------ DOM builder
-
   function appendChildren(node, children) {
     children.forEach(function (c) {
       if (c === null || c === undefined || c === false || c === true) return;
@@ -93,24 +26,14 @@
     });
   }
 
-  /**
-   * French guillemets hold their content with a narrow no-break space (U+202F), so that « never ends a
-   * line on its own. Applied to every text child built by UI.el (server messages included).
-   */
+  // A narrow no-break space inside « » keeps a guillemet from ending a line on its own.
   var NNBSP = '\u202f';
   function frSpacing(s) {
     return s.indexOf('«') < 0 && s.indexOf('»') < 0 ? s : s.replace(/«[ \u00a0]/g, '«' + NNBSP).replace(/[ \u00a0]»/g, NNBSP + '»');
   }
 
-  /** UI.quote(s) -> '« s »' with narrow no-break spaces inside the guillemets. */
   function quote(s) { return '«' + NNBSP + String(s === null || s === undefined ? '' : s) + NNBSP + '»'; }
 
-  /**
-   * UI.el(tag, attrs?, ...children)
-   * attrs: class, id, style (object|string), dataset (object), on<Event> (function), text
-   * (textContent), value (set as a property after children, so <select> works), any other attribute
-   * via setAttribute (true -> '', false/null/undefined -> omitted).
-   */
   function el(tag, attrs) {
     var node = document.createElement(tag);
     var children = Array.prototype.slice.call(arguments, 2);
@@ -118,7 +41,6 @@
     var hasValue = false;
     var tip = null;
     if (attrs && (attrs instanceof Node || Array.isArray(attrs) || typeof attrs !== 'object')) {
-      // Called as UI.el(tag, child, ...): no attributes object.
       children.unshift(attrs);
       attrs = null;
     }
@@ -152,7 +74,7 @@
         } else if (k === 'innerHTML' || k === 'outerHTML') {
           throw new Error('UI.el: ' + k + ' is not allowed');
         } else if (/^on/i.test(k) || /^srcdoc$/i.test(k) || (URL_ATTRS[k.toLowerCase()] && !safeUrl(v))) {
-          // dropped on purpose: inline handlers as text, srcdoc markup, javascript:/data:/... URLs
+          // Dropped on purpose: inline handler strings, srcdoc markup and unsafe URLs.
         } else {
           node.setAttribute(k, v === true ? '' : String(v));
         }
@@ -170,18 +92,12 @@
     return node;
   }
 
-  /** External link (new tab, rel=noopener). */
   function extLink(href, text, attrs) {
-    var a = el('a', Object.assign({ href: href || '#', target: '_blank', rel: 'noopener noreferrer' }, attrs || {}),
-      text);
-    return a;
+    return el('a', Object.assign({ href: href || '#', target: '_blank', rel: 'noopener noreferrer' }, attrs), text);
   }
-
-  // ------------------------------------------------------------------------------ formatting
 
   function isNum(n) { return n !== null && n !== undefined && n !== '' && isFinite(Number(n)); }
 
-  /** UI.fmtPct(n, digits=1) -> '71,4\u202f%' (fr-FR, narrow no-break space before %); '—' for blanks. */
   function fmtPct(n, digits) {
     if (!isNum(n)) return '—';
     var d = digits === undefined || digits === null ? 1 : digits;
@@ -189,12 +105,11 @@
       .format(Number(n)) + NNBSP + '%';
   }
 
-  /** Same text as fmtPct; the narrow no-break space is wrapped so that it stays narrow in mono text. */
+  // Same text as fmtPct, with the NNBSP in its own span so it stays narrow inside mono figures.
   function fmtPctNode(n, digits) {
     var txt = fmtPct(n, digits);
     var i = txt.length - 2;
     if (txt.charAt(i + 1) !== '%' || !/\s/.test(txt.charAt(i))) return el('span', { class: 'pct' }, txt);
-    // The space keeps its character (text content unchanged); only its face changes.
     return el('span', { class: 'pct' }, txt.slice(0, i), el('span', { class: 'nnbsp' }, txt.charAt(i)), '%');
   }
 
@@ -204,16 +119,13 @@
       .replace(/[\u0020\u00a0\u2009]/g, NNBSP);
   }
 
-  // ------------------------------------------------------------------------------ small components
-
-  /** Status mark "■ text" (the square is drawn by CSS, so textContent is exactly `text`). */
+  // The square is drawn by CSS, so textContent is exactly `text`.
   function badge(text, tone) {
     return el('span', { class: 'badge badge-' + (tone || 'neutral') }, text);
   }
 
   var RISK_CLASS = { 'Critique': 'risk-critique', 'Élevé': 'risk-eleve', 'Moyen': 'risk-moyen', 'Faible': 'risk-faible' };
 
-  /** Mono figure coloured ok/ko (no square). */
   function scoreBadge(score) {
     var tone = !isNum(score) ? 'neutral' : (Number(score) >= Core.threshold() ? 'ok' : 'ko');
     var b = badge(null, tone);
@@ -222,7 +134,6 @@
     return b;
   }
 
-  /** "■ Critique": square in the risk colour, text in ink. */
   function riskBadge(level) {
     var lvl = Core.str(level);
     if (!lvl) return badge('—', 'neutral');
@@ -230,10 +141,7 @@
     return el('span', { class: 'badge badge-risk ' + RISK_CLASS[lvl], dataset: { risk: lvl } }, lvl);
   }
 
-  /**
-   * UI.statusMark(text, tone) -> span.mark.mark-<tone> ("■ Conforme")
-   * tone: 'ok'|'ko'|'warn'|'info'|'neutral' or a risk level ('Critique', 'Élevé', 'Moyen', 'Faible').
-   */
+  // tone: 'ok' | 'ko' | 'warn' | 'info' | 'neutral' or a risk level.
   function statusMark(text, tone) {
     var t = Core.str(tone) || 'neutral';
     if (Object.prototype.hasOwnProperty.call(RISK_CLASS, t)) {
@@ -242,16 +150,12 @@
     return el('span', { class: 'mark mark-' + t }, text);
   }
 
-  /** Yes/No criteria of the inventories (value that makes the record conform). */
+  // The value of each criterion that makes a record conform.
   var CRITERIA_OK = { 'IT Decathlon': 'Oui', 'EDR Decathlon': 'Oui', 'Chiffrement disque': 'Oui', 'Réseau Decathlon': 'Oui',
     'Type de compte': 'Nominatif', 'Contrat': 'Oui', 'SIP': 'Oui', 'Galink': 'Oui', 'IDP': 'Oui' };
   var STATUT_TONES = { 'conforme': 'ok', 'non conforme': 'ko', 'en cours': 'warn' };
 
-  /**
-   * UI.cellMark(column, value) -> Node|null. Read view of an inventory cell: « Statut » and « Niveau de
-   * risque » as status marks, a missing criterion (« Non », or not the conforming value) in --ko text.
-   * The text content is exactly the value. Returns null for the other columns / blank values.
-   */
+  // The text content is exactly the value; null for other columns and blank values.
   function cellMark(column, value) {
     var v = Core.str(value);
     if (!v) return null;
@@ -264,7 +168,6 @@
     return null;
   }
 
-  /** One KPI-strip cell (no box): small-caps label, 32px mono figure, optional coloured sub line. */
   function card(o) {
     var opts = o || {};
     var node = el('div', { class: 'kpi metric-card' + (opts.tone ? ' tone-' + opts.tone : '') },
@@ -277,19 +180,11 @@
     return node;
   }
 
-  /**
-   * UI.kpiStrip([{key?, title, value, sub?, tone?, delta?, deltaTone?, spark?}]) -> one row of cells divided by
-   * vertical hairlines. delta: change over the period (text, ok / ko tone); spark: UI.sparkline node.
-   */
   function kpiStrip(items) {
-    return el('div', { class: 'kpi-strip', role: 'group' }, (items || []).map(function (it) { return card(it); }));
+    return el('div', { class: 'kpi-strip', role: 'group' }, (items || []).map(card));
   }
 
-  /**
-   * UI.lede(text, more?, {id?, small?}?) -> div.lede: the one line a section needs (p.page-lede, or p.field-help
-   * when small; id on it), then, when `more` is given, the rest behind « En savoir plus » (a native
-   * <details>, keyboard and screen-reader ready). Settings read at a glance; the detail stays one click away.
-   */
+  // A native <details> for « En savoir plus », so keyboard and screen readers work as is.
   function lede(text, more, o) {
     var opts = o || {};
     return el('div', { class: ['lede', opts.small ? 'lede-small' : null] },
@@ -306,10 +201,6 @@
     return el('section', { class: 'section' }, title ? el('h2', { class: 'section-title' }, title) : null, children);
   }
 
-  /**
-   * UI.pageHeader({title, kicker?, kickerId?, actions?}) -> header.page-header
-   * kicker: string | Node | array — the small-caps line shown above the title (e.g. month + export).
-   */
   function pageHeader(o) {
     var opts = o || {};
     var hasKicker = opts.kicker !== undefined && opts.kicker !== null && opts.kicker !== '';
@@ -320,20 +211,12 @@
         opts.actions && opts.actions.length ? el('div', { class: 'page-header-actions' }, opts.actions) : null));
   }
 
-  /**
-   * UI.empty(text, action? | {action?, small?}) -> one line of ink-2 text, left-aligned ("no data" only);
-   * optional action node (text button / link) after it.
-   */
   function empty(text, o) {
     var opts = o instanceof Node ? { action: o } : (o || {});
     return el('div', { class: ['empty-state', opts.small ? 'is-small' : null], role: 'note' },
       el('p', null, text || 'Aucune donnée.', opts.action ? [' ', opts.action] : null));
   }
 
-  /**
-   * UI.noData(id) -> the empty state of a page when no month is synchronised yet: admins can run the first
-   * synchronisation (App.syncNow), lecteurs are told the data comes with the next hourly run.
-   */
   function noData(id) {
     var node;
     if (State.canEdit()) {
@@ -347,24 +230,15 @@
     return node;
   }
 
-  /** UI.filterNote(scope) -> p.filter-note (State.filterSummary(scope)) or null when no filter is active. */
   function filterNote(scope) {
     var text = State.filterSummary(scope);
     return text ? el('p', { class: 'filter-note', role: 'status' }, text) : null;
   }
 
-  /** UI.plural(n, one, many) -> '3 postes' (figure formatted, noun agreed). */
   function plural(n, one, many) { return fmtNum(n) + ' ' + (n > 1 ? many : one); }
 
-  /** UI.errorToast(err, context?) -> error toast « Erreur : message » / « Erreur : context. message ». */
   function errorToast(err, context) { toast('Erreur : ' + (context ? context + '. ' : '') + errorText(err), 'error'); }
 
-  /**
-   * UI.monthHeader({title, month, from?, endLabel?, kickerId, actions?}) -> UI.pageHeader with the month kicker
-   * « Mai 2026 · Export 2026-05 » (kicker carries data-month and kickerId), « Aucun export importé » when
-   * there is no month. A period (from before month): « Avril → octobre 2026 · état fin octobre » (endLabel
-   * replaces « état »; data-from too).
-   */
   function monthHeader(o) {
     var m = o.month;
     var range = m && o.from && o.from < m;
@@ -378,10 +252,7 @@
     return h;
   }
 
-  /**
-   * UI.sparkline(values) -> small inline SVG line of a month-by-month series (nulls skipped), the last point
-   * marked; null when fewer than two points. Decorative: the figure and its delta say the same in words.
-   */
+  // Decorative (aria-hidden): the figure and its delta next to it say the same in words.
   function sparkline(values) {
     var pts = [];
     (values || []).forEach(function (v, i) { if (typeof v === 'number' && isFinite(v)) pts.push([i, v]); });
@@ -412,14 +283,7 @@
     return svg;
   }
 
-  /**
-   * UI.asyncBlock(box, {load, render, placeholder?, error?, small?, errorId?, live?}) -> Promise
-   * The one way a block shows async data: placeholder (a node, or a function returning one) + aria-busy
-   * while `load()` runs, then render(data, box) — or an error line with « Réessayer » (error: {prefix,
-   * retry?} or a function err -> that object; retry defaults to running the block again). A result is
-   * dropped when the box was detached (page left), reloaded since (each call supersedes the previous one
-   * for that box), or live() returns false.
-   */
+  // Each call supersedes the previous one for the same box; a stale or detached result is dropped.
   function asyncBlock(box, o) {
     var seq = (box.__asyncSeq || 0) + 1;
     box.__asyncSeq = seq;
@@ -445,20 +309,17 @@
     });
   }
 
-  /** UI.monthError(month) -> asyncBlock error for month data: « Impossible de charger mai 2026 », retry reloads. */
   function monthError(month) {
     return { prefix: 'Impossible de charger ' + Fmt.monthLong(month),
       retry: function () { State.invalidate(month); App.refresh(); } };
   }
 
-  /** UI.loading(text='Chargement…', {small?}) -> spinner + one line of ink-2 text. */
   function loading(text, o) {
     var opts = o || {};
     return el('div', { class: ['loading-state', opts.small ? 'is-small' : null], role: 'status' },
       el('span', { class: 'spinner', 'aria-hidden': 'true' }), el('span', null, text || 'Chargement…'));
   }
 
-  /** UI.skeleton(kind, {label, columns?, rows?}) -> div.skeleton (see the header). */
   var SKEL_WIDTHS = [72, 54, 86, 40, 64, 78, 48, 60];
   function skeleton(kind, o) {
     var opts = o || {};
@@ -491,7 +352,6 @@
     } else if (kind === 'chart') {
       shown.appendChild(el('div', { class: 'section' }, bar('skel-label', 30), el('span', { class: 'skel-chart' })));
     } else if (kind === 'form') {
-      // Two sections of four fields: small-caps label, then field labels over 32px input outlines.
       [0, 1].forEach(function (s) {
         shown.appendChild(el('div', { class: 'skel-form-section' }, bar('skel-label', 24 + s * 10),
           el('div', { class: 'form' }, [0, 1, 2, 3].map(function (i) {
@@ -504,17 +364,12 @@
     return root;
   }
 
-  /** UI.errorText(err) -> the message of an Error / string, 'Erreur inconnue.' when there is none. */
   function errorText(err) {
     var m = err && typeof err === 'object' ? err.message : err;
     m = m === null || m === undefined ? '' : String(m).trim();
     return m || 'Erreur inconnue.';
   }
 
-  /**
-   * UI.errorState(err|text, {retry?, prefix='Erreur', small?}) -> « Erreur : message » as an alert-error
-   * line (role=alert), with a « Réessayer » text button when retry is given.
-   */
   function errorState(err, o) {
     var opts = o || {};
     var prefix = opts.prefix === undefined ? 'Erreur' : opts.prefix;
@@ -527,8 +382,6 @@
   function spinner() {
     return el('span', { class: 'spinner', role: 'status', 'aria-label': 'Chargement' });
   }
-
-  // ------------------------------------------------------------------------------ toast
 
   function toast(message, type) {
     var kind = type === 'success' || type === 'error' ? type : 'info';
@@ -549,7 +402,7 @@
     return { close: dismiss };
   }
 
-  // ------------------------------------------------------------------------------ overlays (modal, drawer)
+  // Overlays: modal and drawer.
 
   var FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
     'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -565,24 +418,20 @@
 
   function openPopover() { return window.UI && UI.popover && UI.popover.current ? UI.popover.current() : null; }
 
-  /**
-   * Shared overlay behaviour: Escape closes, Tab is trapped inside `panel`, focus is restored on close.
-   * Returns a close(force?) function; `onClose` runs exactly once. `canClose()` (optional) can veto the
-   * user-initiated closes (Escape, backdrop) — used while a busy action runs.
-   * Escape is left to an open popover (dropdown, calendar) and to a non-empty search field first.
-   */
+  // Escape closes, Tab stays inside `panel` and the focus goes back where it was on close. Returns close();
+  // canClose() can veto the user's closes (Escape, backdrop) while a busy action runs.
   function openOverlay(overlay, panel, onClose, canClose) {
     var previous = document.activeElement;
     var closed = false;
     function userClose() { if (!canClose || canClose()) close(); }
     function onKey(e) {
       if (e.key === 'Escape') {
+        // An open popover or a non-empty search field gets the Escape first.
         if (openPopover()) return;
         var t = e.target;
         if (t && t.matches && t.matches('input[type=search]') && t.value) return;
         // Only the top-most overlay reacts.
-        var root = modalRoot();
-        if (root.lastElementChild === overlay) { e.stopPropagation(); userClose(); }
+        if (modalRoot().lastElementChild === overlay) { e.stopPropagation(); userClose(); }
       } else if (e.key === 'Tab') {
         if (!panel.contains(document.activeElement)) return;
         var items = Array.prototype.filter.call(panel.querySelectorAll(FOCUSABLE), function (n) {
@@ -624,14 +473,6 @@
     if (target) setTimeout(function () { try { target.focus(); } catch (e) { /* ignore */ } }, 0);
   }
 
-  /**
-   * UI.modal({title, body, actions:[{label, primary?, danger?, onClick(close)}], wide?, onClose?, initialFocus?})
-   *   -> {close, node, buttons, setBusy(bool)}
-   * onClick may return a Promise: the dialog stays open, the clicked button shows UI.busy, the other buttons
-   * are disabled and Escape / backdrop / × are ignored until it settles.
-   * Initial focus: the first field of the body, else the primary button; for a dialog with a danger action,
-   * the first non-destructive button (« Annuler ») so that a stray Enter never deletes.
-   */
   function modal(o) {
     var opts = o || {};
     var titleId = nextId('modal-title');
@@ -677,16 +518,12 @@
     var primary = buttons.filter(function (b, i) { return actions[i].primary || actions[i].danger; })[0];
     var safe = buttons.filter(function (b, i) { return !actions[i].danger && !actions[i].primary; })[0];
     if (opts.initialFocus) focusFirst(null, opts.initialFocus);
+    // With a danger action the focus starts on « Annuler », so a stray Enter never deletes.
     else if (hasDanger) focusFirst(null, safe || closeBtn);
     else focusFirst(dialog.querySelector('.modal-body'), primary || closeBtn);
     return { close: close, node: dialog, buttons: buttons, setBusy: setBusy };
   }
 
-  /**
-   * UI.confirm(message, {title?, okLabel?, cancelLabel?, danger?, onConfirm?}) -> Promise<boolean>
-   * onConfirm (optional) runs on « OK » and may return a Promise: the dialog stays open with the busy button;
-   * on rejection the error is shown inline and the dialog stays open (the user can retry or cancel).
-   */
   function confirm(message, o) {
     var opts = o || {};
     return new Promise(function (resolve) {
@@ -715,7 +552,7 @@
 
   function normOptions(options) {
     return (options || []).map(function (o) {
-      // Keeps the dropdown option extras (hint, group, mono, disabled).
+      // Keep the dropdown option extras (hint, group, mono, disabled).
       if (o !== null && typeof o === 'object') {
         return Object.assign({}, o, { value: Core.str(o.value), label: Core.str(o.label !== undefined ? o.label : o.value) });
       }
@@ -723,11 +560,8 @@
     });
   }
 
-  /**
-   * A short list as buttons in a labelled group (form field types 'yesno' — Oui / Non, the pressed Oui in the ok
-   * tone and Non in the ko tone — and 'choice' — f.options, e.g. Basse / Moyenne / Haute). A second click on the
-   * pressed one clears an optional field. -> group div with getValue(), setValue(v), first (its first button).
-   */
+  // Buttons in a labelled group for the 'yesno' and 'choice' field types. Returns the group with
+  // getValue(), setValue(v) and first (its first button).
   function choiceGroup(id, labelId, f, value, onChange, options) {
     var values = options.map(function (o) { return Core.str(o && typeof o === 'object' ? o.value : o); });
     var labels = options.map(function (o) { return Core.str(o && typeof o === 'object' ? (o.label || o.value) : o); });
@@ -744,6 +578,7 @@
       var b = el('button', { type: 'button', class: 'choice-btn' + (f.type === 'yesno' ? ' yesno-btn' : '') + tone,
         disabled: !!f.disabled, dataset: { value: v },
         onClick: function () {
+          // A second click on the pressed button clears an optional field.
           set(current === v && !f.required ? '' : v);
           onChange();
         } }, labels[i]);
@@ -757,36 +592,18 @@
     return group;
   }
 
-  /**
-   * UI.formFields({fields, groups?, onEnter?, onChange?}) -> {form, control(name), values(), collect(), check(name),
-   *   showError(err), clearErrors(), isDirty(), focusFirst(), firstField(), setValues(values)}
-   * type 'choice': f.options as buttons (choiceGroup). date fields: f.quick = [{label, value}] shortcut buttons.
-   * type 'yesno': two buttons Oui / Non (aria-pressed, in a labelled group; a second click on the pressed one
-   * clears an optional field). onChange(name) runs after any field changes (typing, a pick, a click).
-   * groups[].hint: a muted line in the summary while the section is closed (what it holds); groups[].tally: the
-   * summary counts its yesno fields at Oui (« 3 sur 4 à Oui »), live.
-   * The fields of UI.formModal and UI.formPanel. fields: see UI.formModal, plus group (a groups[].id).
-   * groups: [{id, title, open?, note?}] -> one <details class="form-section" data-group=id> per group: a small-caps
-   * <summary class="form-section-title"> with the +/− marker, then a div.form of its fields and the optional
-   * p.form-section-note; fields of no known group come first in a plain div.form; a group with no field and no
-   * note is left out. Without groups the form itself is the div.form grid (UI.formModal).
-   * Enter in a single-line field calls onEnter(). collect() checks every field, opens the sections of the invalid
-   * ones and focuses the first of them: the values, or null. showError(err): err.field = a field name -> the
-   * message under that field (its section opened, the field focused), else an alert at the top of the form.
-   * isDirty(): a field's text differs from the one it was built with. values(): the values without checks.
-   */
+  // Fields of no known group come first in a plain div.form; without groups the form itself is the grid.
   function formFields(o) {
     var opts = o || {};
     var fields = opts.fields || [];
     var groups = opts.groups || null;
-    // Keyed by field name, i.e. by source column name (data): no prototype, so that a column named
-    // '__proto__' or 'constructor' is a field like any other.
+    // Field names are source column names, so no prototype: '__proto__' is a field like any other.
     var controls = Object.create(null);
     var names = [];
     var initial = Object.create(null);
-    /** Passed to a select field's onChange(value, form): form.control(name) = another field's control. */
+    // Second argument of a select field's onChange(value, form).
     var formApi = { control: function (name) { return controls[name] ? controls[name].control : null; } };
-    var tallies = [];   // {group, node}: « N sur M à Oui » of the groups with tally
+    var tallies = [];
     function changed(name) {
       tallies.forEach(updateTally);
       if (opts.onChange) opts.onChange(name);
@@ -819,13 +636,12 @@
       var labelId = id + '-label';
       var type = f.type || 'text';
       var value = f.value === null || f.value === undefined ? '' : String(f.value);
-      var control;   // element placed in the form
-      var focusEl;   // element receiving focus / aria-invalid
+      var control;
+      var focusEl;   // gets the focus and aria-invalid
       var get;
-      var raw;       // the text as typed (isDirty)
-      // No name attribute: a control named after a column ('addEventListener', 'submit', 'elements'…) would
-      // shadow that member of the <form> (named properties of HTMLFormElement). The id is a counter, the
-      // field name goes to data-name (control) and data-field (.form-field); values come from `controls`.
+      var raw;       // the text as typed, for isDirty()
+      // No name attribute: a control named after a column ('submit', 'elements'…) would shadow that member
+      // of the <form>. The field name goes on data-name and data-field instead.
       var common = { id: id, class: ['input', f.mono ? 'mono' : null], required: !!f.required,
         placeholder: f.placeholder || null, disabled: !!f.disabled };
       if (type === 'textarea') {
@@ -870,7 +686,6 @@
         label.addEventListener('click', function (e) { e.preventDefault(); if (!focusEl.disabled) focusEl.focus(); });
       }
       var hint = f.hint ? el('p', { class: 'field-help', id: id + '-help' }, f.hint) : null;
-      // Date shortcuts (« Fin du mois »…): f.quick = [{label, value: 'DD/MM/YYYY'}].
       var quick = type === 'date' && f.quick && f.quick.length ? el('div', { class: 'date-quick', role: 'group',
         'aria-label': 'Raccourcis : ' + (f.label || f.name) }, f.quick.map(function (q) {
           return el('button', { type: 'button', class: 'date-quick-btn', disabled: !!f.disabled,
@@ -880,8 +695,9 @@
       var err = el('p', { class: 'field-error', id: id + '-err', hidden: true });
       focusEl.setAttribute('aria-describedby', ((focusEl.getAttribute('aria-describedby') || '') + ' ' + id + '-err').trim());
       controls[f.name] = { field: f, control: control, focusEl: focusEl, type: type, get: get, raw: raw };
-      if (type === 'text' || type === 'textarea') control.addEventListener('input', function () { changed(f.name); });
-      else if (type === 'date' || type === 'month') control.addEventListener('input', function () { changed(f.name); });
+      if (type === 'text' || type === 'textarea' || type === 'date' || type === 'month') {
+        control.addEventListener('input', function () { changed(f.name); });
+      }
       names.push(f.name);
       hostOf(f).appendChild(el('div', { class: 'form-field' + (type === 'textarea' ? ' form-field-wide' : ''), dataset: { field: f.name } },
         label, control, quick, hint, err));
@@ -893,7 +709,6 @@
     names.forEach(function (name) { initial[name] = controls[name].raw(); });
     tallies.forEach(updateTally);
 
-    /** « 3 sur 4 à Oui » for a group's yesno fields (empty when it has none). */
     function updateTally(t) {
       var yn = names.filter(function (n) { return controls[n].type === 'yesno' && controls[n].field.group === t.group; });
       var yes = yn.filter(function (n) { return controls[n].get() === 'Oui'; }).length;
@@ -909,7 +724,7 @@
       if (opts.onEnter) opts.onEnter();
     });
 
-    /** Opens the collapsed section around `node` (a field must be visible to be focused). */
+    // A field in a closed section cannot take the focus.
     function reveal(node) {
       var d = node && node.closest ? node.closest('details.form-section') : null;
       if (d && !d.open) d.open = true;
@@ -968,7 +783,6 @@
       return names.some(function (name) { return controls[name].raw() !== initial[name]; });
     }
 
-    /** The first enabled field of an open section (null when there is none). */
     function firstField() {
       var list = form.querySelectorAll(FIELD_FOCUS);
       for (var i = 0; i < list.length; i++) {
@@ -977,7 +791,7 @@
       return null;
     }
 
-    /** Puts typed values back (a re-read of the form keeps them); unknown names are skipped. */
+    // Puts typed values back after the form is reloaded; unknown names are skipped.
     function setValues(map) {
       Object.keys(map || {}).forEach(function (name) {
         var c = controls[name];
@@ -1004,18 +818,6 @@
     };
   }
 
-  /**
-   * UI.formModal({title, fields, groups?, submitLabel?, onSubmit?, wide?}) -> Promise<values|null>
-   * groups: as UI.formFields (fields with a group go in its collapsible section; e.g. « Plus d’options »).
-   * fields: [{name, label, type:'text'|'textarea'|'select'|'date'|'month', options?, value?, required?,
-   *           placeholder?, allowCustom?, tokens?, hint?, min?, max?, mono?, disabled?, onChange?}]
-   * onChange(value, form) (select fields): form.control(name) is another field's control (e.g. setOptions).
-   * 'date' fields take and return 'DD/MM/YYYY'; 'month' fields 'YYYY-MM'. Values are trimmed strings
-   * ('' when empty). Enter submits; the first invalid field is focused; errors are shown under the fields
-   * (UI.fieldError). onSubmit(values) -> Promise keeps the modal open (busy submit button) until it
-   * resolves; on rejection the error is shown inline (err.field -> that field) and the values are kept.
-   * Built on UI.formFields.
-   */
   function formModal(o) {
     var opts = o || {};
     var fields = opts.fields || [];
@@ -1069,16 +871,7 @@
   }
 
   var openDrawers = [];
-  /**
-   * UI.drawer({title, subtitle?, subtitleTone?, body, onClose?, footer?, canClose?, className?, initialFocus?})
-   *   -> {close, node, requestClose}
-   * subtitle: a short line under the title (p.drawer-subtitle; subtitleTone 'warn' for a frozen month).
-   * Right-side panel. Opening a drawer closes the previous one. footer (Node | [Node]): div.drawer-footer under
-   * the scrolling body. canClose() vetoes the user's closes (×, Escape, backdrop, requestClose) when it returns
-   * false; it may start its own flow (a confirm) and call close() later. close() always closes.
-   * initialFocus: an element, or a function returning one (or null), focused once the panel slid in instead
-   * of the × button.
-   */
+  // Opening a drawer closes the previous one. close() always closes; canClose() only vetoes the user's closes.
   function drawer(o) {
     var opts = o || {};
     openDrawers.slice().forEach(function (c) { c(); });
@@ -1111,24 +904,7 @@
     return { close: close, node: panel, requestClose: requestClose };
   }
 
-  /**
-   * UI.formPanel({title, subtitle?, subtitleTone?, className?, submitLabel?, note?, load, onSubmit?, open?, reloadLabel?,
-   *   live?, again?}) -> Promise<values|null>
-   * live(values) -> Node | null: a preview kept at the top of the form (div.form-panel-live), rebuilt on every
-   *   change (e.g. the score an application would get). again: {label, checked} -> a checkbox in the footer
-   *   (« Enchaîner avec un autre poste »); its state is written back to again.checked for the caller.
-   * A creation form in a side panel (UI.drawer, or `open` = a function taking the same options, e.g. a page's
-   * ctx.drawer). load({force}) -> Promise<{fields, groups?, alert?, meta?}> (UI.formFields; alert: a warning line
-   * above the form; meta: a short line under it). A skeleton shows while it runs and the submit button stays
-   * disabled; a failure shows the error and « Réessayer ». reloadLabel: a quiet button after `meta` that calls
-   * load({force:true}) again, the typed values kept. Footer: `note` (where the record goes) on the left,
-   * « Annuler » and the primary submit button on the right. onSubmit(values) -> Promise: the submit button is busy
-   * and the panel cannot be closed until it settles; it closes on success, and on failure the error is shown in
-   * the form (err.field -> under that field, its section opened). Closing (×, Escape, backdrop, « Annuler ») with
-   * typed changes asks « Abandonner la saisie ? » first; without changes the panel closes at once. The first
-   * field is focused once loaded unless the user moved the focus meanwhile. Resolves with the submitted values,
-   * or null when the panel was closed without saving.
-   */
+  // Resolves with the submitted values, or null when the panel closes without saving.
   function formPanel(o) {
     var opts = o || {};
     return new Promise(function (resolve) {
@@ -1215,7 +991,7 @@
       }
 
       function render(res, keep) {
-        // The focus is still where the panel put it (× or nothing yet): the first field takes it.
+        // Move the focus to the first field only if the user has not moved it since the panel opened.
         var a = document.activeElement;
         var untouched = !a || a === document.body || a === closeButton() || !panel.contains(a) || body.contains(a);
         ff = formFields({ fields: res.fields || [], groups: res.groups || null, onEnter: function () { submit(); },
@@ -1262,13 +1038,7 @@
     });
   }
 
-  // ------------------------------------------------------------------------------ tabs / selects
-
-  /**
-   * UI.tabs([{id, label, render(root)}], activeId?) -> Element. The panel is re-rendered on activation.
-   * Keyboard: ArrowLeft/ArrowRight (wrap), Home/End. On narrow screens the tab row scrolls sideways with a
-   * fade on the clipped side(s) and keeps the active tab in view. The panel is not a Tab stop.
-   */
+  // The panel is re-rendered on each activation. The returned element has activate(id) and getActive().
   function tabs(items, activeId) {
     var list = items || [];
     var baseId = nextId('tabs');
@@ -1281,7 +1051,7 @@
       tablist.classList.toggle('has-more-left', max > 1 && tablist.scrollLeft > 1);
       tablist.classList.toggle('has-more-right', max > 1 && tablist.scrollLeft < max - 1);
     }
-    /** Phones: the tab row scrolls sideways; keep the active tab in view (horizontal scroll only). */
+    // On phones the tab row scrolls sideways: keep the active tab in view without scrolling the page.
     function revealTab(b, retried) {
       if (!b.isConnected) { if (!retried) setTimeout(function () { revealTab(b, true); }, 0); return; }
       if (tablist.scrollWidth > tablist.clientWidth) {
@@ -1340,28 +1110,16 @@
     return root;
   }
 
-  /**
-   * UI.select({label?, ariaLabel?, options:[string|{value,label,hint?,group?}], value, onChange, id?, disabled?,
-   *            mono?, searchable?, placeholder?, size?}) -> Element (div.field.select-field, a UI.dropdown).
-   * The trigger button carries `id`. Returned element: getValue/setValue/setOptions/setDisabled/focus, .control.
-   * No native <select> is rendered.
-   */
   function select(o) {
     var opts = o || {};
-    var dd = UI.dropdown({
+    return UI.dropdown({
       id: opts.id, label: opts.label || null, ariaLabel: opts.label ? null : (opts.ariaLabel || 'Sélection'),
       options: opts.options, value: opts.value, onChange: opts.onChange, disabled: opts.disabled, mono: opts.mono,
       searchable: opts.searchable, placeholder: opts.placeholder, size: opts.size, allowEmpty: opts.allowEmpty,
       className: 'field select-field'
     });
-    return dd;
   }
 
-  /**
-   * UI.multiSelect({label, options:[string], value:[string], onChange:(values)=>void, id?, searchable?})
-   * -> Element (div.multiselect, a UI.dropdown in multiple mode: checkbox rows, « Effacer la sélection »,
-   * summary « Toutes » / « Labo Textile » / « Labo Textile + 1 »).
-   */
   function multiSelect(o) {
     var opts = o || {};
     return UI.dropdown({ id: opts.id, label: opts.label || null, ariaLabel: opts.label ? null : (opts.ariaLabel || 'Sélection'),
@@ -1370,18 +1128,8 @@
       className: 'multiselect' });
   }
 
-  // ------------------------------------------------------------------------------ read-only table
-
-  /**
-   * UI.table({columns, rows, id?, className?, caption?, cells?(row, i), rowAttrs?(row, i), extraRows?(row, i)})
-   * -> div.table-scroll (with .table = the <table>). Read-only ledger table on the etable markup: header on
-   * --paper-2 in small caps, 32px rows, hairline separators, no zebra.
-   *   columns: [{label, num?, mono?, wrap?, width? ('30%'), rowHeader?, className?, cell?(row, i)}]
-   *     num = right-aligned tabular figure; mono = identifier; wrap = free text that may wrap (the row grows);
-   *     rowHeader = <th scope=row>; width (any column) switches the table to a fixed layout with a <colgroup>.
-   *   cells(row, i) -> [content per column] builds a whole row at once (instead of each column.cell).
-   *   rowAttrs(row, i) -> attributes of the <tr> (dataset, class...); extraRows(row, i) -> <tr> | [<tr>] after it.
-   */
+  // Read-only table.
+  // columns: [{label, key?, num?, mono?, wrap?, width?, rowHeader?, className?, cell?(row, i)}].
   function table(o) {
     var opts = o || {};
     var cols = opts.columns || [];
@@ -1413,7 +1161,7 @@
     return wrap;
   }
 
-  // ------------------------------------------------------------------------------ editable table
+  // Editable table.
 
   function foldText(v) {
     return Core.str(v).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
@@ -1422,25 +1170,20 @@
   function compareValues(a, b) {
     var ea = a === null || a === undefined || a === '';
     var eb = b === null || b === undefined || b === '';
-    if (ea || eb) return ea === eb ? 0 : (ea ? 1 : -1); // blanks last (in both directions, see caller)
+    if (ea || eb) return ea === eb ? 0 : (ea ? 1 : -1);
     if (typeof a === 'number' && typeof b === 'number') return a - b;
     if (typeof a === 'boolean' || typeof b === 'boolean') return (a ? 1 : 0) - (b ? 1 : 0);
     return String(a).localeCompare(String(b), 'fr', { numeric: true, sensitivity: 'base' });
   }
 
-  /**
-   * UI.editableTable({columns, rows, rowKey='_id', search=true, pageSize=50, onSave?, onRowClick?,
-   *                   emptyText?, toolbar?, readOnly?}) -> {node, setRows(rows), getDirty(), lockColumns(keys)}
-   */
   function editableTable(o) {
     var opts = o || {};
     var columns = opts.columns || [];
     var rowKey = opts.rowKey || '_id';
-    var readOnly = !!opts.readOnly;   // read-only mode (lecteur): no column is editable
+    var readOnly = !!opts.readOnly;
     var pageSize = opts.pageSize || 50;
     var rows = (opts.rows || []).slice();
-    // id -> {colKey: newValue}. Keyed by record ids and column names (data): maps without a prototype
-    // (dirtyMap), so that an id or a column named '__proto__' is an entry, never Object.prototype.
+    // id -> {column: value}, keyed by data, so no prototype: an id or column named '__proto__' is an entry.
     var dirty = dirtyMap();
     var sortKey = null;
     var sortDir = 1;
@@ -1448,7 +1191,7 @@
     var page = 0;
     var saving = false;
     var rowsReplaced = false;
-    var staleBody = false;   // lockColumns while a cell was being edited: the body re-renders when it closes
+    var staleBody = false;   // set by lockColumns during an edit: the body re-renders when the editor closes
 
     function dirtyMap() { return Object.create(null); }
     function idOf(row) { return row ? String(row[rowKey]) : ''; }
@@ -1471,7 +1214,6 @@
       });
     }
 
-    // --- structure
     var searchBox = opts.search === false ? null : UI.searchField({
       className: 'etable-search-field', inputClass: 'etable-search', placeholder: 'Rechercher…',
       ariaLabel: 'Rechercher dans le tableau',
@@ -1491,17 +1233,15 @@
     var table = el('table', { class: 'table etable-table' }, thead, tbody);
     var pager = el('div', { class: 'etable-pager' });
     var scroller = el('div', { class: 'table-scroll' }, table);
-    // Read-only: the dirty bar (Enregistrer / Annuler) is never part of the table.
     var node = el('div', { class: ['etable', readOnly ? 'is-readonly' : null] }, toolbar, readOnly ? null : dirtyBar,
       scroller, pager);
 
-    /** Right-edge fade while columns remain hidden to the right (scroll cue). */
+    // Edge fades while columns are hidden to either side.
     function updateScrollCue() {
       var more = scroller.scrollWidth - scroller.clientWidth - scroller.scrollLeft > 1;
       scroller.classList.toggle('has-more-right', more);
-      // The sticky key column's fade is only drawn once something has actually scrolled under it.
       scroller.classList.toggle('has-more-left', scroller.scrollLeft > 1);
-      // The first column is sticky: cells scrolled into view (focus, keyboard) must land right of it.
+      // The first column is sticky, so cells scrolled into view by focus must land right of it.
       var first = thead.querySelector('th');
       var pad = first ? first.offsetWidth + 'px' : '';
       if (scroller.style.scrollPaddingLeft !== pad) scroller.style.scrollPaddingLeft = pad;
@@ -1562,7 +1302,7 @@
           list.sort(function (a, b) {
             var ea = a.v === null || a.v === undefined || a.v === '';
             var eb = b.v === null || b.v === undefined || b.v === '';
-            if (ea !== eb) return ea ? 1 : -1;   // blanks always last
+            if (ea !== eb) return ea ? 1 : -1;   // blanks last in both directions
             return (compareValues(a.v, b.v) * sortDir) || (a.i - b.i);
           });
           list = list.map(function (x) { return x.r; });
@@ -1589,7 +1329,6 @@
       if (col.mono) td.classList.add('mono');
     }
 
-    /** Re-renders all the cells of `tr` (except a cell currently being edited). */
     function renderRow(tr, row) {
       if (!tr) return;
       columns.forEach(function (col) {
@@ -1612,19 +1351,13 @@
       updateDirtyBar();
     }
 
-    /** Date-like columns get the date editor (DD/MM/YYYY mask, calendar, validation). */
     var DATE_COL = /date|deadline|prochaine revue|échéance/i;
     function isDateColumn(col) {
       if (col.type) return col.type === 'date';
       return !Array.isArray(col.options) && DATE_COL.test(String(col.label !== undefined ? col.label : col.key));
     }
 
-    /**
-     * Inline editor, laid over the cell (absolutely positioned) so that the column never changes width:
-     * options -> UI.dropdown size sm opened at once (commit on select, Esc / outside click cancel);
-     * date columns -> UI.dateField sm (Enter / blur commit a valid date, an invalid one is refused);
-     * other columns -> text input (Enter / blur commit, Esc cancels).
-     */
+    // The editor is laid over the cell so the column never changes width.
     function startEdit(td, row, col) {
       if (td.classList.contains('cell-editing') || saving || !isEditable(col)) return;
       var curStr = Core.str(view(row)[col.key]);
@@ -1640,7 +1373,7 @@
         if (apply && isEditable(col)) setDirty(row, col.key, getValue());
         td.classList.remove('cell-editing');
         if (host.parentNode) host.parentNode.removeChild(host);
-        // Re-render every cell of the row: computed columns (score, criteria...) follow the edit at once.
+        // The whole row re-renders so computed columns (score, criteria) follow the edit.
         if (staleBody) renderBody();
         else renderRow(td.parentNode, row);
         if (td.isConnected) td.focus();
@@ -1687,8 +1420,8 @@
       }
       host.addEventListener('click', function (e) { e.stopPropagation(); });
       host.appendChild(editor);
-      // Freeze the geometry: the editor covers exactly the cell (2px inset), never the next one. Date and
-      // dropdown columns have a CSS min-width (td.cell-date / td.cell-choice) so that the editor fits.
+      // The editor covers exactly the cell (2px inset). td.cell-date / td.cell-choice have a CSS min-width
+      // so their editors fit.
       host.style.width = Math.max(td.offsetWidth - 4, 0) + 'px';
       td.classList.add('cell-editing');
       td.appendChild(host);
@@ -1741,7 +1474,7 @@
       countEl.textContent = list.length === rows.length ?
         fmtNum(rows.length) + ' ligne' + (rows.length > 1 ? 's' : '') :
         fmtNum(list.length) + ' / ' + fmtNum(rows.length) + ' lignes';
-      renderPager(pages, list.length);
+      renderPager(pages);
       updateDirtyBar();
     }
 
@@ -1759,11 +1492,11 @@
     function updateDirtyBar() {
       var n = dirtyCount();
       dirtyBar.hidden = n === 0;
-      // Sentence in sans, only the figure in mono (same text content as before).
+      // Only the figure is set in mono.
       clear(dirtyLabel).appendChild(el('span', { class: 'etable-dirty-count' }, String(n)));
       dirtyLabel.appendChild(document.createTextNode(' modification' + (n > 1 ? 's' : '') + ' non enregistrée' + (n > 1 ? 's' : '')));
       if (!saving) {
-        // While saving, UI.busy owns the button content (spinner + « Enregistrement… »).
+        // While saving, UI.busy owns the button content.
         saveBtn.textContent = 'Enregistrer (' + n + ')';
         saveBtn.disabled = n === 0 || !opts.onSave;
       }
@@ -1782,7 +1515,7 @@
       try { p = Promise.resolve(opts.onSave(changes)); } catch (e) { p = Promise.reject(e); }
       UI.busy(saveBtn, p, 'Enregistrement…').then(function () {
         if (!rowsReplaced) {
-          // The page did not push fresh rows: apply the saved values locally.
+          // The page did not push fresh rows, so apply the saved values locally.
           rows = rows.map(function (r) { return snapshot[idOf(r)] ? Object.assign({}, r, snapshot[idOf(r)]) : r; });
         }
         dirty = dirtyMap();
@@ -1808,12 +1541,7 @@
       renderBody();
     }
 
-    /**
-     * Makes the columns whose key is in `keys` read-only from now on (found computed after the table was
-     * shown): their unsaved values are dropped, and a toast names those columns (the source would refuse
-     * them anyway), header and rows re-render (once a cell being edited closes). Returns true when a column
-     * changed.
-     */
+    // For columns found to be formulas after the table was shown: the source would refuse their edits.
     function lockColumns(keys) {
       var locked = columns.filter(function (col) { return col.editable && (keys || []).indexOf(col.key) >= 0; });
       if (!locked.length) return false;
@@ -1847,18 +1575,14 @@
     return { node: node, setRows: setRows, getDirty: getDirty, lockColumns: lockColumns };
   }
 
-  // ------------------------------------------------------------------------------ CSV
-
-  /**
-   * Every field is quoted, headers included: a value such as 'x,=HYPERLINK(…),' must stay one cell when
-   * Excel splits on ',' (comma locales), where only its first character would have been escaped.
-   */
+  // Every field is quoted, headers included: Excel set to a ',' separator would otherwise split
+  // 'x,=HYPERLINK(…),' and only its first character would have been escaped.
   function csvCell(v) {
     var s = v === null || v === undefined ? '' : typeof v === 'string' ? Core.escapeFormula(v) : String(v);
     return '"' + s.replace(/"/g, '""') + '"';
   }
 
-  /** UI.downloadCsv(filename, columns, rows): ';'-separated, every field quoted, UTF-8 BOM (Excel friendly). */
+  // The BOM makes Excel read the file as UTF-8.
   function downloadCsv(filename, columns, rows) {
     var cols = columns || [];
     var lines = [cols.map(csvCell).join(';')];

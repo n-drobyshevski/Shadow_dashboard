@@ -1,73 +1,19 @@
 <script>
-/**
- * Shared machinery of the two inventory pages (Postes, Applications), loaded before them.
- *
- * window.EntityDrawer — blocks of the poste / application drawers:
- *     EntityDrawer.head(rec, extra?) -> div.drawer-head « Score 86 % · ■ Conforme · Risque ■ Élevé » (+ extra)
- *     EntityDrawer.kv(rows:[[label, value]], monoLabels?:{label:1}) -> dl.kv of the non-empty rows
- *     EntityDrawer.actionsBlock({target_type, target_name, equipe, month, values?, isOpen, emptyText})
- *         -> section « Actions liées » + « Nouvelle action ». The form is window.ActionForm.open (defined by
- *         js_page_actions.html: one form, copy and toast for the drawers and Suivi des actions) with the
- *         target prefilled and locked; the list re-renders from the refreshed actions cache. Lecteurs
- *         (!State.canEdit()) get the list alone, without « Nouvelle action ».
- *     EntityDrawer.statLine(items:[Node|string]) -> p.stat-line ; EntityDrawer.count(n, one, many) -> [num, ' noun'].
- *
- * window.InventoryPage.create(spec) -> {id, title, mount, unmount, update}: header (month kicker,
- * « Exporter CSV » + the page's create button), filter note, one-line stat summary, optional sections,
- * then the « Inventaire » editable table over the filtered records of the month (key column first and
- * read-only, opening the drawer; computed columns right after it), the « Conformité » filter, inline
- * saves; current month: the columns the source computes (State.peekFormSchema / the form's schema, `computed`) are
- * read-only, also once the schema arrives after the table is shown (form opened, prefetch: ctx.lockComputed).
- * update(['filters']) re-renders the body from the cache without re-mounting the page;
- * update(['editing']) also rebuilds the header. Paramètres › « Saisie dans l’application » gates the writes:
- * the create buttons need State.can('create'), the inline editors State.can('edit'); the admins' edit note
- * (p.edit-note[data-locked]) names the switches that are off. A write refused with FORBIDDEN (switch turned
- * off meanwhile) shows its error and State.afterWriteError reloads the bootstrap.
- *   spec: {id ('postes'|'apps': element ids and classes), title, entity ('postes'|'applications'),
- *     keyField, filterScope (State.filterSummary scope), filtered(s) (the global filters apply here),
- *     nouns: {one, many, loading, inExport, noMatch, none}, monoColumns, numericColumns?, extraColumns?:[name],
- *     computedColumns(ctx) -> [column], statsExtra?(all) -> [stat item], sections?(ctx) -> [section],
- *     onStats?(all, ctx), csv(ctx) -> {file, columns, rows}, csvTooltip, saveApi,
- *     primary?: {id, label, tooltip?, run(ctx, button), prefetch?(ctx)} (State.can('create'); prefetch runs
- *       when the pointer or the focus reaches the button), secondary?: {id, label, tooltip?, run(ctx, button)}
- *       (State.can('create'), an outline button before the primary one), openDrawer(id, ctx)}
- *   ctx: {month, columns, md() (current cached month), all() (globally filtered), visible() (+ conformity),
- *     refresh(), refreshPage(), rerenderPage() (body rebuilt from the cache: new columns), isShown(id) (the record
- *     is in the table as filtered now), rowNode(id), live(), table, openDrawer(id), drawer(UI.drawer opts),
- *     drawerOpen(), closeDrawer(), lockComputed(schema) / lockComputedPage(schema) (this table / the page's
- *     current one: the schema's computed columns become read-only, table.lockColumns)}
- *
- * window.EntityForm.open(ctx, {entity, keyField, title, submitLabel, api, sections, presentation?, toast,
- *     fieldFallback?, button?}) -> Promise<record|null> — the creation form of a poste / an application in a side
- *   panel (UI.formPanel through ctx.drawer). Its fields come from api_getFormSchema (State.loadFormSchema):
- *   strict lists -> dropdown, other lists -> combobox (suggestions; a list without options suggests the month's
- *   values), date -> UI.dateField, checkbox -> Oui / Non (or its options), text. Computed columns are not fields:
- *   one note names them (end of « Conformité »). sections: [{id, title, open, columns:[name]}] (matched with
- *   Core.normKey, in that order; unknown columns go to « Autres colonnes », open); a section holding a required
- *   field or a prefilled value opens. presentation: {column: extras | (md) -> extras} for text / non-strict
- *   columns (type:'textarea', tokens + options + hint, mono). Équipe / Bâtiment / Labo default to the single
- *   active filter value. Oui / Non columns are two buttons (UI.formFields 'yesno'); the « Conformité » section
- *   counts its Oui; a closed section says what it holds. Under the title: the month and where the record goes
- *   (source, or the frozen month's history). live(values) -> Node: a preview kept at the top (the applications'
- *   score); again: {label, checked}: a footer box to open a fresh form after a success (postes); on postes,
- *   an Équipe fills an empty Bâtiment / Labo (linkFields). Only
- *   non-blank values are sent to `api`; on success the record is added to the cache, the table refreshed, the
- *   row scrolled into view, toast(name, {live, hidden, month}) shown, focus back on `button`. fieldFallback: the
- *   field a VALIDATION error without a field is shown under.
- */
+// Shared code for the Postes and Applications pages, loaded before them:
+// EntityDrawer (drawer blocks), InventoryPage (header, stats, editable ledger) and EntityForm (creation panel).
+// On the current month, array-formula columns are read-only because the server refuses those edits.
 (function () {
   'use strict';
 
   var el = UI.el;
 
-  // ============================================================================== EntityDrawer
+  // EntityDrawer
 
   function AF() { return window.ActionForm; }
 
-  /** [figure in mono, ' noun'] for a stat line. */
   function count(n, one, many) { return [el('span', { class: 'num' }, UI.fmtNum(n)), ' ' + (n > 1 ? many : one)]; }
   function statLine(items, attrs) {
-    return el('p', Object.assign({ class: 'stat-line' }, attrs || {}),
+    return el('p', Object.assign({ class: 'stat-line' }, attrs),
       items.filter(Boolean).map(function (it) { return el('span', { class: 'stat' }, it); }));
   }
 
@@ -99,13 +45,9 @@
       a.comment ? el('p', { class: 'action-comment' }, a.comment) : null);
   }
 
-  /**
-   * « Actions liées » block of a drawer; reloads itself after « Nouvelle action ».
-   * o: {target_type, target_name, equipe, month, values?, isOpen(), emptyText}
-   */
   function actionsBlock(o) {
     var list = el('div', { class: 'drawer-actions-list', id: 'drawer-actions', 'aria-live': 'polite' });
-    // Lecteurs read the linked actions; creating one is an admin write (api_addAction).
+    // Lecteurs can read the linked actions but not create one.
     var addBtn = !State.canEdit() ? null : el('button', { type: 'button', class: 'btn btn-secondary btn-sm', id: 'drawer-add-action',
       onClick: function () {
         AF().open({ target: { type: o.target_type, name: o.target_name, equipe: o.equipe }, defaults: o.values || {},
@@ -136,19 +78,15 @@
 
   window.EntityDrawer = { head: head, kv: kv, actionsBlock: actionsBlock, statLine: statLine, count: count };
 
-  // ============================================================================== InventoryPage
+  // InventoryPage
 
-  /** Editing switches (State.can) and the entities whose page offers that write (no poste deletion in the app). */
+  // Paramètres switches and the pages they affect; postes cannot be deleted from the app.
   var KINDS = [
     { key: 'edit', noun: 'la modification', entities: ['postes', 'applications'] },
     { key: 'create', noun: 'la création', entities: ['postes', 'applications'] },
     { key: 'delete', noun: 'la suppression', entities: ['applications'] }
   ];
 
-  /**
-   * « La modification et la création des entrées sont désactivées dans les Paramètres. » for the switches
-   * that are off and matter on the page of `entity`; '' when none is.
-   */
   function lockedSentence(entity) {
     var off = KINDS.filter(function (k) { return k.entities.indexOf(entity) >= 0 && !State.can(k.key); })
       .map(function (k) { return k.noun; });
@@ -164,13 +102,8 @@
     { value: 'ko', label: 'Non conformes' }
   ];
 
-  /**
-   * {normKey(column): true} for the columns an array formula fills (`arrayFormula`: computed in every row)
-   * in a form schema read from the source for `month` (api_getFormSchema origin 'source': the current
-   * month); empty for anything else (none, a fallback, a past month, whose computed columns are ordinary
-   * snapshot fields). A column computed only by the sample row's own formula stays editable: the server
-   * checks the formula of each edited cell. No prototype: a column named « constructor » is an ordinary key.
-   */
+  // Columns filled by an array formula, only for a schema read live from the source for this month.
+  // Past months are plain snapshots, and single-cell formulas are checked by the server on save.
   function computedKeys(schema, month) {
     var out = Object.create(null);
     if (!schema || schema.origin !== 'source' || schema.month !== month) return out;
@@ -180,12 +113,12 @@
 
   function create(spec) {
     var p = spec.id;
-    var conformity = 'all';   // kept across re-mounts (month / filter changes)
-    var changedOnly = false;  // period: « Seulement ce qui a changé » (kept across re-mounts)
-    var view = null;          // {root, body, month, buttons, ctx}
+    // These two filters survive re-mounts on month or filter changes.
+    var conformity = 'all';
+    var changedOnly = false;
+    var view = null;
     var drawerHandle = null;
 
-    /** Column order from the month's headers, key column first (falls back to the record keys). */
     function sourceColumns(md) {
       var declared = md.columns && md.columns[spec.entity];
       var cols = declared && declared.length ? declared.slice() :
@@ -203,7 +136,7 @@
         return;
       }
       var per = State.period();
-      // A period shows the inventory of its last month, compared with its first one (fromMonth).
+      // A period shows its last month, compared with its first one.
       var v = { root: root, month: s.month, fromMonth: per.single ? '' : per.from, ctx: null, buttons: {} };
       v.header = buildHeader(v);
       root.appendChild(v.header);
@@ -221,11 +154,7 @@
       });
     }
 
-    /**
-     * Page header with its actions, enabled once the month is loaded (renderBody). Lecteurs: CSV only; the
-     * create buttons need State.can('create'). One rule on every page: [Exporter CSV (secondary)] then
-     * [create action (primary)].
-     */
+    // Buttons stay disabled until renderBody has the month.
     function buildHeader(v) {
       var buttons = {};
       var ready = !!v.ctx;
@@ -245,7 +174,7 @@
         var prefetch = spec.primary.prefetch ? function () {
           if (!v.ctx || !State.can('create')) return;
           spec.primary.prefetch(v.ctx);
-          // The same request (kept by State): its computed columns become read-only in the table.
+          // State dedupes this request; once it lands, computed columns lock in the table.
           State.loadFormSchema(spec.entity, v.month).then(function (schema) {
             if (v.ctx) v.ctx.lockComputedPage(schema);
           }, function () {});
@@ -259,18 +188,13 @@
         kickerId: p + '-caption', actions: [buttons.csv, buttons.secondary, buttons.primary].filter(Boolean) });
     }
 
-    /**
-     * In place, without re-mounting: a filter change re-renders the body from the cache (header, buttons and
-     * scroll position stay); an editing switch change (State 'editing') rebuilds the header and the body, so
-     * the create buttons, the inline editors and the edit note follow. Unsaved cells are then dropped when
-     * editing is off (an info toast says so). The open drawer stays either way.
-     */
+    // Re-renders in place so scroll and the open drawer survive; an 'editing' change also rebuilds the header.
     function update(changed) {
       var v = view;
       if (!v || !changed.length || changed.some(function (k) { return k !== 'filters' && k !== 'editing'; })) return false;
       var editing = changed.indexOf('editing') >= 0;
       if (!v.ctx) {
-        // Still loading: renderBody reads the switches when the month arrives; only the header changes now.
+        // Still loading: renderBody will read the switches itself.
         if (!editing || changed.indexOf('filters') >= 0) return false;
         replaceHeader(v);
         return true;
@@ -285,7 +209,7 @@
       return true;
     }
 
-    /** New header in place of the current one; the focus stays on the same button when it still exists. */
+    // Keeps focus on the same button when it still exists.
     function replaceHeader(v) {
       var old = v.header;
       var focused = old && document.activeElement && old.contains(document.activeElement) ? document.activeElement.id : '';
@@ -303,7 +227,7 @@
       ctx.md = function () { return State.getMonthData(month) || md; };
       ctx.conformity = function () { return conformity; };
       ctx.all = function () { return State.filtered(ctx.md())[spec.entity]; };
-      // Period: Core.scoreEvolution of the first month -> this one (same filters), memoised until refresh().
+      // Score changes since the period's first month, cached until refresh().
       var evo = null;
       ctx.evolution = function () {
         if (!v.fromMonth) return null;
@@ -330,7 +254,7 @@
         renderStats();
       };
       ctx.openDrawer = function (id) { spec.openDrawer(id, ctx); };
-      /** UI.drawer whose lifetime the page tracks (closed on unmount). */
+      // Tracked so unmount can close it.
       ctx.drawer = function (o) {
         var onClose = o.onClose;
         drawerHandle = UI.drawer(Object.assign({}, o, { onClose: function () {
@@ -341,17 +265,15 @@
       };
       ctx.drawerOpen = function () { return !!drawerHandle; };
       ctx.closeDrawer = function () { if (drawerHandle) drawerHandle.close(); };
-      /** Refreshes the table of the page as it is now (the body may have been re-rendered since). */
+      // The *Page variants target the current body, which may have been re-rendered since this ctx.
       ctx.refreshPage = function () { if (view && view.ctx) view.ctx.refresh(); };
-      /** The computed columns of a live form schema become read-only in this table (if it is still shown). */
       ctx.lockComputed = function (schema) {
         if (!ctx.live() || !ctx.table) return;
         var keys = computedKeys(schema, month);
         ctx.table.lockColumns(cols.filter(function (c) { return keys[Core.normKey(c)] === true; }));
       };
-      /** Same, on the table of the page as it is now. */
       ctx.lockComputedPage = function (schema) { if (view && view.ctx) view.ctx.lockComputed(schema); };
-      /** Rebuilds the body of the page from the cache (the month gained a column). */
+      // Used when the month gained a column.
       ctx.rerenderPage = function () {
         var cur = view;
         var data = cur && cur.ctx ? State.getMonthData(cur.month) : null;
@@ -359,11 +281,9 @@
         UI.clear(cur.body);
         renderBody(cur, data);
       };
-      /** True when the record is a row of the table as filtered now (global filters, conformity, period). */
       ctx.isShown = function (id) {
         return !!(view && view.ctx && view.ctx.visible().some(function (r) { return r._id === id; }));
       };
-      /** The table row of a record (null when it is filtered out or on another page of the table). */
       ctx.rowNode = function (id) {
         if (!view || !view.ctx || !view.ctx.table) return null;
         var rows = view.ctx.table.node.querySelectorAll('tbody tr[data-id]');
@@ -372,8 +292,7 @@
       };
       v.ctx = ctx;
 
-      // Summary line (globally filtered records, before the conformity filter):
-      // "7 postes   ■ 5 conformes 71,4 %   ■ 2 non conformes" (figures in mono) + the page's extras.
+      // Counts ignore the conformity filter.
       var stats = el('div', { id: p + '-stats', class: p + '-stats-wrap', role: 'status' });
       function renderStats() {
         var all = ctx.all();
@@ -389,7 +308,6 @@
         if (spec.onStats) spec.onStats(all, ctx);
       }
 
-      // Period summary: « +14 nouveaux · 2 retirés · 9 scores modifiés depuis avril » and the removed records.
       var fromName = v.fromMonth ? Fmt.MONTHS[Number(v.fromMonth.slice(5, 7)) - 1] : '';
       var removedBox = el('p', { class: 'field-help evo-removed', id: p + '-removed', hidden: true });
       var fem = spec.entity === 'applications';
@@ -418,9 +336,7 @@
 
       var mono = spec.monoColumns || {};
       var numeric = spec.numericColumns || {};
-      // Current month: the columns the source computes (a formula, or an array formula filling the column)
-      // are not editable inline, the server refuses them. Known from the creation form's schema once it was
-      // read: here when State keeps it, else when the form (or its prefetch) reads it (ctx.lockComputed).
+      // Computed columns are known from the form schema; if it is not cached yet, ctx.lockComputed applies them later.
       var computedCols = computedKeys(State.peekFormSchema(spec.entity, month), month);
       var columns = cols.map(function (c, i) {
         if (i === 0) {
@@ -429,7 +345,6 @@
               onClick: function () { ctx.openDrawer(row._id); } }, Core.str(row[c]) || '(sans nom)');
           } };
         }
-        // Read view: Statut / Niveau de risque as status marks, « Non » criteria in --ko (the editor is unchanged).
         return { key: c, label: c, editable: computedCols[Core.normKey(c)] !== true, mono: !!mono[c], numeric: !!numeric[c],
           options: Core.optionsForColumn(c, md.referentiel),
           render: numeric[c] ? function (row) {
@@ -437,8 +352,7 @@
             return n === null || n === undefined ? Core.str(row[c]) : UI.fmtPctNode(n);
           } : function (row) { return UI.cellMark(c, row[c]) || Core.str(row[c]); } };
       });
-      // Computed columns right after the key column (what the user scans first); they are computed from
-      // the displayed row (re-rendered after every edit), so they follow unsaved edits.
+      // Computed columns go right after the key column and follow unsaved edits.
       var computed = spec.computedColumns(ctx);
       if (v.fromMonth) {
         computed.push({ key: '_evo', label: 'Évolution depuis ' + fromName, editable: false,
@@ -480,7 +394,7 @@
             UI.toast(UI.plural(edits, 'modification enregistrée', 'modifications enregistrées') +
               (res && res.sourceUpdated ? ' dans le Google Sheet source.' : ' (historique de ' + Fmt.monthLong(month) + ').'), 'success');
           }, function (err) {
-            // Refused because editing was turned off meanwhile: the bootstrap reload hides the editors.
+            // If editing was turned off meanwhile, the reload hides the editors.
             State.afterWriteError(err);
             throw err;
           });
@@ -490,8 +404,7 @@
 
       var note = UI.filterNote(spec.filterScope);
       if (note) v.body.appendChild(note);
-      // Where an edit goes: the current month follows the source (written there), a past month is history.
-      // Admins also read which writes Paramètres › « Saisie dans l’application » turned off here.
+      // Admins see where edits go (source sheet or frozen month) and which writes are turned off.
       if (State.canEdit()) {
         var live = month === State.get().currentMonth;
         var locked = lockedSentence(spec.entity);
@@ -525,12 +438,12 @@
 
   window.InventoryPage = { create: create };
 
-  // ============================================================================== EntityForm
+  // EntityForm
 
   var OTHER_SECTION = 'autres';
-  var NOTE_SECTION = 'conformite';   // the computed-columns note closes this section (else the first one)
+  // The computed-columns note goes in this section, or the first one when it is absent.
+  var NOTE_SECTION = 'conformite';
 
-  /** Line under the form title: the month and where the new record is written. */
   function whereNote(entity, month, live) {
     if (live) {
       return Fmt.monthTitle(month) + ' · écrit dans le Google Sheet source' +
@@ -539,20 +452,18 @@
     return Fmt.monthTitle(month) + ' · mois figé : historique seulement, le Google Sheet source n’est pas modifié';
   }
 
-  /** A strict Oui / Non list (in either order) is a yes/no field: two buttons instead of a dropdown. */
+  // A strict Oui / Non list becomes two buttons instead of a dropdown.
   function isYesNo(options) {
     if (!options || options.length !== 2) return false;
     var o = options.map(Core.str).sort();
     return o[0] === 'Non' && o[1] === 'Oui';
   }
 
-  /** « OS, Version OS, Date d’achat… »: what a closed section holds. */
   function sectionHint(fields) {
     var names = fields.map(function (f) { return f.label || f.name; });
     return names.slice(0, 4).join(', ') + (names.length > 4 ? '…' : '');
   }
 
-  /** The value of `col` most often seen with `key` = `value` in `rows` ('' when none). */
   function mostCommonWith(rows, key, value, col) {
     var n = Object.create(null);
     var best = '';
@@ -566,7 +477,7 @@
     return best;
   }
 
-  /** Équipe / Bâtiment / Labo: the value of the single active filter of that kind ('' otherwise). */
+  // Prefills Équipe / Bâtiment / Labo when exactly one value of that filter is active.
   function filterDefault(name, entity) {
     var f = State.get().filters || {};
     var k = Core.normKey(name);
@@ -585,7 +496,6 @@
     });
   }
 
-  /** One schema column (api_getFormSchema) -> one UI.formFields field. */
   function fieldOf(col, md, cfg) {
     var f = { name: col.name, label: col.name, required: !!col.required };
     var options = Array.isArray(col.options) && col.options.length ? col.options.map(Core.str) : null;
@@ -603,7 +513,7 @@
       f.type = 'select';
       f.options = options;
     } else if (col.kind === 'select') {
-      // A list that accepts other values (or whose values are unknown): a combobox suggesting them.
+      // Non-strict list: a combobox that also accepts other values.
       f.type = 'select';
       f.allowCustom = true;
       f.options = options || Core.uniqueSorted(md[cfg.entity], col.name);
@@ -638,12 +548,10 @@
     return null;
   }
 
-  /** « Score conformité, Niveau de risque, Statut : calculés par le Google Sheet. » */
   function computedNote(names) {
     return names.join(', ') + ' : ' + (names.length > 1 ? 'calculés' : 'calculé') + ' par le Google Sheet.';
   }
 
-  /** « Colonnes lues dans le Google Sheet source · 14:02 » and the like, from the schema's origin. */
   function schemaMeta(schema, month) {
     var at = schema.readAt ? Fmt.stamp(schema.readAt) : '';
     if (schema.origin === 'source') return 'Colonnes lues dans le Google Sheet source' + (at ? ' à ' + at : '') + '.';
@@ -651,10 +559,7 @@
     return 'Colonnes de l’historique de ' + Fmt.monthLong(month) + '.';
   }
 
-  /**
-   * Postes: picking an Équipe fills an empty Bâtiment / Labo with the one its postes use most this month
-   * (still editable).
-   */
+  // Picking an Équipe fills an empty Bâtiment / Labo with the one its postes use most this month.
   function linkFields(fields, md, cfg) {
     if (cfg.entity !== 'postes') return;
     var team = fields.filter(function (f) { return Core.normKey(f.name) === Core.normKey('Équipe'); })[0];
@@ -670,10 +575,9 @@
     };
   }
 
-  /** {fields, groups, alert, meta} of UI.formPanel for a schema. */
   function buildForm(schema, md, cfg, month) {
     var sections = cfg.sections || [];
-    var place = Object.create(null);   // normKey(column) -> {index (section), rank}
+    var place = Object.create(null);
     sections.forEach(function (sec, i) {
       (sec.columns || []).forEach(function (c, rank) { place[Core.normKey(c)] = { index: i, rank: rank }; });
     });
@@ -709,14 +613,14 @@
     };
   }
 
-  /** EntityForm.open(ctx, cfg): see the header. */
+  // Resolves to the created record, or null when cancelled.
   function openEntityForm(ctx, cfg) {
     var month = ctx.month;
     var entity = cfg.entity;
     var live = month === State.get().currentMonth;
     var created = null;
     var sent = null;
-    // Keyed by column names (data), as the records sent: no prototype ('__proto__' is a column like any other).
+    // Keyed by column names, which are data, so no prototype.
     var appOnly = Object.create(null);
     return UI.formPanel({
       title: cfg.title,
@@ -745,22 +649,21 @@
         sent = record;
         return api.call(cfg.api, { month: month, record: record }).then(function (rec) { created = rec; }, function (err) {
           if (cfg.fieldFallback && err && err.code === 'VALIDATION' && !err.field) err.field = cfg.fieldFallback;
-          // Creation turned off meanwhile: the panel keeps the values and shows the message; the page hides
-          // its create buttons once the bootstrap is reloaded.
+          // If creation was turned off meanwhile, the panel keeps the values and the reload hides the buttons.
           State.afterWriteError(err);
           throw err;
         });
       }
     }).then(function (values) {
       if (!values || !created) return null;
-      var grew = State.extendColumns(month, entity, Object.keys(sent || {}).filter(function (k) { return !appOnly[k]; }));
+      var grew = State.extendColumns(month, entity, Object.keys(sent).filter(function (k) { return !appOnly[k]; }));
       State.addRecord(month, entity, created);
       if (grew) ctx.rerenderPage(); else ctx.refreshPage();
       var name = Core.str(created[cfg.keyField]);
       UI.toast(cfg.toast(name, { live: live, hidden: !ctx.isShown(created._id), month: month }), 'success');
       var row = ctx.rowNode(created._id);
       if (row && row.scrollIntoView) row.scrollIntoView({ block: 'nearest' });
-      // « Enchaîner avec un autre poste »: a fresh form right away (the box stays ticked).
+      // « Enchaîner »: open a fresh form right away.
       if (cfg.again && cfg.again.checked) return openEntityForm(ctx, cfg).then(function () { return created; });
       var button = cfg.button;
       if (button && button.isConnected && document.activeElement !== button) {

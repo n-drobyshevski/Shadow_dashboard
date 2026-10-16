@@ -1,11 +1,6 @@
 <script>
-/**
- * window.State — global client state + data caches (docs/API.md §5).
- *
- * The state object is replaced (never mutated) on every State.set(), so subscribers can compare
- * references. Month data, the timeline and the actions are cached; in-flight requests are shared
- * so that concurrent callers (sidebar + page) trigger a single server call.
- */
+// window.State: client state and the data caches.
+// State.set() replaces the state object instead of mutating it, so subscribers can compare references.
 (function () {
   'use strict';
 
@@ -13,9 +8,9 @@
     page: 'dashboard',
     configured: false,
     months: [],
-    month: '',                 // the selected month = the END of the period (pages show its state)
-    from: '',                  // start of the period ('' = a single month)
-    preset: '',                // period shortcut in use (Core.PERIOD_PRESETS) or '' (custom / stepped)
+    month: '',                 // end of the selected period
+    from: '',                  // start of the period, '' for a single month
+    preset: '',                // Core.PERIOD_PRESETS key, '' for a custom period
     currentMonth: '',
     dataUrl: '',
     sourceUrl: '',
@@ -24,32 +19,29 @@
     loading: false,
     threshold: 80,
     user: { email: '', role: '', isOwner: false },
-    // An admin previewing the app as a lecteur sees (sidebar role button, State.setReaderView): canEdit() is
-    // false meanwhile. Display only, this tab, until reload; the server keeps the account's real rights.
+    // Admin previewing the lecteur view; display only, the server still applies the real role.
     readerView: false,
-    prefs: {},                 // the account's interface preferences (api_bootstrap.prefs)
-    // Paramètres › « Saisie dans l’application » (api_bootstrap / api_getSyncStatus / api_setEditing .editing):
-    // what admins may do on Postes / Applications. Replaced only when a switch changes (State.setEditing).
+    prefs: {},
+    // Replaced only when a switch actually changes, so subscribers see no spurious 'editing' change.
     editing: { edit: false, create: false, delete: false },
-    sync: null                 // hourly synchronisation status (api_bootstrap.sync / api_getSyncStatus)
+    sync: null
   };
   var subscribers = [];
 
-  var monthCache = {};     // month -> monthData
-  var monthPending = {};   // month -> Promise<monthData>
-  // month -> {err, at}: a failure handed once to the next caller within FAILURE_REUSE_MS (the page mounted
-  // right after a month swap shows the error the swap just got, instead of requesting the month again).
+  var monthCache = {};
+  var monthPending = {};
+  // A failure is handed once to the next caller within FAILURE_REUSE_MS, so the page mounted right after
+  // a month swap shows that error instead of requesting the month again.
   var monthFailed = {};
   var FAILURE_REUSE_MS = 2000;
   var timelineCache = null;
   var timelinePending = null;
   var actionsCache = null;
   var actionsPending = null;
-  // Creation-form schemas (api_getFormSchema), 'entity|month' -> {at, data} / pending {promise, fresh}.
   var FORM_SCHEMA_TTL_MS = 5 * 60 * 1000;
   var formSchemaCache = {};
   var formSchemaPending = {};
-  // Bumped by invalidate(): responses of requests started before an invalidation are not cached.
+  // Responses to requests started before an invalidate() are not cached.
   var generation = 0;
 
   function get() { return state; }
@@ -82,7 +74,7 @@
     return entity === 'postes' ? Core.enrichPostes(records) : Core.enrichApplications(records);
   }
 
-  /** Server records are already enriched; re-enrich defensively so the cache is always consistent. */
+  // The server already enriches records; doing it again keeps the cache consistent whatever it sent.
   function normalizeMonthData(md) {
     md.postes = enrich('postes', md.postes || []);
     md.applications = enrich('applications', md.applications || []);
@@ -121,7 +113,7 @@
   function patchRecords(month, entity, records) {
     var md = monthCache[month];
     if (!md || !md[entity]) return;
-    var byId = Object.create(null);   // record ids are data: no prototype ('__proto__' is an id like any other)
+    var byId = Object.create(null);   // no prototype, since '__proto__' is a valid record id
     (records || []).forEach(function (r) { if (r && r._id) byId[r._id] = r; });
     md[entity] = enrich(entity, md[entity].map(function (r) { return byId[r._id] || r; }));
     dropTimeline();
@@ -143,10 +135,7 @@
     dropTimeline();
   }
 
-  /**
-   * A record created with a column the month did not have yet (a column added to the source since the last
-   * sync): the month's columns gain it, so the table shows its value. Returns true when columns changed.
-   */
+  // A record may carry a column added to the source since the last sync. Returns true when columns changed.
   function extendColumns(month, entity, names) {
     var md = monthCache[month];
     if (!md || !md.columns) return false;
@@ -158,11 +147,7 @@
     return added;
   }
 
-  /**
-   * Fields of the creation form of `entity` ('postes' | 'applications') in `month` (api_getFormSchema), kept
-   * 5 minutes; one request in flight per form. force: asks the server for a fresh read of the source
-   * ({fresh:true}, past its cache too).
-   */
+  // force also asks the server to bypass its own cache.
   function loadFormSchema(entity, month, opts) {
     var force = !!(opts && opts.force);
     var key = entity + '|' + month;
@@ -185,13 +170,12 @@
     return p;
   }
 
-  /** The form schema loadFormSchema keeps for `entity` + `month` (whatever its age), or null: never asks the server. */
   function peekFormSchema(entity, month) {
     var hit = formSchemaCache[entity + '|' + month];
     return hit ? hit.data : null;
   }
 
-  /** Local edits change scores, so the cached timeline (built from server snapshots) is stale. */
+  // Local edits change scores, so the timeline built from server snapshots is stale.
   function dropTimeline() {
     timelineCache = null;
     timelinePending = null;
@@ -199,9 +183,8 @@
 
   function invalidate(month) {
     generation++;
-    // Every kept failure goes, not only this month's: « Réessayer » (UI.monthError) invalidates the
-    // page's month, and a period page may have failed on its first month (a boot prefetch the page
-    // joined, so the failure was not handed over yet): the retry must ask the server again.
+    // Drop every kept failure: a period page retrying one month may have failed on another month
+    // whose error was never handed over, and the retry must ask the server again.
     monthFailed = {};
     if (month) {
       delete monthCache[month];
@@ -223,11 +206,7 @@
     return Core.filterData({ postes: md.postes || [], applications: md.applications || [] }, state.filters);
   }
 
-  /**
-   * State.filterByEquipe(records, key='equipe') -> records whose équipe is in the global Équipe filter
-   * (all records when the filter is empty). For actions / replacements (field `equipe`); the
-   * Bâtiment / Labo filter does not apply to them.
-   */
+  // For actions and replacements, which have no bâtiment: only the Équipe filter applies.
   function filterByEquipe(records, key) {
     var k = key || 'equipe';
     var eq = ((state.filters && state.filters.equipes) || []).map(function (s) { return String(s).trim(); });
@@ -236,18 +215,12 @@
     return list.filter(function (r) { return r && eq.indexOf(String(r[k] === null || r[k] === undefined ? '' : r[k]).trim()) >= 0; });
   }
 
-  /**
-   * State.filterSummary(scope='all') -> '' | 'Filtres actifs — Équipe : A, B · Bâtiment / Labo : X (postes uniquement)'
-   * One wording for the « Filtres actifs » note of every page (render it as p.filter-note[role=status]).
-   * scope: 'all' (postes + applications: the Bâtiment filter is marked "postes uniquement"), 'postes'
-   * (Bâtiment applies fully), 'actions' (Bâtiment not applicable: marked "non applicable ici").
-   */
-  /** State.hasFilters() -> true when an Équipe or Bâtiment filter is active. */
   function hasFilters() {
     var f = state.filters || {};
     return ((f.equipes || []).length + (f.batiments || []).length) > 0;
   }
 
+  // scope 'all' (default), 'postes' or 'actions' decides how the Bâtiment filter is qualified.
   function filterSummary(scope) {
     var f = state.filters || {};
     var parts = [];
@@ -295,11 +268,7 @@
     return p;
   }
 
-  /**
-   * State.takeInline(id) -> the JSON doGet rendered into <script type="application/json" id=…>, or
-   * undefined when the element is missing, empty (nothing inlined) or unreadable. The element is removed:
-   * the page-load snapshot is read once and never seen again (a later boot or reload asks the server).
-   */
+  // Reads the JSON doGet inlined in a <script type="application/json"> and removes it, so it is used once.
   function takeInline(id) {
     var node = document.getElementById(id);
     if (!node) return undefined;
@@ -314,7 +283,7 @@
     }
   }
 
-  // The bootstrap doGet rendered into the page (#boot-data), consumed by the FIRST refreshBootstrap call.
+  // Consumed by the first refreshBootstrap call, whether or not it uses it.
   var inlineBootRead = false;
   function takeInlineBootstrap() {
     if (inlineBootRead) return null;
@@ -323,12 +292,7 @@
     return env && env.ok === true && env.data && typeof env.data === 'object' ? env.data : null;
   }
 
-  /**
-   * State.refreshBootstrap({useInline}?) -> Promise<state>: api_bootstrap -> configured / months / user ...
-   * With useInline (App.boot only), the first call of the page answers from the inline bootstrap when
-   * doGet rendered one, without a server call; every other call (reload, retry, new source, threshold)
-   * asks the server.
-   */
+  // useInline is for App.boot only; every later call asks the server.
   function refreshBootstrap(opts) {
     var inline = takeInlineBootstrap();
     set({ loading: true });
@@ -341,7 +305,7 @@
 
   var EDITING_KEYS = ['edit', 'create', 'delete'];
 
-  /** Server editing switches -> {edit, create, delete} (only an explicit true is on); null when not an object. */
+  // Only an explicit true turns a switch on.
   function normEditing(e) {
     if (!e || typeof e !== 'object') return null;
     var out = {};
@@ -349,20 +313,18 @@
     return out;
   }
 
-  /** `next` unless it says the same as `prev` (then `prev`: subscribers see no 'editing' change). */
+  // Keeps the previous object when nothing changed, so subscribers see no 'editing' change.
   function sameEditing(prev, next) {
     return prev && EDITING_KEYS.every(function (k) { return prev[k] === next[k]; }) ? prev : next;
   }
 
-  /** New editing switches from the server (api_getSyncStatus, api_setEditing); ignored when missing. */
   function setEditing(e) {
     var next = normEditing(e);
     if (next) set({ editing: sameEditing(state.editing, next) });
   }
 
-  /** api_bootstrap data -> state (the inline snapshot and the server answer alike). */
   function applyBootstrap(b) {
-    // Before set(): subscribers re-render with the threshold the server scored with.
+    // Before set(), so subscribers re-render with the threshold the server scored with.
     var threshold = Core.setThreshold(b.threshold);
     var u = b.user || {};
     var user = { email: u.email || '', role: u.role || '', isOwner: !!u.isOwner };
@@ -390,10 +352,6 @@
     return state;
   }
 
-  /**
-   * The selected period: {from, to, months (synchronised months inside, ascending), single}. `to` is
-   * state.month; a single month has from === to.
-   */
   function period() {
     var to = state.month;
     var from = state.from && state.from < to ? state.from : to;
@@ -401,7 +359,6 @@
     return { from: from, to: to, months: months, single: from === to };
   }
 
-  /** Selects a period (a reversed range is swapped; from === to = one month). preset: the shortcut used, if any. */
   function setPeriod(from, to, preset) {
     var a = from || to;
     var b = to || from;
@@ -409,43 +366,28 @@
     set({ month: b, from: a === b ? '' : a, preset: preset || '' });
   }
 
-  /** The account's real role is admin (whatever the view): only admins get the lecteur preview switch. */
+  // The account's real role, whatever the current view.
   function isAdmin() {
     return !!(state.user && state.user.role === 'admin');
   }
 
-  /**
-   * Admins edit; lecteurs only read (the server refuses their writes anyway, FORBIDDEN). An admin previewing
-   * the lecteur view (state.readerView) reads only too.
-   */
   function canEdit() {
     return isAdmin() && !state.readerView;
   }
 
-  /**
-   * State.setReaderView(on): an admin switches to what a lecteur sees, and back. Ignored for other roles.
-   * Leaves an admin-only page (Paramètres) for the dashboard in the same change.
-   */
+  // Leaves the admin-only settings page in the same change.
   function setReaderView(on) {
     var next = !!on && isAdmin();
     if (next === state.readerView) return;
     set(next && state.page === 'settings' ? { readerView: true, page: 'dashboard' } : { readerView: next });
   }
 
-  /**
-   * State.can('edit' | 'create' | 'delete') -> whether the controls of that write on Postes / Applications
-   * show: an admin, and the switch of Paramètres › « Saisie dans l’application » is on. Other writes
-   * (actions, settings, sync) stay on canEdit().
-   */
+  // Postes / Applications writes only; actions, settings and sync stay on canEdit().
   function can(kind) {
     return canEdit() && !!state.editing && state.editing[kind] === true;
   }
 
-  /**
-   * After a refused write: FORBIDDEN means a switch was turned off (or the role changed) since the page
-   * loaded; the bootstrap is reloaded so the controls follow (pages update in place). The caller still
-   * shows the error itself.
-   */
+  // FORBIDDEN means a switch or the role changed since load: reload the bootstrap so the controls follow.
   function afterWriteError(err) {
     if (!err || err.code !== 'FORBIDDEN') return;
     refreshBootstrap().catch(function (e) { console.warn('Bootstrap reload failed: ' + ((e && e.message) || e)); });
@@ -483,22 +425,8 @@
   };
 })();
 
-/**
- * window.Fmt — month / date notation, one per role, independent of the DOM (usable before UI loads).
- *   Fmt.monthLong('2026-05')   -> 'mai 2026'          inside a sentence, chart axes, table headers, options
- *   Fmt.monthTitle('2026-05')  -> 'Mai 2026'          start of a sentence or caption, select labels
- *   Fmt.MONTHS                 -> ['janvier', …, 'décembre'] (the one list of month names)
- *   (page kicker « Mai 2026 · Export 2026-05 »: UI.monthHeader; the ISO export id appears ONLY there.)
- *   Fmt.monthRange(a, b)       -> 'Avril 2026 – mai 2026' (one month -> 'Mai 2026')
- *   Fmt.date('2026-05-04')     -> '04/05/2026'        (DD/MM/YYYY input is returned unchanged)
- *   Fmt.dateTime('2026-05-04 10:30') / ('2026-05-04T10:30:00') -> '04/05/2026 10:30'
- *   Fmt.monthShort('2026-04')  -> 'avr.'             compact labels (period button)
- *   Fmt.periodTitle(a, b)      -> 'Avril → octobre 2026' / 'Décembre 2025 → octobre 2026' (a === b: 'Mai 2026')
- *   Fmt.periodShort(a, b)      -> 'Avr. – oct. 2026' / 'Déc. 2025 – oct. 2026' (a === b: 'Mai 2026')
- *   Fmt.stamp('2026-05-04 10:30')  -> '10:30' today, '04/05 10:30' this year, else '04/05/2026 10:30'
- *   Fmt.syncChange(changes)    -> '+2 postes · 1 application modifiée (3 valeurs)' (ImportLog / sync changes)
- * Invalid input is returned as a string unchanged ('' for null).
- */
+// window.Fmt: French month and date formatting, with no DOM dependency so it works before UI loads.
+// Invalid input comes back unchanged as a string ('' for null).
 (function () {
   'use strict';
   var MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre',
@@ -545,7 +473,7 @@
     return cap(monthShort(a)) + (ya === yb ? '' : ' ' + ya) + ' – ' + monthShort(b) + ' ' + yb;
   }
 
-  /** Short time stamp for status lines (the server stamps in Europe/Paris, the viewers are there too). */
+  // Compares with the local date: the server stamps in Europe/Paris, where the viewers are too.
   function stamp(v) {
     var r = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(s(v).trim());
     if (!r) return dateTime(v);
@@ -559,7 +487,6 @@
 
   function counted(n, one, many) { return n + ' ' + (n > 1 ? many : one); }
 
-  /** One entity's part of a change summary: '+2 postes', '−1 application', '3 postes modifiés (5 valeurs)'. */
   function entityChange(d, one, many, modOne, modMany) {
     if (!d) return [];
     var out = [];
@@ -570,7 +497,6 @@
     return out;
   }
 
-  /** What a synchronisation changed, in words ('' for nothing / unknown). */
   function syncChange(c) {
     if (!c || typeof c !== 'object') return '';
     if (c.created) return 'mois créé';

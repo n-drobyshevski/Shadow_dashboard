@@ -1,29 +1,7 @@
 <script>
-/**
- * window.Charts — Plotly wrappers with one shared "audit ledger" theme (docs/API.md §5, docs/DESIGN.md).
- *
- * Every function draws into `el` with Plotly.react (idempotent: redraws reuse the same element),
- * config {responsive:true, displayModeBar:false}. Plotly is loaded by Charts.ready() (async, never blocking
- * the page): a draw asked before it is there waits for it, and falls back to UI.empty('Graphique
- * indisponible') when Plotly could not be loaded (CDN blocked, offline...).
- *
- * Theme: IBM Plex Sans, transparent backgrounds, no gridlines unless they carry reading value, tight
- * margins, French separators, no titles inside plots (the page puts a small-caps label above each chart).
- *   - tick labels: numbers and months in Plex Mono 12px --ink-3; categories (risk levels, équipes) in
- *     Plex Sans 13px --ink; value labels on bars in mono 12px; annotations ("seuil 80 %") sans 12px --ink-2.
- *   - hover labels: --ink background, white Plex Mono 12px, no border, one order everywhere:
- *     « <mois|catégorie> · <série> <valeur formatée> », e.g. « mai 2026 · Postes 71,4 % ». Values are
- *     pre-formatted in fr-FR (narrow no-break space before %, thousands with a narrow space) and passed
- *     as customdata, never printed raw by Plotly.
- * Colours come from the CSS tokens (css.html :root) through Charts.tokens(); colour is used for status only.
- *
- * Page authors: series without `color` get the ledger defaults (ink solid, ink-3 dashed, accent, ...);
- * series accept `dash` ('solid'|'dash'|'dot'). Charts.tokens() returns the palette.
- * Values are formatted with UI.fmtPct / UI.fmtNum. Charts.board() groups the chart blocks of a page body
- * (queue the draws, run them once in the DOM, purge them on leave).
- * Charts.thresholdCaption({prefix?, items:[{label?, rate, ok?, total?}], threshold?}) -> p.chart-caption
- * .threshold-caption « ■ Sous le seuil · 5 conformes sur 7 · seuil 80 % » (status always in words).
- */
+// window.Charts: Plotly wrappers sharing one theme (colours from the CSS tokens, French number formats).
+// Plotly loads asynchronously; draws wait for it and show « Graphique indisponible » if it never comes.
+// Hover values are pre-formatted and passed as customdata so Plotly never prints raw numbers.
 (function () {
   'use strict';
 
@@ -41,16 +19,15 @@
     riskCritique: '--risk-critique', riskEleve: '--risk-eleve', riskMoyen: '--risk-moyen',
     riskFaible: '--risk-faible', onInk: '--on-ink', sans: '--font-sans', mono: '--font-mono'
   };
-  var NNBSP = '\u202f'; // narrow no-break space (fr-FR before % and as thousands separator)
-  var GAP = '\u00a0';   // no-break space set in the sans face: the gap before % in the big gauge figure
-  var TICK = 12;        // tick label size (numbers / months)
-  var CAT = 13;         // category label size (risk levels, équipes)
+  var NNBSP = '\u202f'; // fr-FR uses it before % and between thousands
+  var GAP = '\u00a0';
+  var TICK = 12;
+  var CAT = 13;
 
-  /** Design tokens read from the stylesheet (fallbacks when the CSS variables are missing). */
   function tokens() {
     var out = {};
     var cs = null;
-    try { cs = window.getComputedStyle(document.documentElement); } catch (e) { cs = null; }
+    try { cs = window.getComputedStyle(document.documentElement); } catch (e) { /* use the fallbacks */ }
     Object.keys(VARS).forEach(function (k) {
       var v = cs ? String(cs.getPropertyValue(VARS[k]) || '').trim() : '';
       out[k] = v || FALLBACK[k];
@@ -65,11 +42,8 @@
     return 'rgba(' + parseInt(m[1], 16) + ',' + parseInt(m[2], 16) + ',' + parseInt(m[3], 16) + ',' + alpha + ')';
   }
 
-  // ------------------------------------------------------------------------------ fr-FR formatting
-
   function isNum(v) { return v !== null && v !== undefined && v !== '' && isFinite(Number(v)); }
 
-  /** 71.42857 -> '71,4 %' (narrow no-break space); '—' for null. */
   function fmtPct(v, digits) {
     if (!isNum(v)) return '—';
     var d = digits === undefined ? 1 : digits;
@@ -77,23 +51,20 @@
       .format(Number(v)) + NNBSP + '%';
   }
 
-  /** 1234 -> '1 234' (narrow no-break space); '—' for null. */
   function fmtNum(v) {
     if (!isNum(v)) return '—';
     return new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 }).format(Math.round(Number(v)))
       .replace(/[   ]/g, NNBSP);
   }
 
-  /** Text that goes into a hovertemplate: no markup, no Plotly placeholders. */
+  // Strips markup and Plotly placeholders from text that goes into a hovertemplate.
   function clean(s) { return String(s === null || s === undefined ? '' : s).replace(/[<>%{}]/g, ''); }
 
-  /** '<head> · <series> <value>' with the trace box suppressed. */
+  // <extra></extra> hides Plotly's trace-name box.
   function hoverTemplate(head, series, value) {
     var s = clean(series);
     return String(head) + ' · ' + (s ? s + ' ' : '') + String(value) + '<extra></extra>';
   }
-
-  // ------------------------------------------------------------------------------ shared layout
 
   function tickFont(t) { return { family: t.mono, size: TICK, color: t.ink3 }; }
   function catFont(t) { return { family: t.sans, size: CAT, color: t.ink }; }
@@ -116,20 +87,18 @@
   }
 
   function baseLayout(t, extra) {
-    var layout = {
+    return Object.assign({
       font: { family: t.sans, size: 12, color: t.ink2 },
       paper_bgcolor: 'rgba(0,0,0,0)',
       plot_bgcolor: 'rgba(0,0,0,0)',
       margin: { l: 8, r: 8, t: 8, b: 8, pad: 0 },
-      separators: ', ',            // French: decimal comma, space as thousands separator
+      separators: ', ',
       showlegend: false,
       hovermode: 'closest',
-      // Ink box, white mono 12px, no visible border (border = background).
       hoverlabel: { bgcolor: t.ink, bordercolor: t.ink, font: { family: t.mono, size: 12, color: t.onInk }, align: 'left',
         namelength: 0 },
       dragmode: false
-    };
-    return Object.assign(layout, extra || {});
+    }, extra || {});
   }
 
   function annotationFont(t) { return { family: t.sans, size: 12, color: t.ink2 }; }
@@ -140,31 +109,23 @@
     return null;
   }
 
-  // ------------------------------------------------------------------------------ Plotly loading
-
-  // Same build as the <link rel="preload"> of index.html; never a blocking <script> in <head>.
+  // Must match the <link rel="preload"> in index.html.
   var PLOTLY_URL = 'https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.3/plotly.min.js';
-  // Subresource Integrity (cdnjs' published hash, same in index.html): a modified file on the CDN is
-  // refused by the browser and the charts show « Graphique indisponible » instead of running it.
+  // cdnjs' published hash: a tampered file is refused and the charts fall back to « Graphique indisponible ».
   var PLOTLY_SRI = 'sha512-7H/XbvOmUsf6mawBvmmx9BsPt9ew2NTwQ3QDSzNe6iyacDbCJU+7pBbZY1NdmTpuj7snxSsXasMYMiR2tv906g==';
   var PLOTLY_TIMEOUT_MS = 30000;
   var plotlyReady = null;
-  var lateDraws = []; // draws that fell back on the timeout (whenLate); null once Plotly can no longer come
+  var lateDraws = []; // null once Plotly can no longer arrive
 
   function hasPlotly() { return !!(window.Plotly && typeof window.Plotly.react === 'function'); }
 
-  /** Keeps fn to run if the Plotly script still arrives after the timeout (never called once it has). */
+  // Runs fn if the Plotly script still arrives after the timeout.
   function whenLate(fn) {
     if (lateDraws && !hasPlotly()) lateDraws.push(fn);
   }
 
-  /**
-   * Charts.ready() -> Promise<Plotly>: adds the Plotly script (async) once and resolves when it has run.
-   * Memoized, failures included: a load error, or no load within 30 s, rejects for every caller (the charts
-   * show « Graphique indisponible »; the script is never requested again). A build that still arrives after
-   * the timeout serves the charts drawn from then on, and redraws the ones that fell back meanwhile and are
-   * still in the page (whenLate). App.boot starts it first, so the download overlaps the data requests.
-   */
+  // Memoized, failures included: the script is requested once. A script that arrives after the timeout
+  // still serves later draws and redraws the charts that fell back meanwhile.
   function ready() {
     if (plotlyReady) return plotlyReady;
     if (hasPlotly()) {
@@ -184,7 +145,7 @@
       script.onload = function () {
         clearTimeout(timer);
         if (!hasPlotly()) { lateDraws = null; fail('the script did not define Plotly'); return; }
-        if (settled) { // late, after the timeout
+        if (settled) {
           plotlyReady = Promise.resolve(window.Plotly);
           var late = lateDraws || [];
           lateDraws = null;
@@ -207,11 +168,7 @@
     return plotlyReady;
   }
 
-  /**
-   * Draws now when Plotly is there, else once Charts.ready() settles: then only into an element still in
-   * the page (a page left meanwhile is not drawn), « Graphique indisponible » when Plotly failed (drawn
-   * after all if the script still arrives late and the element is still in the page).
-   */
+  // An element that left the page while Plotly was loading is not drawn.
   function draw(el, data, layout) {
     if (!el) return null;
     if (hasPlotly()) return plot(el, data, layout);
@@ -221,7 +178,7 @@
       if (!el.isConnected) return null;
       whenLate(function () {
         if (!el.isConnected) return;
-        UI.clear(el); // Plotly draws next to the children it finds: the placeholder goes first
+        UI.clear(el); // Plotly keeps existing children, so remove the placeholder first
         plot(el, data, layout);
       });
       return unavailable(el);
@@ -244,29 +201,19 @@
 
   function thresholdLabel(value) { return 'seuil ' + value + NNBSP + '%'; }
 
-  // ------------------------------------------------------------------------------ gauge
-
-  /**
-   * Compliance gauge 0–100 % (kept from the Streamlit original), restyled: thin flat arc on a neutral
-   * track, bar --ok when >= threshold else --ko, 2px ink tick at the threshold that just overshoots the
-   * arc, value as a mono figure. Plotly centres the arc in its ring and sets its tick labels far from it,
-   * so the three labels ("0", "80", "100") are small HTML labels placed from the drawn arc after every
-   * redraw: "0" / "100" right under the arc ends, "80" just outside the threshold tick.
-   */
+  // Plotly puts the gauge tick labels far from the arc, so gaugeEnds places HTML labels after every redraw.
   function gauge(el, value, opts) {
     var o = opts || {};
     var t = tokens();
     var v = value === null || value === undefined || !isFinite(Number(value)) ? 0 : Number(value);
     var ok = v >= Core.threshold();
-    var band = 0.2;      // thickness of the arc, as a fraction of the gauge ring
-    // Left-aligned with its label and caption (.chart-gauge caps the plot width; the arc is not centred
-    // in a wide column).
+    var band = 0.2;      // arc thickness as a fraction of the ring
     if (el) el.classList.add('chart-gauge');
     var p = draw(el, [{
       type: 'indicator',
       mode: 'gauge+number',
       value: v,
-      // The space before % is set in the sans face: in Plex Mono it would take a full cell.
+      // The space before % uses the sans face; in the mono face it would take a full cell.
       number: { suffix: '<span style="font-family:' + t.sans.replace(/"/g, "'") + '">' + GAP + '</span>%',
         valueformat: '.1f', font: { family: t.mono, size: 30, color: t.ink } },
       gauge: {
@@ -296,9 +243,8 @@
     return p;
   }
 
-  /** "0" / "100" under the two ends of the gauge arc and "80" beside the tick (HTML, from the drawn ring). */
   function gaugeEnds(el) {
-    if (!el || !el.isConnected) return;
+    if (!el.isConnected) return;
     var ring = el.querySelectorAll('g.angular path');
     var box = el.getBoundingClientRect();
     var l = Infinity, r = -Infinity, b = -Infinity;
@@ -318,27 +264,20 @@
     }
     wrap.hidden = false;
     var radius = (r - l) / 2;
-    var mid = radius * (0.75 + 0.25 / 2);         // radius of the centre line of the arc
+    var mid = radius * (0.75 + 0.25 / 2);         // centre line of the arc
     var cx = l - box.left + radius;
     var cy = b - box.top;                          // the arc ends sit on the horizontal diameter
     var spans = wrap.children;
     spans[0].style.left = (cx - mid) + 'px';
     spans[1].style.left = (cx + mid) + 'px';
     spans[0].style.top = spans[1].style.top = (cy + 1) + 'px';
-    // Threshold label: just beyond the outer end of the tick (the arc band is centred on `mid`; the tick
-    // overshoots it by ~5px), anchored at its lower-left corner.
+    // The tick overshoots the arc by about 5px, so the label sits just beyond it.
     var a = Math.PI * (1 - Core.threshold() / 100);
     var rr = mid + 7;
     spans[2].style.left = (cx + rr * Math.cos(a) + 1) + 'px';
     spans[2].style.top = (cy - rr * Math.sin(a) - 11) + 'px';
   }
 
-  // ------------------------------------------------------------------------------ bars
-
-  /**
-   * One horizontal bar per risk level (Core.RISK_ORDER, top to bottom), risk colours, count at the bar end.
-   * opts.noun ('poste' | 'application') adds the unit to the hover label: « Élevé · 1 poste ».
-   */
   function riskBars(el, counts, opts) {
     var c = counts || {};
     var o = opts || {};
@@ -368,11 +307,6 @@
     }));
   }
 
-  /**
-   * 10 equal bins on 0–100 (Core.histogramBins). Bins below the threshold in --ko at 70 % opacity,
-   * at/above in --ok; dashed ink line at 80 labelled "seuil 80 %"; counts printed above non-empty bins.
-   * opts.noun adds the unit to the hover label: « Score 80–90 % · 2 postes ».
-   */
   function histogram(el, scores, opts) {
     var o = opts || {};
     var t = tokens();
@@ -392,8 +326,7 @@
       textfont: { family: t.mono, size: 12, color: t.ink2 },
       cliponaxis: false,
       marker: {
-        // A bin that straddles a custom threshold (e.g. 70–80 with a 75 % threshold) holds both
-        // statuses: neutral ink, the dashed threshold line shows where it splits.
+        // A bin that straddles the threshold holds both statuses, so it stays neutral.
         color: bins.map(function (b) {
           var th = Core.threshold();
           return b.x0 >= th ? t.ok : b.x1 <= th ? rgba(t.ko, 0.7) : rgba(t.ink3, 0.55);
@@ -432,12 +365,7 @@
     return -1;
   }
 
-  /**
-   * Line chart: {x, series:[{name, y, color?, dash?}], threshold?, yTitle?, yRange?, unit?:'%'|''}.
-   * Series are labelled directly at their last point (no legend); the threshold is a dotted rule
-   * labelled at the right edge. unit defaults to '%' when a threshold is given (rates), else none.
-   * Hover: « mai 2026 · Postes 71,4 % ».
-   */
+  // unit defaults to '%' when a threshold is given. Series are labelled at their last point, not in a legend.
   function line(el, opts) {
     var o = opts || {};
     var t = tokens();
@@ -483,7 +411,7 @@
       height: o.height || 280,
       margin: { l: 4, r: Math.min(140, labelRoom), t: 12, b: 4 },
       xaxis: axis(t, { type: 'category', showline: true, ticks: 'outside' }),
-      // yTitle is accepted for compatibility but not drawn: the label above the chart names the measure.
+      // yTitle is accepted but not drawn: the section title names the measure.
       yaxis: axis(t, { range: o.yRange || undefined, rangemode: 'tozero', showgrid: true, gridcolor: t.rule,
         gridwidth: 1, nticks: 5, ticksuffix: unit === '%' ? NNBSP + '%' : '', ticklabelstandoff: 4 }),
       shapes: hasThreshold ? [{ type: 'line', xref: 'paper', yref: 'y', x0: 0, x1: 1, y0: o.threshold, y1: o.threshold,
@@ -492,17 +420,8 @@
     }));
   }
 
-  /**
-   * Part-of-whole bars, labelled directly (no legend):
-   *   {x:[category], groups:[{label, total:{name, y}, part:{name, y}, color?}], height?}.
-   * Per category and group, one outline bar (total = inventoriés, 1px in the group colour on paper) with
-   * the part (conformes) drawn as a solid bar inside it from the baseline: the paired encoding
-   * "inventoriés vs conformes" reads without a key. "part sur total" is printed above each bar, the group
-   * label under it and the category (month) under the group labels. Bars are capped at 28px wide so the
-   * solid parts never become heavy blocks.
-   * Traces, in order: [g0 total, g0 part, g1 total, g1 part, ...] (names from total.name / part.name).
-   * Hover: « mai 2026 · Postes 5 conformes sur 7 ».
-   */
+  // Each group draws an outline bar for the total with the part as a solid bar inside it.
+  // Traces come in order [g0 total, g0 part, g1 total, g1 part, ...].
   function partBars(el, opts) {
     var o = opts || {};
     var t = tokens();
@@ -512,10 +431,10 @@
     var G = Math.max(1, groups.length);
     var slot = 0.8 / G;                  // share of a category taken by one group
     var plotW = (el && el.clientWidth) || 480;
-    var unitPx = plotW / Math.max(1, n); // pixels per category
-    var width = Math.min(slot * 0.5, 28 / unitPx);
-    var px = unitPx / G;                 // ~pixels per bar slot
-    var compact = px < 52;               // too narrow for "5 sur 7": "5/7", no group labels
+    var unitPx = plotW / Math.max(1, n);
+    var width = Math.min(slot * 0.5, 28 / unitPx); // capped at 28px so the solid parts stay light
+    var px = unitPx / G;
+    var compact = px < 52;               // too narrow for "5 sur 7": use "5/7" and drop group labels
     var palette = [t.ink, t.ink3, t.accent];
     function pos(i, g) { return i + (g - (G - 1) / 2) * Math.min(slot, width * 2.2); }
     var data = [];
@@ -569,13 +488,6 @@
     }));
   }
 
-  /**
-   * Heatmap: {x, y, z:[[number|null]], zmin=0, zmax=100, title?, maxCellWidth?}: light sequential single hue
-   * (paper-2 -> a 45 % tint of --ok, so ink text stays readable in every cell), % printed in each cell in
-   * mono with 1 decimal like every other rate (« 50,0 % »), no colour bar. Hover: « mai 2026 · Labo Textile
-   * 50,0 % ».
-   * `title` is ignored inside the plot (label it above).
-   */
   function heatmap(el, opts) {
     var o = opts || {};
     var t = tokens();
@@ -589,7 +501,7 @@
       return (row || []).map(function (v) { return isNum(v) ? fmtPct(v, 1) : 'aucun poste'; });
     });
     var yLabels = o.y || [];
-    // maxCellWidth: caps each column (px) so that a few months read as a compact table, left-aligned.
+    // Caps the column width so a few months read as a compact table.
     if (el && o.maxCellWidth) {
       var labelW = yLabels.reduce(function (m, s) { return Math.max(m, String(s).length); }, 0) * 7.5 + 24;
       el.style.maxWidth = Math.round(labelW + Math.max(1, (o.x || []).length) * o.maxCellWidth + 8) + 'px';
@@ -597,7 +509,7 @@
     return draw(el, [{
       type: 'heatmap',
       x: o.x || [],
-      y: yLabels.map(clean), // équipes come from the sheet: Plotly renders <a>, <span style>... in labels
+      y: yLabels.map(clean), // équipes come from the sheet, and Plotly renders markup in labels
       z: z,
       zmin: zmin,
       zmax: zmax,
@@ -609,7 +521,7 @@
       xgap: 2,
       ygap: 2,
       showscale: false,
-      colorscale: [[0, t.paper2], [1, rgba(t.ok, 0.45)]]
+      colorscale: [[0, t.paper2], [1, rgba(t.ok, 0.45)]] // light enough for ink text in every cell
     }], baseLayout(t, {
       height: Math.max(140, 34 * yLabels.length + 40),
       margin: { l: 4, r: 4, t: 4, b: 4 },
@@ -618,16 +530,7 @@
     }));
   }
 
-  // ------------------------------------------------------------------------------ captions
-
-  /**
-   * Charts.thresholdCaption({prefix?, items:[{label?, rate, ok?, total?}], threshold?}) -> p.chart-caption
-   * One status per item, always in words next to its colour:
-   *   item without label: « ■ Sous le seuil · 5 conformes sur 7 »
-   *   item with label:    « Postes 71,4 % ■ Sous le seuil »
-   * followed by « · seuil 80 % ». prefix (string | Node | array) comes first, e.g. 'Mai 2026 — '.
-   * An item with rate null renders « Postes — ».
-   */
+  // Status is always given in words next to its colour, never by colour alone.
   function thresholdCaption(o) {
     var opts = o || {};
     var th = opts.threshold === undefined ? Core.threshold() : opts.threshold;
@@ -639,7 +542,7 @@
       if (!isNum(it.rate)) { parts.push(label || '', ' —'); return; }
       var above = Number(it.rate) >= th;
       var mark = UI.statusMark(above ? 'Seuil atteint' : 'Sous le seuil', above ? 'ok' : 'ko');
-      // « Postes 71,4 % ■ Sous le seuil » stays on one line (it only wraps between items).
+      // Keeps each labelled item on one line so wrapping happens only between items.
       if (label) parts.push(el('span', { class: 'tc-item' }, label, ' ', el('span', { class: 'num' }, fmtPct(it.rate)), ' ', mark));
       else parts.push(mark);
       if (isNum(it.total)) {
@@ -657,12 +560,7 @@
     }
   }
 
-  /**
-   * Charts.board({sectionClass?}) -> {section(title, id, drawFn, caption?), draw(), purge()}: the charts of
-   * one page body. section() returns a block (hairline + small-caps label) around a chart box and queues
-   * drawFn(box); draw() runs the queue once the blocks are in the DOM (one failing chart does not stop the
-   * others); purge() releases every Plotly instance of the board.
-   */
+  // The charts of one page body: section() queues a draw, draw() runs the queue once the boxes are in the DOM.
   function board(o) {
     var opts = o || {};
     var boxes = [];
@@ -670,7 +568,7 @@
     var purged = false;
     function run(queue) {
       queue.forEach(function (d) {
-        // A board purged (re-render, page left) or a box taken out of the page meanwhile is not drawn.
+        // Skip a purged board or a box that has left the page.
         if (purged || !d.box.isConnected) return;
         try { d.fn(d.box); } catch (e) { console.error(e); }
       });
@@ -683,10 +581,6 @@
         return UI.el('section', { class: ['section', opts.sectionClass || 'chart-section'], dataset: { chart: id } },
           UI.el('h2', { class: 'section-title' }, title), box, caption || null);
       },
-      /**
-       * Runs the queued draws: at once when Plotly is loaded, else when Charts.ready() settles (on failure
-       * « Graphique indisponible », then the queue again if the script still arrives late).
-       */
       draw: function () {
         var queue = draws.splice(0);
         if (!queue.length) return;
@@ -696,7 +590,7 @@
           queue.forEach(function (d) { if (d.box.isConnected) unavailable(d.box); });
           whenLate(function () {
             if (purged) return;
-            queue.forEach(function (d) { if (d.box.isConnected) UI.clear(d.box); }); // the placeholders
+            queue.forEach(function (d) { if (d.box.isConnected) UI.clear(d.box); });
             run(queue);
           });
         });

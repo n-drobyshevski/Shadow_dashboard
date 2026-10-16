@@ -1,25 +1,12 @@
-/**
- * Core — pure domain logic shared by the Apps Script server and the browser client.
- *
- * Contract: docs/API.md §1 (constants) and §2 (functions).
- *
- * IMPORTANT: CoreFactory_ is serialised with Function.prototype.toString() by coreScript() and
- * evaluated in the browser. It must therefore stay fully self-contained:
- *   - no reference to anything declared outside its body (no GAS globals, no other modules);
- *   - ES2019-safe syntax (no optional chaining, no nullish coalescing, no regex lookbehind);
- *   - the source text must never contain the HTML closing tag of a script element.
- * All functions are total: they never throw on null / undefined / blank input unless stated.
- */
+// Core: pure domain logic shared by the Apps Script server and the browser.
+// coreScript() sends CoreFactory_.toString() to the browser, so it must stay self-contained (no outside
+// references), use ES2019 syntax only, and never contain a closing script tag.
+// Functions never throw on null, undefined or blank input unless stated.
 function CoreFactory_() {
   'use strict';
 
-  // ------------------------------------------------------------------------------------------
-  // §1 Domain constants
-  // ------------------------------------------------------------------------------------------
-
   var THRESHOLD = 80;
-  // Effective compliance threshold (Paramètres). THRESHOLD stays the default; the server sets this
-  // from the Script Properties on every api_* call, the client from api_bootstrap.
+  // Set from the Script Properties on every api_* call on the server, from api_bootstrap in the client.
   var threshold_ = THRESHOLD;
   var KEY_POSTE = 'Nom du poste';
   var KEY_APP = 'Nom du logiciel / service';
@@ -50,23 +37,20 @@ function CoreFactory_() {
     referentiel: 'Référentiel' };
   var ERROR_CODES = ['NOT_CONFIGURED', 'MONTH_EXISTS', 'NOT_FOUND', 'BUSY', 'VALIDATION', 'SOURCE_ERROR', 'FORBIDDEN',
     'INTERNAL'];
-  // Creation forms: fields a new record cannot do without, and column names that hold dates.
   var FORM_REQUIRED = { postes: [KEY_POSTE, 'Équipe'], applications: [KEY_APP] };
   var FORM_DATE_HINTS = ['Date visite', 'Prochaine revue', "Date d'achat", 'Deadline', 'Date'];
-  // Size limits of an import and of admin free text. A Sheets cell holds at most 50,000 characters and a
-  // stored record is ONE JSON cell of the data spreadsheet (its headers one ImportLog cell).
+  // A Sheets cell holds at most 50,000 characters, and each stored record is a single JSON cell.
   var LIMITS = {
-    cellChars: 5000,         // an imported value (truncated beyond) / an admin text value (refused beyond)
-    headerChars: 200,        // an imported header or Référentiel category (truncated beyond)
-    sourceColumns: 500,      // non-blank header cells of a source tab (SOURCE_ERROR beyond)
-    sourceRecords: 5000,     // records of a source entity tab (SOURCE_ERROR beyond)
-    sourceRecordsWarn: 4000, // records of a source entity tab from which the import warns (the limit is near)
-    refCategories: 100,      // Référentiel categories (SOURCE_ERROR beyond)
-    refValues: 500,          // values of one Référentiel category (the first ones kept, with a warning, beyond)
-    recordJsonChars: 45000   // JSON of one stored record, or of an entity's headers (SOURCE_ERROR from)
+    cellChars: 5000,         // imported values are truncated, admin text is refused
+    headerChars: 200,
+    sourceColumns: 500,
+    sourceRecords: 5000,
+    sourceRecordsWarn: 4000,
+    refCategories: 100,
+    refValues: 500,          // extra values are dropped with a warning
+    recordJsonChars: 45000
   };
 
-  // Field names used by several functions below.
   var F_EQUIPE = 'Équipe';
   var F_BATIMENT = 'Bâtiment / Labo';
   var F_SCORE = 'Score conformité';
@@ -75,16 +59,11 @@ function CoreFactory_() {
   var F_ACTION_OWNER = 'Responsable action';
   var F_INSTALLED_ON = 'Installé sur poste';
 
-  // Non-breaking spaces (NBSP and narrow NBSP) as found in Google Sheets exports.
+  // NBSP and narrow NBSP, both found in Google Sheets values.
   var NBSP_RE = /[  ]/g;
-
-  // ------------------------------------------------------------------------------------------
-  // Private helpers
-  // ------------------------------------------------------------------------------------------
 
   var hasOwn = Object.prototype.hasOwnProperty;
 
-  /** Deep-freezes the plain constant arrays/objects so consumers cannot corrupt shared state. */
   function freeze_(v) {
     if (v && typeof v === 'object' && !Object.isFrozen(v)) {
       Object.keys(v).forEach(function (k) { freeze_(v[k]); });
@@ -93,18 +72,16 @@ function CoreFactory_() {
     return v;
   }
 
-  /** Assigns an own enumerable property (safe even for keys such as "__proto__"). */
+  // defineProperty so that keys such as "__proto__" from sheet headers stay plain data.
   function setOwn_(obj, key, value) {
     Object.defineProperty(obj, key, { value: value, writable: true, enumerable: true, configurable: true });
     return obj;
   }
 
-  /** Reads an own property, ignoring the prototype chain. */
   function getOwn_(obj, key) {
     return obj && hasOwn.call(obj, key) ? obj[key] : undefined;
   }
 
-  /** Shallow copy of a record (own enumerable keys only). */
   function copy_(rec) {
     var out = {};
     if (rec && typeof rec === 'object') {
@@ -113,7 +90,7 @@ function CoreFactory_() {
     return out;
   }
 
-  /** Cross-realm Date test (vm contexts / iframes have their own Date constructor). */
+  // instanceof Date fails across realms (vm contexts, iframes).
   function isDate_(v) {
     return Object.prototype.toString.call(v) === '[object Date]';
   }
@@ -136,32 +113,25 @@ function CoreFactory_() {
     return [v];
   }
 
-  /** Codepoint comparison (deterministic everywhere; mirrors Python's sorted()). */
+  // Codepoint order, deterministic everywhere and the same as Python's sorted().
   function cmp_(a, b) {
     return a < b ? -1 : (a > b ? 1 : 0);
   }
 
-  /** Removes floating-point noise such as 30.400000000000002 -> 30.4. */
+  // Removes floating-point noise such as 30.400000000000002.
   function round10_(n) {
     return Math.round(n * 1e10) / 1e10;
   }
 
-  /** Cleans a header / category label: NFC, NBSP -> space, trimmed. */
   function cleanLabel_(v) {
     return nfc_(str(v)).replace(NBSP_RE, ' ').trim();
   }
 
-  // ------------------------------------------------------------------------------------------
-  // §2 Basic value helpers
-  // ------------------------------------------------------------------------------------------
-
-  /** Normalised key for header / tab / category matching. */
   function normKey(s) {
     var v = (s === null || s === undefined || (typeof s === 'number' && isNaN(s))) ? '' : String(s);
     return nfc_(v).replace(NBSP_RE, ' ').trim().replace(/\s+/g, ' ').toLowerCase();
   }
 
-  /** True for null, undefined, NaN, or a string that is empty after trim. */
   function isBlank(v) {
     if (v === null || v === undefined) return true;
     if (typeof v === 'number') return isNaN(v);
@@ -169,41 +139,30 @@ function CoreFactory_() {
     return false;
   }
 
-  /** Trimmed string, or '' for blank values. */
   function str(v) {
     return isBlank(v) ? '' : String(v).trim();
   }
 
-  // Strict decimal number (after % / spaces removal and comma -> dot).
   var NUMBER_RE = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
 
-  /**
-   * Parses a compliance score into a 0–100 number.
-   * '30,4%' -> 30.4, '25%' -> 25, '25' -> 25, '0,5' -> 50, 0.304 -> 30.4, 85 -> 85, 1 -> 100,
-   * blank / unparseable -> null. Values in [0,1] without a '%' sign are treated as fractions.
-   */
+  /** Score as 0–100, or null. Values in [0, 1] without a '%' are fractions: '0,5' gives 50, '1%' gives 1. */
   function parseScore(v) {
     if (isBlank(v)) return null;
-    var n;
     if (typeof v === 'number') {
       if (!isFinite(v)) return null;
-      n = v;
-      return round10_(n >= 0 && n <= 1 ? n * 100 : n);
+      return round10_(v >= 0 && v <= 1 ? v * 100 : v);
     }
     if (typeof v !== 'string') return null;
     var hasPct = v.indexOf('%') >= 0;
     var cleaned = v.replace(/%/g, '').replace(NBSP_RE, '').replace(/\s+/g, '').replace(',', '.');
     if (!NUMBER_RE.test(cleaned)) return null;
-    n = Number(cleaned);
+    var n = Number(cleaned);
     if (!isFinite(n)) return null;
     if (!hasPct && n >= 0 && n <= 1) n = n * 100;
     return round10_(n);
   }
 
-  /**
-   * Error with a machine-readable `.code` (one of ERROR_CODES). `field` (a non-empty string) names the
-   * form field the error is about: the API reply carries it for VALIDATION errors.
-   */
+  /** `code` is one of ERROR_CODES; `field` names the form field a VALIDATION error is about. */
   function makeError(code, message, field) {
     var err = new Error(message === null || message === undefined ? String(code) : String(message));
     err.code = code;
@@ -211,25 +170,21 @@ function CoreFactory_() {
     return err;
   }
 
-  /** 'YYYY-MM' with a month in 01..12. */
   function validateMonth(m) {
     return typeof m === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(m);
   }
 
-  /** 'YYYY-MM' of a Date (local getters); defaults to now; '' for an invalid date. */
   function currentMonth(date) {
     var d = (date === null || date === undefined) ? new Date() : date;
     if (!isValidDate_(d)) return '';
     return d.getFullYear() + '-' + pad2_(d.getMonth() + 1);
   }
 
-  /** 'DD/MM/YYYY' of a Date (local getters); '' for anything that is not a valid Date. */
   function fmtDDMMYYYY(date) {
     if (!isValidDate_(date)) return '';
     return pad2_(date.getDate()) + '/' + pad2_(date.getMonth() + 1) + '/' + date.getFullYear();
   }
 
-  /** '15/03/2025' -> '2025-03-15' (also accepts 1-digit day/month); '' otherwise. */
   function frToIso(s) {
     var m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(str(s));
     if (!m) return '';
@@ -239,7 +194,6 @@ function CoreFactory_() {
     return m[3] + '-' + pad2_(mo) + '-' + pad2_(d);
   }
 
-  /** '2025-03-15' -> '15/03/2025'; '' otherwise. */
   function isoToFr(s) {
     var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(str(s));
     if (!m) return '';
@@ -249,30 +203,23 @@ function CoreFactory_() {
     return m[3] + '/' + m[2] + '/' + m[1];
   }
 
-  /** Spreadsheet ID from a full Sheets URL or a bare ID; null otherwise. */
   function extractSpreadsheetId(urlOrId) {
     var s = str(urlOrId);
     if (!s) return null;
-    // Also accepts multi-account URLs such as /spreadsheets/u/1/d/<ID>/edit.
+    // Multi-account URLs look like /spreadsheets/u/1/d/<ID>/edit.
     var m = /\/spreadsheets\/(?:u\/\d+\/)?d\/([A-Za-z0-9_-]+)/.exec(s);
     if (m) return m[1].length >= 20 ? m[1] : null;
     return /^[A-Za-z0-9_-]{20,}$/.test(s) ? s : null;
   }
 
-  /**
-   * Prevents formula injection when writing user strings to a sheet or a CSV export: text starting with
-   * = + - @, tab or carriage return (OWASP CSV injection list) gets a leading apostrophe.
-   */
+  // Prevents formula injection in sheets and CSV exports (OWASP CSV injection list).
   function escapeFormula(v) {
     if (typeof v === 'string' && /^[=+\-@\t\r]/.test(v)) return "'" + v;
     return v;
   }
 
-  // ------------------------------------------------------------------------------------------
-  // §2 Source sheet parsing
-  // ------------------------------------------------------------------------------------------
+  // Source sheet parsing
 
-  /** Index of the first row (within maxScan) containing one of the anchors (normKey match); -1 if none. */
   function findHeaderRow(rows, anchors, maxScan) {
     if (!Array.isArray(rows)) return -1;
     var limit = (typeof maxScan === 'number' && maxScan > 0) ? maxScan : 15;
@@ -289,24 +236,20 @@ function CoreFactory_() {
     return -1;
   }
 
-  // Warnings name at most WARN_DETAILS items (the others are counted), each shortened to WARN_NAME_CHARS:
-  // they are stored in one ImportLog cell.
+  // Warnings are stored in one ImportLog cell, so they name few items and shorten each.
   var WARN_DETAILS = 5;
   var WARN_NAME_CHARS = 60;
 
-  /** « name » for a warning or an error message, shortened beyond WARN_NAME_CHARS. */
   function quote_(s) {
     var v = String(s);
     return '« ' + (v.length > WARN_NAME_CHARS ? v.slice(0, WARN_NAME_CHARS) + '…' : v) + ' »';
   }
 
-  /** '« a », « b » et 3 autre(s)': the first WARN_DETAILS names, quoted. */
   function quoteList_(names) {
     var shown = names.slice(0, WARN_DETAILS).map(quote_).join(', ');
     return names.length > WARN_DETAILS ? shown + ' et ' + (names.length - WARN_DETAILS) + ' autre(s)' : shown;
   }
 
-  /** SOURCE_ERROR when a header row has more than LIMITS.sourceColumns non-blank (cleaned) cells. */
   function checkWidth_(row, where) {
     var n = 0;
     for (var c = 0; c < row.length; c++) if (cleanLabel_(row[c])) n++;
@@ -316,11 +259,7 @@ function CoreFactory_() {
     }
   }
 
-  /**
-   * `value` cut to LIMITS.cellChars. In a list column (« Installé sur poste », comma-separated), the cut
-   * falls after the last whole item, so that no half poste name is kept (a single item longer than the
-   * limit is cut as it is).
-   */
+  // In a comma-separated list column the cut falls after the last whole item, so no half poste name is kept.
   function cutValue_(value, isList) {
     var max = LIMITS.cellChars;
     var cut = value.slice(0, max);
@@ -330,15 +269,8 @@ function CoreFactory_() {
   }
 
   /**
-   * Converts a sheet (display values + optional raw values) into records.
-   * opts = {display, raw?, anchors?, keyField?, fmtDate?, tab?} (tab: the sheet name, for messages).
-   * Throws SOURCE_ERROR when no header row is found, when keyField is given but no header matches it,
-   * when the header row has more than LIMITS.sourceColumns non-blank cells, or beyond
-   * LIMITS.sourceRecords records (from LIMITS.sourceRecordsWarn records, a warning says the limit is near).
-   * Headers starting with '_' (reserved for the app's own fields) are ignored; headers longer than
-   * LIMITS.headerChars and values longer than LIMITS.cellChars are truncated (cutValue_: « Installé sur
-   * poste » after its last whole item). Each case adds a warning. The write-back refuses to overwrite a
-   * source cell longer than LIMITS.cellChars (the snapshot holds only its start, see Importer.writeEdits).
+   * opts = {display, raw?, anchors?, keyField?, fmtDate?, tab?}. Throws SOURCE_ERROR past the LIMITS.
+   * Headers starting with '_' are reserved for the app and ignored; truncations add warnings.
    */
   function rowsToRecords(opts) {
     var o = opts || {};
@@ -355,15 +287,15 @@ function CoreFactory_() {
         toArray_(anchors).map(str).join(' », « ') + ' »).');
     }
 
-    // Header cells -> cleaned unique names; blank and reserved headers are dropped (cols keeps their index).
+    // cols[i] is the grid column of headers[i], since blank and reserved headers are dropped.
     var headerRow = display[headerIdx] || [];
     checkWidth_(headerRow, where);
     var keyNorm = normKey(keyField);
     var headers = [];
     var cols = [];
     var keyHeader = null;
-    var taken = Object.create(null);      // names given so far
-    var nextSuffix = Object.create(null); // name -> first " (k)" worth trying (no rescan from 2)
+    var taken = Object.create(null);
+    var nextSuffix = Object.create(null); // avoids rescanning " (2)", " (3)"… for each duplicate
     var reserved = [];
     var longHeaders = [];
     for (var c = 0; c < headerRow.length; c++) {
@@ -377,7 +309,7 @@ function CoreFactory_() {
         h = h.slice(0, LIMITS.headerChars);
         longHeaders.push(h);
       }
-      // The key column takes the canonical keyField spelling so that record[keyField] always works.
+      // The key column takes the keyField spelling so that record[keyField] always works.
       if (keyField && keyHeader === null && normKey(h) === keyNorm) {
         h = keyField;
         keyHeader = h;
@@ -399,7 +331,7 @@ function CoreFactory_() {
     var records = [];
     var rows = [];
     var missingKey = 0;
-    var cut = []; // {name, column} of the values truncated to LIMITS.cellChars
+    var cut = [];
     var installedNorm = normKey(F_INSTALLED_ON);
     var isList = headers.map(function (name) { return normKey(name) === installedNorm; });
     for (var r = headerIdx + 1; r < display.length; r++) {
@@ -423,7 +355,7 @@ function CoreFactory_() {
         }
         setOwn_(rec, headers[i], value);
       }
-      if (allNull) continue; // ghost / empty row
+      if (allNull) continue;
       if (keyField && rec[keyHeader] === null) {
         missingKey++;
         continue;
@@ -463,17 +395,13 @@ function CoreFactory_() {
     if (cut.length > WARN_DETAILS) {
       warnings.push((cut.length - WARN_DETAILS) + ' autre(s) valeur(s) tronquée(s) à ' + LIMITS.cellChars + ' caractères.');
     }
-    // rows[i] / columns[j] = grid indexes (0-based) of records[i] / headers[j], for writing back.
+    // rows and columns are 0-based grid indexes of records and headers, used by the write-back.
     return { headers: headers, records: records, warnings: warnings, headerRow: headerIdx, rows: rows, columns: cols };
   }
 
   /**
-   * Parses the transposed Référentiel tab: first non-empty row = category names, each column below
-   * holds the category values (ragged; blanks skipped; trimmed; de-duplicated preserving order).
-   * Category names are truncated to LIMITS.headerChars, values to LIMITS.cellChars. A category keeps its
-   * first LIMITS.refValues distinct values: beyond, the others are left out and a warning is pushed onto
-   * `warnings` (optional array). SOURCE_ERROR (naming the tab) beyond LIMITS.sourceColumns non-blank header
-   * cells or LIMITS.refCategories categories.
+   * The Référentiel tab is transposed: the first non-empty row holds category names, each column its values.
+   * Pushes onto the optional `warnings` array when values are dropped; throws SOURCE_ERROR past the LIMITS.
    */
   function parseReferentiel(display, warnings) {
     var out = {};
@@ -487,8 +415,8 @@ function CoreFactory_() {
     var header = display[h];
     var where = 'Onglet « ' + SOURCE_TABS.referentiel + ' »';
     checkWidth_(header, where);
-    var seen = {}; // category -> {value: true}, for a linear de-duplication
-    var full = Object.create(null); // category -> true once LIMITS.refValues values are kept and more come
+    var seen = {};
+    var full = Object.create(null);
     var cats = 0;
     for (var c = 0; c < header.length; c++) {
       var cat = cleanLabel_(header[c]);
@@ -527,11 +455,8 @@ function CoreFactory_() {
     return out;
   }
 
-  // ------------------------------------------------------------------------------------------
-  // §2 Scoring and enrichment
-  // ------------------------------------------------------------------------------------------
+  // Scoring and KPIs
 
-  /** Application score: 5 criteria worth 20 points each. */
   function scoreApplication(rec) {
     var r = rec || {};
     var criteria = {
@@ -546,7 +471,6 @@ function CoreFactory_() {
     return { score: score, criteria: criteria };
   }
 
-  /** New poste objects with `_score` (from 'Score conformité') and `_conforme`. */
   function enrichPostes(list) {
     return toArray_(list).map(function (rec) {
       var out = copy_(rec);
@@ -557,7 +481,6 @@ function CoreFactory_() {
     });
   }
 
-  /** New application objects with `_score`, `_conforme` and `_criteria`. */
   function enrichApplications(list) {
     return toArray_(list).map(function (rec) {
       var out = copy_(rec);
@@ -569,11 +492,6 @@ function CoreFactory_() {
     });
   }
 
-  // ------------------------------------------------------------------------------------------
-  // §2 Filtering and KPIs
-  // ------------------------------------------------------------------------------------------
-
-  /** Distinct non-blank values of `field`, sorted the French way. */
   function uniqueSorted(list, field) {
     var seen = {};
     var out = [];
@@ -584,7 +502,7 @@ function CoreFactory_() {
     return out.sort(function (a, b) { return a.localeCompare(b, 'fr'); });
   }
 
-  /** Applies the sidebar filters (Équipe -> both entities, Bâtiment / Labo -> postes only). */
+  // The Bâtiment filter applies to postes only.
   function filterData(data, filters) {
     var d = data || {};
     var f = filters || {};
@@ -606,7 +524,7 @@ function CoreFactory_() {
     return list.filter(function (r) { return r && str(r[field]) === 'Non'; }).length;
   }
 
-  /** Dashboard KPIs (uses the `_conforme` enrichment flag). */
+  /** Expects enriched records (`_conforme`). */
   function computeKpis(postes, apps) {
     var p = toArray_(postes);
     var a = toArray_(apps);
@@ -631,7 +549,6 @@ function CoreFactory_() {
     };
   }
 
-  /** Count per risk level, keys in RISK_ORDER order; other values are ignored. */
   function riskCounts(list) {
     var out = {};
     RISK_ORDER.forEach(function (k) { out[k] = 0; });
@@ -642,10 +559,7 @@ function CoreFactory_() {
     return out;
   }
 
-  /**
-   * Equal-width bins on the fixed range 0–100; 100 falls in the last bin. Non-numeric values
-   * (null, NaN, strings) and values outside [0, 100] are ignored.
-   */
+  // Fixed range 0–100 with 100 in the last bin. Non-numbers and values outside it are ignored.
   function histogramBins(scores, nbins) {
     var n = (typeof nbins === 'number' && isFinite(nbins) && nbins >= 1) ? Math.floor(nbins) : 10;
     var bins = [];
@@ -660,7 +574,6 @@ function CoreFactory_() {
     return bins;
   }
 
-  /** Poste <-> application relation from the comma-separated 'Installé sur poste' column. */
   function buildPosteAppsRelation(apps) {
     var relations = [];
     var byPoste = {};
@@ -687,24 +600,20 @@ function CoreFactory_() {
     return { relations: relations, byPoste: byPoste, byApp: byApp };
   }
 
-  // ------------------------------------------------------------------------------------------
-  // §2 Month-to-month change detection
-  // ------------------------------------------------------------------------------------------
+  // Month-to-month changes
 
-  /** {key: firstRecord} for non-blank keys, plus the key list in first-seen order. */
   function indexBy_(list, keyField) {
     var map = {};
     var keys = [];
     toArray_(list).forEach(function (rec) {
       var k = str(rec ? rec[keyField] : null);
-      if (k === '' || hasOwn.call(map, k)) return; // first occurrence wins
+      if (k === '' || hasOwn.call(map, k)) return;
       setOwn_(map, k, rec);
       keys.push(k);
     });
     return { map: map, keys: keys };
   }
 
-  /** Shared part of diffPostes / diffApplications: removed, added, common keys, resolved actions. */
   function diffBase_(oldList, newList, keyField) {
     var o = indexBy_(oldList, keyField);
     var n = indexBy_(newList, keyField);
@@ -734,10 +643,6 @@ function CoreFactory_() {
     };
   }
 
-  /**
-   * Postes diff keyed by 'Nom du poste'. `changes` compares POSTE_DIFF_COLS with str() and reports
-   * {old, new} as trimmed strings ('' for blank); `equipe` comes from the new row (old as fallback).
-   */
   function diffPostes(oldList, newList) {
     var b = diffBase_(oldList, newList, KEY_POSTE);
     var changes = [];
@@ -758,17 +663,13 @@ function CoreFactory_() {
     return { removed: b.removed, added: b.added, changes: changes, resolved_actions: b.resolved_actions };
   }
 
-  /** Applications diff keyed by 'Nom du logiciel / service'. */
   function diffApplications(oldList, newList) {
     var b = diffBase_(oldList, newList, KEY_APP);
     return { removed: b.removed, added: b.added, resolved_actions: b.resolved_actions };
   }
 
-  // ------------------------------------------------------------------------------------------
-  // §2 Record helpers
-  // ------------------------------------------------------------------------------------------
+  // Records and forms
 
-  /** Generic poste record, or null when it already exists in existingNames (normKey match). */
   function makeGenericPoste(templateKeys, existingNames) {
     var target = normKey(GENERIC_POSTE_NAME);
     var exists = toArray_(existingNames).some(function (n) { return normKey(n) === target; });
@@ -782,15 +683,12 @@ function CoreFactory_() {
     return rec;
   }
 
-  /**
-   * Carries app-only fields (e.g. Galink/IDP) over from a previous snapshot.
-   * Every returned record has each field (null when nothing to carry); `carried` counts copied values.
-   */
+  /** Carries app-only fields (Galink, IDP) over from the previous snapshot. Missing fields are set to null. */
   function mergeCarryOver(newRecs, prevRecs, keyField, fields) {
     var prev = {};
     toArray_(prevRecs).forEach(function (rec) {
       var k = normKey(rec ? rec[keyField] : null);
-      if (k !== '' && !hasOwn.call(prev, k)) setOwn_(prev, k, rec); // first occurrence wins
+      if (k !== '' && !hasOwn.call(prev, k)) setOwn_(prev, k, rec);
     });
     var fieldList = toArray_(fields);
     var carried = 0;
@@ -813,7 +711,7 @@ function CoreFactory_() {
     return { records: records, carried: carried };
   }
 
-  /** Dropdown options for a column: Référentiel category, else Oui/Non, else null (free text). */
+  /** Référentiel values, else Oui/Non, else null for free text. */
   function optionsForColumn(col, referentiel) {
     var c = str(col);
     var target = normKey(hasOwn.call(COLUMN_REF_ALIASES, c) ? COLUMN_REF_ALIASES[c] : c);
@@ -827,18 +725,13 @@ function CoreFactory_() {
     return null;
   }
 
-  // ------------------------------------------------------------------------------------------
-  // §2 Creation forms (fields of a new poste / application)
-  // ------------------------------------------------------------------------------------------
+  var MAX_LISTED_OPTIONS_ = 8;
 
-  var MAX_LISTED_OPTIONS_ = 8; // a refused list value names the expected values up to this many
-
-  /** One form column with every key of the column shape (docs/API.md §3, api_getFormSchema). */
   function formColumn_(name, kind, options, strict, required) {
     return { name: name, kind: kind, options: options, strict: strict, computed: false, required: required };
   }
 
-  /** Galink / IDP: app-only Oui/Non columns (they live in the snapshot only). */
+  // Galink and IDP live in the snapshot only, not in the source sheet.
   function appOnlyColumn_(name) {
     var col = formColumn_(name, 'select', ['Oui', 'Non'], true, false);
     col.appOnly = true;
@@ -850,14 +743,7 @@ function CoreFactory_() {
     return FORM_DATE_HINTS.some(function (h) { return normKey(h) === k; });
   }
 
-  /**
-   * Form columns from a snapshot's headers (no source sheet at hand: past months, or a source that
-   * cannot be read): options from the Référentiel / Oui-Non (optionsForColumn), strict only for the
-   * Oui/Non columns (YES_NO_COLS), 'date' for the FORM_DATE_HINTS names, nothing computed. The required
-   * fields of FORM_REQUIRED are always there (added first when the headers lack them); applications end
-   * with Galink / IDP (appOnly) when the headers lack them.
-   * @return {Array<{name, kind, options, strict, computed, required, appOnly?}>}
-   */
+  // Used when the source sheet is not at hand (past months, unreadable source), so nothing is computed.
   function snapshotFormColumns(entity, headers, referentiel) {
     var ent = entity === 'applications' ? 'applications' : 'postes';
     var required = FORM_REQUIRED[ent];
@@ -884,7 +770,7 @@ function CoreFactory_() {
     return cols;
   }
 
-  /** 'DD/MM/YYYY' of a real calendar day given as 'DD/MM/YYYY' (1-digit day / month too) or ISO; '' otherwise. */
+  // Accepts ISO or DD/MM/YYYY and rejects days that do not exist, such as 31/02.
   function formDate_(s) {
     var iso = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
     var fr = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
@@ -905,15 +791,7 @@ function CoreFactory_() {
     return { ok: false, field: field, message: message };
   }
 
-  /**
-   * Checks a new record against form columns (snapshotFormColumns, or the live source's ones):
-   * {ok:true, record} with the record's values under the column names (a key matching a column by
-   * normKey takes its spelling), trimmed, blanks as null and dates as 'DD/MM/YYYY'; or the first problem
-   * as {ok:false, field, message} (French), checked in this order: a key that is no column, then per
-   * column in order: a value for a computed column, a missing required value, a date that is no real day
-   * (ISO or DD/MM/YYYY accepted), a value outside the options of a strict select / checkbox
-   * (comma-separated values are accepted when every part is an option).
-   */
+  /** Returns {ok: true, record} with normalised values, or {ok: false, field, message} for the first problem. */
   function checkFormRecord(columns, record) {
     var cols = toArray_(columns).filter(function (c) { return c && typeof c === 'object' && str(c.name) !== ''; });
     var rec = record && typeof record === 'object' ? record : {};
@@ -966,7 +844,6 @@ function CoreFactory_() {
     return { ok: true, record: out };
   }
 
-  /** Ascending, unique, valid 'YYYY-MM' months. */
   function sortMonths(months) {
     var out = [];
     toArray_(months).forEach(function (m) {
@@ -977,16 +854,13 @@ function CoreFactory_() {
 
   var EMAIL_RE_ = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
 
-  /** Plausible e-mail address (no spaces, one '@', a dot in the domain, max 254 chars). */
   function isEmail(v) {
     return typeof v === 'string' && v.length <= 254 && EMAIL_RE_.test(v);
   }
 
   /**
-   * Addresses pasted in any common shape -> {emails:[unique, trimmed, lower-cased, in order],
-   * invalid:[tokens containing '@' that are not addresses]}. Accepts one per line (a Sheets column),
-   * comma / semicolon / tab / space separated lists, mail headers (« Léa Martin <lea@x.com> »),
-   * quotes and « mailto: ». Words without '@' (names) are ignored.
+   * Accepts addresses pasted as a column, a separated list or mail headers (« Léa Martin <lea@x.com> »).
+   * Returns {emails, invalid}. Words without '@' are ignored.
    */
   function parseEmailList(text) {
     var out = { emails: [], invalid: [] };
@@ -1007,37 +881,31 @@ function CoreFactory_() {
     return out;
   }
 
-  /** Effective compliance threshold (integer 1–100; THRESHOLD unless changed in Paramètres). */
   function threshold() { return threshold_; }
 
-  /** Valid threshold -> integer 1–100, else null. Accepts numbers and numeric strings ('75'). */
+  /** Integer 1–100, or null. Accepts numeric strings. */
   function validateThreshold(v) {
     var n = typeof v === 'number' ? v : (typeof v === 'string' && /^\s*\d+\s*$/.test(v) ? Number(v) : NaN);
     return isFinite(n) && Math.floor(n) === n && n >= 1 && n <= 100 ? n : null;
   }
 
-  /** Sets the effective threshold (invalid values reset it to THRESHOLD). Returns the value set. */
+  /** Invalid values reset it to THRESHOLD. */
   function setThreshold(v) {
     var n = validateThreshold(v);
     threshold_ = n === null ? THRESHOLD : n;
     return threshold_;
   }
 
-  /** Latest month in `months` strictly before `month`, or null. */
   function previousMonth(months, month) {
     if (!validateMonth(month)) return null;
     var before = sortMonths(months).filter(function (m) { return m < month; });
     return before.length ? before[before.length - 1] : null;
   }
 
-  // ------------------------------------------------------------------------------------------
-  // §7 Periods (a range of monthly snapshots: the state at the end, compared with the start)
-  // ------------------------------------------------------------------------------------------
+  // Periods
 
-  /** Period shortcuts of the app bar, in display order. */
   var PERIOD_PRESETS = ['month', 'last3', 'last6', 'year', 'all'];
 
-  /** 'YYYY-MM' moved by n months (negative = earlier); '' for an invalid month. */
   function addMonths(month, n) {
     if (!validateMonth(month)) return '';
     var y = Number(month.slice(0, 4));
@@ -1047,7 +915,6 @@ function CoreFactory_() {
     return y + '-' + (m < 9 ? '0' : '') + (m + 1);
   }
 
-  /** Months of `months` within [from, to] (inclusive), sorted; a reversed range is swapped. */
   function monthsInRange(months, from, to) {
     var a = validateMonth(from) ? from : '';
     var b = validateMonth(to) ? to : '';
@@ -1058,11 +925,7 @@ function CoreFactory_() {
     return sortMonths(months).filter(function (m) { return m >= a && m <= b; });
   }
 
-  /**
-   * {from, to} of a period shortcut over the available months, ending at the latest one: 'month' (that
-   * month alone), 'last3' / 'last6' (calendar months, starting at the first available month inside),
-   * 'year' (its calendar year), 'all'. null when there is no month or the preset is unknown.
-   */
+  /** {from, to} ending at the latest month, with from snapped to the first available month in range. */
   function presetPeriod(months, preset) {
     var list = sortMonths(months);
     if (!list.length || PERIOD_PRESETS.indexOf(preset) < 0) return null;
@@ -1076,10 +939,8 @@ function CoreFactory_() {
   }
 
   /**
-   * What changed for each record between two snapshots (keyed by normKey of keyField, first occurrence
-   * wins), on the score: {byKey:{key:{status:'new'|'up'|'down'|'same', from:score|null, to:score|null}},
-   * added:n, changed:n (up + down), removed:[old records absent from the new list]}.
-   * Scores are `_score` (enriched records); a difference under 0.05 point is no change.
+   * Returns {byKey: {key: {status: 'new'|'up'|'down'|'same', from, to}}, added, changed, removed}.
+   * Expects enriched records. A score difference under 0.05 counts as no change.
    */
   function scoreEvolution(oldList, newList, keyField) {
     var key = str(keyField);
@@ -1113,7 +974,6 @@ function CoreFactory_() {
   }
 
   return {
-    // §1 constants
     THRESHOLD: THRESHOLD,
     KEY_POSTE: KEY_POSTE,
     KEY_APP: KEY_APP,
@@ -1136,7 +996,6 @@ function CoreFactory_() {
     FORM_REQUIRED: freeze_(FORM_REQUIRED),
     FORM_DATE_HINTS: freeze_(FORM_DATE_HINTS),
     LIMITS: freeze_(LIMITS),
-    // §2 functions
     normKey: normKey,
     isBlank: isBlank,
     str: str,

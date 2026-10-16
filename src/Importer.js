@@ -1,22 +1,9 @@
 /**
- * Importer — reads the live source spreadsheet ("ShadowIT_Industry"), snapshots one month into the
- * data spreadsheet, and writes the app's edits of the current month back into the source
- * (docs/API.md §4). Sync.js calls importMonth every hour; nobody imports by hand any more.
- *
- * Reading discipline: per source tab ONE getDataRange(), then getValues() (raw, to detect real Date
- * cells) + getDisplayValues() (what the user sees: '30,4%', 'Oui'...). Date cells are formatted
- * 'dd/MM/yyyy' in the SOURCE spreadsheet's time zone (not the script's), so a date typed as
- * 15/03/2026 in Paris never becomes 14/03/2026. importMonth reads the source before taking the script
- * lock; the write-back reads only the rows it touches (see the write-back section).
- *
- * Load-order safe: the IIFE only defines functions; Config / Core / Store / GAS services are used
- * lazily, inside the functions.
+ * Importer: reads the source spreadsheet, snapshots one month into the data spreadsheet, and writes
+ * the app's edits of the current month back into the source.
  */
 var Importer = (function () {
 
-  // ------------------------------------------------------------------------------- source access
-
-  /** Opens a spreadsheet by id, mapping any failure (bad id, no access) to SOURCE_ERROR. */
   function openById_(id) {
     try {
       return SpreadsheetApp.openById(id);
@@ -27,7 +14,6 @@ var Importer = (function () {
     }
   }
 
-  /** The configured source spreadsheet ('' -> NOT_CONFIGURED, open failure -> SOURCE_ERROR). */
   function openSource() {
     var id = Config.get().sourceId;
     if (!id) throw notConfigured_();
@@ -39,7 +25,7 @@ var Importer = (function () {
       'Aucun classeur source n’est configuré. Renseignez l’URL du Google Sheet source.');
   }
 
-  /** Sheet whose name matches `name` with Core.normKey (case / NBSP / extra spaces tolerant), or null. */
+  // Matches with Core.normKey, so case, NBSP and extra spaces are tolerated.
   function findTab(ss, name) {
     var target = Core.normKey(name);
     var sheets = ss.getSheets();
@@ -49,31 +35,25 @@ var Importer = (function () {
     return null;
   }
 
-  /** {postes, applications, referentiel} -> bool, for the configuration screen. */
   function tabsFound_(ss) {
     var out = {};
     Object.keys(Core.SOURCE_TABS).forEach(function (k) { out[k] = !!findTab(ss, Core.SOURCE_TABS[k]); });
     return out;
   }
 
-  /** One getDataRange(), then raw + display values of the same range. */
+  // Raw values reveal real Date cells, display values are what the user sees ('30,4%', 'Oui').
   function readGrid_(sheet) {
     var range = sheet.getDataRange();
     return { raw: range.getValues(), display: range.getDisplayValues() };
   }
 
-  /** Copy of a record without its `_` fields: ids and stamps never come from the source. */
+  // Ids and stamps never come from the source.
   function sourceFields_(rec) {
     var out = {};
     Object.keys(rec || {}).forEach(function (k) { if (k.charAt(0) !== '_') out[k] = rec[k]; });
     return out;
   }
 
-  /**
-   * Records of an entity tab, or null when the tab does not exist. Logs {stage:'sourceSheet', tab, rows, ms}.
-   * Core.rowsToRecords applies the size limits (Core.LIMITS) and drops the `_` columns; the records are
-   * stripped of `_` fields once more (defence in depth: `_id` / `_updated_at` are the Store's).
-   */
   function readEntityTab_(ss, tabName, keyField, fmtDate) {
     var sheet = findTab(ss, tabName);
     if (!sheet) return null;
@@ -94,23 +74,18 @@ var Importer = (function () {
     return parsed;
   }
 
-  var DUPLICATES_LISTED = 10; // names listed in the duplicates warning
+  var DUPLICATES_LISTED = 10;
+  // All warnings share one ImportLog cell, so names in them are cut short.
+  var WARN_NAME_CHARS = 60;
 
-  var WARN_NAME_CHARS = 60;  // names in warnings are cut there (as Core's warnings: one ImportLog cell holds them all)
-
-  /** « name » for a warning, shortened beyond WARN_NAME_CHARS characters. */
   function quoteName_(name) {
     var v = Core.str(name);
     return '« ' + (v.length > WARN_NAME_CHARS ? v.slice(0, WARN_NAME_CHARS) + '…' : v) + ' »';
   }
 
-  /**
-   * Warning naming the keys (normKey) that several records of the tab share, or '': the write-back
-   * refuses to edit or delete such a row (it could not tell which one is meant, see sourceTable_). Each
-   * name is cut at WARN_NAME_CHARS characters.
-   */
+  // The write-back refuses to edit or delete a duplicated row, so the user is told up front.
   function duplicatesWarning_(records, keyField, tabName) {
-    var seen = Object.create(null); // keys such as "__proto__" are ordinary keys here
+    var seen = Object.create(null);
     var order = [];
     records.forEach(function (r) {
       var k = Core.normKey(r[keyField]);
@@ -129,11 +104,7 @@ var Importer = (function () {
       'ni modifiées ni supprimées depuis l’application tant que les doublons ne sont pas corrigés dans le Google Sheet source.';
   }
 
-  /**
-   * Time zone of the source spreadsheet for Date cells. Some files (e.g. converted from Excel) report
-   * none: Utilities.formatDate would then throw « Argument incorrect : timeZone », so fall back to the
-   * app's zone (Config.TIME_ZONE).
-   */
+  // Some files (e.g. converted from Excel) report no time zone, and Utilities.formatDate would throw.
   function sourceTimeZone_(ss) {
     var tz = null;
     try { tz = ss.getSpreadsheetTimeZone(); } catch (e) { tz = null; }
@@ -142,15 +113,10 @@ var Importer = (function () {
     return Config.TIME_ZONE;
   }
 
-  /**
-   * Reads the whole configured source. Outside the lock: a source over the size limits (Core.LIMITS:
-   * columns, records, Référentiel categories) is SOURCE_ERROR before any lock is taken; a Référentiel
-   * category over Core.LIMITS.refValues values keeps its first ones (referentielWarnings).
-   * @return {{sourceId, title, postes:{headers,records,warnings}|null, applications:{...}|null,
-   *           referentiel:Object<string,string[]>|null, referentielWarnings:string[]}}
-   */
+  // Runs outside the lock. A missing tab gives null for that part.
   function readSource() {
     var ss = openSource();
+    // Format dates in the source's time zone, not the script's, or 15/03 typed in Paris can become 14/03.
     var tz = sourceTimeZone_(ss);
     var fmtDate = function (d) { return Utilities.formatDate(d, tz, 'dd/MM/yyyy'); };
 
@@ -174,15 +140,11 @@ var Importer = (function () {
     };
   }
 
-  // ---------------------------------------------------------------------------------- import
+  // Import
 
-  /**
-   * Gives each new record the `_id` of the stored record with the same key (normKey), so that a
-   * re-import keeps record identities stable for the client (open drawers, pending edits). The ids
-   * only ever come from `previous` (the stored records): incoming `_` fields are dropped first.
-   */
+  // Keeps record ids stable across re-imports so open drawers and pending edits on the client survive.
   function keepIds_(records, previous, keyField) {
-    var byKey = Object.create(null); // keys such as "__proto__" are ordinary keys here
+    var byKey = Object.create(null);
     (previous || []).forEach(function (p) {
       var k = Core.normKey(p[keyField]);
       if (k !== '' && !(k in byKey)) byKey[k] = p._id;
@@ -200,7 +162,7 @@ var Importer = (function () {
     });
   }
 
-  /** Characters of the JSON of a record's data fields, as Store stores it (one cell). */
+  // Same JSON as Store writes to one cell.
   function recordJsonLength_(rec) {
     var data = {};
     Object.keys(rec || {}).forEach(function (k) {
@@ -209,11 +171,8 @@ var Importer = (function () {
     return JSON.stringify(data).length;
   }
 
-  /**
-   * SOURCE_ERROR unless every record JSON and the headers JSON (one ImportLog cell) stay under
-   * Core.LIMITS.recordJsonChars: a cell over the Sheets limit (50,000 characters) would make the import
-   * fail half-way through its writes. Called before the first write.
-   */
+  // A cell over the Sheets limit of 50,000 characters would make the import fail half-way through
+  // its writes, so this runs before the first one.
   function checkSizes_(records, headers, keyField, tabName) {
     var max = Core.LIMITS.recordJsonChars;
     if (JSON.stringify(headers || []).length >= max) {
@@ -229,17 +188,11 @@ var Importer = (function () {
     });
   }
 
-  /** Référentiel size reported in counts = number of categories. */
   function countCategories_(ref) {
     return Object.keys(ref || {}).length;
   }
 
-  /**
-   * Latest month strictly before `month` whose stored applications snapshot actually has records, as
-   * {month, records}, or null. Skipping empty snapshots (an import whose applications tab was
-   * missing, or that failed half-way) keeps the Galink/IDP carry-over chain intact. Reads column A
-   * of Applications (Store.tabMonths: a month listed there has rows) and that one month's rows.
-   */
+  // Skipping months without applications keeps the Galink/IDP carry-over chain intact.
   function latestEarlierWithRecords_(month) {
     var earlier = Store.tabMonths(Config.TABS.applications).filter(function (m) { return m < month; });
     if (!earlier.length) return null;
@@ -247,20 +200,14 @@ var Importer = (function () {
     return { month: m, records: Store.readEntityMonth(Config.TABS.applications, m) };
   }
 
-  /** Field names of a record without the internal `_` fields. */
   function dataFields_(rec) {
     return Object.keys(rec || {}).filter(function (k) { return k.charAt(0) !== '_'; });
   }
 
-  /**
-   * What a re-import would change in a stored month: {added, removed, changed, values} for records
-   * matched by key (normKey). Records sharing a key (duplicates in the source) are matched among
-   * themselves: identical records first, then the others in sheet order; the extra ones are added /
-   * removed. `changed` counts records, `values` the cells that differ (compared with Core.str). Pure
-   * row-order changes are not changes.
-   */
+  // Returns {added, removed, changed, values}. Records sharing a key are paired identical ones first,
+  // then in sheet order. Row order alone is not a change.
   function diffRecords_(fresh, stored, keyField) {
-    // Maps keyed by data (record keys, field names): no prototype, so "__proto__" / "constructor" are ordinary keys.
+    // Prototype-less maps, since keys come from user data and may be "__proto__".
     function group(list) {
       var out = Object.create(null);
       (list || []).forEach(function (r) {
@@ -307,10 +254,7 @@ var Importer = (function () {
     return !d || (!d.added && !d.removed && !d.changed);
   }
 
-  /**
-   * « Poste générique Decathlon » for the applications that name it in « Installé sur poste » when the
-   * source has no such poste (the app used to add it by hand). Returns the records, completed or not.
-   */
+  // Adds the generic poste when applications name it but the source lacks it.
   function withGenericPoste_(postes, headers, apps) {
     var target = Core.normKey(Core.GENERIC_POSTE_NAME);
     var named = (apps || []).some(function (a) {
@@ -321,53 +265,20 @@ var Importer = (function () {
     return rec ? postes.concat([rec]) : postes;
   }
 
-  /**
-   * Snapshots the live source as `month` (Sync.run every hour; docs/API.md §4). The source is read
-   * OUTSIDE the script lock (its slowest step, done on every run, even when nothing changed): saves are
-   * not kept waiting behind it. The lock is then taken to read the stored month, compare and write;
-   * every read happens before the first write.
-   *
-   * Lost-edit guard: a live-month save writes into the source under the lock, so a source read taken
-   * before the lock may predate it, and the comparison would revert that edit. The source write stamp
-   * (Config.sourceStamp, moved by Store.withLock after every write-back has been flushed) is noted
-   * BEFORE the outside read; when it moved by the time the lock is held (or the configured source
-   * changed), the source is read again, under the lock.
-   * Out-of-order guard: two runs can overlap (hourly trigger, api_syncNow, api_enableSync) and the lock
-   * is not granted in arrival order, so an older outside read could be committed after a newer one and
-   * revert it (records removed, snapshot-only Galink/IDP set in between lost). Every run that writes
-   * therefore moves the same stamp, under the lock and before its first write: a run whose read
-   * predates that commit reads the source again.
-   *
-   * Safety rules (user-entered data must never be lost silently):
-   *   - an entity / référentiel tab missing from the source does NOT replace the stored snapshot of
-   *     that month (kept as-is on overwrite, nothing written for a new month) — only a warning;
-   *   - Galink/IDP are carried over from the same month's snapshot when overwriting, otherwise from
-   *     the latest EARLIER month that has applications. When overwriting a month whose previous
-   *     import is incomplete (no ImportLog entry, e.g. it failed half-way) or has no applications,
-   *     fields still blank are then filled from that earlier month too;
-   *   - write order: Applications, Référentiel, Postes, then the ImportLog entry, which marks the
-   *     import as complete;
-   *   - sizes are checked before the first write (checkSizes_: each record's JSON and each entity's
-   *     headers under Core.LIMITS.recordJsonChars), the other limits by readSource: an import that
-   *     cannot be stored in full writes nothing.
-   * With opts.skipUnchanged, an overwrite that would change nothing (records, headers, référentiel)
-   * writes nothing at all, not even the ImportLog entry: `changed` is then false.
-   * Logs {stage:'importMonth', ms, readSource, lockWait, rereadSource, dataReads, compare, writes, flush,
-   * month, changed, reread} (Perf) when it completes; `rereadSource` is absent when the outside read was
-   * used, `writes` when nothing was written. A failure is reported by the caller's line (sync / api,
-   * ok:false).
-   * @return {{month, counts:{postes, applications, referentiel}, overwritten:boolean, carriedOver:number,
-   *           warnings:string[], changed:boolean, changes:{created:boolean, postes, applications, referentiel:boolean}}}
-   */
+  // The source is read outside the lock so saves are not kept waiting behind it. A save that lands
+  // before we get the lock, or another import committed in between, moves the source stamp, and then
+  // the source is read again under the lock so neither gets reverted. A tab missing from the source
+  // never replaces the stored snapshot. ImportLog is written last and marks the import complete.
+  // With opts.skipUnchanged, a run that would change nothing writes nothing.
   function importMonth(month, overwrite, opts) {
     var o = opts || {};
     if (!Core.validateMonth(month)) {
       throw Core.makeError('VALIDATION', 'Mois invalide : « ' + month + ' » (format attendu AAAA-MM).');
     }
-    if (!Config.get().sourceId) throw notConfigured_(); // fail fast, before waiting for the lock
+    if (!Config.get().sourceId) throw notConfigured_();
 
     var t = Perf.start('importMonth', { month: month });
-    var stamp = Config.sourceStamp(); // before the source read (see the lost-edit guard above)
+    var stamp = Config.sourceStamp();
     var outside = readSource();
     t.lap('readSource');
     var reread = false;
@@ -379,7 +290,6 @@ var Importer = (function () {
         reread = true;
         t.lap('rereadSource');
       }
-      // The source was opened anyway: keep the title api_bootstrap shows up to date (no write unless it changed).
       Config.rememberSourceTitle(src.sourceId, src.title);
       var months = Store.listMonths();
       var exists = months.indexOf(month) >= 0;
@@ -403,13 +313,12 @@ var Importer = (function () {
       warnings = warnings.concat((src.postes && src.postes.warnings) || [],
         (src.applications && src.applications.warnings) || [], src.referentielWarnings || []);
 
-      // ---- applications (+ Galink/IDP carry-over). Reads this month's rows and, only when the
-      // carry-over needs it (new month, or a previous import incomplete / without applications), the
-      // latest earlier month that has applications: never the whole history.
+      // Galink/IDP come from this month's snapshot, or from the latest earlier month for a new month
+      // or when the previous import was incomplete.
       var sameApps = exists ? Store.readEntityMonth(Config.TABS.applications, month) : [];
       var needEarlier = !!src.applications && (!exists || !prevInfo || !sameApps.length);
       var earlier = needEarlier ? latestEarlierWithRecords_(month) : null;
-      var appRecords = null; // null = keep the stored snapshot
+      var appRecords = null; // null keeps the stored snapshot
       var carried = 0;
       if (src.applications) {
         var merged = Core.mergeCarryOver(src.applications.records, exists ? sameApps : (earlier ? earlier.records : []),
@@ -427,21 +336,18 @@ var Importer = (function () {
         appRecords = exists ? keepIds_(merged.records, sameApps, Core.KEY_APP) : merged.records;
       }
 
-      // ---- postes
-      var posteRecords = null; // null = keep the stored snapshot
+      var posteRecords = null;
       var storedPostes = exists ? Store.readEntityMonth(Config.TABS.postes, month) : [];
       if (src.postes) {
         var postes = withGenericPoste_(src.postes.records, src.postes.headers, appRecords || sameApps);
         posteRecords = exists ? keepIds_(postes, storedPostes, Core.KEY_POSTE) : postes;
       }
 
-      // ---- référentiel
-      var referentiel = src.referentiel || null; // null = keep the stored one
+      var referentiel = src.referentiel || null;
       var storedRef = exists ? Store.readReferentiel(month) : null;
       var refCount = referentiel ? countCategories_(referentiel) : (exists ? countCategories_(storedRef) : 0);
       t.lap('dataReads');
 
-      // ---- what changes (an hourly sync that changes nothing writes nothing)
       var postesHeaders = src.postes ? src.postes.headers : ((prevInfo && prevInfo.postes_headers) || []);
       var appsHeaders = src.applications ? src.applications.headers : ((prevInfo && prevInfo.apps_headers) || []);
       var changes = {
@@ -464,12 +370,10 @@ var Importer = (function () {
       t.lap('compare');
       if (!changed && o.skipUnchanged) return result;
 
-      // ---- size checks, before the first write: a failed import writes nothing.
       if (appRecords) checkSizes_(appRecords, appsHeaders, Core.KEY_APP, Core.SOURCE_TABS.applications);
       if (posteRecords) checkSizes_(posteRecords, postesHeaders, Core.KEY_POSTE, Core.SOURCE_TABS.postes);
 
-      // ---- writes (Applications first, ImportLog last = completion marker). Moving the stamp first
-      // (out-of-order guard) also covers a run that fails half-way through its writes.
+      // Bumped before writing so it also covers a run that fails half-way.
       Config.bumpSourceStamp();
       if (appRecords) Store.replaceEntityMonth(Config.TABS.applications, month, appRecords, Core.KEY_APP);
       if (referentiel) Store.replaceReferentiel(month, referentiel);
@@ -493,48 +397,26 @@ var Importer = (function () {
     return res;
   }
 
-  // ------------------------------------------------------------------------------- write-back
-  //
-  // Reading discipline: the header row is located in the first HEADER_SCAN_ROWS rows, the records by
-  // ONE read of the key column, then only the rows a write touches are read (formulas of the edited rows,
-  // plus the header row and the first data row for array formulas; for an append, readSample_ and the row
-  // below the last record, then the new row once written; for a delete, the deleted row's formulas):
-  // never the whole tab.
-  //
-  // Writing discipline: one setValue per edited cell. A block setValues would also rewrite the cells
-  // between the edited ones (a formula, a data-validated cell, a value someone just typed in the
-  // source), and a refused block could not name the refused value. Apps Script batches consecutive
-  // writes until the next read or flush anyway.
-  //
-  // Every write-back runs under Store.withLock (re-entrant: the api_* callers already hold it) and
-  // calls Store.noteSourceWrite before its first write, so that the source write stamp moves
-  // (importMonth's lost-edit guard).
+  // Write-back
 
-  var HEADER_SCAN_ROWS = 15; // = Core.findHeaderRow's default scan depth
-  var ROW_GAP = 5;           // touched rows at most this far apart are read in one block
-  var MAX_ROW_BLOCKS = 3;    // more blocks than this: one block from the first to the last touched row
-  // An array formula (ARRAYFORMULA, ={…}, BYROW, MAP, and every function whose result spills: QUERY,
-  // FILTER, SORT, UNIQUE, SEQUENCE, IMPORTRANGE, VSTACK, TOCOL, SCAN, MAKEARRAY, LAMBDA…) fills its whole
-  // column from one cell, in the header row or the first data row; the cells it spills into hold no formula
-  // of their own (getFormulas: ''). So does any formula over an open-ended range (A2:A, Data!C2:C).
+  // Writes go one setValue per cell: a block setValues would also overwrite the cells in between,
+  // which may hold formulas or something just typed in the source. Every write-back runs under
+  // Store.withLock and calls Store.noteSourceWrite first so importMonth sees the source stamp move.
+
+  var HEADER_SCAN_ROWS = 15; // matches Core.findHeaderRow's default
+  var ROW_GAP = 5;
+  var MAX_ROW_BLOCKS = 3;
+  // Spilled cells hold no formula of their own, so columns filled by an array formula or a formula
+  // over an open-ended range (A2:A) have to be detected from the cell that spills.
   var ARRAY_FORMULA_RE = new RegExp('^=\\s*\\{|(?:^|[^A-Za-z0-9_.])(?:ARRAYFORMULA|BYROW|BYCOL|MAP|SCAN|' +
     'MAKEARRAY|LAMBDA|QUERY|FILTER|SORT|SORTN|UNIQUE|SEQUENCE|IMPORTRANGE|IMPORTDATA|IMPORTHTML|IMPORTXML|' +
     'IMPORTFEED|VSTACK|HSTACK|TOCOL|TOROW|WRAPROWS|WRAPCOLS|FLATTEN|TRANSPOSE|CHOOSECOLS|CHOOSEROWS|SPLIT|' +
     'MMULT|FREQUENCY|GOOGLEFINANCE)\\s*\\(|' +
-    // An open-ended range: A2:A, $C$2:$C, 'Data'!C2:C (column letters on both sides, no row after the colon).
+    // Open-ended range: A2:A, $C$2:$C, 'Data'!C2:C.
     '\\$?[A-Z]{1,3}\\$?[0-9]+\\s*:\\s*\\$?[A-Z]{1,3}(?![A-Za-z0-9_$(])', 'i');
 
-  /**
-   * The source tab of an entity, located for writing: {sheet, tabName, keyField, headers, columns
-   * (grid column of each header), headerRow, width, height (data range), rows (grid row of each record,
-   * in sheet order), indexes(name) -> indexes in rows of every record with that key (normKey), find(name)
-   * -> its index in rows or -1}. Records are the rows below the header whose key is not blank (as
-   * Core.rowsToRecords sees them; its header-width limit applies, SOURCE_ERROR naming the tab). find
-   * refuses a key that several rows share (SOURCE_ERROR, before anything is written): the write would hit
-   * the first of them, not necessarily the record meant.
-   * SOURCE_ERROR when the tab or its header row is missing. `timer` (Perf.start) gets the sourceOpen and
-   * sourceRead laps.
-   */
+  // Reads only the header block and the key column. find() throws SOURCE_ERROR on a duplicated key,
+  // since a write would hit the first row and not necessarily the one meant.
   function sourceTable_(entity, timer) {
     var keyField = entity === 'postes' ? Core.KEY_POSTE : Core.KEY_APP;
     var tabName = Core.SOURCE_TABS[entity];
@@ -551,7 +433,7 @@ var Importer = (function () {
     var head = sheet.getRange(1, 1, Math.min(HEADER_SCAN_ROWS, height), width).getDisplayValues();
     var parsed = Core.rowsToRecords({ display: head, anchors: [keyField], keyField: keyField, tab: tabName });
     var keyCol = parsed.columns[parsed.headers.indexOf(keyField)];
-    var first = parsed.headerRow + 1; // grid row (0-based) just below the header
+    var first = parsed.headerRow + 1;
     var keys = height > first ? sheet.getRange(first + 1, keyCol + 1, height - first, 1).getDisplayValues() : [];
     var rows = [];
     var norms = [];
@@ -591,15 +473,8 @@ var Importer = (function () {
     }
   }
 
-  /**
-   * Formulas of the given grid rows (0-based) across the data range: {gridRow: [formula or '' per
-   * column]}. One getFormulas per block of nearby rows (ROW_GAP); when that makes more than
-   * MAX_ROW_BLOCKS calls, one block from the first to the last row instead. `headRows` (optional: rows
-   * above all the others, e.g. the header row and the first data row) make one more block, joined to the
-   * first one when it is near, never stretched down to the last row. With `values` (an object), the
-   * display values of the blocks holding `gridRows` are read too (one getDisplayValues per block) and
-   * stored there the same way.
-   */
+  // Returns {gridRow: formulas}, reading nearby rows in one block. When `values` is given, display
+  // values of the non-head blocks are stored into it too.
   function rowFormulas_(t, gridRows, headRows, values) {
     var sorted = gridRows.slice().sort(function (a, b) { return a - b; });
     var blocks = [];
@@ -632,10 +507,6 @@ var Importer = (function () {
     return out;
   }
 
-  /**
-   * Grid columns {gridCol: true} filled by an array formula in the header row or the first data row
-   * (`formulas`: rowFormulas_ of both). Their cells below are computed although they hold no formula.
-   */
   function arrayCols_(t, formulas) {
     var out = {};
     [t.headerRow, t.headerRow + 1].forEach(function (r) {
@@ -644,7 +515,6 @@ var Importer = (function () {
     return out;
   }
 
-  /** Header of a grid column (0-based), else its A1 letters. */
   function columnName_(t, c) {
     var j = t.columns.indexOf(c);
     if (j >= 0) return t.headers[j];
@@ -653,13 +523,11 @@ var Importer = (function () {
     return s;
   }
 
-  /** VALIDATION (field = the key column): another source row already has `name` (normKey). */
   function takenName_(t, name) {
     return Core.makeError('VALIDATION', '« ' + Core.str(name) + ' » existe déjà dans l’onglet « ' + t.tabName +
       ' » du Google Sheet source.', t.keyField);
   }
 
-  /** Cell value as written into the source: '' for blank, formula-looking text kept as text. */
   function sourceValue_(v) {
     return v === null || v === undefined ? '' : Core.escapeFormula(String(v));
   }
@@ -669,11 +537,7 @@ var Importer = (function () {
       ' » du Google Sheet source (renommé ou supprimé ?). Synchronisez puis réessayez.');
   }
 
-  /**
-   * SOURCE_ERROR when `count` (records of the stored snapshot of the month sharing the name, normKey) is
-   * more than 1: the source may hold only one of them now (the other row deleted or renamed in the sheet
-   * since the last sync), and a write-back would then hit that row for either record.
-   */
+  // The source may hold only one of the duplicates by now, and a write would hit it for either record.
   function refuseSnapshotDuplicates_(entity, name, count) {
     if (!(count > 1)) return;
     throw Core.makeError('SOURCE_ERROR', quoteName_(name) + ' apparaît ' + count + ' fois dans les données ' +
@@ -681,23 +545,8 @@ var Importer = (function () {
       'synchronisez, puis réessayez.');
   }
 
-  /**
-   * Writes edits of the current month into the source, before the snapshot is updated:
-   * edits = [{name, fields:{header: value}, snapshotCount?}] (name = the record's key in the snapshot,
-   * snapshotCount = how many records of the stored snapshot share it). Fields that have no column in the
-   * source (Galink / IDP when the source has none) are skipped: they live in the snapshot only, and an edit
-   * made of them alone does not look the row up at all. Every other edit is checked first, then written
-   * cell by cell: its row is found and is the only one with that key (sourceTable_ find), its name is
-   * unique in the snapshot too (refuseSnapshotDuplicates_), a new key (rename) is no other row's, the cell holds no
-   * formula, its column is not filled by an array formula (arrayCols_: a value typed into a spilled cell
-   * breaks the whole column) and it holds at most Core.LIMITS.cellChars characters (a longer one was
-   * truncated by the import: the snapshot holds only its start, writing it back would lose the rest;
-   * VALIDATION). Reads the formulas and display values of the edited rows and the formulas of the header
-   * row + first data row (rowFormulas_ blocks), never the whole tab.
-   * Like appendRecord / deleteRecord, logs {stage:'writeBack', ms, sourceOpen, sourceRead, cellWrites,
-   * op, entity} (Perf) when it completes; a refused write is reported by the caller's api line.
-   * @return {number} cells written
-   */
+  // edits: [{name, fields, snapshotCount?}]. Every edit is checked before any cell is written.
+  // Returns the number of cells written.
   function writeEdits(entity, edits) {
     if (!edits || !edits.length) return 0;
     return Store.withLock(function () {
@@ -706,7 +555,7 @@ var Importer = (function () {
       var cells = [];
       edits.forEach(function (e) {
         var fields = Object.keys(e.fields).filter(function (f) { return t.headers.indexOf(f) >= 0; });
-        if (!fields.length) return; // snapshot-only fields: no source row involved
+        if (!fields.length) return; // Galink/IDP may live in the snapshot only
         var i = t.find(e.name);
         if (i < 0) throw missingRow_(t, e.name);
         refuseSnapshotDuplicates_(entity, e.name, e.snapshotCount);
@@ -725,10 +574,12 @@ var Importer = (function () {
         var arrays = arrayCols_(t, formulas);
         timer.lap('sourceRead');
         cells.forEach(function (cell) {
+          // Typing a value into a spilled cell breaks the whole column.
           if (formulas[cell.row - 1][cell.col - 1] || arrays[cell.col - 1]) {
             throw Core.makeError('VALIDATION', 'La colonne « ' + cell.field + ' » est calculée par une formule dans ' +
               'le Google Sheet source : modifiez-la là-bas.', cell.field);
           }
+          // The import truncated longer cells, so writing back would lose the rest.
           var current = String((shown[cell.row - 1] || [])[cell.col - 1] || '');
           if (current.length > Core.LIMITS.cellChars) {
             throw Core.makeError('VALIDATION', quoteName_(cell.name) + ', colonne ' + quoteName_(cell.field) + ' : la ' +
@@ -745,7 +596,6 @@ var Importer = (function () {
     });
   }
 
-  /** One cell write; a value refused by the cell's data validation becomes VALIDATION (with the field). */
   function setCell_(t, cell) {
     try {
       t.sheet.getRange(cell.row, cell.col).setValue(cell.value);
@@ -757,22 +607,17 @@ var Importer = (function () {
     }
   }
 
-  /** First line of a Sheets error message, at most 160 characters. */
   function sheetMessage_(e) {
     return String((e && e.message) || '').split('\n')[0].slice(0, 160);
   }
 
-  /** 'L' -> 11 (1-based column number of A1 letters). */
   function colNumber_(letters) {
     var n = 0;
     for (var i = 0; i < letters.length; i++) n = n * 26 + (letters.toUpperCase().charCodeAt(i) - 64);
     return n;
   }
 
-  /**
-   * The header of the first cell a Sheets refusal names (« … in cell L4 violates the data validation
-   * rules … »), or '' when the message names no cell of a known column.
-   */
+  // Finds the cell named in « ... in cell L4 violates the data validation rules ... ».
   function fieldFromSheetError_(t, message) {
     var m = /(?:^|[^A-Za-z0-9_!$])\$?([A-Z]{1,3})\$?([1-9][0-9]{0,6})(?![A-Za-z0-9_])/.exec(String(message || ''));
     if (!m) return '';
@@ -780,31 +625,20 @@ var Importer = (function () {
     return j >= 0 ? t.headers[j] : '';
   }
 
-  // ------------------------------------------------------------------------------- creation forms
-  //
-  // A new record's fields come from the live source tab (docs/API.md §4, readFormSchema): its headers,
-  // the data validation of its last record row (dropdown lists, checkboxes, dates), and which columns
-  // are computed (a formula in the last record row, or an array formula — ARRAYFORMULA, ={…}, BYROW,
-  // MAP — in the header row or the first data row, whose results spill into the rows below).
+  // Creation forms, described from the source tab's headers and its last record row.
 
-  var FORM_CACHE_TTL_S = 300;        // readFormSchema cache lifetime
-  var FORM_CACHE_MAX_CHARS = 90000;  // larger schemas are not cached (CacheService value limit: 100 KB)
-  var LIST_MAX_ROWS = 2000;          // VALUE_IN_RANGE lists: the bounding box read per sheet is capped
+  var FORM_CACHE_TTL_S = 300;
+  var FORM_CACHE_MAX_CHARS = 90000;  // CacheService values are limited to 100 KB
+  var LIST_MAX_ROWS = 2000;
   var LIST_MAX_COLS = 30;
-  var LIST_MAX_OPTIONS = 500;        // options kept per list
-  var LIST_MAX_CHARS = 200;          // longer option values are left out
+  var LIST_MAX_OPTIONS = 500;
+  var LIST_MAX_CHARS = 200;
 
   function isDateValue_(v) {
     return Object.prototype.toString.call(v) === '[object Date]';
   }
 
-  /**
-   * What the forms need from the source rows (one block of formulas when the rows are close, see
-   * rowFormulas_): {lastIdx (grid row of the last record or -1), sampleRow (that row, else the first data
-   * row when the sheet has one, else -1), arrayCols {gridCol: true} (array formula in the header row or
-   * the first data row), formulas / rules / raw: the sample row's formulas, data validations and raw
-   * values, per grid column ([] when there is no sample row)}.
-   */
+  // The sample row is the last record, else the first data row, else -1.
   function readSample_(t) {
     var maxRows = t.sheet.getMaxRows();
     var lastIdx = t.rows.length ? t.rows[t.rows.length - 1] : -1;
@@ -825,7 +659,6 @@ var Importer = (function () {
     return out;
   }
 
-  /** Trimmed, non-blank, de-duplicated option values (at most LIST_MAX_OPTIONS of at most LIST_MAX_CHARS). */
   function cleanOptions_(values) {
     var out = [];
     (values || []).forEach(function (v) {
@@ -836,11 +669,8 @@ var Importer = (function () {
     return out;
   }
 
-  /**
-   * The values of VALUE_IN_RANGE lists: ONE getDisplayValues per sheet, over the bounding box of that
-   * sheet's ranges (capped at LIST_MAX_ROWS x LIST_MAX_COLS from its top-left cell). Returns
-   * lookup(range) -> options (row by row, cleanOptions_), or null when the range could not be read.
-   */
+  // One read per sheet over the bounding box of its ranges. The returned lookup gives null for a
+  // range that could not be read.
   function rangeLists_(ranges) {
     var boxes = {};
     ranges.forEach(function (r) {
@@ -881,7 +711,6 @@ var Importer = (function () {
     };
   }
 
-  /** Data validation of a column -> kind / options / strict / rule (lists: rangeLists_ lookup or null). */
   function describeRule_(col, rule, lists) {
     var type = String(rule.getCriteriaType());
     var values = rule.getCriteriaValues() || [];
@@ -908,11 +737,7 @@ var Importer = (function () {
     }
   }
 
-  /**
-   * Form columns of a source tab, in sheet order: {name, kind, options, strict, computed, required,
-   * arrayFormula?, rule?} (docs/API.md §3, api_getFormSchema). Without `lists`, VALUE_IN_RANGE columns are plain text
-   * (the sheet itself refuses a value outside the range when the rule rejects).
-   */
+  // Without `lists`, VALUE_IN_RANGE columns stay plain text and the sheet enforces the rule itself.
   function describeColumns_(entity, t, sample, lists) {
     var required = Core.FORM_REQUIRED[entity] || [];
     return t.headers.map(function (name, j) {
@@ -920,7 +745,7 @@ var Importer = (function () {
       var computed = !!sample.arrayCols[c] || !!sample.formulas[c];
       var col = { name: name, kind: 'text', options: null, strict: false, computed: computed,
         required: !computed && required.indexOf(name) >= 0 };
-      // Filled by an array formula: computed in EVERY row (a formula in the sample row may be that row's only).
+      // Unlike a formula in the sample row, an array formula computes every row.
       if (sample.arrayCols[c]) col.arrayFormula = true;
       var rule = sample.rules[c];
       if (rule) describeRule_(col, rule, lists);
@@ -934,7 +759,6 @@ var Importer = (function () {
     });
   }
 
-  /** Counts of a schema for the formSchema timing line (never names). */
   function schemaCounts_(columns, cache) {
     return {
       columns: columns.length,
@@ -944,17 +768,7 @@ var Importer = (function () {
     };
   }
 
-  /**
-   * Form schema of an entity read from the live source, OUTSIDE the script lock (nothing is written):
-   * {keyField, readAt:'YYYY-MM-DD HH:mm', columns} (describeColumns_). Reads: the tab as for a
-   * write-back (sourceTable_), readSample_, then one bounding box per sheet for the VALUE_IN_RANGE lists.
-   * Cached in CacheService (Access.cacheGet / cachePut) under 'fs1:<entity>:<sourceId>' for
-   * FORM_CACHE_TTL_S seconds (not when the JSON exceeds FORM_CACHE_MAX_CHARS); opts.fresh skips the
-   * cached value and stores the new one. NOT_CONFIGURED without a source; any read failure is SOURCE_ERROR.
-   * Logs {stage:'formSchema', ms, sourceOpen, sourceRead, validations, lists, entity, columns, computed,
-   * selects, cache:'miss'|'bypass'} ({stage, ms, entity, columns, computed, selects, cache:'hit'} from the
-   * cache): counts only, never a column name.
-   */
+  // Read-only, so no lock. opts.fresh bypasses the cache but still refreshes it.
   function readFormSchema(entity, opts) {
     var fresh = !!(opts && opts.fresh);
     var id = Config.get().sourceId;
@@ -993,11 +807,7 @@ var Importer = (function () {
     return schema;
   }
 
-  /**
-   * A record's values under the source headers (exact name, else normKey match; `_` keys ignored). A key
-   * with no source column is skipped when blank, when it is an app-only field (Galink / IDP) or when not
-   * `strict`; otherwise VALIDATION naming it.
-   */
+  // Maps record keys to source headers by exact name, else by normKey.
   function sheetFields_(t, rec, strict) {
     var out = {};
     Object.keys(rec || {}).forEach(function (k) {
@@ -1015,7 +825,6 @@ var Importer = (function () {
     return out;
   }
 
-  /** Grid columns [from, to] (inclusive) of the runs of consecutive true cells of `flags`. */
   function runs_(flags) {
     var out = [];
     flags.forEach(function (on, c) {
@@ -1027,7 +836,6 @@ var Importer = (function () {
     return out;
   }
 
-  /** Puts back what a refused append left: the inserted row, else the cells already written. Never throws. */
   function undoAppend_(t, at, inserted, written) {
     try {
       if (inserted) t.sheet.deleteRow(at);
@@ -1037,7 +845,6 @@ var Importer = (function () {
     }
   }
 
-  /** A refused setValues of an append -> VALIDATION naming the field when the message names a cell. */
   function appendRefusal_(t, e, values) {
     var msg = sheetMessage_(e);
     console.warn('Importer: source append refused (' + t.tabName + '): ' + msg);
@@ -1052,28 +859,15 @@ var Importer = (function () {
     return e;
   }
 
-  /** A computed value read back right after the write: '' and « Loading… » (not computed yet) -> null. */
+  // Read right after the write, a formula may still show « Loading… ».
   function computedValue_(v) {
     var s = Core.str(v);
     return s === '' || /^(loading|chargement)/i.test(s) ? null : s;
   }
 
-  /**
-   * Appends a record as a new source row, just below the last record (a row is inserted when that row
-   * is not empty), under the lock. The record's values go under the source headers (sheetFields_);
-   * computed columns are never written: the formulas of the last record's row are copied down (relative
-   * references follow, as with a fill) and array-formula columns are left to spill. With opts.strict, the
-   * values are first checked against the sheet (Core.checkFormRecord on describeColumns_: unknown column,
-   * computed column, required field, date, list of a rejecting rule) and refused as VALIDATION with the
-   * field, before anything is written; without it, values of computed columns are dropped. A value the
-   * sheet itself refuses (a rejecting VALUE_IN_RANGE rule…) becomes VALIDATION with the field its cell
-   * belongs to, and what was written is undone. A duplicate key is VALIDATION (field = the key).
-   * Reads: the header block and key column (sourceTable_), readSample_, the row below the last record
-   * and, after SpreadsheetApp.flush(), the new row's display values.
-   * @return {{values:Object, computed:Object}} the values written (header -> value | null; dates as
-   *   'DD/MM/YYYY' when strict) and the computed columns as the sheet shows them now (null when blank or
-   *   still loading)
-   */
+  // Computed columns are never written: the last record's formulas are copied down and array
+  // formulas are left to spill. A value the sheet refuses is undone and reported as VALIDATION.
+  // Returns {values, computed}.
   function appendRecord(entity, rec, opts) {
     var strict = !!(opts && opts.strict);
     return Store.withLock(function () {
@@ -1082,7 +876,7 @@ var Importer = (function () {
       if (t.indexes(rec[t.keyField]).length) throw takenName_(t, rec[t.keyField]);
       var sample = readSample_(t);
       var lastIdx = sample.lastIdx;
-      var at = (lastIdx >= 0 ? lastIdx : t.headerRow) + 2; // 1-based row just below the last record (or the header)
+      var at = (lastIdx >= 0 ? lastIdx : t.headerRow) + 2; // 1-based
       var below = at <= t.height ? t.sheet.getRange(at, 1, 1, t.width).getDisplayValues()[0] : null;
       timer.lap('sourceRead');
 
@@ -1147,13 +941,8 @@ var Importer = (function () {
     });
   }
 
-  /**
-   * Deletes the source row of `name`; false when the source has no such row (nothing to delete). Refused
-   * before anything is written: a name several rows share (SOURCE_ERROR, sourceTable_ find), a name several
-   * records of the stored snapshot share (opts.snapshotCount, refuseSnapshotDuplicates_) and a row
-   * holding an array formula (VALIDATION: deleting it would empty the whole column). Reads that row's
-   * formulas.
-   */
+  // False when the source has no such row. A row holding an array formula is refused, since deleting
+  // it would empty the whole column.
   function deleteRecord(entity, name, opts) {
     return Store.withLock(function () {
       var timer = Perf.start('writeBack', { op: 'delete', entity: entity });

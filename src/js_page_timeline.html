@@ -1,9 +1,7 @@
 <style>
-/* Suivi temporel (docs/API.md §6, docs/DESIGN.md). Everything else comes from css.html: page header,
-   sections, chart captions, threshold captions, ledger table, filter note. Only the KPI ledger's layout
-   (sticky label column, current month, signed deltas) is specific to this page. */
+/* Suivi temporel: only the KPI table layout is page-specific, the rest comes from css.html. */
 .page-timeline .timeline-body { display: flex; flex-direction: column; gap: var(--s6); }
-/* KPI ledger: full width; the label column stays visible while many months scroll sideways. */
+/* The label column stays visible while the months scroll sideways. */
 .page-timeline .tl-kpi-table .tl-label-col {
   position: sticky; left: 0; z-index: 2; background: var(--paper); min-width: 240px; width: 32%;
   padding-right: var(--s5); box-shadow: inset -1px 0 0 var(--rule);
@@ -12,11 +10,9 @@
 .page-timeline .tl-kpi-table td { min-width: 148px; }
 /* The applications block starts under a stronger rule. */
 .page-timeline .tl-kpi-table tr:has(+ tr.tl-group-start) > * { border-bottom-color: var(--rule-2); }
-/* Selected month (sidebar « Période »): 2px ink rule under its header, its figures in ink 500. */
 .page-timeline .tl-kpi-table th.tl-current { color: var(--ink); box-shadow: inset 0 -2px 0 var(--ink); }
 .page-timeline .tl-kpi-table .tl-value { color: var(--ink-2); }
 .page-timeline .tl-kpi-table td.tl-current .tl-value { color: var(--ink); font-weight: 500; }
-/* Delta vs the previous month: a signed mono figure, ok / ko when the direction matters, ink-3 otherwise. */
 .page-timeline .tl-delta {
   display: inline-block; min-width: 8ch; margin-left: var(--s2); text-align: right;
   font-family: var(--font-mono); font-size: 12px; color: var(--ink-3);
@@ -24,7 +20,7 @@
 .page-timeline .tl-delta.is-ok { color: var(--ok); }
 .page-timeline .tl-delta.is-ko { color: var(--ko); }
 .page-timeline .tl-legend .tl-delta { min-width: 0; margin-left: 0; }
-/* Phones: label column narrower, the delta goes under the value so that two months fit 358px. */
+/* On phones the delta goes under the value so that two months fit in 358px. */
 @media (max-width: 700px) {
   .page-timeline .tl-kpi-table .tl-label-col { min-width: 128px; max-width: 150px; width: auto; white-space: normal; padding-right: var(--s2); }
   .page-timeline .tl-kpi-table td { min-width: 0; }
@@ -32,31 +28,18 @@
 }
 </style>
 <script>
-/**
- * Pages.timeline — "Suivi temporel" (docs/API.md §6).
- *
- * Month-by-month evolution of the conformity KPIs, computed client-side from the slim records of
- * api_getTimeline (State.loadTimeline, cached). The global sidebar filters (Équipe / Bâtiment) are
- * applied to every month with Core.filterData before Core.computeKpis, exactly like the dashboard.
- *
- * Sections: conformity rate line chart (Postes / Applications, threshold 80) with the threshold status in
- * words (Charts.thresholdCaption), inventoried vs conformant counts, équipe × month heatmap of the postes
- * conformity rate, KPI ledger with the delta vs the previous month.
- * Month notation: window.Fmt (axes / headers 'mai 2026', captions 'Mai 2026'); figures: UI.fmtPct / fmtNum.
- */
+// Suivi temporel page: month-by-month KPIs computed in the browser from the cached timeline.
+// The sidebar filters apply to every month, the same way as on the dashboard.
 (function () {
   'use strict';
 
   var el = UI.el;
   var NO_TEAM = 'Sans équipe';
 
-  var board = null;     // Charts.board of the rendered body (purged on re-render / leave)
-  var view = null;      // {body, kicker, timeline} of the mounted page (filter changes re-render in place)
+  var board = null;
+  var view = null;
 
-  /**
-   * KPI table rows. `kind`: 'pct' (percentage, delta in points) or 'count'.
-   * `better`: direction of a favourable change ('up' / 'down'), null when neutral (inventory sizes).
-   */
+  // `better` is the direction of a favourable change; null for inventory sizes.
   var KPI_ROWS = [
     { key: 'total_postes', label: 'Postes inventoriés', kind: 'count', better: null },
     { key: 'postes_conformes', label: 'Postes conformes', kind: 'count', better: 'up' },
@@ -75,21 +58,17 @@
     { key: 'apps_sans_idp', label: 'Applications sans IDP', kind: 'count', better: 'down' }
   ];
 
-  // ------------------------------------------------------------------------------ computations
-
-  /** [{month, postes, applications, kpis}] with the global filters applied to each month. */
   function computeSeries(timeline, filters) {
-    return (timeline || []).map(function (m) {
+    return timeline.map(function (m) {
       var f = Core.filterData({ postes: m.postes || [], applications: m.applications || [] }, filters);
       return { month: m.month, postes: f.postes, applications: f.applications,
         kpis: Core.computeKpis(f.postes, f.applications) };
     });
   }
 
-  /** Conformity rate, or null when there is nothing to measure (avoids plotting a misleading 0 %). */
+  // Null rather than 0 when there is nothing to measure, so the chart shows a gap.
   function rate(total, ok) { return total ? (ok / total) * 100 : null; }
 
-  /** Équipe × month matrix of the postes conformity rate (null when the équipe has no poste that month). */
   function teamMatrix(series) {
     var teams = [];
     series.forEach(function (m) {
@@ -111,16 +90,12 @@
     return { teams: teams, z: z };
   }
 
-  // ------------------------------------------------------------------------------ rendering helpers
-
-  /** Small-caps line above the title: "Avril 2026 – mai 2026 · 2 exports". */
   function kickerText(series) {
     if (!series.length) return 'Aucun export importé';
     return Fmt.monthRange(series[0].month, series[series.length - 1].month) + ' · ' + series.length +
       ' export' + (series.length > 1 ? 's' : '');
   }
 
-  /** "Mai 2026 — Postes 71,4 % ■ Sous le seuil · Applications 60,0 % ■ Sous le seuil · seuil 80 %". */
   function rateCaption(last) {
     var k = last.kpis;
     return Charts.thresholdCaption({
@@ -134,10 +109,6 @@
 
   function plural(n, word) { return word + (n > 1 ? 's' : ''); }
 
-  /**
-   * "Mai 2026 — 5 postes conformes sur 7 · 3 applications conformes sur 5", then how to read the bars in
-   * words (they carry their own labels: no legend to decode).
-   */
   function countsCaption(last) {
     var k = last.kpis;
     function part(ok, total, noun) {
@@ -153,9 +124,9 @@
     return row.kind === 'pct' ? UI.fmtPctNode(v) : UI.fmtNum(v);
   }
 
-  /** Signed delta text: '+2', '−1', '=' for counts; '+5,0 pt', '−2,5 pt' for percentages. */
   function fmtDelta(row, d) {
-    var eps = row.kind === 'pct' ? 0.05 : 0.5;   // below display precision -> unchanged
+    // A change below display precision reads as unchanged.
+    var eps = row.kind === 'pct' ? 0.05 : 0.5;
     if (Math.abs(d) < eps) return '=';
     var sign = d > 0 ? '+' : '−';
     var abs = Math.abs(d);
@@ -191,7 +162,7 @@
           if (i > 0) {
             var d = v - series[i - 1].kpis[row.key];
             var tone = deltaTone(row, d);
-            // The words are in the tooltip (aria-describedby) and in the legend under the table.
+            // The colour is explained in words in the tooltip and in the legend under the table.
             delta = el('span', { class: 'tl-delta is-' + tone, dataset: { tone: tone },
               tooltip: 'Par rapport à ' + Fmt.monthLong(series[i - 1].month) + ' : ' + TONE_WORDS[tone] },
             fmtDelta(row, d));
@@ -206,7 +177,6 @@
         el('thead', null, head), el('tbody', null, body)));
   }
 
-  /** How to read the deltas, in words next to each colour. */
   function deltaLegend() {
     return el('p', { class: 'chart-caption tl-legend' }, 'Écart par rapport au mois précédent : ',
       el('span', { class: 'tl-delta is-ok' }, '+1'), ' amélioration · ',
@@ -214,11 +184,9 @@
       el('span', { class: 'tl-delta is-neutral' }, '='), ' stable ou sans objet (taille des inventaires).');
   }
 
-  // ------------------------------------------------------------------------------ page body
-
   function renderTimeline(body, s, timeline, kicker) {
     board = Charts.board({ sectionClass: 'chart-card' });
-    // A period (app bar) limits the history to its months; a single month shows the whole history.
+    // A period limits the history to its months; a single month shows the whole history.
     var per = State.period();
     var all = timeline || [];
     var shown = per.single ? all : all.filter(function (m) { return m.month >= per.from && m.month <= per.to; });
@@ -246,7 +214,6 @@
     var t = Charts.tokens();
 
     body.appendChild(el('div', { class: 'grid grid-2' },
-      // Ledger line styles (Charts defaults): postes in ink, applications in ink-3 dashed.
       board.section('Taux de conformité', 'chart-timeline-taux', function (box) {
         Charts.line(box, {
           x: x,
@@ -259,8 +226,7 @@
           yRange: [0, 105]
         });
       }, rateCaption(last)),
-      // Part-of-whole bars, labelled directly: per month, one outline bar per inventory (inventoriés) with
-      // the conformant part solid inside it, "5 sur 7" above, "Postes" / "Applis" under it. No legend.
+      // Bars are labelled directly, so there is no legend.
       board.section('Inventaire et conformité (nombre)', 'chart-timeline-counts', function (box) {
         Charts.partBars(box, {
           x: x,
@@ -288,9 +254,6 @@
     board.draw();
   }
 
-  // ------------------------------------------------------------------------------ page
-
-  /** Loads (or reloads with force) the timeline and renders it; resolves when the body is drawn. */
   function load(v, force) {
     if (board) board.purge();
     return UI.asyncBlock(v.body, {
@@ -315,7 +278,7 @@
     load(v, false);
   }
 
-  /** Filter change: the series are recomputed from the loaded history (no reload, the header stays). */
+  // A filter change recomputes from the loaded history without reloading it.
   function update(changed) {
     if (!view || !view.timeline || changed.length !== 1 || changed[0] !== 'filters') return false;
     if (board) board.purge();

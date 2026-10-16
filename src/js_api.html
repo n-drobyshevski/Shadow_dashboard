@@ -1,16 +1,7 @@
 <script>
-/**
- * window.api — Promise wrapper around google.script.run (docs/API.md §5).
- *
- * Every server function takes one JSON string and returns one JSON envelope string
- * {ok:true, data} | {ok:false, error:{code, message, field?}}.
- *   api.call('api_getMonthData', {month: '2026-05'}).then(function (data) { ... })
- * Rejections are Error objects with a `.code`: one of Core.ERROR_CODES, or 'TRANSPORT' when the
- * call itself failed (network, authorization, server crash outside apiWrap_, malformed reply), and a
- * `.field` when the server named the form field a VALIDATION error is about.
- * Every call logs `[rpc] <name> <ms>ms` (plus the error code on failure) with console.debug: the
- * round trip as the browser sees it, to compare with the server's {api, ms} line (docs/API.md §4).
- */
+// window.api: Promise wrapper around google.script.run. Server functions take one JSON string and
+// return a JSON envelope. Rejections carry .code (a Core.ERROR_CODES value, or 'TRANSPORT' when the call
+// or its reply failed) and .field when the server named the invalid form field.
 (function () {
   'use strict';
 
@@ -25,7 +16,7 @@
     return window.performance && typeof window.performance.now === 'function' ? window.performance.now() : Date.now();
   }
 
-  /** Development timing line; never throws. */
+  // Browser-side round trip, to compare with the server's {api, ms} log line.
   function logRpc(name, t0, code) {
     try {
       console.debug('[rpc] ' + name + ' ' + Math.round(now() - t0) + 'ms' + (code ? ' ' + code : ''));

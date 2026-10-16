@@ -1,60 +1,23 @@
 /**
- * Store — repository over the app's own data spreadsheet (docs/API.md §4).
- * This is the ONLY module that writes to the data spreadsheet.
- *
- * Layout: one tab per entry of Config.SCHEMAS, row 1 = header (frozen), data from row 2, every
- * cell stored as plain text.
- *
- * Write discipline (Sheets would otherwise silently retype user data):
- *   - the exact target range gets the '@' (plain text) number format right before each setValues,
- *     so '2026-05', '15/03/2025' or '0042' are never turned into dates / numbers and
- *     '=HYPERLINK(...)' is stored as text, not evaluated;
- *   - strings are written VERBATIM (no Core.escapeFormula "'" prefix): in a plain-text cell Sheets
- *     keeps a leading apostrophe as a literal character, so a prefix would corrupt '- x', '+33…',
- *     '@user' on read. The '@' format is the one and only formula guard.
- *
- * Data spreadsheet safety: a configured DATA_SPREADSHEET_ID is never replaced automatically. An
- * open failure (often transient in Apps Script) is retried, then reported as INTERNAL; a new
- * spreadsheet is only created when no id is configured, under the script lock.
- *
- * Performance discipline (each Sheets call is a round trip, each cell read costs too):
- *   - a whole tab is read with ONE getDataRange().getValues();
- *   - one month of an entity / Référentiel tab is read without the other months: column A (one
- *     narrow read, usually already done by listMonths) locates the month's rows, ONE getValues reads
- *     that block (monthSpan_). ImportLog is read from the bottom (latestImportInfo, recentImportLog);
- *   - a mutation is committed with at most ONE setValues(): commit_() diffs the new rows against
- *     the rows just read and only rewrites the smallest contiguous block that changed (plus one
- *     deleteRows() of the leftover rows when the tab shrank). No per-row API calls in loops;
- *   - new tabs are trimmed to their schema width (trimColumns_), so that the rows inserted later
- *     are not 26 columns wide.
- *   - reads are memoized for the current execution (memo_), see below.
- *
- * Load-order safe: the IIFE only defines functions; Config / Core / GAS services are used lazily.
+ * Store: repository over the app's data spreadsheet, and the only module that writes to it.
+ * One tab per Config.SCHEMAS entry, header in row 1, every cell stored as plain text.
  */
 var Store = (function () {
   var LOCK_TIMEOUT_MS = 20000;
-  var OPEN_RETRY_DELAYS_MS = [500, 1500]; // openById of the data spreadsheet: 3 attempts in total
+  var OPEN_RETRY_DELAYS_MS = [500, 1500];
   var PLAIN_TEXT_FORMAT = '@';
   var META_SCHEMA_VERSION_KEY = 'schema_version';
+  var IMPORT_LOG_TAIL = 30;
 
-  var IMPORT_LOG_TAIL = 30; // rows read from the bottom of ImportLog before scanning its column A
-
-  // Per-execution caches (GAS re-evaluates the script for every execution).
-  var ss_ = null;      // data Spreadsheet
-  var sheets_ = {};    // tab name -> Sheet
-  var lockDepth_ = 0;  // > 0 while this execution holds the script lock (re-entrant withLock)
-  var sourceWritten_ = false; // the current withLock wrote into the source spreadsheet (noteSourceWrite)
-  /**
-   * Read memo, tab -> {table: readTable_ result | null, col: column A | null, spans: {month: span}}.
-   * A tab's entry is dropped by every write primitive on that tab (writeBlock_, the row removal of
-   * commit_, deleteSheetRow_), and the whole memo when withLock acquires the lock (a read-modify-write
-   * under the lock never starts from rows read before it), when ensure() maps the tabs, by
-   * resetCache_ and by clearMemo_ (start of every api_* call and of the hourly trigger run). Memoized
-   * tables and spans are shared: callers copy rows / objects before changing them.
-   */
+  // Per-execution caches.
+  var ss_ = null;
+  var sheets_ = {};
+  var lockDepth_ = 0;
+  var sourceWritten_ = false;
+  // tab: {table, col, spans}. A tab's entry is dropped by every write to it, and the whole memo when
+  // withLock acquires the lock so a read-modify-write never starts from stale rows. Memoized tables
+  // and spans are shared, so callers copy before changing them.
   var memo_ = {};
-
-  // ------------------------------------------------------------------------------- helpers
 
   function schema_(tab) {
     var schema = Config.SCHEMAS[tab];
@@ -62,7 +25,6 @@ var Store = (function () {
     return schema;
   }
 
-  /** Key column of an entity tab (used to keep `_key` in sync when a record is edited). */
   function entityKeyField_(tab) {
     if (tab === Config.TABS.postes) return Core.KEY_POSTE;
     if (tab === Config.TABS.applications) return Core.KEY_APP;
@@ -79,12 +41,10 @@ var Store = (function () {
     return Core.makeError('NOT_FOUND', 'Élément introuvable (id : ' + id + ').');
   }
 
-  /** Cross-realm safe Date test. */
   function isDate_(v) {
     return Object.prototype.toString.call(v) === '[object Date]';
   }
 
-  /** Any cell / field value -> the string stored in (or read from) the sheet. */
   function toText_(v) {
     if (v === null || v === undefined) return '';
     if (typeof v === 'string') return v;
@@ -118,20 +78,17 @@ var Store = (function () {
     return schema.map(function (k) { return toText_(obj[k]); });
   }
 
-  /** A row of cell values -> `width` strings (missing cells -> ''). */
   function textRow_(src, width) {
     var row = [];
     for (var j = 0; j < width; j++) row.push(j < src.length ? toText_(src[j]) : '');
     return row;
   }
 
-  // ----------------------------------------------------------------------------- read memo
-
   function memoOf_(tab) {
     return memo_[tab] || (memo_[tab] = { table: null, col: null, spans: Object.create(null) });
   }
 
-  /** Drops the memo of the tab held in `sheet` (all of it when the sheet is not a mapped tab yet). */
+  // Drops the whole memo when the sheet is not a mapped tab yet.
   function forgetSheet_(sheet) {
     var tabs = Object.keys(sheets_);
     for (var i = 0; i < tabs.length; i++) {
@@ -140,14 +97,11 @@ var Store = (function () {
     memo_ = {};
   }
 
-  /** Forgets every memoized read of this execution (api_* calls and the trigger run start with it). */
   function clearMemo_() {
     memo_ = {};
   }
 
-  // ----------------------------------------------------------------------- sheet primitives
-
-  /** Grows the sheet so that (rows x cols) fits: GAS throws on out-of-bounds ranges. */
+  // GAS throws on out-of-bounds ranges.
   function ensureSize_(sheet, rows, cols) {
     var maxRows = sheet.getMaxRows();
     if (maxRows < rows) sheet.insertRowsAfter(maxRows, rows - maxRows);
@@ -155,12 +109,8 @@ var Store = (function () {
     if (maxCols < cols) sheet.insertColumnsAfter(maxCols, cols - maxCols);
   }
 
-  /**
-   * Writes a block of string rows at startRow (1-based): '@' format on the exact range, then ONE
-   * setValues of the strings VERBATIM. This is the only write path. The plain-text format is the
-   * formula guard ('=…' is stored as text, not evaluated); no "'" prefix is added, because Sheets
-   * keeps a leading apostrophe literally in plain-text cells and it would become part of the value.
-   */
+  // The only write path. The '@' format stops Sheets from retyping '2026-05' or '0042' and from
+  // evaluating '=...'. Do not add a "'" prefix: in a plain-text cell it is kept as part of the value.
   function writeBlock_(sheet, startRow, rows) {
     if (!rows.length) return;
     forgetSheet_(sheet);
@@ -171,13 +121,7 @@ var Store = (function () {
     range.setValues(rows);
   }
 
-  /**
-   * Reads a whole tab with ONE getValues().
-   * @return {{sheet, schema, raw: string[][], items: {index:number, obj:Object}[]}}
-   *   raw   = every data row (row 2..last), schema width, as strings (blank rows included, so that
-   *           raw[i] is sheet row i + 2);
-   *   items = the non-blank rows as {header: string} objects.
-   */
+  // raw keeps blank rows so that raw[i] is sheet row i + 2.
   function readSheet_(sheet, schema) {
     var values = sheet.getDataRange().getValues();
     var raw = [];
@@ -190,10 +134,7 @@ var Store = (function () {
     return { sheet: sheet, schema: schema, base: 0, raw: raw, items: items };
   }
 
-  /**
-   * readSheet_ of a data tab, memoized for the execution (memo_), with one {stage:'sheet', tab, rows,
-   * ms} timing line (Perf) per actual read. The result is shared: do not change it.
-   */
+  // Memoized and shared: do not change the result.
   function readTable_(tab) {
     var sheet = sheet_(tab);
     var m = memoOf_(tab);
@@ -205,10 +146,7 @@ var Store = (function () {
     return table;
   }
 
-  /**
-   * Data rows first .. first + count - 1 of a tab (0-based: data row 0 = sheet row 2) as strings,
-   * with ONE getValues. Logs {stage:'span', tab, rows, ms} (Perf). Not memoized (callers are).
-   */
+  // `first` is a 0-based data row index (data row 0 is sheet row 2). Not memoized.
   function readRows_(tab, first, count) {
     var sheet = sheet_(tab);
     var width = schema_(tab).length;
@@ -218,15 +156,8 @@ var Store = (function () {
     return rows;
   }
 
-  /**
-   * Persists `newRows` for a table read by readSheet_ (complete list of data rows) or for a month span
-   * (monthSpan_: the rows of its block, same length only), writing only the smallest contiguous block
-   * that differs from what was read (ONE setValues) and removing the leftover rows when the table
-   * shrank: ONE deleteRows (they are the last rows of the data range, so nothing below them moves and
-   * the sheet does not keep growing). Sheets refuses to delete every non-frozen row: when nothing
-   * else is left, the last leftover row is cleared (clearContent) instead.
-   * @return {number} number of rows written
-   */
+  // Rewrites only the smallest contiguous block that changed and deletes leftover rows when the
+  // table shrank. A month span can only be rewritten in place. Returns the number of rows written.
   function commit_(table, newRows) {
     var old = table.raw;
     if (table.partial && newRows.length !== old.length) {
@@ -243,7 +174,8 @@ var Store = (function () {
       forgetSheet_(table.sheet);
       var first = 2 + newRows.length;
       var count = old.length - newRows.length;
-      var del = Math.min(count, table.sheet.getMaxRows() - 2); // Sheets keeps one non-frozen row
+      // Sheets refuses to delete the last non-frozen row, so that one is cleared instead.
+      var del = Math.min(count, table.sheet.getMaxRows() - 2);
       if (del > 0) table.sheet.deleteRows(first, del);
       if (count > del) table.sheet.getRange(first, 1, count - del, table.schema.length).clearContent();
     }
@@ -251,13 +183,12 @@ var Store = (function () {
     return end - start;
   }
 
-  /** Appends rows after the last used row without reading the tab. */
   function appendRows_(tab, rows) {
     var sheet = sheet_(tab);
     writeBlock_(sheet, Math.max(sheet.getLastRow(), 1) + 1, rows);
   }
 
-  /** Deletes one sheet row (1-based) — Sheets refuses to delete the last non-frozen row. */
+  // Sheets refuses to delete the last non-frozen row.
   function deleteSheetRow_(sheet, rowNumber) {
     forgetSheet_(sheet);
     var maxRows = sheet.getMaxRows();
@@ -265,7 +196,6 @@ var Store = (function () {
     sheet.deleteRow(rowNumber);
   }
 
-  /** Replaces the rows whose first column (`_month`) equals `month`, keeping months sorted. */
   function replaceMonthRows_(table, month, freshRows) {
     var before = [];
     var after = [];
@@ -277,7 +207,7 @@ var Store = (function () {
     commit_(table, before.concat(freshRows, after));
   }
 
-  // ------------------------------------------------------------------------- spreadsheet
+  // Spreadsheet and tabs
 
   function metaValue_(metaSheet, key) {
     var values = metaSheet.getDataRange().getValues();
@@ -305,12 +235,7 @@ var Store = (function () {
     if (sheet.getFrozenRows() !== 1) sheet.setFrozenRows(1);
   }
 
-  /**
-   * True when the data spreadsheet `id` carries the current schema version. The DATA_SCHEMA_VERSION
-   * Script Property (Config.get reads it with the other properties, keyed by the spreadsheet id)
-   * answers without reading Meta; otherwise Meta is read once, and a current version found there is
-   * copied into the property for the next executions.
-   */
+  // The Script Property answers without reading Meta, and a version found in Meta is copied to it.
   function schemaCurrent_(metaSheet, id, cfg) {
     if (cfg.schemaVersion === Config.SCHEMA_VERSION) return true;
     if (metaValue_(metaSheet, META_SCHEMA_VERSION_KEY) !== Config.SCHEMA_VERSION) return false;
@@ -318,15 +243,7 @@ var Store = (function () {
     return true;
   }
 
-  /**
-   * Makes sure every tab exists with its header. Fast path (getSheets, no Meta read when the schema
-   * version property is current, no write, no lock) when all tabs exist and the schema version is
-   * current; otherwise the repair (tab creation, header and Meta writes) runs under the script lock
-   * and re-reads the tabs there.
-   * @param {Spreadsheet} ss the data spreadsheet, whose id is `id`
-   * @param {Object} cfg Config.get() of this execution (schemaVersion)
-   * @return {Object<string, Sheet>}
-   */
+  // Takes no lock and writes nothing unless a tab is missing or the schema is outdated.
   function ensureTabs_(ss, id, cfg, created) {
     var names = Object.keys(Config.SCHEMAS);
     if (!created) {
@@ -342,17 +259,13 @@ var Store = (function () {
     return withLock(function () { return repairTabs_(ss, id, created); });
   }
 
-  /**
-   * Deletes the columns past `width` (a new sheet has 26), so that the rows ensureSize_ inserts later
-   * are only as wide as the schema. Only when nothing is written past `width` (getLastColumn): a column
-   * typed in by hand is kept.
-   */
+  // A new sheet has 26 columns, and rows inserted later would be that wide. Hand-typed columns stay.
   function trimColumns_(sheet, width) {
     var max = sheet.getMaxColumns();
     if (max > width && sheet.getLastColumn() <= width) sheet.deleteColumns(width + 1, max - width);
   }
 
-  /** Slow path of ensureTabs_ (caller holds the lock); records the schema version in Meta and in the property. */
+  // Caller holds the lock.
   function repairTabs_(ss, id, created) {
     var names = Object.keys(Config.SCHEMAS);
     var existing = ss.getSheets();
@@ -377,12 +290,8 @@ var Store = (function () {
     return out;
   }
 
-  /**
-   * Opens the CONFIGURED data spreadsheet, retrying transient failures with a short backoff. Never
-   * replaces the id: after the last attempt it throws INTERNAL (the property is left untouched, so
-   * the next execution tries the same spreadsheet again). Recovering from a spreadsheet that is
-   * really gone is an explicit admin step: delete the DATA_SPREADSHEET_ID script property.
-   */
+  // openById fails transiently, so retry. Never replace a configured id automatically: an admin
+  // deletes the DATA_SPREADSHEET_ID property to start over.
   function openData_(id) {
     var lastError = null;
     for (var attempt = 0; attempt <= OPEN_RETRY_DELAYS_MS.length; attempt++) {
@@ -401,13 +310,8 @@ var Store = (function () {
       'Si le problème persiste, vérifiez l’accès au classeur de données.');
   }
 
-  /**
-   * Opens the data spreadsheet (creating it only when no id is configured) and makes sure the
-   * layout is in place. Idempotent and cached for the current execution. The creation runs under
-   * the script lock and re-reads the property there, so concurrent first loads create ONE file.
-   * The first successful call of an execution logs {stage:'ensure', ms, open, ensureTabs, created}
-   * (Perf; a failure is reported by openData_ and the caller's {api, ok:false} line).
-   */
+  // Creation runs under the lock and re-reads the property there, so concurrent first loads create
+  // a single file.
   function ensure() {
     if (ss_) return ss_;
     var t = Perf.start('ensure');
@@ -421,7 +325,7 @@ var Store = (function () {
       t.lap('ensureTabs');
     } else {
       withLock(function () {
-        var fresh = Config.get({ fresh: true }); // another execution may have created it while we waited
+        var fresh = Config.get({ fresh: true });
         var id = fresh.dataId;
         if (id) {
           ss = openData_(id);
@@ -441,7 +345,6 @@ var Store = (function () {
     return ss;
   }
 
-  /** Maps the tabs of the (re)opened data spreadsheet; reads memoized before refer to other sheets. */
   function setSheets_(map) {
     sheets_ = map;
     memo_ = {};
@@ -454,7 +357,6 @@ var Store = (function () {
     return sh;
   }
 
-  /** Drops the per-execution caches, Config's included (tests simulate a new execution with it). */
   function resetCache_() {
     ss_ = null;
     sheets_ = {};
@@ -462,25 +364,13 @@ var Store = (function () {
     Config.clearMemo_();
   }
 
-  /**
-   * URL of the data spreadsheet, built from the configured id without opening the file; only when no id
-   * is configured yet does it go through ensure() (which creates the spreadsheet).
-   */
   function dataUrl() {
     return Config.spreadsheetUrl(Config.get().dataId || ensure().getId());
   }
 
-  // ------------------------------------------------------------------------------- lock
-
-  /**
-   * Runs fn under the script lock (20 s wait, timeout -> BUSY). Flushes pending writes and releases
-   * the lock in `finally`. Re-entrant: a nested call runs inside the outer lock. Acquiring the lock
-   * drops the read memos (Store and Config): another execution may have written while this one
-   * waited, and every read-modify-write under the lock must start from the stored values.
-   * When fn wrote into the source spreadsheet (noteSourceWrite), the source write stamp moves forward
-   * after the flush and before the lock is released (Config.bumpSourceStamp): whoever sees the new stamp
-   * also sees the flushed source, which is what Importer.importMonth relies on.
-   */
+  // Re-entrant. Memos are dropped on acquire since another execution may have written while we
+  // waited. The source stamp is bumped after the flush and before release, so whoever sees the new
+  // stamp also sees the flushed source (Importer.importMonth relies on it).
   function withLock(fn) {
     if (lockDepth_ > 0) return fn();
     var lock = LockService.getScriptLock();
@@ -511,35 +401,27 @@ var Store = (function () {
     }
   }
 
-  /**
-   * Records that this execution is about to write into the SOURCE spreadsheet (Importer write-back):
-   * the outermost withLock then moves the source write stamp. Only under withLock (INTERNAL otherwise).
-   */
+  // Call before writing to the source spreadsheet, under withLock.
   function noteSourceWrite() {
     if (lockDepth_ <= 0) throw Core.makeError('INTERNAL', 'Écriture dans le classeur source hors du verrou.');
     sourceWritten_ = true;
   }
 
-  // --------------------------------------------------------------------------- generic tabs
+  // Generic tabs
 
-  /** @return {Object[]} one {header: string} object per non-blank data row ('' for empty cells); new objects. */
   function readTab(tab) {
     var table = readTable_(tab);
     return table.items.map(function (it) { return rowToObject_(table.schema, table.raw[it.index]); });
   }
 
-  /** Rewrites all data rows of `tab` (schema column order). */
   function writeTab(tab, objects) {
     var table = readTable_(tab);
     commit_(table, (objects || []).map(function (o) { return objectToRow_(table.schema, o || {}); }));
   }
 
-  // ------------------------------------------------------------------------------- months
+  // Months
 
-  /**
-   * First-column values of a tab (data rows only: col[i] is data row i), with getLastRow + one narrow
-   * getValues, or taken from the memoized table. Memoized; shared (do not change it).
-   */
+  // col[i] is data row i. Memoized and shared.
   function firstColumn_(tab) {
     var sheet = sheet_(tab);
     var m = memoOf_(tab);
@@ -551,18 +433,13 @@ var Store = (function () {
       try {
         m.col = last < 2 ? [] : sheet.getRange(2, 1, last - 1, 1).getValues().map(function (r) { return toText_(r[0]); });
       } catch (e) {
-        // Another execution deleted a row between getLastRow and the read, in a sheet without blank
-        // rows: the range ran past its end. ONE getValues of the whole tab instead (memoized).
+        // Another execution deleted rows after getLastRow, so the range ran past the end.
         m.col = readTable_(tab).raw.map(function (r) { return r[0]; });
       }
     }
     return m.col;
   }
 
-  /**
-   * Months present in ImportLog ∪ Postes ∪ Applications, ascending and unique. Logs
-   * {stage:'listMonths', ms, <tab>: ms, ..., rows, months} (Perf; `ms` includes a first ensure()).
-   */
   function listMonths() {
     var t = Perf.start('listMonths');
     var seen = {};
@@ -582,14 +459,12 @@ var Store = (function () {
     return Core.validateMonth(month) && listMonths().indexOf(month) >= 0;
   }
 
-  /** Months that have at least one row in `tab` (column A), ascending, valid months only. */
   function tabMonths(tab) {
     var seen = {};
     firstColumn_(tab).forEach(function (m) { seen[m] = true; });
     return Core.sortMonths(Object.keys(seen));
   }
 
-  /** The span of `table` (a full read) for `month`: the whole table, items = the month's rows. */
   function spanOfTable_(table, month) {
     var items = [];
     table.items.forEach(function (it) {
@@ -598,22 +473,10 @@ var Store = (function () {
     return { sheet: table.sheet, schema: table.schema, base: 0, raw: table.raw, items: items };
   }
 
-  /**
-   * The rows of `month` in a tab whose column A is the month (entities, Référentiel), read without
-   * the other months: column A (firstColumn_, usually already read by listMonths in the same call)
-   * gives the first and the last row of the month, and ONE getValues reads that block plus one row on
-   * each side of it (when the sheet has that row). Rows of other months inside the block (a record
-   * appended by appendEntityRow after a later month) are skipped by the row[0] === month filter.
-   * Reads happen outside the lock, so another execution may have moved rows since column A was read:
-   * when the block no longer matches column A, when a row on either side of it is now `month` (the
-   * month grew, or moved, past the block: its records are no longer all inside it), when the sheet
-   * lost rows (the block would run past its end), or, for a block ending on the last row of the sheet
-   * (no row below it to check), when the sheet gained rows while the block was read, the whole tab is
-   * read instead. Memoized; shared.
-   * @return {{sheet, schema, base:number, raw:string[][], items:{index:number, row:string[]}[], partial?:true}}
-   *   raw = the rows of the block (raw[i] is data row base + i, i.e. sheet row base + i + 2);
-   *   items = the rows of `month`, index = data row index (as in readSheet_).
-   */
+  // Reads one month's block (located through column A) plus one row on each side, without the other
+  // months. Reads happen outside the lock, so if rows moved since column A was read (block mismatch,
+  // the month found just outside it, or the sheet shrank or grew) the whole tab is read instead.
+  // raw[i] is data row base + i. Memoized and shared.
   function monthSpan_(tab, month) {
     var sheet = sheet_(tab);
     var m = memoOf_(tab);
@@ -630,19 +493,16 @@ var Store = (function () {
     if (first >= 0 && month !== '') {
       var last = col.lastIndexOf(month);
       var lo = first > 0 ? first - 1 : first;
-      // Below the last row column A had, the sheet itself tells whether a row exists now (data row
-      // index = sheet row - 2); fewer rows than the block means rows were deleted meanwhile.
+      // Past the end of column A, only the sheet size tells whether a row exists now.
       var hi = last + 1 < col.length ? last + 1 : Math.min(last + 1, sheet.getMaxRows() - 2);
       if (hi < last) return wholeTab();
       var rows;
       try {
         rows = readRows_(tab, lo, hi - lo + 1);
       } catch (e) {
-        return wholeTab(); // the sheet shrank between getMaxRows and the read: same as above
+        return wholeTab();
       }
-      // No row below the block was read (it ends on the last row of the sheet): a write that grew the
-      // sheet between getMaxRows and the read (ensureSize_ inserts rows) may have pushed the month's
-      // last records below it, which the checks below cannot see. One more getMaxRows tells.
+      // With no row below the block to check, rows inserted during the read would go unnoticed.
       if (hi === last && sheet.getMaxRows() - 2 > last) return wholeTab();
       if ((lo < first && rows[0][0] === month) || (hi > last && rows[rows.length - 1][0] === month)) return wholeTab();
       span.base = first;
@@ -657,8 +517,7 @@ var Store = (function () {
     return span;
   }
 
-  // ----------------------------------------------------------------------- entity snapshots
-  // Entity rows: ['_month','_id','_key','_order','_json','_updated_at'] (indices 0..5).
+  // Entity rows: _month, _id, _key, _order, _json, _updated_at.
 
   function parseJsonObject_(s, where) {
     if (!s) return {};
@@ -671,7 +530,6 @@ var Store = (function () {
     }
   }
 
-  /** Record without `_`-prefixed fields (ids, order, enrichment), undefined -> null. */
   function stripMeta_(rec) {
     var out = {};
     Object.keys(rec || {}).forEach(function (k) {
@@ -702,12 +560,10 @@ var Store = (function () {
       .map(function (x) { return x.r; });
   }
 
-  /** @return {Object[]} records of `month` (new objects), sorted by _order. Reads that month only (monthSpan_). */
   function readEntityMonth(tab, month) {
     return sortByOrder_(monthSpan_(tab, month).items.map(function (it) { return entityRecord_(it.row); }));
   }
 
-  /** @return {Object<string, Object[]>} month -> records sorted by _order. */
   function readEntityAll(tab) {
     var table = readTable_(tab);
     var byMonth = {};
@@ -720,17 +576,10 @@ var Store = (function () {
     return byMonth;
   }
 
-  /** `_id` kept by replaceEntityMonth: uuid-shaped only (never "__proto__", "constructor", a source value…). */
+  // Only uuid-shaped ids are kept, never "__proto__" or a value copied from the source.
   var ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  /** `_updated_at` kept by replaceEntityMonth: an ISO stamp as updateEntityRows writes it. */
   var STAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 
-  /**
-   * Replaces the snapshot of one month (other months untouched). Keeps an existing `_id` (uuid-shaped
-   * and not used by an earlier record, else a new Config.uuid()) and `_updated_at` (an ISO stamp, else
-   * ''); `_order` = index, `_key` = str(rec[keyField]).
-   * @return {Object[]} the stored records
-   */
   function replaceEntityMonth(tab, month, records, keyField) {
     checkMonth_(month);
     var kf = keyField || entityKeyField_(tab);
@@ -747,17 +596,11 @@ var Store = (function () {
     return fresh.map(entityRecord_);
   }
 
-  /**
-   * Applies field updates to records of `month`. All ids are checked before anything is written
-   * (unknown id -> NOT_FOUND, nothing written). `_`-prefixed keys are ignored, blank values are
-   * stored as null, `_key` follows the key column and `_updated_at` is set to now (ISO).
-   * @param {{id:string, updates:Object}[]} changes
-   * @return {Object[]} updated records (one per distinct id, in order of first appearance)
-   */
+  // Every id is checked first: an unknown one throws NOT_FOUND before anything is written.
   function updateEntityRows(tab, month, changes) {
     var list = changes || [];
     var span = monthSpan_(tab, month);
-    var indexById = Object.create(null); // id -> position in span.raw
+    var indexById = Object.create(null);
     span.items.forEach(function (it) { indexById[it.row[1]] = it.index - span.base; });
     list.forEach(function (c) {
       var id = Core.str(c && c.id);
@@ -787,10 +630,7 @@ var Store = (function () {
     return touched.map(function (i) { return entityRecord_(rows[i]); });
   }
 
-  /**
-   * Appends a record to `month` with a new _id and _order = max + 1, after the last used row (the
-   * month's rows are then no longer contiguous: monthSpan_ and the next replaceEntityMonth handle it).
-   */
+  // Appends after the last used row, so the month's rows may stop being contiguous.
   function appendEntityRow(tab, month, record, keyField) {
     checkMonth_(month);
     var kf = keyField || entityKeyField_(tab);
@@ -804,7 +644,6 @@ var Store = (function () {
     return entityRecord_(row);
   }
 
-  /** First item of `table` whose raw row and object pass `test(row, obj)`, or null. */
   function findItem_(table, test) {
     for (var k = 0; k < table.items.length; k++) {
       var it = table.items[k];
@@ -813,14 +652,6 @@ var Store = (function () {
     return null;
   }
 
-  /** Deletes the sheet row of a found item; false when there is none. */
-  function deleteItem_(table, it) {
-    if (!it) return false;
-    deleteSheetRow_(table.sheet, it.index + 2);
-    return true;
-  }
-
-  /** @return {boolean} false when the id does not exist in `month`. */
   function deleteEntityRow(tab, month, id) {
     var key = Core.str(id);
     if (key === '') return false;
@@ -833,13 +664,8 @@ var Store = (function () {
     return false;
   }
 
-  // ---------------------------------------------------------------------------- référentiel
-  // Rows: ['_month','category','position','value'].
+  // Référentiel rows: _month, category, position, value.
 
-  /**
-   * @return {Object<string, string[]>} categories in stored order, values ordered by position. Reads
-   *   that month only (monthSpan_).
-   */
   function readReferentiel(month) {
     var cats = [];
     var byCat = {};
@@ -870,7 +696,7 @@ var Store = (function () {
     replaceMonthRows_(table, month, fresh);
   }
 
-  // ------------------------------------------------------------------------------ import log
+  // Import log
 
   function parseJsonValue_(s, fallback) {
     if (!s) return fallback;
@@ -882,7 +708,6 @@ var Store = (function () {
     }
   }
 
-  /** ImportLog row (schema order, strings) -> entry, json columns parsed. */
   function importLogEntry_(row) {
     return {
       month: row[0],
@@ -896,27 +721,21 @@ var Store = (function () {
     };
   }
 
-  /** Entry of the last row of `rows` whose month is `month`, or null. */
   function lastEntryIn_(rows, month) {
     for (var i = rows.length - 1; i >= 0; i--) if (rows[i][0] === month) return importLogEntry_(rows[i]);
     return null;
   }
 
-  /** @return {Object[]} every ImportLog entry in insertion order, json columns parsed (whole tab). */
   function getImportLog() {
     var table = readTable_(Config.TABS.importLog);
     return table.items.map(function (it) { return importLogEntry_(table.raw[it.index]); });
   }
 
-  /**
-   * The `limit` latest ImportLog entries, newest first, read from the bottom of the tab: the last
-   * `limit` rows, then blocks twice as large while blank rows left fewer entries than wanted. A block
-   * that runs past the end of the sheet (rows deleted by hand since getLastRow) falls back to the whole tab.
-   */
+  // Newest first, read from the bottom in doubling blocks while blank rows leave too few entries.
   function recentImportLog(limit) {
     var tab = Config.TABS.importLog;
     var n = Math.max(0, Math.floor(Number(limit) || 0));
-    var end = sheet_(tab).getLastRow() - 1; // data rows above `end` are still unread
+    var end = sheet_(tab).getLastRow() - 1;
     var chunk = n;
     var out = [];
     while (out.length < n && end > 0) {
@@ -925,7 +744,8 @@ var Store = (function () {
       try {
         rows = readRows_(tab, end - k, k);
       } catch (e) {
-        rows = readTable_(tab).raw; // the sheet lost rows: start over on the whole tab (last pass)
+        // The sheet lost rows: start over on the whole tab as a last pass.
+        rows = readTable_(tab).raw;
         out = [];
         end = 0;
       }
@@ -938,7 +758,6 @@ var Store = (function () {
     return out;
   }
 
-  /** @param {{month, imported_at?, source_id, counts, postes_headers, apps_headers, warnings, changes?}} entry */
   function appendImportLog(entry) {
     var e = entry || {};
     appendRows_(Config.TABS.importLog, [[
@@ -953,14 +772,8 @@ var Store = (function () {
     ]]);
   }
 
-  /**
-   * @return {Object|null} the last ImportLog entry for `month`, parsing that row only. Without a
-   *   memoized column A: the last IMPORT_LOG_TAIL rows first (the latest entry of the current month is
-   *   normally there). Otherwise, or when the tail does not have it: column A (memoized, usually read
-   *   by listMonths in the same call) scanned from the bottom, then that one row. A row that no longer
-   *   matches column A, or is no longer in the sheet (rows deleted by hand in between), falls back to
-   *   reading the whole tab.
-   */
+  // Tries the last IMPORT_LOG_TAIL rows, then column A from the bottom and that one row, then the
+  // whole tab if rows were deleted in between.
   function latestImportInfo(month) {
     var tab = Config.TABS.importLog;
     var sheet = sheet_(tab);
@@ -974,7 +787,7 @@ var Store = (function () {
       try {
         tail = readRows_(tab, count - k, k);
       } catch (e) {
-        tail = null; // rows deleted between getLastRow and the read: column A below (same fallback)
+        tail = null;
       }
       var hit = tail && lastEntryIn_(tail, month);
       if (tail && (hit || k === count)) return hit;
@@ -985,20 +798,19 @@ var Store = (function () {
     try {
       row = readRows_(tab, j, 1)[0];
     } catch (e) {
-      row = null; // past the end of a sheet that lost rows meanwhile: read in full below
+      row = null;
     }
     if (row && row[0] === month) return importLogEntry_(row);
     delete memo_[tab];
     return lastEntryIn_(readTable_(tab).raw, month);
   }
 
-  // ------------------------------------------------------------------- id-keyed rows (Actions…)
+  // Id-keyed rows (Actions)
 
   function listRows(tab) {
     return readTab(tab);
   }
 
-  /** Appends `obj` (normalised to the schema, all strings; id generated when blank). */
   function insertRow(tab, obj) {
     var schema = schema_(tab);
     var row = rowToObject_(schema, objectToRow_(schema, obj || {}));
@@ -1007,7 +819,6 @@ var Store = (function () {
     return row;
   }
 
-  /** Merges schema fields of `patch` (except id) into a copy of `obj`. */
   function mergeRow_(schema, obj, patch) {
     var next = rowToObject_(schema, objectToRow_(schema, obj));
     Object.keys(patch || {}).forEach(function (k) {
@@ -1016,7 +827,6 @@ var Store = (function () {
     return next;
   }
 
-  /** @return {Object} the updated row; NOT_FOUND when id is unknown. */
   function updateRow(tab, id, updates) {
     var key = Core.str(id);
     var table = readTable_(tab);
@@ -1029,18 +839,16 @@ var Store = (function () {
     return next;
   }
 
-  /** @return {boolean} false when id is unknown. */
   function deleteRow(tab, id) {
     var key = Core.str(id);
     var table = readTable_(tab);
-    return deleteItem_(table, key === '' ? null : findItem_(table, function (row, obj) { return obj.id === key; }));
+    var it = key === '' ? null : findItem_(table, function (row, obj) { return obj.id === key; });
+    if (!it) return false;
+    deleteSheetRow_(table.sheet, it.index + 2);
+    return true;
   }
 
-  /**
-   * Bulk update with one read and (at most) one write. For every row where predicate(copy) is
-   * truthy, updater(copy) either returns a patch object or mutates the copy in place.
-   * @return {number} number of rows matched
-   */
+  // updater(copy) returns a patch or mutates the copy. Returns the number of rows matched.
   function updateRowsWhere(tab, predicate, updater) {
     var table = readTable_(tab);
     var rows = table.raw.slice();

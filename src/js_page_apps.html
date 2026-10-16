@@ -1,32 +1,17 @@
 <style>
-/* Applications page (docs/API.md §6 "Applications", docs/DESIGN.md). Everything else comes from css.html
-   (page header, stat line, sections, ledger tables, status marks, .entity-drawer blocks). Page-specific:
-   the « Critères » cell, five short status marks in one row — met = ■ in --ok with an ink-2 label,
-   missing = ■ and label in --ko (same encoding as the drawer checklist: a filled square coloured by
-   status, the state also told by the colour of the word). */
+/* « Critères » cell: five short status marks on one row, same encoding as the drawer checklist. */
 .page-apps .apps-criteria { display: inline-flex; gap: var(--s3); flex-wrap: nowrap; }
 .page-apps .apps-criteria .mark { font-size: 12px; font-weight: 400; gap: 5px; }
 .page-apps .apps-criteria .mark-ok { color: var(--ink-2); }
 .page-apps .apps-criteria .mark-ok::before { background: var(--ok); }
 .page-apps .apps-criteria .mark-ko { font-weight: 500; }
-/* The drawer title is an application name: sans, like the table key column. */
+/* Application names are set in sans, like the table key column. */
 .drawer.is-app .drawer-title { font-family: var(--font-sans); letter-spacing: 0; }
 </style>
 <script>
-/**
- * Pages.apps — application inventory (docs/API.md §6 "Applications"), typeset per docs/DESIGN.md. Built by
- * InventoryPage (js_page_inventory.html): header (« Exporter CSV » / « Nouvelle application »), stat line,
- * editable ledger, conformity filter. Specific here: the Galink / IDP migration ledger, the computed
- * « Score » / « Critères » columns (they follow unsaved edits), the « Nouvelle application » form (EntityForm:
- * fields read from the source sheet, in sections) and the drawer (5-criteria checklist, postes, linked actions,
- * rename / delete).
- *
- * Read-only mode (lecteur, !State.canEdit()): no « Nouvelle application », no inline editing (Galink / IDP
- * included: plain cells, a row click opens the drawer), no « Renommer » / « Supprimer » / « Nouvelle action »
- * in the drawer; CSV export, the migration ledger and the drawer details stay. Admins follow the switches of
- * Paramètres (State.can): « Nouvelle application » on 'create', the inline editors and « Renommer » on 'edit',
- * « Supprimer » on 'delete'.
- */
+// Applications page: the application ledger, built on InventoryPage.
+// Adds the Galink / IDP migration summary, the Score / Critères columns (they follow unsaved edits),
+// the « Nouvelle application » form and the drawer with rename / delete.
 (function () {
   'use strict';
 
@@ -35,7 +20,7 @@
   var KEY_POSTE = Core.KEY_POSTE;
   var SCORE_CSV = 'Score calculé (%)';
 
-  /** Criteria of Core.scoreApplication, in display order. */
+  // Criteria of Core.scoreApplication, in display order.
   var CRITERIA = [
     { key: 'contrat', short: 'Contrat', label: 'Contrat' },
     { key: 'sip', short: 'SIP', label: 'SIP' },
@@ -44,10 +29,7 @@
     { key: 'champs', short: 'Champs', label: 'Champs obligatoires renseignés' }
   ];
 
-  /**
-   * A VALIDATION error of a form is shown under `field` (the modal stays open). A FORBIDDEN one (the switch
-   * was turned off meanwhile) is shown too, and the bootstrap is reloaded (State.afterWriteError).
-   */
+  // Shows a validation error under `field` and keeps the modal open.
   function onField(field) {
     return function (err) {
       if (err && err.code === 'VALIDATION' && !err.field) err.field = field;
@@ -55,8 +37,6 @@
       throw err;
     };
   }
-
-  // ------------------------------------------------------------------------------ drawer
 
   function openDrawer(id, ctx) {
     var md = ctx.md();
@@ -66,12 +46,11 @@
     var crit = rec._criteria || Core.scoreApplication(rec).criteria;
     var missing = Core.APP_REQUIRED_FIELDS.filter(function (f) { return Core.isBlank(rec[f]); });
     var postes = Core.buildPosteAppsRelation([rec]).byApp[name] || [];
-    var posteIndex = Object.create(null);   // poste names are data: no prototype
+    var posteIndex = Object.create(null);
     md.postes.forEach(function (p) { posteIndex[Core.normKey(p[KEY_POSTE])] = p; });
     var closed = false;
 
-    // Rename / delete are admin writes, each behind its switch of Paramètres (State.can): lecteurs, and
-    // admins while a switch is off, get no button (hidden, not disabled).
+    // Buttons are hidden rather than disabled when the matching Paramètres switch is off.
     var canRename = State.can('edit');
     var canDelete = State.can('delete');
     var buttons = !canRename && !canDelete ? null : el('div', { class: 'drawer-buttons' },
@@ -132,7 +111,7 @@
       var n = res.actionsUpdated || 0;
       UI.toast('Application renommée en ' + UI.quote(values.newName) +
         (n ? ' — ' + UI.plural(n, 'action mise à jour', 'actions mises à jour') : '') + '.', 'success');
-      // Action targets changed server side: reload them before the drawer re-renders.
+      // The server renamed the action targets too, so reload them before the drawer re-renders.
       return State.loadActions({ force: true }).catch(function () { return null; }).then(function () {
         ctx.refreshPage();
         if (ctx.drawerOpen()) openDrawer(rec._id, ctx);
@@ -163,9 +142,7 @@
       });
   }
 
-  // ------------------------------------------------------------------------------ add application
-
-  /** Sections of the « Nouvelle application » form (EntityForm): source columns by name, then « Autres colonnes ». */
+  // Source columns not listed here end up in « Autres colonnes ».
   var APP_SECTIONS = [
     { id: 'identification', title: 'Identification', open: true, columns: [KEY, 'Éditeur', 'Type', 'Équipe', 'Date'] },
     { id: 'usage', title: 'Usage', open: true, columns: ['Installé sur poste', 'Données sensibles exposées'] },
@@ -185,10 +162,7 @@
 
   var PREVIEW_CRITERIA = [['contrat', 'Contrat'], ['sip', 'SIP'], ['idp', 'IDP'], ['galink', 'Galink'], ['champs', 'Champs']];
 
-  /**
-   * Top of the « Nouvelle application » form: the score the application would get (Core.scoreApplication, the
-   * table's own rule), conforme or not against the threshold, each criterion, and the required fields still empty.
-   */
+  // Live score at the top of the form, computed with the same rule as the table.
   function scorePreview(values) {
     var s = Core.scoreApplication(values);
     var t = Core.threshold();
@@ -224,9 +198,6 @@
     }).catch(function (err) { UI.errorToast(err); });
   }
 
-  // ------------------------------------------------------------------------------ page body
-
-  /** Migration readiness ledger: Galink / IDP Oui / Non / Non renseigné counts + share migrated. */
   function migrationSummary(box, apps) {
     UI.clear(box);
     var rows = Core.APP_CUSTOM_FIELDS.map(function (f) {
@@ -280,7 +251,7 @@
     entity: 'applications',
     keyField: KEY,
     filterScope: 'all',
-    // Only Équipe applies to applications (they carry no bâtiment).
+    // Applications have no bâtiment, so only the Équipe filter applies.
     filtered: function (s) { return ((s.filters || {}).equipes || []).length > 0; },
     nouns: { one: 'application', many: 'applications', loading: 'Chargement des applications…',
       inExport: 'Aucune application dans cet export.', noMatch: 'Aucune application ne correspond aux filtres.',

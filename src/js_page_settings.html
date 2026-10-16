@@ -1,7 +1,5 @@
 <style>
-/* Paramètres (admin only). Sections, dl.kv, ledger table, inline forms and buttons come from css.html;
-   only the column widths of the forms and the access table are specific to this page. */
-/* Three tabs (Général · Saisie · Accès), each a stack of cards. */
+/* Paramètres. Sections, dl.kv, tables, forms and buttons come from css.html. */
 .page-settings .settings-body { display: flex; flex-direction: column; gap: var(--s5); max-width: 880px; }
 .page-settings .settings-tabs { display: flex; flex-wrap: wrap; gap: 0 var(--s6); border-bottom: 1px solid var(--rule-2); }
 .page-settings .settings-tab {
@@ -22,7 +20,7 @@
 }
 .page-settings .settings-card > .page-lede, .page-settings .settings-card > .field-help, .page-settings .settings-card > .lede { margin: 0; }
 .page-settings .card-head + .lede { margin-top: calc(-1 * var(--s3)); }
-/* Synchronisation: three figures, then the actions and the journal (opened on demand). */
+/* Synchronisation */
 .page-settings .sync-figures { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr); gap: var(--s4); margin: 0; }
 .page-settings .sync-figures > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .page-settings .sync-figures dt { margin: 0; }
@@ -46,10 +44,10 @@
 .page-settings .threshold-input { display: inline-flex; align-items: center; gap: var(--s1); }
 .page-settings .threshold-input .input { width: 72px; text-align: right; font-family: var(--font-mono); }
 .page-settings .threshold-input .unit { color: var(--ink-2); }
-/* « Saisie dans l’application »: one switch per row, rows split by a hairline. */
+/* Saisie: one switch per row. */
 .page-settings .editing-list { display: flex; flex-direction: column; gap: var(--s3); }
 .page-settings .editing-list > .toggle-row + .toggle-row { border-top: 1px solid var(--rule); padding-top: var(--s3); }
-/* Accès: « Qui d’autre… » band, then one list of accounts and groups. */
+/* Accès */
 .page-settings .access-domain {
   display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3) var(--s5); padding: var(--s4) var(--s5);
   background: var(--paper-2); border-radius: var(--radius-overlay);
@@ -100,11 +98,11 @@
   font-family: var(--font-sans); font-size: 11px; line-height: 18px; color: var(--ink-2); vertical-align: 1px;
 }
 .page-settings .access-fixed-role { color: var(--ink-2); padding-left: 7px; }
-/* Quiet role dropdown: reads as text, a border under the pointer or the focus. */
+/* Quiet role dropdown: reads as text until hovered or focused. */
 .page-settings .dd-quiet .dd-trigger { border-color: transparent; background: none; }
 .page-settings .dd-quiet .dd-trigger:hover, .page-settings .dd-quiet .dd-trigger:focus-visible,
 .page-settings .dd-quiet .dd-trigger[aria-expanded="true"] { border-color: var(--rule-2); background: var(--paper); }
-/* « Retirer » stays quiet until the row is pointed at or focused (always visible on touch screens). */
+/* « Retirer » is faded until its row is hovered or focused. Touch screens keep it at full strength. */
 @media (hover: hover) {
   .page-settings .access-table tbody tr .access-actions .btn { opacity: .55; }
   .page-settings .access-table tbody tr:hover .access-actions .btn,
@@ -112,7 +110,7 @@
 }
 /* Rows just added: a green wash until the next change. */
 .page-settings .access-table tbody tr.is-new > * { background: var(--ok-bg); }
-/* « Ajouter un accès » dialog: tabs, the field(s) of the tab, the role for all. */
+/* « Ajouter un accès » dialog */
 .access-add { display: flex; flex-direction: column; gap: var(--s4); }
 .access-add .settings-tabs { display: flex; flex-wrap: wrap; gap: 0 var(--s5); border-bottom: 1px solid var(--rule-2); }
 .access-add .settings-tab {
@@ -144,7 +142,7 @@
   .page-settings .access-table .access-role { width: auto; }
   .page-settings .access-table .access-added, .page-settings .access-table thead th:nth-child(3) { display: none; }
   .page-settings .access-table .access-role .access-note { display: block; margin-left: 0; }
-  /* Narrow: the address alone (no avatar, no group subtitle), the tag under it; « Retirer » always full strength. */
+  /* Narrow: the address alone, with its tag underneath. */
   .page-settings .access-avatar, .page-settings .access-sub { display: none; }
   .page-settings .access-tag { display: table; margin: 2px 0 0; }
   .page-settings .access-table .access-role { width: 1%; }
@@ -154,46 +152,24 @@
 }
 </style>
 <script>
-/**
- * Pages.settings — « Paramètres » (admin only; docs/API.md §3 settings endpoints).
- *
- * Three tabs (ARIA tabs: arrows / Home / End move between them; the last one stays selected while the app is
- * open): « Général » (source, synchronisation, seuil), « Saisie » and « Accès ». Each section is a card (h2 title,
- * an optional status or button on its right). Five sections, each saved on its own:
- *   - Source de données: current source spreadsheet, tabs found, data spreadsheet; change the source
- *     (App.applySource -> api_setConfig then a first synchronisation, the same path as the configuration screen).
- *   - Synchronisation: hourly trigger on / off (api_enableSync), last run, last change, error, « Synchroniser
- *     maintenant » (App.syncNow -> api_syncNow), and the journal of the runs that changed something
- *     (api_getImportLog {limit: 12}, newest first). Re-rendered when the status changes elsewhere (app bar).
- *   - Seuil de conformité: integer 1–100 (api_setThreshold). Every cache is dropped and the bootstrap is
- *     reloaded so that every page re-scores with the new value.
- *   - Saisie dans l’application: three switches (UI.toggle), saved on toggle (api_setEditing {edit | create |
- *     delete: bool}), for every admin and every month: modify, create and delete postes / applications
- *     (actions and remplacements are not concerned). The result goes to State.setEditing (the Postes /
- *     Applications pages follow at once); the switches follow State 'editing' changes made elsewhere.
- *   - Accès: « Qui d’autre peut ouvrir l’application ? » (domain role, two buttons -> api_setDomainRole), then
- *     one list of accounts and Google Groups (search, filter chips by role / groups, inline role dropdown,
- *     « Retirer »: api_saveUser / api_removeUser, api_saveGroup / api_removeGroup) and « Ajouter » (openAdd: one
- *     account, a pasted list with its live preview -> api_addUsers, or a group the server checks). Every member
- *     of a listed group gets its role. The deployer is always admin and the caller cannot edit their own access
- *     (server guards, shown here as plain text).
- * The page is also reachable before a source is configured, so that access can be set up first.
- */
+// Pages.settings: the admin-only « Paramètres » page, in three tabs (Général, Saisie, Accès).
+// Each card saves on its own. The page is reachable before a source is configured, so access
+// can be set up first.
 (function () {
   'use strict';
 
   window.Pages = window.Pages || {};
   var el = UI.el;
-  var page = null;        // root of the mounted page: late responses do not touch a page that was left
-  var syncView = null;    // the « Synchronisation » section (re-rendered when State.sync changes)
-  var editingView = null; // the « Saisie dans l’application » section (follows State.editing)
+  var page = null;        // late responses must not touch a page that was left
+  var syncView = null;
+  var editingView = null;
   var unsubscribe = null;
-  var currentTab = 'general'; // selected tab, kept across visits
-  var journalOpen = false;    // the sync journal is open (kept across visits: a sync that adds a month re-mounts)
-  var journalWanted = false;  // Pages.settings.showJournal(): focus the journal toggle on the next render
+  var currentTab = 'general'; // kept across visits
+  var journalOpen = false;    // kept across visits, since a sync that adds a month re-mounts the page
+  var journalWanted = false;  // focus the journal toggle on the next render
   function alive() { return !!page && page.isConnected; }
 
-  /** One card: h2 title, `aside` on its right (a status, a button; null for none), then the content. */
+  // h2 title with an optional aside on its right, then the remaining arguments as content.
   function card(title, aside) {
     var children = Array.prototype.slice.call(arguments, 2);
     return el('section', { class: 'section settings-card' },
@@ -207,7 +183,7 @@
   var ROLE_OPTIONS = [{ value: 'lecteur', label: 'Lecteur' }, { value: 'admin', label: 'Administrateur' }];
   var DOMAIN_OPTIONS = [{ value: 'none', label: 'Personne d’autre' }, { value: 'lecteur', label: 'Tous, en lecture' }];
 
-  // ------------------------------------------------------------------------------ source
+  // Source
 
   function tabsLine(found) {
     if (!found) return el('span', { class: 'field-help' }, 'Classeur inaccessible.');
@@ -241,7 +217,7 @@
       UI.fieldError(input, '');
       if (!value) { UI.fieldError(input, 'Collez l’URL ou l’identifiant du Google Sheet source.'); input.focus(); return; }
       UI.busy(button, App.applySource(value)).then(function () {
-        // A first source re-renders the whole shell (and re-mounts this page): nothing left to do then.
+        // A first source re-renders the whole shell and re-mounts this page.
         if (!alive()) return;
         input.value = '';
         reload();
@@ -256,9 +232,9 @@
         input),
       el('div', { class: 'form-actions' }, button));
 
-    // The server refuses a source change from anyone but the owner (the deployer's rights open the file).
+    // The server refuses a source change from anyone but the owner, whose rights open the file.
     var owner = !!(State.get().user || {}).isOwner;
-    // With a source, the form waits behind « Changer de source » (it is rarely changed); without one, it shows.
+    // A source is rarely changed, so its form waits behind « Changer de source ».
     var toggle = owner && src.id ? el('button', { type: 'button', class: 'btn btn-secondary btn-sm', id: 'settings-source-toggle',
       'aria-expanded': 'false', 'aria-controls': 'settings-source-form',
       onClick: function () {
@@ -276,12 +252,10 @@
         'Seul le propriétaire de l’application (le compte qui l’a déployée) peut changer de source.'));
   }
 
-  // ------------------------------------------------------------------------------ synchronisation
+  // Synchronisation
 
-  /** « 14:02 » / « 04/05 10:30 » in mono. */
   function stampNode(v) { return el('span', { class: 'mono' }, Fmt.stamp(v)); }
 
-  /** « ■ Active · toutes les heures » / « Inactive », on the right of the card title. */
   function syncAutoMark(st) {
     return st.enabled ? UI.statusMark('Active · toutes les heures', 'ok') : UI.statusMark('Inactive', 'neutral');
   }
@@ -307,7 +281,6 @@
     ];
   }
 
-  /** Warnings of one run: a hidden row listing them, revealed by the count button of its row. */
   function logWarnings(e, i) {
     var w = e.warnings || [];
     if (!w.length) return { toggle: null, detail: null };
@@ -325,7 +298,7 @@
     return { toggle: toggle, detail: detail };
   }
 
-  var SYNC_LOG_ROWS = 12; // latest entries shown (the server reads only those: api_getImportLog {limit})
+  var SYNC_LOG_ROWS = 12; // the server reads only this many rows
 
   function loadSyncLog(box) {
     UI.asyncBlock(box, {
@@ -366,7 +339,7 @@
     var logLoaded = false;
     var st = initial || {};
 
-    // The journal costs a server read (and quota): loaded the first time it is opened.
+    // The journal costs a server read and quota, so it loads on first open.
     var logToggle = el('button', { type: 'button', class: 'btn btn-link btn-sm', id: 'settings-sync-log-toggle',
       'aria-expanded': 'false', 'aria-controls': 'import-log',
       onClick: function () { setLogOpen(logBox.hidden); } }, 'Journal des synchronisations');
@@ -407,17 +380,16 @@
       el('div', { class: 'sync-actions' }, actions, logToggle),
       logBox);
     section.id = 'settings-sync';
-    // The app bar (or another tab action) changed the status: show it, keeping what only Paramètres knows.
+    // Status changed elsewhere: keep the authError that only Paramètres knows.
     section.__sync = function (next) {
-      var merged = {};
-      Object.keys(next || {}).forEach(function (k) { merged[k] = next[k]; });
+      var merged = Object.assign({}, next);
       if (st.authError && !merged.enabled) merged.authError = st.authError;
       render(merged);
     };
     return section;
   }
 
-  // ------------------------------------------------------------------------------ threshold
+  // Threshold
 
   function thresholdSection(s) {
     var input = el('input', { type: 'text', inputmode: 'numeric', class: 'input', id: 'settings-threshold',
@@ -434,7 +406,7 @@
       if (n === null) { UI.fieldError(input, 'Entrez un nombre entier entre 1 et 100.'); input.focus(); return; }
       if (n === s.threshold) { UI.toast('Seuil inchangé — ' + pct(n) + '.'); return; }
       UI.busy(button, api.call('api_setThreshold', { threshold: n }).then(function (res) {
-        // Every cached score depends on the threshold: drop them and reload the bootstrap.
+        // Every cached score depends on the threshold.
         State.invalidate();
         return State.refreshBootstrap().then(function () { return res; });
       })).then(function (res) {
@@ -464,9 +436,8 @@
         form));
   }
 
-  // ------------------------------------------------------------------------------ editing switches
+  // Editing switches
 
-  /** The three switches of « Saisie dans l’application »: State / api_setEditing key, copy, toasts. */
   var EDITING_SWITCHES = [
     { key: 'edit', label: 'Modifier les entrées',
       description: 'Cellules des tableaux et « Renommer » une application.',
@@ -505,19 +476,16 @@
         { id: 'settings-editing-help' }),
       list);
     section.id = 'settings-editing';
-    // Switches changed elsewhere (another tab's poll, a refused write's bootstrap reload): show them.
+    // Switches can change elsewhere, through another tab's poll or a bootstrap reload.
     section.__editing = function (e) {
       EDITING_SWITCHES.forEach(function (sw) { toggles[sw.key].setValue(!e || e[sw.key] !== false); });
     };
     return section;
   }
 
-  // ------------------------------------------------------------------------------ access
+  // Access
 
-  /**
-   * What a bulk add would do, computed client-side from the current list (the server decides; this is
-   * only the preview): {add:[], change:[], same:[], skip:[{email, reason}], invalid:[]}.
-   */
+  // Preview of a bulk add from the current list. The server makes the real decision.
   function bulkPlan(text, role, view, me) {
     var parsed = Core.parseEmailList(text);
     var byEmail = {};
@@ -543,12 +511,7 @@
     { value: 'admin', label: 'Administrateur', help: 'Modifie les données, synchronise et gère ces paramètres.' }
   ];
 
-  /**
-   * « Ajouter un accès »: a dialog with three tabs (one account → api_saveUser, a pasted list → api_addUsers with
-   * a live preview, a Google Group → api_saveGroup, checked by the server) and one role for all (radio cards).
-   * The primary button says what will happen; a refusal shows on the field and keeps the dialog open.
-   * onDone(accessView, addedEmails) after a success.
-   */
+  // A refusal shows on the field and keeps the dialog open. onDone(accessView, addedEmails) on success.
   function openAdd(view, me, onDone) {
     var tab = 'one';
     var role = 'lecteur';
@@ -631,10 +594,7 @@
       }
     }
 
-    /**
-     * One address (account or group): apiName({email, role}); the error stays on the field. The toast and the
-     * highlighted row name the entry as the server stored it (normalised), never the typed text.
-     */
+    // The toast and the highlighted row use the address as the server stored it, never the typed text.
     function addOne(close, input, apiName, empty, done) {
       var value = input.value.trim();
       if (!value) { UI.fieldError(input, empty); input.focus(); return null; }
@@ -705,14 +665,13 @@
     { id: 'group', label: 'Groupes' }
   ];
 
-  /** « SA » for sam.admin@…, « LE » for lea@… (decorative: the address is read next to it). */
+  // « SA » for sam.admin@…, « LE » for lea@…
   function initials(email) {
     var parts = String(email).split('@')[0].split(/[._+-]+/).filter(Boolean);
     var a = parts[0] || '?';
     return (a.charAt(0) + (parts[1] ? parts[1].charAt(0) : a.charAt(1))).toUpperCase();
   }
 
-  /** Two heads (a Google Group), drawn with SVG nodes. */
   function groupIcon() {
     var NS = 'http://www.w3.org/2000/svg';
     var svg = document.createElementNS(NS, 'svg');
@@ -730,12 +689,7 @@
     return svg;
   }
 
-  /**
-   * Accès: « Qui d’autre peut ouvrir l’application ? » (domain role, two buttons), then one list of accounts AND
-   * groups (#access-table: user rows data-email, group rows data-group) with a search, filters by role / groups
-   * and « Ajouter » (openAdd). Roles change in place (quiet dropdown), « Retirer » asks first. Rows just added
-   * are highlighted until the next change.
-   */
+  // Domain role, then one list of accounts and groups. Rows just added stay highlighted until the next change.
   function accessSection(s) {
     var domainBox = el('section', { class: 'access-domain', id: 'settings-domain', 'aria-labelledby': 'settings-domain-title' });
     var wrap = el('div', { class: 'access-body' });
@@ -752,10 +706,7 @@
       render();
     }
 
-    /**
-     * Dropdown saved on change: disabled while saving, reverted with an error toast on failure.
-     * o: {options, value, save(value) -> Promise<AccessView>, done(value), + UI.select options (label, id, ariaLabel, size)}
-     */
+    // Saved on change: disabled while saving, reverted with an error toast on failure.
     function savingSelect(o) {
       var dd = UI.select(Object.assign({}, o, { onChange: function (value) {
         if (value === o.value) return;
@@ -774,7 +725,6 @@
       return dd;
     }
 
-    /** Inline role dropdown of a user or group row (quiet: a border only under the pointer or the focus). */
     function entryRole(entry, apiName, aria) {
       var dd = savingSelect({ ariaLabel: aria, options: ROLE_OPTIONS, value: entry.role, size: 'sm',
         save: function (role) { return api.call(apiName, { email: entry.email, role: role }); },
@@ -783,7 +733,6 @@
       return dd;
     }
 
-    /** « Retirer » of a user or group row: confirmation, then apiName({email}). */
     function removeEntry(o) {
       return el('button', { type: 'button', class: 'btn btn-quiet is-danger btn-sm', dataset: o.dataset || null,
         'aria-label': o.aria,
@@ -896,7 +845,7 @@
           return chips[f.id];
         }));
 
-      // Hides the rows that do not match (no re-render: the search keeps focus while typing).
+      // Hides rows in place so the search keeps focus while typing.
       function filter() {
         var q = query.trim().toLowerCase();
         var shown = 0;
@@ -940,7 +889,7 @@
     return [domainBox, list];
   }
 
-  // ------------------------------------------------------------------------------ page
+  // Page
 
   function load(body) {
     UI.asyncBlock(body, {
@@ -965,10 +914,7 @@
     { id: 'acces', label: 'Accès' }
   ];
 
-  /**
-   * ARIA tab strip: tabs [{id, label}] -> buttons #<prefix>-tab-<id> controlling #<prefix>-panel-<id>; roving
-   * tabindex, arrows / Home / End move and select (wrapping). onSelect(id) shows the panel. -> {node, select(id, focus)}
-   */
+  // ARIA tabs with a roving tabindex. Buttons #<prefix>-tab-<id> control #<prefix>-panel-<id>.
   function tabList(o) {
     var buttons = {};
     var current = o.selected;
@@ -1000,7 +946,7 @@
     return { node: node, select: select };
   }
 
-  /** The page's tabs + one panel per tab (every panel stays in the DOM: switches and the sync status keep following State while hidden). */
+  // Hidden panels stay in the DOM so the switches and sync status keep following State.
   function tabbed(body, panels) {
     var nodes = {};
     var first = TABS.some(function (t) { return t.id === currentTab; }) ? currentTab : 'general';
@@ -1017,7 +963,7 @@
     });
   }
 
-  /** The app bar's « Journal » link: next mount opens « Général » with the journal shown and focused. */
+  // For the app bar's « Journal » link: the next mount opens Général with the journal focused.
   function showJournal() {
     currentTab = 'general';
     journalOpen = true;

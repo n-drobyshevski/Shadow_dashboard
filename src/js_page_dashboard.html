@@ -1,15 +1,6 @@
 <script>
-/**
- * Pages.dashboard — port of Tableau_de_bord.py (docs/API.md §6), typeset per docs/DESIGN.md.
- *
- * KPI strip, compliance gauges, risk bars, "Détail conformité" leader rows, score histograms (all on
- * the filtered data of the selected month). The data comes from the hourly synchronisation (status in
- * the app bar, journal in Paramètres): there is no import section any more.
- *
- * Period (« avril → octobre », State.period()): every figure and chart is the state of the LAST month; each
- * headline KPI also says how it moved since the first month (delta) and draws a month-by-month sparkline
- * (from the slim history of State.loadTimeline, same filters).
- */
+// Dashboard page: KPIs, gauges, risk bars, conformity details and score histograms for the filtered month.
+// Over a period, figures show the last month; headline KPIs add a delta since the first month and a sparkline.
 (function () {
   'use strict';
 
@@ -17,23 +8,19 @@
   var KEY_POSTE = Core.KEY_POSTE;
   var KEY_APP = Core.KEY_APP;
 
-  var board = null;         // Charts.board of the rendered body (purged on re-render / leave)
-  var view = null;          // {body, month} of the mounted page (filter changes re-render the body in place)
-
-  // ------------------------------------------------------------------------------ helpers
+  var board = null;
+  var view = null;
 
   function toneFor(rate, total) {
     if (!total) return null;
     return rate >= Core.threshold() ? 'ok' : 'ko';
   }
 
-  /** "■ Sous le seuil · 5 conformes sur 7 · seuil 80 %" under a gauge (status always in words). */
   function gaugeCaption(rate, ok, total, noun) {
     if (!total) return el('p', { class: 'chart-caption' }, 'Aucun' + (noun === 'application' ? 'e ' : ' ') + noun + ' dans la sélection.');
     return Charts.thresholdCaption({ items: [{ rate: rate, ok: ok, total: total }] });
   }
 
-  /** One "Détail conformité" row: label ……… count (share), expandable to the affected names. */
   function detailItem(id, label, count, total, items, keyField) {
     var names = items.map(function (r) { return Core.str(r[keyField]) || '(sans nom)'; });
     var share = total ? ['(', UI.fmtPctNode(count / total * 100), ')'] : '';
@@ -43,7 +30,7 @@
       el('span', { class: 'detail-value' },
         el('span', { class: 'detail-count' + (count > 0 ? ' is-ko' : '') }, UI.fmtNum(count)),
         el('span', { class: 'detail-share' }, share)));
-    // A zero row has nothing to reveal: it does not toggle.
+    // An empty row has nothing to reveal, so it should not toggle.
     if (!names.length) summary.addEventListener('click', function (e) { e.preventDefault(); });
     var body = names.length ?
       el('ul', { class: 'detail-list' }, names.map(function (n) { return el('li', null, n); })) : null;
@@ -54,18 +41,13 @@
     return list.filter(function (r) { return Core.str(r[field]) === 'Non'; });
   }
 
-  // ------------------------------------------------------------------------------ dashboard body
-
-  /** '+12' / '−3' / '0' (true minus sign). */
+  // Uses a true minus sign.
   function signed(n, digits) {
-    var abs = UI.fmtNum ? (digits ? Math.abs(n).toFixed(digits).replace('.', ',') : UI.fmtNum(Math.abs(n))) : String(Math.abs(n));
+    var abs = digits ? Math.abs(n).toFixed(digits).replace('.', ',') : UI.fmtNum(Math.abs(n));
     return (n > 0 ? '+' : n < 0 ? '−' : '') + abs;
   }
 
-  /**
-   * Period extras of the KPI strip: {key: {delta, deltaTone, spark}} — counts « +12 depuis avril », rates
-   * « ▲ +6,0 pts depuis avril » (ok / ko), sparklines over the months of the period. {} for a single month.
-   */
+  // Delta and sparkline per KPI key over the period; empty for a single month.
   function periodExtras(s, k, extra) {
     if (!extra || !extra.fromMd) return {};
     var since = ' depuis ' + Fmt.MONTHS[Number(extra.from.slice(5, 7)) - 1];
@@ -115,7 +97,6 @@
       body.appendChild(UI.empty('Aucun poste ni application ne correspond aux filtres sélectionnés.'));
     }
 
-    // KPI strip
     body.appendChild(UI.kpiStrip([
       kpi({ key: 'total_postes', title: 'Postes inventoriés', value: UI.fmtNum(k.total_postes) }),
       kpi({ key: 'postes_conformes', title: 'Postes conformes', value: UI.fmtNum(k.postes_conformes),
@@ -125,19 +106,16 @@
         sub: UI.fmtPctNode(k.taux_apps), tone: toneFor(k.taux_apps, k.total_apps) })
     ]));
 
-    // Gauges
     body.appendChild(el('div', { class: 'grid grid-2' },
       board.section('Conformité des postes', 'chart-gauge-postes', function (box) { Charts.gauge(box, k.taux_postes); },
         gaugeCaption(k.taux_postes, k.postes_conformes, k.total_postes, 'poste')),
       board.section('Conformité des applications', 'chart-gauge-apps', function (box) { Charts.gauge(box, k.taux_apps); },
         gaugeCaption(k.taux_apps, k.apps_conformes, k.total_apps, 'application'))));
 
-    // Risk bars
     body.appendChild(el('div', { class: 'grid grid-2' },
       board.section('Risques — Postes', 'chart-risk-postes', function (box) { Charts.riskBars(box, Core.riskCounts(postes)); }),
       board.section('Risques — Applications', 'chart-risk-apps', function (box) { Charts.riskBars(box, Core.riskCounts(apps)); })));
 
-    // Conformity details
     body.appendChild(UI.section('Détail conformité',
       el('div', { class: 'grid grid-2' },
         el('div', { class: 'detail-block', id: 'detail-postes' },
@@ -155,7 +133,6 @@
             detailItem('apps_sans_galink', 'Sans Galink', k.apps_sans_galink, k.total_apps, nonItems(apps, 'Galink'), KEY_APP),
             detailItem('apps_sans_idp', 'Sans IDP', k.apps_sans_idp, k.total_apps, nonItems(apps, 'IDP'), KEY_APP))))));
 
-    // Histograms
     function scores(list) {
       return list.map(function (r) { return r._score; }).filter(function (v) { return v !== null && v !== undefined; });
     }
@@ -166,8 +143,6 @@
     board.draw();
   }
 
-  // ------------------------------------------------------------------------------ page
-
   function mount(root) {
     purgeCharts();
     view = null;
@@ -177,7 +152,7 @@
     root.appendChild(UI.monthHeader({ title: 'Tableau de bord', month: s.month, from: per.from, kickerId: 'dashboard-caption' }));
 
     if (!s.months.length) {
-      // Empty state: one line of ink-2 text; admins can run the first synchronisation from here.
+      // Admins can run the first synchronisation from here.
       var empty = UI.empty('Aucune donnée pour le moment. ' + (canEdit ?
         'La synchronisation crée le mois en cours à partir du Google Sheet source.' :
         'Les données arrivent à la prochaine synchronisation horaire.'));
@@ -196,7 +171,7 @@
     view = { body: body, month: s.month, ready: false, extra: null };
     var v = view;
     UI.asyncBlock(body, {
-      // A period also needs its first month and the history (sparklines; the page works without it).
+      // A period also needs its first month, and the history for sparklines, which is optional.
       load: function () {
         if (per.single) return State.loadMonth(v.month);
         return Promise.all([State.loadMonth(v.month), State.loadMonth(per.from),
@@ -211,7 +186,7 @@
     });
   }
 
-  /** Filter change: only the figures and charts re-render (the header stays). */
+  // A filter change re-renders the body in place and keeps the header.
   function update(changed) {
     var md = view && view.ready && State.getMonthData(view.month);
     if (!md || changed.length !== 1 || changed[0] !== 'filters') return false;

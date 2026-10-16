@@ -819,31 +819,66 @@ State.takeInline(id)             -> JSON.parse of <script type="application/json
 UI.el(tag, attrs?, ...children) -> Element
     attrs: class, id, style (object or string), dataset (object), on<Event> (function), any other
     attribute via setAttribute; `text` sets textContent. children: Node | string | number | null |
-    false | arrays (flattened); strings become text nodes.
+    false | arrays (flattened); strings become text nodes. `value` is set as a property after the children
+    (so <select> works); true -> '', false/null -> omitted. `tooltip` (text | Node) attaches UI.tooltip
+    (js_controls.html); never use title=. innerHTML / outerHTML throw; on* strings, srcdoc and unsafe URLs
+    are dropped.
 UI.clear(node)
+UI.extLink(href, text, attrs?) -> <a target=_blank rel="noopener noreferrer">
 UI.fmtPct(n, digits=1)    -> '30,4 %' (fr-FR); '—' for null
+UI.fmtPctNode(n, digits?) -> span.pct, same text as fmtPct; the space before % is set in the sans face so it
+                             stays narrow inside mono figures
 UI.fmtNum(n)              -> fr-FR integer
+UI.NNBSP                  -> ' ' (narrow no-break space: before %, inside « »)
+UI.quote(s)               -> '« s »' with NNBSP inside; UI.frSpacing(s) fixes the spaces of any « » (UI.el does it)
 UI.badge(text, tone)      -> span.badge.badge-<tone>   tone: 'ok'|'ko'|'warn'|'info'|'neutral'
 UI.scoreBadge(score)      -> badge with fmtPct, tone ok if >= 80 else ko, neutral if null
 UI.riskBadge(level)       -> badge colored with Core.RISK_COLORS
+UI.statusMark(text, tone) -> span.mark.mark-<tone>: 6px square + coloured text; tone: 'ok'|'ko'|'warn'|'info'|
+                             'neutral' or a risk level
+UI.cellMark(column, value) -> read view of a ledger cell: Statut / Niveau de risque as marks, a failed Oui/Non
+                             criterion (« Non ») in --ko text; null for other columns and blank values
 UI.card({title, value, sub?, tone?})       -> metric card
+UI.kpiStrip([{key?, title, value, sub?, tone?, delta?, deltaTone?, spark?}]) -> div.kpi-strip of UI.card cells
+                                              (data-kpi = key; delta: change over the period; spark: UI.sparkline)
+UI.pageHeader({title, kicker?, kickerId?, actions?:[Node]}) -> header.page-header (kicker: small-caps line above)
 UI.section(title, ...children)             -> section with h2
 UI.lede(text, more?, {id?, small?}?)       -> div.lede: one short line (p.page-lede, or p.field-help when small; id on
                                               it), then `more` (string | Node | array) behind « En savoir plus » (native
                                               <details>, closed). Help text stays one line; the detail is one click away.
-UI.asyncBlock(box, {load, render, placeholder?, error?, small?, errorId?, live?}) -> Promise (see js_ui.html)
+UI.asyncBlock(box, {load, render, placeholder?, error?, small?, errorId?, live?}) -> Promise
+    placeholder (node or function) + aria-busy while load() runs, then render(data, box), or UI.errorState with
+    « Réessayer » (error: {prefix, retry?} or err => that object). A result is dropped when the box left the page,
+    was reloaded since, or live() returns false.
 UI.monthError(month)      -> {prefix:'Impossible de charger mai 2026', retry} for asyncBlock
 UI.monthHeader({title, month, kickerId, actions?}) -> page header with the « Mai 2026 · Export 2026-05 » kicker
+    from? (a period ending at month): « Avril → octobre 2026 · état fin octobre », endLabel? replacing « état »;
+    the kicker carries data-month (and data-from); « Aucun export importé » without a month.
 UI.noData(id)             -> empty state when no month is synchronised yet (admins: « Synchroniser maintenant »)
 UI.filterNote(scope) / UI.plural(n, one, many) / UI.errorToast(err, context?)
-UI.empty(text)                             -> empty-state block
+UI.empty(text, action? | {action?, small?}) -> one line of ink-2 text ("no data" only), optional action node after it
+UI.loading(text='Chargement…', {small?})   -> spinner + text (role=status); small, user-triggered waits
+UI.skeleton(kind, {label, columns?, rows=6}) -> div.skeleton (role=status, aria-busy, sr-only label): the grey
+    silhouette of a page body while it loads, at the real sizes. kind: 'dashboard' | 'table' (columns: [labels]
+    or a count) | 'chart' | 'lines' | 'form' (UI.formPanel).
+UI.errorState(err|text, {retry?, prefix='Erreur', small?}) -> div.alert-error (role=alert) « Erreur : message »,
+    plus a « Réessayer » text button when retry is given
+UI.errorText(err)         -> err.message (or the string), 'Erreur inconnue.' when empty
 UI.toast(message, type='info'|'success'|'error')
-UI.modal({title, body:Node, actions:[{label, primary?, danger?, onClick:(close)=>any}], wide?}) -> {close}
-UI.confirm(message, {title?, okLabel?, danger?}) -> Promise<bool>
+UI.modal({title, body:Node, actions:[{label, primary?, danger?, onClick:(close)=>any}], wide?, onClose?,
+          initialFocus?}) -> {close, node, buttons, setBusy(bool)}
+    An onClick that returns a Promise keeps the dialog open (UI.busy on that button, the others, × and Escape
+    ignored) until it settles. A dialog with a danger action opens with the focus on the non-destructive button.
+UI.confirm(message, {title?, okLabel?, cancelLabel?, danger?, onConfirm?}) -> Promise<bool>
+    onConfirm() -> Promise keeps the dialog open (busy button) until it settles; a rejection is shown inline.
 UI.formModal({title, fields:[{name, label, type:'text'|'textarea'|'select'|'date'|'month', options?, value?,
-              required?, placeholder?, allowCustom?}], submitLabel?}) -> Promise<values|null>
-    type 'date' shows <input type=date> but the value in/out is 'DD/MM/YYYY' (Core.frToIso/isoToFr).
-    'select' with allowCustom renders <input list> + <datalist>.
+              required?, placeholder?, allowCustom?}], groups?, submitLabel?, onSubmit?, wide?}) -> Promise<values|null>
+    type 'date' is a UI.dateField; the value in/out is 'DD/MM/YYYY' (Core.frToIso/isoToFr).
+    'select' is a UI.dropdown, a combobox with allowCustom (tokens:true: comma-separated tokens); 'month' takes
+    options = known months, value 'YYYY-MM'. Extra keys: hint (help line), min/max (date), mono, disabled,
+    onChange(value, form) (select; form.control(name) is another field's control). Values are trimmed strings.
+    onSubmit(values) -> Promise keeps the modal open (busy submit) until it resolves; a rejection is shown
+    inline (err.field -> under that field) and the values are kept.
 UI.formFields({fields, groups?, onEnter?, onChange?}) -> {form, control(name), values(), collect(), check(name), showError(err),
               clearErrors(), isDirty(), focusFirst(), firstField(), setValues(values)}
     The field loop of UI.formModal / UI.formPanel (same field types and keys, plus `group`). Extra types: 'yesno'
@@ -882,12 +917,23 @@ UI.formPanel({title, subtitle?, subtitleTone?, className?, submitLabel?, note?, 
 UI.tabs(items:[{id, label, render:(root)=>void}], activeId?) -> Element
 UI.multiSelect({label, options:[string], value:[string], onChange:(values)=>void}) -> Element
 UI.select({label?, options:[string|{value,label}], value, onChange}) -> Element
+    Both build a UI.dropdown (js_controls.html), no native <select>. select also takes id? (on the trigger),
+    ariaLabel?, disabled?, mono?, searchable?, placeholder?, size?, allowEmpty?; multiSelect id?, searchable?,
+    placeholder='Toutes'. The element has getValue / setValue / setOptions / setDisabled.
+UI.table({columns, rows, id?, className?, caption?, cells?(row, i), rowAttrs?(row, i), extraRows?(row, i)})
+         -> div.table-scroll (.table = the <table>): read-only ledger table
+    columns: [{label, key?, num?, mono?, wrap?, width?, rowHeader?, className?, cell?(row, i)}]; any width
+    switches to a fixed layout with a <colgroup>. cells(row, i) returns the contents of a whole row at once.
 UI.editableTable({columns, rows, rowKey='_id', search=true, pageSize=50, onSave?, onRowClick?, emptyText?,
-                  toolbar?:[Node]}) -> {node, setRows(rows), getDirty(), lockColumns(keys)}
+                  toolbar?:[Node], toolbarEnd?:[Node], readOnly?}) -> {node, setRows(rows), getDirty(), lockColumns(keys)}
     columns: [{key, label?, editable?:bool, options?:[string]|null, width?, render?:(row)=>Node|string,
-               sortValue?:(row)=>any}]
-    Click on an editable cell -> inline <select> (options + current value + '' ) or <input>; edits are
-    kept as dirty until "Enregistrer (n)" -> onSave(changes:[{id, updates}]) (Promise); "Annuler" reverts.
+               sortValue?:(row)=>any, numeric?, mono?, type?:'date'}]
+    toolbarEnd: placed at the right end, after search + count. readOnly (lecteurs): editable columns render as
+    plain cells, no dirty bar; sorting, search, paging and onRowClick stay. The search box is a UI.searchField.
+    Click on an editable cell -> an editor laid over the cell (the column keeps its width): UI.dropdown (sm,
+    opened at once) for `options`, UI.dateField for date columns (type 'date', or a label with Date / Deadline /
+    Prochaine revue / Échéance), else a text input. Edits are kept as dirty until "Enregistrer (n)" (UI.busy)
+    -> onSave(changes:[{id, updates}]) (Promise); "Annuler" reverts.
     The dirty map (id -> {column: value}) and `updates` have no prototype: an id or a column named '__proto__'
     is an entry, never Object.prototype.
     Sorting by header click, text search across visible columns, pagination. lockColumns(keys): those columns
@@ -900,6 +946,16 @@ UI.toggle({id, label, description?, checked, onChange?(checked) -> Promise|void,
     Space / Enter / click (also on the label) switch it; the new state shows at once, the button is busy
     (aria-busy, aria-disabled, keeps the focus) while the returned promise runs and goes back on rejection.
     getValue(), setValue(bool) (no onChange), setDisabled(bool), .control (the button). (js_controls.html)
+UI.monthField({id?, name?, value 'YYYY-MM', options?, onChange?, onValidate?, required?, size?, ariaLabel?,
+               labelledBy?, placeholder='AAAA-MM', className?}) -> div.dd-field
+    Like UI.dateField for months: AAAA-MM mask checked by Core.validateMonth, year / 12-month grid popover
+    (known months marked « importé »). Same methods as dateField.
+UI.checkbox({checked, label, onChange?(checked), id?, name?, value?, disabled?}) -> label.cb
+    Drawn checkbox over a visually hidden <input type=checkbox>. getValue(), setValue(bool), setDisabled(bool),
+    .input.
+UI.fieldError(control, message) -> the .field-error node
+    Red message under the field, --ko border, aria-invalid and aria-describedby. control: input, textarea,
+    dropdown, dateField or monthField. An empty message clears it.
 UI.spinner()              -> Element
 UI.downloadCsv(filename, columns:[string], rows:[object])   (client-side CSV export, ';' separator, BOM)
     Every field is quoted, headers included, after Core.escapeFormula: a value such as 'x,=HYPERLINK(…),' stays
