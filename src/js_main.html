@@ -1124,6 +1124,25 @@
     return main.getAttribute('aria-busy') === 'true' || !!main.querySelector('[aria-busy="true"]:not(button)');
   }
 
+  // Easter egg: a click on the ghost of the sidebar or the top bar plays one trick, never the same twice in a row.
+  var TRICKS = { hop: 700, look: 1100, boo: 600, spin: 700, fade: 900, wiggle: 600 };
+  var lastTrick = '';
+  function playTrick(logo) {
+    if (logo.hasAttribute('data-trick')) return;
+    var names = Object.keys(TRICKS).filter(function (n) { return n !== lastTrick; });
+    var name = names[Math.floor(Math.random() * names.length)];
+    lastTrick = name;
+    logo.setAttribute('data-trick', name);
+    setTimeout(function () { logo.removeAttribute('data-trick'); }, TRICKS[name]);
+  }
+
+  function watchGhostClicks() {
+    document.addEventListener('click', function (e) {
+      var logo = e.target instanceof Element ? e.target.closest('.sidebar .brand-logo, .topbar-brand .brand-logo') : null;
+      if (logo) playTrick(logo);
+    });
+  }
+
   function watchLoading() {
     var was = false;
     new MutationObserver(function () {
@@ -1142,6 +1161,7 @@
     // index.html already picked one for the splash.
     if (!document.documentElement.hasAttribute('data-ghost')) pickGhost();
     watchLoading();
+    watchGhostClicks();
     document.body.classList.toggle('nav-collapsed', readLocalSidebar() === 'collapsed');
     var toggle = document.getElementById('nav-toggle');
     if (toggle && !toggle.dataset.bound) {

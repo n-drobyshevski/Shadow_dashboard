@@ -1061,26 +1061,46 @@ details.form-section[open] > :not(summary), details.more[open] > :not(summary), 
 
 /* The ghost moves while data loads: the splash, a month change, a block loading, a sync.
    data-ghost (js_main.html) picks floating or looking around for each wait; looking is the default. */
-.splash .brand-logo, body.is-syncing .brand-logo,
-.app:has(#main[aria-busy="true"], #main [aria-busy="true"]:not(button)) .brand-logo {
+.splash .brand-logo:not([data-trick]), body.is-syncing .brand-logo:not([data-trick]),
+.app:has(#main[aria-busy="true"], #main [aria-busy="true"]:not(button)) .brand-logo:not([data-trick]) {
   transform-origin: 50% 90%; animation: ghost-sway 2.4s ease-in-out infinite;
 }
-.splash .brand-logo .icon-fill, body.is-syncing .brand-logo .icon-fill,
-.app:has(#main[aria-busy="true"], #main [aria-busy="true"]:not(button)) .brand-logo .icon-fill {
+.splash .brand-logo:not([data-trick]) .icon-fill, body.is-syncing .brand-logo:not([data-trick]) .icon-fill,
+.app:has(#main[aria-busy="true"], #main [aria-busy="true"]:not(button)) .brand-logo:not([data-trick]) .icon-fill {
   transform-box: fill-box; animation: ghost-look 2.4s ease-in-out infinite;
 }
-html[data-ghost="float"] .splash .brand-logo, html[data-ghost="float"] body.is-syncing .brand-logo,
-html[data-ghost="float"] .app:has(#main[aria-busy="true"], #main [aria-busy="true"]:not(button)) .brand-logo {
+html[data-ghost="float"] .splash .brand-logo:not([data-trick]), html[data-ghost="float"] body.is-syncing .brand-logo:not([data-trick]),
+html[data-ghost="float"] .app:has(#main[aria-busy="true"], #main [aria-busy="true"]:not(button)) .brand-logo:not([data-trick]) {
   animation: ghost-float 1.8s ease-in-out infinite;
 }
-html[data-ghost="float"] .splash .brand-logo .icon-fill, html[data-ghost="float"] body.is-syncing .brand-logo .icon-fill,
-html[data-ghost="float"] .app:has(#main[aria-busy="true"], #main [aria-busy="true"]:not(button)) .brand-logo .icon-fill {
+html[data-ghost="float"] .splash .brand-logo:not([data-trick]) .icon-fill, html[data-ghost="float"] body.is-syncing .brand-logo:not([data-trick]) .icon-fill,
+html[data-ghost="float"] .app:has(#main[aria-busy="true"], #main [aria-busy="true"]:not(button)) .brand-logo:not([data-trick]) .icon-fill {
   transform-origin: center; animation: ghost-blink 3.6s ease-in-out infinite;
 }
 @keyframes ghost-sway { 0%, 100% { transform: none; } 35% { transform: rotate(-4deg); } 65% { transform: rotate(4deg); } }
 @keyframes ghost-float { 0%, 100% { transform: none; } 50% { transform: translateY(-12%); } }
 @keyframes ghost-blink { 0%, 44%, 52%, 100% { transform: none; } 48% { transform: scaleY(.1); } }
 @keyframes ghost-look { 0%, 15%, 85%, 100% { transform: none; } 30%, 45% { transform: translateX(-60%); } 60%, 75% { transform: translateX(60%); } }
+
+/* A click on the ghost plays one trick at random (js_main.html sets data-trick, then clears it). */
+.sidebar .brand-logo, .topbar-brand .brand-logo { cursor: pointer; }
+.brand-logo[data-trick] { transform-origin: 50% 90%; }
+.brand-logo[data-trick] .icon-fill { transform-box: fill-box; transform-origin: center; }
+.brand-logo[data-trick="hop"] { animation: trick-hop 700ms var(--ease-out); }
+.brand-logo[data-trick="hop"] .icon-fill { animation: ghost-blink 700ms ease-in-out; }
+.brand-logo[data-trick="look"] { animation: ghost-sway 1100ms ease-in-out; }
+.brand-logo[data-trick="look"] .icon-fill { animation: ghost-look 1100ms ease-in-out; }
+.brand-logo[data-trick="boo"] { animation: trick-boo 600ms var(--ease-out); }
+.brand-logo[data-trick="boo"] .icon-fill { animation: trick-wide 600ms var(--ease-out); }
+.brand-logo[data-trick="spin"] { transform-origin: 50% 50%; animation: trick-spin 700ms var(--ease-out); }
+.brand-logo[data-trick="fade"] { animation: trick-fade 900ms ease-in-out; }
+.brand-logo[data-trick="wiggle"] { animation: trick-wiggle 600ms ease-in-out; }
+@keyframes trick-hop { 30% { transform: translateY(-28%); } 55% { transform: none; } 75% { transform: translateY(-10%); } }
+@keyframes trick-boo { 35% { transform: scale(1.3) rotate(-6deg); } }
+@keyframes trick-wide { 20%, 60% { transform: scale(1.6); } }
+@keyframes trick-spin { to { transform: rotateY(360deg); } }
+@keyframes trick-fade { 50% { opacity: .1; transform: translateY(-10%); } }
+@keyframes trick-wiggle { 20% { transform: rotate(-12deg); } 40% { transform: rotate(10deg); } 60% { transform: rotate(-8deg); } 80% { transform: rotate(5deg); } }
 
 /* Reduced motion: the scroll-driven edge fades stay, since they track scroll position and nothing moves. */
 @media (prefers-reduced-motion: reduce) {

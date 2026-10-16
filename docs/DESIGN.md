@@ -272,7 +272,9 @@ with the system fallbacks above. The stylesheet must not block the first paint (
 - **Ghost logo**: while something loads (the splash, a month change, any `aria-busy` block in the page,
   a sync started from this tab) the ghost in the sidebar, the top bar and the splash foot moves. Each
   wait draws one of two loops at random (`html[data-ghost]`): it floats and blinks, or it looks left
-  and right and sways. It is still the rest of the time.
+  and right and sways. It is still the rest of the time. A click on the ghost of the sidebar or the
+  top bar plays one trick at random (hop, look around, « boo », spin, fade, wiggle; never the same twice
+  in a row), over the loading loop if one runs.
 
 ## Motion
 Short and quiet: the interface answers a click without drawing attention. Tokens `--d1` 110 ms
