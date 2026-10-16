@@ -1,18 +1,14 @@
 <style>
-/* Suivi des actions (docs/API.md §6, docs/DESIGN.md). Everything else comes from css.html / css_controls.html:
-   page header, stat line, status / priority marks, ledger tables, row actions, sections, notes. Only the
-   column behaviour of these ledgers and the phone layout of the change-detection tables live here. */
+/* Suivi des actions: ledger column widths and the phone layout of the change-detection tables. */
 .page-actions .act-header-slot { display: contents; }
 .page-actions .act-panel { display: flex; flex-direction: column; gap: var(--s4); }
-/* Remediation ledger: 11 columns fit the 1072px main column at 1400px (tighter cell padding); free-text
-   columns wrap (the full text is also in the edit form opened by a row click). */
+/* Tighter padding so the 11 columns fit the 1072px main column; free-text columns wrap. */
 .page-actions #actions-table :is(th, td) { padding-left: 6px; padding-right: 6px; }
 .page-actions #actions-table td:is([data-col="action"], [data-col="equipe"], [data-col="responsable"]) {
   white-space: normal; line-height: 1.35; padding-top: 6px; padding-bottom: 6px;
 }
 .page-actions #actions-table td[data-col="action"] { min-width: 160px; max-width: 300px; }
 .page-actions #replacements-table td[data-col="comment"] { white-space: normal; min-width: 200px; max-width: 360px; line-height: 1.35; }
-/* Overdue deadline: the date, « ■ En retard » under it (12px). */
 .page-actions .deadline-cell { display: inline-flex; flex-direction: column; align-items: flex-start; line-height: 16px; }
 .page-actions .deadline-cell .mark { font-size: 12px; }
 /* Change detection */
@@ -32,17 +28,16 @@
   .page-actions .diff-controls .diff-arrow { display: none; }
   .page-actions .diff-controls .dd-label { min-width: 8.5em; }
 }
-/* Phones: no sideways scroll. Record / change tables drop their secondary columns; resolved actions become
-   two-line rows (name | action, then the full-width button or the « Déjà enregistrée » mark). */
+/* Phones: no sideways scroll, so secondary columns go and resolved actions become two-line rows. */
 @media (max-width: 640px) {
   .page-actions .diff-table { min-width: 0; table-layout: auto; }
   .page-actions .diff-table-record :is(th, td, col):nth-child(2), .page-actions .diff-table-record :is(th, td, col):nth-child(3),
   .page-actions .diff-table-change :is(th, td, col):nth-child(2) { display: none; }
   .page-actions .diff-table td, .page-actions .diff-table th { white-space: normal; }
-  /* Words break between syllables (hyphens, lang="fr"), never mid-word; only the mono ids / values may. */
+  /* Only mono ids and values may break mid-word; prose hyphenates. */
   .page-actions .diff-table :is(td, th).is-wrap { overflow-wrap: break-word; hyphens: auto; }
   .page-actions .diff-table td.mono, .page-actions .diff-table .diff-values { overflow-wrap: anywhere; hyphens: none; }
-  /* Modifications: Poste 26 %, Champ 30 % (« Score conformité » on two whole lines), values the rest. */
+  /* 30 % keeps « Score conformité » on two whole lines. */
   .page-actions .diff-table-change col:nth-child(1) { width: 26% !important; }
   .page-actions .diff-table-change col:nth-child(3) { width: 30% !important; }
   .page-actions .diff-table-change col:nth-child(4) { width: auto !important; }
@@ -61,44 +56,9 @@
 }
 </style>
 <script>
-/**
- * Pages.actions — "Suivi des actions" (docs/API.md §6).
- *
- * Three tabs (UI.tabs):
- *   1. Actions de remédiation   — status / type filters (toolbar), counts per status + overdue (stat line),
- *                                  ledger; row click opens the action form (edit), « Supprimer » row action.
- *   2. Remplacements de postes  — ledger, add / edit (row click) / delete.
- *   3. Détection des changements — two month dropdowns -> api_getDiff -> removed / added / changed postes,
- *                                  resolved actions (« Enregistrer comme terminée » -> api_addAction status
- *                                  'Terminé'), same for applications.
- * Period (app bar « avril → octobre »): the two ledgers keep the records dated inside it (actions created or
- * completed, replacements), and change detection compares its first and last months by default.
- * The global sidebar Équipe filter applies to the three tabs (State.filterByEquipe); the Bâtiment / Labo filter
- * does not apply to actions (the filter note says so).
- *
- * Read-only mode (lecteur, !State.canEdit()): no « Nouvelle action » / « Nouveau remplacement », no « Supprimer »
- * column, no « Enregistrer comme terminée ». A remediation row click opens a details drawer (every field,
- * comment included) instead of the edit form; replacement rows are not clickable (the table shows every field).
- * Change detection is unchanged otherwise (api_getDiff is allowed).
- *
- * Forms are UI.formModal with onSubmit: the modal stays open (busy button) while the server call runs and
- * keeps the typed values with the error inline when it fails.
- *
- * Shared action form — window.ActionForm (one form, one copy, one toast for every place that creates an
- * action: this page and the Postes / Applications drawers):
- *   ActionForm.open({existing?, target?: {type:'poste'|'application', name, equipe?}, defaults?: {field: value},
- *                    trigger?: button, onSaved?: (record, {created}) => any}) -> Promise<record|null>
- *     Title « Nouvelle action » / « Modifier l’action », submit « Enregistrer », same 12 fields everywhere.
- *     With `target` the target type / name are prefilled and locked (drawer). `defaults` prefill a new action
- *     (e.g. {action, responsable, deadline} from the poste record). `trigger` shows UI.busy while the
- *     suggestions load. api_addAction gets {target_type, target_name, equipe, action, responsable, priorite,
- *     status, deadline, date_created, date_completed, source_month, comment}; api_updateAction only the
- *     changed fields. Toasts: « Action créée — <cible>. » / « Action mise à jour — <cible>. ». After a
- *     successful write the actions cache is reloaded (State.loadActions({force:true})), then onSaved runs
- *     (re-render from the cache there, no second reload).
- *   ActionForm.statusMark(status), ActionForm.priorityMark(priorite), ActionForm.isOverdue(action),
- *   ActionForm.deadlineCell(action) — the same marks as the Suivi des actions ledger.
- */
+// Suivi des actions page: remediation actions, poste replacements and change detection between two months.
+// Also defines window.ActionForm, the single action form reused by the Postes and Applications drawers.
+// The Équipe filter applies to all three tabs; Bâtiment / Labo does not apply to actions.
 (function () {
   'use strict';
 
@@ -106,33 +66,31 @@
   var KEY_POSTE = Core.KEY_POSTE;
   var KEY_APP = Core.KEY_APP;
   var CLOSED_STATUSES = ['Terminé', 'Abandonné'];
-  // Colour = status only. À faire = hollow neutral mark (the accent blue is kept for interactive elements),
-  // Abandonné = ink-3. Priority is NOT a status: neutral ink marks told apart by weight and marker shape.
+  // Colour is for status only: blue is kept for interactive elements, and priority uses neutral marks.
   var STATUS_TONES = { 'À faire': 'neutral', 'En cours': 'warn', 'Terminé': 'ok', 'Abandonné': 'muted' };
   var PRIORITY_CLASS = { 'Haute': 'priority-haute', 'Moyenne': 'priority-moyenne', 'Basse': 'priority-basse' };
   var TYPE_LABELS = { poste: 'Poste', application: 'Application' };
 
-  var token = 0;                 // bumped on every mount/unmount: stale async renders are dropped
-  var activeTab = 'remediation'; // survives re-mounts
+  // Bumped on every mount and unmount so stale async renders can be dropped.
+  var token = 0;
+  var activeTab = 'remediation';
   var actionFilters = { status: '', type: '' };
-  var diffChoice = null;         // {base, oldMonth, newMonth}: user's months, valid while the global month is `base`
-  var lastDiff = null;           // last api_getDiff result (re-rendered after "Enregistrer comme terminée")
-  var headerSlot = null;         // page-header actions of the active tab (create button), see setHeaderAction
-  var drawerHandle = null;       // read-only action details drawer (lecteurs), closed on unmount
-
-  // ------------------------------------------------------------------------------ small helpers
+  // The user's chosen months, valid only while the global month and period match `base`.
+  var diffChoice = null;
+  // Kept so « Enregistrer comme terminée » can re-render without another api_getDiff call.
+  var lastDiff = null;
+  var headerSlot = null;
+  var drawerHandle = null;
 
   function todayFr() { return Core.fmtDDMMYYYY(new Date()); }
   function todayIso() { return Core.frToIso(todayFr()); }
 
-  /** True when the action has a past deadline and is still open. */
   function isOverdue(a) {
     if (CLOSED_STATUSES.indexOf(Core.str(a.status)) >= 0) return false;
     var iso = Core.frToIso(Core.str(a.deadline));
     return !!iso && iso < todayIso();
   }
 
-  /** Sort key for 'DD/MM/YYYY' columns. */
   function frSortValue(v) { return Core.frToIso(Core.str(v)) || ''; }
 
   function statusMark(status) {
@@ -140,7 +98,6 @@
     return s ? UI.statusMark(s, STATUS_TONES[s] || 'neutral') : UI.statusMark('—', 'neutral');
   }
 
-  /** Neutral priority mark (weight + square shape, no colour); {long:true} -> « Priorité haute ». */
   function priorityMark(p, o) {
     var s = Core.str(p);
     if (!s) return '';
@@ -148,7 +105,6 @@
       o && o.long ? 'Priorité ' + s.toLowerCase() : s);
   }
 
-  /** Identifier cell: poste names in mono, application names in sans (docs/DESIGN.md "Tables"). */
   function targetCell(type, name) {
     var n = Core.str(name);
     return type === 'application' ? el('span', { class: 'act-app' }, n) : el('span', { class: 'mono' }, n);
@@ -159,7 +115,6 @@
     return d ? el('span', { class: 'mono' }, d) : '';
   }
 
-  /** Overdue deadline: the date + « ■ En retard » (status in words, same mark as the drawers). */
   function deadlineCell(a) {
     var d = Core.str(a.deadline);
     if (!d) return '';
@@ -177,17 +132,15 @@
     return out.sort(function (a, b) { return a.localeCompare(b, 'fr'); });
   }
 
-  /** Month data of the selected global month (for suggestions); resolves to null when unavailable. */
   function monthData() {
     var m = State.get().month;
     if (!m) return Promise.resolve(null);
     return State.loadMonth(m).then(null, function () { return null; });
   }
 
-  /** Suggestions for the forms (postes / applications / équipes of the current month). */
   function loadSuggestions() {
     return monthData().then(function (md) {
-      return State.loadActions().then(function (data) { return data; }, function () { return null; }).then(function (data) {
+      return State.loadActions().then(null, function () { return null; }).then(function (data) {
         var postes = md ? Core.uniqueSorted(md.postes, KEY_POSTE) : [];
         var apps = md ? Core.uniqueSorted(md.applications, KEY_APP) : [];
         var ref = md && md.referentiel ? (md.referentiel['Équipe'] || []) : [];
@@ -201,7 +154,6 @@
     });
   }
 
-  /** Équipe of a poste / application in the current month (used when the form left it blank). */
   function equipeOf(md, type, name) {
     if (!md || !name) return '';
     var list = type === 'application' ? md.applications : md.postes;
@@ -211,7 +163,6 @@
     return rec ? Core.str(rec['Équipe']) : '';
   }
 
-  /** Changed fields of a form against the stored record ({} when nothing changed). */
   function changedFields(values, existing) {
     var updates = {};
     Object.keys(values).forEach(function (k) {
@@ -220,17 +171,12 @@
     return updates;
   }
 
-  /** Re-fetches actions/replacements, then re-renders the active tab (if still mounted). */
   function refreshAfterWrite(ctx) {
     return State.loadActions({ force: true }).then(function () {
       if (ctx.token === token) ctx.rerender();
     }, function (err) { UI.errorToast(err, 'Actualisation impossible'); });
   }
 
-  /**
-   * Page-level create action of the active tab, in the page header like on the other pages
-   * (right-aligned). Nothing for "Détection des changements".
-   */
   function setHeaderAction(node) {
     if (!headerSlot) return;
     UI.clear(headerSlot);
@@ -238,12 +184,7 @@
     headerSlot.hidden = !node;
   }
 
-  /**
-   * One ledger tab (actions, remplacements): header create button, skeleton, then — once the actions cache
-   * is loaded — the filter note, the « nothing yet » / « nothing for this équipe » states or o.build(rows)
-   * (rows = the o.pick list within the global Équipe filter, sorted with o.sort). Over a period (app bar),
-   * only the records with a date inside it (o.dates) are kept, under a note (o.periodText / o.emptyPeriod).
-   */
+  // Shared shell of the actions and replacements tabs: filters by Équipe and period, then calls o.build(rows).
   function ledgerTab(panel, ctx, o) {
     setHeaderAction(o.addBtn);
     UI.asyncBlock(panel, {
@@ -258,7 +199,6 @@
         if (!all.length) { panel.appendChild(UI.empty(o.emptyAll)); return; }
         var rows = State.filterByEquipe(all);
         if (!rows.length) { panel.appendChild(UI.empty(o.emptyTeam)); return; }
-        // A period (app bar) keeps the records dated inside it (o.dates: DD/MM/YYYY strings of a record).
         var per = State.period();
         if (!per.single) {
           panel.appendChild(el('p', { class: 'filter-note period-note', id: o.pick + '-period-note', role: 'status' },
@@ -276,12 +216,7 @@
     });
   }
 
-  /**
-   * Create / edit form of a ledger record (action or remplacement): suggestions (busy trigger), UI.formModal,
-   * api add / update of the changed fields only, « Aucune modification. » when nothing changed.
-   * o: {existing?, trigger?, titles:[new, edit], wide?, fields(sug), prepare(values, sug) -> record,
-   *     addApi, updateApi, toast(saved, created) -> text, after(saved, created)} -> Promise<saved|null>
-   */
+  // Create or edit form for an action or a replacement; an edit sends only the changed fields.
   function recordForm(o) {
     var existing = o.existing || null;
     var loading = loadSuggestions();
@@ -316,14 +251,12 @@
     });
   }
 
-  /** Quiet destructive text button of a ledger row (32px hit area, never stacked). */
   function deleteButton(label, onDelete) {
     return el('span', { class: 'row-actions' },
       el('button', { type: 'button', class: 'btn btn-quiet is-danger btn-delete', 'aria-label': 'Supprimer ' + label,
         onClick: function (e) { e.stopPropagation(); onDelete(); } }, 'Supprimer'));
   }
 
-  /** Deletion behind a danger confirm: the dialog stays open (busy) until the server answers. */
   function confirmDelete(ctx, message, title, call, doneText) {
     return UI.confirm(message, { title: title, okLabel: 'Supprimer', danger: true, onConfirm: call }).then(function (ok) {
       if (!ok) return null;
@@ -332,9 +265,7 @@
     });
   }
 
-  // ------------------------------------------------------------------------------ shared action form
-
-  /** « Dans 1 semaine », « Fin du mois », « Dans 3 mois » from today (DD/MM/YYYY). */
+  // Shared action form
   function deadlineShortcuts() {
     var now = new Date();
     function plusDays(n) { var d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + n); return Core.fmtDDMMYYYY(d); }
@@ -344,22 +275,15 @@
       { label: 'Dans 3 mois', value: Core.fmtDDMMYYYY(in3) }];
   }
 
-  /**
-   * The action form: what matters first (Cible, Action, Priorité as three buttons, Échéance with shortcuts), the
-   * rest under « Plus d’options » (open when editing). The Cible's type follows a known poste / application.
-   */
+  // The main fields come first; the rest sit under « Plus d’options ».
   function actionFields(v, sug, target) {
     var locked = !!target;
-    /**
-     * Cible suggestions: postes (mono identifiers) and applications (names, sans) under their group label,
-     * the group of the chosen « Type de cible » first.
-     */
+    // The group matching the chosen type is listed first.
     function targetOptionsFor(type) {
       var postes = sug.postes.map(function (p) { return { value: p, label: p, group: 'Postes', mono: true }; });
       var apps = sug.apps.map(function (a) { return { value: a, label: a, group: 'Applications' }; });
       return type === 'application' ? apps.concat(postes) : postes.concat(apps);
     }
-    /** 'poste' | 'application' for a known name ('' for a free text). */
     function typeOf(name) {
       var k = Core.normKey(name);
       if (!k) return '';
@@ -407,13 +331,11 @@
     ];
   }
 
-  /** « Plus d’options » of the action form: closed for a new action, open when editing one. */
   function actionGroups(existing) {
     return [{ id: 'more', title: 'Plus d’options', open: !!existing,
       hint: 'Statut, équipe, responsable, dates, commentaire' }];
   }
 
-  /** Fills the derived values: completion date when closed as 'Terminé', équipe from the target. */
   function completeActionValues(values, md) {
     var v = Object.assign({}, values);
     if (v.status === 'Terminé' && !v.date_completed) v.date_completed = todayFr();
@@ -421,7 +343,7 @@
     return v;
   }
 
-  /** ActionForm.open (see the header comment). */
+  // o: {existing?, target?, defaults?, trigger?, onSaved?}; a target is prefilled and locked.
   function openActionForm(o) {
     var opts = o || {};
     var existing = opts.existing || null;
@@ -449,7 +371,7 @@
       toast: function (saved, created) {
         return (created ? 'Action créée — ' : 'Action mise à jour — ') + Core.str(saved.target_name) + '.';
       },
-      // Fresh actions cache for every list that shows actions, then the caller's refresh.
+      // Reload the actions cache once here so onSaved can re-render from it.
       after: function (saved, created) {
         return State.loadActions({ force: true }).then(null, function (err) { UI.errorToast(err, 'Actualisation impossible'); })
           .then(function () { return opts.onSaved ? opts.onSaved(saved, { created: created }) : null; })
@@ -458,7 +380,7 @@
     });
   }
 
-  // ------------------------------------------------------------------------------ tab 1: remediation actions
+  // Remediation tab
 
   function filterActions(actions) {
     var f = actionFilters;
@@ -483,7 +405,6 @@
   var STAT_WORDS = { 'À faire': ['à faire', 'à faire'], 'En cours': ['en cours', 'en cours'],
     'Terminé': ['terminée', 'terminées'], 'Abandonné': ['abandonnée', 'abandonnées'] };
 
-  /** "1 à faire  1 en cours  1 terminée  0 abandonnée  ■ 2 en retard sur 2 ouvertes" (figures in .num). */
   function statLine(actions) {
     var c = statusCounts(actions);
     var open = actions.length - c['Terminé'] - c['Abandonné'];
@@ -503,7 +424,7 @@
     return line;
   }
 
-  /** Lecteurs: every field of an action, read only (the admins' row click opens the edit form instead). */
+  // Read-only details for lecteurs, who cannot open the edit form.
   function openActionDetails(a) {
     var type = Core.str(a.target_type);
     var prio = Core.str(a.priorite);
@@ -538,7 +459,7 @@
       periodText: 'actions créées ou terminées dans la période',
       dates: function (a) { return [a.date_created, a.date_completed]; },
       sort: function (a, b) {
-        // Open first, then by deadline (blank last), then by target name.
+        // Open first, then by deadline with blanks last, then by target name.
         var ca = CLOSED_STATUSES.indexOf(a.status) >= 0 ? 1 : 0;
         var cb = CLOSED_STATUSES.indexOf(b.status) >= 0 ? 1 : 0;
         if (ca !== cb) return ca - cb;
@@ -548,7 +469,7 @@
         return Core.str(a.target_name).localeCompare(Core.str(b.target_name), 'fr');
       },
       build: function (actions) {
-        // Counts per status (within the global Équipe filter, independent of the table filters).
+        // Counts ignore the table's own status and type filters.
         panel.appendChild(statLine(actions));
 
         var table;
@@ -585,7 +506,6 @@
               sortValue: function (a) { return frSortValue(a.date_created); } },
             { key: 'date_completed', label: 'Réalisée', render: function (a) { return dateCell(a.date_completed); },
               sortValue: function (a) { return frSortValue(a.date_completed); } },
-            // « Supprimer » row action: admins only (no empty column for lecteurs).
             canEdit ? { key: '_actions', label: '', sortable: false, render: function (a) {
               return deleteButton('l’action ' + Core.str(a.action), function () {
                 confirmDelete(ctx, 'Supprimer l’action « ' + Core.str(a.action) + ' » (' + Core.str(a.target_name) + ') ?',
@@ -601,7 +521,7 @@
     });
   }
 
-  // ------------------------------------------------------------------------------ tab 2: replacements
+  // Replacements tab
 
   function replacementFields(r, sug) {
     var v = r || { date_replacement: todayFr() };
@@ -652,7 +572,6 @@
       periodText: 'remplacements datés de la période',
       dates: function (r) { return [r.date_replacement]; },
       sort: function (a, b) {
-        // Most recent first.
         var da = frSortValue(a.date_replacement);
         var db = frSortValue(b.date_replacement);
         return da === db ? 0 : (da < db ? 1 : -1);
@@ -686,29 +605,21 @@
     });
   }
 
-  // ------------------------------------------------------------------------------ tab 3: change detection
+  // Change detection tab
 
-  /** Default comparison: previous month -> selected global month (or latest when it has no predecessor). */
+  // Compares the selected month with the previous one, or the latest month when it has no predecessor.
   function defaultDiffMonths(months, current) {
     var newMonth = months.indexOf(current) >= 0 && Core.previousMonth(months, current) ? current : months[months.length - 1];
     return { oldMonth: Core.previousMonth(months, newMonth) || months[0], newMonth: newMonth };
   }
 
-  /**
-   * Column widths (%) of the diff tables. The first two columns (poste / application, équipe) are the same
-   * in every schema, so that all the stacked tables (retirés / ajoutés / modifications / actions résolues)
-   * line up. Index = column: [width %, 'num' (numeric) | 'wrap' (free text) | null, cell class].
-   */
+  // Per column: [width %, 'num' or 'wrap', cell class]. The first columns match so the stacked tables line up.
   var DIFF_SCHEMAS = {
     record: [[30], [18, 'wrap'], [18, 'wrap'], [12, 'num'], [22]],
     change: [[30], [18, 'wrap'], [18, 'wrap'], [34, 'wrap', 'diff-values']],
     resolved: [[30], [18, 'wrap'], [18, 'wrap', 'diff-action-text'], [12, 'wrap'], [22, 'wrap', 'diff-done-cell']]
   };
 
-  /**
-   * One diff table (UI.table). rows: [{attrs (of the <tr>), cells: [content per column]}]. The first column
-   * is the poste (mono identifier) or the application name (sans).
-   */
   function diffTable(id, headers, rows, schema, type) {
     var cols = DIFF_SCHEMAS[schema];
     return UI.table({
@@ -725,7 +636,7 @@
     });
   }
 
-  /** Conformity fields whose change has a known direction: 'better' | 'worse' | null. */
+  // Fields whose change has a known direction.
   var CRITERIA_OK = { 'IT Decathlon': 'Oui', 'EDR Decathlon': 'Oui', 'Chiffrement disque': 'Oui', 'Réseau Decathlon': 'Oui',
     'Type de compte': 'Nominatif', 'Contrat': 'Oui', 'SIP': 'Oui', 'Galink': 'Oui', 'IDP': 'Oui' };
   var SCORE_FIELDS = { 'Score conformité': true };
@@ -747,7 +658,8 @@
       var io = Core.RISK_ORDER.indexOf(o);
       var inn = Core.RISK_ORDER.indexOf(n);
       if (io < 0 || inn < 0 || io === inn) return null;
-      return inn > io ? 'better' : 'worse';   // RISK_ORDER runs from Critique to Faible
+      // RISK_ORDER runs from Critique to Faible.
+      return inn > io ? 'better' : 'worse';
     }
     if (Object.prototype.hasOwnProperty.call(CRITERIA_OK, col)) {
       var okV = CRITERIA_OK[col];
@@ -757,7 +669,6 @@
     return null;
   }
 
-  /** A source value as shown in the diff: scores through the shared fr-FR formatter, blanks as ∅. */
   function diffValue(col, v) {
     var s = Core.str(v);
     if (!s) return '∅';
@@ -768,7 +679,6 @@
     return s;
   }
 
-  /** Sub-block of a diff group: small-caps sub-label "Postes retirés (1)", then a table or one line. */
   function diffSection(id, title, count, content, emptyText) {
     return el('div', { class: 'diff-section' + (count ? '' : ' is-empty'), id: id, dataset: { count: String(count) } },
       el('h3', { class: 'subsection-title' }, title + ' (' + count + ')'),
@@ -792,8 +702,6 @@
     });
   }
 
-  /** An identical action = same target type + name + action text, already closed as 'Terminé'. */
-  /** Recorded action with the same target and wording as a resolved one, whose status passes `statusOk`. */
   function findSameAction(actions, type, ra, statusOk) {
     return actions.filter(function (a) {
       return a.target_type === type && Core.normKey(a.target_name) === Core.normKey(ra.name) &&
@@ -809,11 +717,11 @@
       var open = done ? null : findSameAction(actions, type, ra, isOpen);
       var cell;
       if (done) {
-        // Already recorded: a status mark, not a disabled button.
+        // A status mark rather than a disabled button.
         cell = UI.statusMark('Déjà enregistrée', 'ok');
         cell.classList.add('diff-done-mark');
       } else if (!State.canEdit()) {
-        // Lecteurs: recording it is an admin write (api_addAction); only say whether it is already tracked.
+        // Lecteurs cannot record it, so only say whether it is already tracked.
         cell = open ? el('div', { class: 'diff-open-note' }, 'Déjà suivie :', statusMark(open.status)) :
           el('span', { class: 'faint' }, 'Non enregistrée');
       } else {
@@ -846,7 +754,6 @@
     UI.clear(box);
     var p = diff.postes || {};
     var a = diff.applications || {};
-    // The global Équipe filter applies here too (Bâtiment / Labo does not: see the filter note).
     var byTeam = function (list, key) { return State.filterByEquipe(list || [], key); };
     var pRemoved = byTeam(p.removed, 'Équipe');
     var pAdded = byTeam(p.added, 'Équipe');
@@ -865,7 +772,6 @@
         count(pChanges.length, 'modifié')),
       el('span', null, 'Applications : ', count(aRemoved.length, 'retirée'), ' · ', count(aAdded.length, 'ajoutée'))));
 
-    // Postes
     var changeRows = [];
     pChanges.forEach(function (ch) {
       Object.keys(ch.diffs || {}).forEach(function (col) {
@@ -896,7 +802,6 @@
           resolvedRows(ctx, pResolved, 'poste', actions, diff), 'resolved', 'poste'),
         'Aucune action résolue.')));
 
-    // Applications
     var appCols = ['Équipe', 'Éditeur', 'score', 'risk'];
     var appHeaders = ['Application', 'Équipe', 'Éditeur', 'Score', 'Niveau de risque'];
     box.appendChild(diffGroup('diff-apps', 'Applications',
@@ -935,7 +840,7 @@
       return;
     }
 
-    // Default: the period's first and last months; a single month is compared with the previous one.
+    // Over a period, compare its first and last months by default.
     var per = State.period();
     var base = s.month + '|' + (per.single ? '' : per.from);
     if (!diffChoice || diffChoice.base !== base ||
@@ -986,7 +891,7 @@
       selectFor('diff-new', 'Mois comparé', 'newMonth')));
     panel.appendChild(result);
 
-    // After "Enregistrer comme terminée", re-render the last result with fresh actions (no new diff call).
+    // After « Enregistrer comme terminée », reuse the last diff with fresh actions rather than call api_getDiff.
     if (ctx.reuseDiff && lastDiff && lastDiff.oldMonth === diffChoice.oldMonth && lastDiff.newMonth === diffChoice.newMonth) {
       var diff = lastDiff;
       State.loadActions().then(function (data) {
@@ -1000,8 +905,6 @@
     }
   }
 
-  // ------------------------------------------------------------------------------ page
-
   function mount(root) {
     var myToken = ++token;
     var s = State.get();
@@ -1011,7 +914,6 @@
         'Aucun export importé', actions: [headerSlot] }));
 
     var tabs;
-    /** Context shared by the tab renderers; rerender() redraws the active tab after a write. */
     function makeCtx(reuseDiff) {
       return {
         token: myToken,
@@ -1019,7 +921,7 @@
         rerender: function () {
           if (myToken !== token) return;
           var id = tabs.getActive();
-          // Change detection: keep the current comparison, only refresh the action-dependent buttons.
+          // On change detection, keep the current comparison and refresh only the action buttons.
           rerenderWith = id === 'diff';
           tabs.activate(id);
           rerenderWith = false;

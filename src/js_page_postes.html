@@ -1,16 +1,7 @@
 <script>
-/**
- * Pages.postes — workstation inventory (docs/API.md §6 "Postes"), typeset per docs/DESIGN.md. Built by
- * InventoryPage (js_page_inventory.html): header (« Exporter CSV » / « Poste générique » / « Nouveau poste »),
- * stat line, editable ledger, conformity filter. Specific here: the computed « Score » / « Applis » columns, the
- * « Nouveau poste » form (EntityForm: fields read from the source sheet, in sections), the generic poste and the
- * drawer (criteria, installed applications, linked remediation actions).
- *
- * Read-only mode (lecteur, !State.canEdit()): no « Nouveau poste » / « Poste générique », no inline editing
- * (plain cells, a click anywhere on a row opens the drawer), no « Nouvelle action »; CSV export and the drawer
- * stay. Admins lose the create buttons when Paramètres turns creation off (State.can('create')), the inline
- * editors when it turns modification off (State.can('edit')); « Nouvelle action » stays.
- */
+// Postes page: the workstation ledger, built on InventoryPage.
+// Adds the Score / Applis columns, the « Nouveau poste » form, the generic poste and the poste drawer.
+// Lecteurs and admins with creation/modification turned off in Paramètres keep the CSV export and the drawer.
 (function () {
   'use strict';
 
@@ -21,11 +12,7 @@
     return Core.str(v).split(',').map(function (x) { return x.trim(); }).filter(Boolean);
   }
 
-  /**
-   * Applications of a poste: relations from the applications' « Installé sur poste » plus the names
-   * declared in the poste's own « Application » column (deduplicated with Core.normKey).
-   * -> [{application, equipe, score|null, linked:bool, declared:bool}]
-   */
+  // Apps linked through « Installé sur poste » plus those named in the poste's own « Application » column.
   function installedApps(rec, relation) {
     var name = Core.str(rec[KEY]);
     var out = [];
@@ -45,9 +32,6 @@
     return out;
   }
 
-  // ------------------------------------------------------------------------------ drawer
-
-  /** Yes/No criterion row: label ……… value ■ Conforme | ■ Non conforme | □ Non renseigné. */
   function criterion(label, value, okValue) {
     var v = Core.str(value);
     var state = !v ? 'empty' : (v === okValue ? 'ok' : 'ko');
@@ -98,8 +82,6 @@
     ctx.drawer({ title: name || '(sans nom)', body: body, onClose: function () { closed = true; } });
   }
 
-  // ------------------------------------------------------------------------------ page
-
   function addGeneric(ctx, button) {
     var p = api.call('api_addGenericPoste', { month: ctx.month }).then(function (res) {
       var label = UI.quote(Core.GENERIC_POSTE_NAME);
@@ -113,13 +95,13 @@
       ctx.refresh();
     }, function (err) {
       UI.errorToast(err);
-      // Creation turned off meanwhile (FORBIDDEN): the bootstrap reload removes the create buttons.
+      // If creation was turned off meanwhile, the reload removes the create buttons.
       State.afterWriteError(err);
     });
     UI.busy(button, p);
   }
 
-  /** Sections of the « Nouveau poste » form (EntityForm): source columns by name, unknown ones go to « Autres colonnes ». */
+  // Source columns not listed here end up in « Autres colonnes ».
   var POSTE_SECTIONS = [
     { id: 'identification', title: 'Identification', open: true, columns: [KEY, 'Équipe', 'Bâtiment / Labo', 'Responsable'] },
     { id: 'equipement', title: 'Équipement', open: false, columns: ["Date d'achat", 'Criticité équipement', 'OS', 'Version OS'] },
@@ -142,7 +124,7 @@
     }
   };
 
-  /** « Enchaîner avec un autre poste »: shared by the forms opened in a row (the box stays as left). */
+  // Shared across forms so the checkbox keeps its last state.
   var AGAIN = { label: 'Enchaîner avec un autre poste', checked: false };
 
   function posteForm(ctx) { return State.loadFormSchema('postes', ctx.month); }
@@ -175,7 +157,6 @@
     filtered: function () { return State.hasFilters(); },
     nouns: { one: 'poste', many: 'postes', loading: 'Chargement des postes…', inExport: 'Aucun poste dans cet export.',
       noMatch: 'Aucun poste ne correspond aux filtres.', none: 'Aucun poste.' },
-    /** Source columns shown as identifiers / dates (mono), and as figures. */
     monoColumns: { 'N° Visite': 1, 'Date visite': 1, 'Prochaine revue': 1, "Date d'achat": 1, 'Deadline': 1, 'Version OS': 1 },
     numericColumns: { 'Score conformité': 1 },
     computedColumns: function (ctx) {
