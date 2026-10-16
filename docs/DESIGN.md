@@ -132,15 +132,22 @@ with the system fallbacks above. The stylesheet must not block the first paint (
 - **Modal / drawer**: the only elevated surfaces (shadow `0 12px 32px rgba(0,0,0,.18)`), 6px radius
   (drawer: none, full height, 1px left rule). Backdrop `rgba(22,24,27,.35)`, no blur.
 - **Form panel** (« Nouveau poste », « Nouvelle application »): a drawer, so the table stays in view. Title in
-  sans (« Nouveau poste — mai 2026 »). The fields come in collapsible sections: a hairline on top and the
-  small-caps label led by the same mono +/− marker as the dashboard's detail rows; two columns of fields when
-  the panel is wide enough, one at 390px. Required fields carry a `--ko` asterisk. Columns the Google Sheet
-  computes are no fields: one 12px `--ink-3` note names them. A fallback schema shows its warning as an
-  `alert-warning` line above the form; a 12px `--ink-3` line under it says where the columns were read, with a
-  quiet « Relire les colonnes ». Footer (fixed under the scrolling fields, hairline on top): a 12px `--ink-3`
-  note saying where the record goes, then « Annuler » (secondary) and the primary button; under 480px the note
-  takes its own line and the buttons stay right. Skeleton (label bars + 32px input outlines) while the
+  sans (« Nouveau poste »), and under it one 12px line with the month and where the record goes (« Mai 2026 ·
+  écrit dans le Google Sheet source »; a frozen month in `--warn`). The essentials first: Identification and
+  Conformité open, the other sections closed with a 12px `--ink-3` hint of what they hold. Sections: a hairline
+  on top and the small-caps label led by the same mono +/− marker as the dashboard's detail rows; two columns of
+  fields when the panel is wide enough, one at 390px. Oui / Non columns are two joined buttons (32px, pressed Oui
+  in `--ok` on `--ok-bg`, pressed Non in `--ko` on `--ko-bg`), and « Conformité » counts its Oui on the right of
+  its label. Required fields carry a `--ko` asterisk. Columns the Google Sheet computes are no fields: one 12px
+  `--ink-3` note names them. « Nouvelle application » keeps a « Score prévu » band at the top (`--paper-2`,
+  sticky): the score in 26px mono (`--ok` / `--ko`), the conformity mark, the five criteria as marks and the
+  required fields still empty. A fallback schema shows its warning as an `alert-warning` line above the form; a
+  12px `--ink-3` line under it says where the columns were read, with a quiet « Relire les colonnes ». Footer
+  (fixed under the scrolling fields, hairline on top): « Enchaîner avec un autre poste » (postes) on the left,
+  then « Annuler » (secondary) and the primary button. Skeleton (label bars + 32px input outlines) while the
   columns load. Closing with typed values asks first; while saving nothing closes the panel.
+- **Action form** (modal): Cible, Action, Priorité (three joined buttons, the pressed one in ink) and Échéance
+  (pill shortcuts under the field); « Plus d’options » (a closed section with its hint) holds the rest.
 - **Toasts**: bottom-left, ink background, white text, 3px radius, no icons; errors get a `--ko`
   left bar.
 - **Config screen**: left-aligned within the main column like any page: title "Source de données",
@@ -151,9 +158,17 @@ with the system fallbacks above. The stylesheet must not block the first paint (
   figure field with its `%` unit, primary « Enregistrer », quiet « Rétablir 80 % » only when changed),
   « Saisie dans l’application » (one intro paragraph — for every admin and every month, actions not
   concerned — then three switches: « Modifier les entrées », « Créer des entrées », « Supprimer des
-  entrées », each saved on toggle with a toast), « Accès » (« Autres comptes du domaine » dropdown, ledger table Compte (mono) / Rôle (small dropdown,
-  saved on change) / Ajouté le / « Retirer » quiet destructive button with a confirm; the owner and the
-  signed-in rows are plain text with a « propriétaire » / « vous » note; add form under the table).
+  entrées », each saved on toggle with a toast), « Accès » tab: a `--paper-2` band « Qui d’autre peut ouvrir l’application ? » with a two-button
+  segmented control (« Personne d’autre » / « Tous, en lecture »), then one card « Personnes et groupes »:
+  « Ajouter » (primary, small) beside the title, search + filter chips with counts (Tous · Administrateurs ·
+  Lecteurs · Groupes, `aria-pressed`) + count, one ledger table Nom (28px initials avatar — ink for admins,
+  `--rule` for lecteurs, dashed two-heads icon for groups — address in mono, « Propriétaire » / « Vous »
+  tag, « Groupe Google · ses membres reçoivent ce rôle » under a group) / Rôle (quiet dropdown: a border
+  only on hover / focus, saved on change) / Ajouté le / « Retirer » (quiet destructive, faded until the row
+  is hovered or focused, with a confirm). Rows just added get an `--ok-bg` wash until the next change.
+  « Ajouter un accès » is a wide modal with three tabs (« Un compte » / « Plusieurs comptes » with the live
+  preview / « Un groupe Google », checked by the server) and the role as two radio cards with what each
+  can do; the primary button says what will happen (« Ajouter 2 comptes », « Ajouter le groupe »).
 - **Signed-in account**: last block of the sidebar footer, email in 12px mono `--ink-2`, role under it
   in `--ink-3` (« Lecteur · lecture seule »). Lecteurs get no spreadsheet links and no write controls
   (hidden, not disabled), and no per-page banner.

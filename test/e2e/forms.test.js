@@ -51,11 +51,24 @@ const field = (name) => `${PANEL} [data-name="${name}"]`;
 /** [{id, title, open}] of the sections of the open form. */
 function sections(page) {
   return page.$$eval(`${PANEL} details.form-section`, (ds) => ds.map((d) => ({ id: d.dataset.group,
-    title: d.querySelector('summary').textContent.trim(), open: d.open })));
+    title: d.querySelector('.form-section-label').textContent.trim(), open: d.open })));
 }
 
 function fieldsOf(page, group) {
   return page.$$eval(`${PANEL} details[data-group="${group}"] .form-field`, (fs) => fs.map((f) => f.dataset.field));
+}
+
+/** A yes/no column is two buttons (Oui / Non); any other list a dropdown. */
+async function pick(page, name, value) {
+  const yn = `${PANEL} [data-field="${name}"] .yesno-btn[data-value="${value}"]`;
+  if (await page.$(yn)) await page.click(yn);
+  else await chooseOption(page, field(name), value);
+}
+
+async function picked(page, name) {
+  const yn = `${PANEL} [data-field="${name}"] .yesno`;
+  if (await page.$(yn)) return page.$eval(yn, (g) => (g.querySelector('[aria-pressed="true"]') || {}).textContent || '');
+  return dropdownValue(page, field(name));
 }
 
 async function footerButton(page, label) {
@@ -87,16 +100,20 @@ describe('« Nouveau poste »: the panel', () => {
       await openForm(app);
       // A side panel: the table stays in the page behind it.
       assert.ok(await page.isVisible('#postes-table'));
-      assert.equal((await page.textContent(`${PANEL} .drawer-title`)).trim(), 'Nouveau poste — mai 2026');
+      assert.equal((await page.textContent(`${PANEL} .drawer-title`)).trim(), 'Nouveau poste');
+      assert.equal((await page.textContent(`${PANEL} .drawer-subtitle`)).trim(), 'Mai 2026 · écrit dans le Google Sheet source');
       assert.deepEqual((await callsNamed(app, 'api_getFormSchema')).map((c) => c.args), [{ entity: 'postes', month: MONTH }]);
 
       assert.deepEqual(await sections(page), [
         { id: 'identification', title: 'Identification', open: true },
-        { id: 'equipement', title: 'Équipement', open: true },
+        { id: 'equipement', title: 'Équipement', open: false },
         { id: 'conformite', title: 'Conformité', open: true },
         { id: 'visite', title: 'Visite', open: false },
         { id: 'suivi', title: 'Suivi', open: false },
       ]);
+      // A closed section says what it holds (hidden once open).
+      assert.equal((await page.textContent(`${PANEL} details[data-group="equipement"] .form-section-hint`)).trim(),
+        'Date d\'achat, Criticité équipement, OS, Version OS');
       assert.deepEqual(await fieldsOf(page, 'identification'), [KEY_POSTE, 'Équipe', 'Bâtiment / Labo', 'Responsable']);
       assert.deepEqual(await fieldsOf(page, 'conformite'),
         ['IT Decathlon', 'EDR Decathlon', 'Chiffrement disque', 'Réseau Decathlon', 'Type de compte', 'Enrolée']);
@@ -116,7 +133,8 @@ describe('« Nouveau poste »: the panel', () => {
       assert.equal(await page.$eval(field('Commentaires'), (n) => n.tagName), 'TEXTAREA');
       assert.ok(await page.$(`${field(KEY_POSTE)}.mono`));
 
-      assert.equal((await page.textContent(`${PANEL} .drawer-footer-note`)).trim(), 'Écrit dans le Google Sheet source.');
+      assert.equal(await page.$(`${PANEL} .drawer-footer-note`), null, 'where the poste goes is under the title');
+      assert.equal((await page.textContent(`${PANEL} .form-panel-again`)).trim(), 'Enchaîner avec un autre poste');
       assert.deepEqual(await page.$$eval(`${PANEL} .drawer-footer button`, (bs) => bs.map((b) => b.textContent.trim())),
         ['Annuler', 'Créer le poste']);
       assert.match(await page.textContent(`${PANEL} .form-panel-meta`), /^Colonnes lues dans le Google Sheet source à \d\d:\d\d\.Relire les colonnes$/);
@@ -238,9 +256,10 @@ describe('« Nouveau poste »: saving', () => {
       await page.fill(field(KEY_POSTE), 'LAB-NEW-01');
       await chooseOption(page, field('Équipe'), 'Labo Textile');
       await chooseOption(page, field('Bâtiment / Labo'), 'Bâtiment A');
+      await page.click(`${PANEL} details[data-group="equipement"] > summary`);
       await typeDate(page, field("Date d'achat"), '15/01/2024');
       await chooseOption(page, field('Criticité équipement'), 'Haute');
-      for (const c of ['IT Decathlon', 'EDR Decathlon', 'Chiffrement disque', 'Réseau Decathlon']) await chooseOption(page, field(c), 'Oui');
+      for (const c of ['IT Decathlon', 'EDR Decathlon', 'Chiffrement disque', 'Réseau Decathlon']) await pick(page, c, 'Oui');
       await footerButton(page, 'Créer le poste');
       await waitPanelGone(page);
       await app.waitIdle();
@@ -271,7 +290,7 @@ describe('« Nouveau poste »: saving', () => {
       await openForm(app);
       await page.fill(field(KEY_POSTE), 'LAB-NEW-02');
       await chooseOption(page, field('Équipe'), 'Labo Textile');
-      for (const c of ['IT Decathlon', 'EDR Decathlon', 'Chiffrement disque', 'Réseau Decathlon']) await chooseOption(page, field(c), 'Oui');
+      for (const c of ['IT Decathlon', 'EDR Decathlon', 'Chiffrement disque', 'Réseau Decathlon']) await pick(page, c, 'Oui');
       await page.press(field(KEY_POSTE), 'Enter');   // Enter in a single-line field submits
       await waitPanelGone(page);
       await app.waitIdle();
@@ -286,7 +305,7 @@ describe('« Nouveau poste »: saving', () => {
       await openForm(app);
       await page.fill(field(KEY_POSTE), 'lab-tex-01');
       await chooseOption(page, field('Équipe'), 'Labo Textile');
-      await chooseOption(page, field('IT Decathlon'), 'Oui');
+      await pick(page, 'IT Decathlon', 'Oui');
       await footerButton(page, 'Créer le poste');
       await app.waitIdle();
       await page.waitForSelector(`${PANEL} .form-field[data-field="${KEY_POSTE}"] .field-error:not([hidden])`);
@@ -295,7 +314,7 @@ describe('« Nouveau poste »: saving', () => {
       assert.equal(await activeName(page), KEY_POSTE);
       assert.equal(await page.inputValue(field(KEY_POSTE)), 'lab-tex-01');
       assert.equal(await page.inputValue(field('Équipe')), 'Labo Textile');
-      assert.equal(await dropdownValue(page, field('IT Decathlon')), 'Oui');
+      assert.equal(await picked(page, 'IT Decathlon'), 'Oui');
       assert.equal((await toasts(page)).some((t) => /^Erreur/.test(t)), false);
       assert.equal(await page.isEnabled(`${PANEL} .form-panel-submit`), true);
       assert.deepEqual(app.errors, []);
@@ -419,7 +438,7 @@ describe('« Nouveau poste »: schema variants', () => {
       await waitPanelGone(page);
       await app.waitIdle();
       assert.deepEqual((await callsNamed(app, 'api_addPoste'))[0].args.record,
-        { [KEY_POSTE]: 'LAB-NEW-06', 'Équipe': 'Labo Textile', 'Numéro de série': 'SN-0042' });
+        { [KEY_POSTE]: 'LAB-NEW-06', 'Équipe': 'Labo Textile', 'Bâtiment / Labo': 'Bâtiment A', 'Numéro de série': 'SN-0042' });
       const id = await page.evaluate(() => window.State.getMonthData('2026-05').postes.find((p) => p['Nom du poste'] === 'LAB-NEW-06')._id);
       assert.equal((await page.textContent(`#postes-table tbody tr[data-id="${id}"] td[data-col="Numéro de série"]`)).trim(), 'SN-0042');
       assert.deepEqual(app.errors, []);
@@ -453,7 +472,7 @@ describe('« Nouveau poste »: schema variants', () => {
       // As sent (JSON parsed in Node: '__proto__' is an own key there too).
       const sent = JSON.parse(await page.evaluate(() =>
         JSON.stringify(window.__calls.filter((c) => c.name === 'api_addPoste').map((c) => c.args.record))));
-      const record = { [KEY_POSTE]: 'LAB-NEW-07', 'Équipe': 'Labo Textile', addEventListener: 'v0', querySelectorAll: 'v1',
+      const record = { [KEY_POSTE]: 'LAB-NEW-07', 'Équipe': 'Labo Textile', 'Bâtiment / Labo': 'Bâtiment A', addEventListener: 'v0', querySelectorAll: 'v1',
         submit: 'v2', elements: 'v3' };
       assert.deepEqual(sent, [JSON.parse(JSON.stringify(record).replace(/\}$/, ',"__proto__":"v4"}')), record]);
       assert.ok((await toasts(page)).includes('Poste « LAB-NEW-07 » créé dans le Google Sheet source.'));
@@ -478,13 +497,29 @@ describe('« Nouveau poste »: schema variants', () => {
     await withApp({ page: 'postes' }, async (app) => {
       const { page } = app;
       await openForm(app);
-      assert.equal((await page.textContent(`${PANEL} .drawer-footer-note`)).trim(),
-        'Mois figé : ajouté à l’historique de mai 2026 seulement, le Google Sheet source n’est pas modifié.');
+      assert.equal((await page.textContent(`${PANEL} .drawer-subtitle`)).trim(),
+        'Mai 2026 · mois figé : historique seulement, le Google Sheet source n’est pas modifié');
+      assert.ok(await page.$(`${PANEL} .drawer-subtitle.is-warn`));
       assert.equal(await page.$(`${PANEL} .form-section-note`), null);
       assert.deepEqual(await fieldsOf(page, 'suivi'), ['Action corrective', 'Responsable action', 'Deadline', 'Statut',
         'Niveau de risque', 'Score conformité', 'Application', 'Commentaires']);
       await page.fill(field(KEY_POSTE), 'LAB-OLD-01');
       await chooseOption(page, field('Équipe'), 'Labo Mécanique');
+      // An empty Bâtiment / Labo follows the Équipe (its postes' most common one).
+      assert.equal(await page.inputValue(field('Bâtiment / Labo')), 'Bâtiment C');
+      // Oui / Non columns are two buttons; « Conformité » counts its Oui; a second click clears.
+      const yn = (name, v) => `${PANEL} [data-field="${name}"] .yesno-btn[data-value="${v}"]`;
+      const tally = () => page.textContent(`${PANEL} details[data-group="conformite"] .form-section-tally`);
+      assert.equal((await tally()).trim(), '0 sur 4 à Oui');
+      await page.click(yn('IT Decathlon', 'Oui'));
+      await page.click(yn('EDR Decathlon', 'Non'));
+      await page.click(yn('Réseau Decathlon', 'Oui'));
+      assert.equal((await tally()).trim(), '2 sur 4 à Oui');
+      await page.click(yn('Réseau Decathlon', 'Oui'));
+      assert.equal(await page.getAttribute(yn('Réseau Decathlon', 'Oui'), 'aria-pressed'), 'false');
+      assert.equal(await page.getAttribute(yn('IT Decathlon', 'Oui'), 'aria-pressed'), 'true');
+      assert.equal(await page.getAttribute(`${PANEL} [data-field="IT Decathlon"] .yesno`, 'role'), 'group');
+      assert.equal((await tally()).trim(), '1 sur 4 à Oui');
       await page.click(`${PANEL} details[data-group="suivi"] > summary`);
       await page.fill(field('Score conformité'), '60%');
       await chooseOption(page, field('Statut'), 'Non conforme');
@@ -492,8 +527,34 @@ describe('« Nouveau poste »: schema variants', () => {
       await waitPanelGone(page);
       await app.waitIdle();
       assert.deepEqual((await callsNamed(app, 'api_addPoste'))[0].args,
-        { month: MONTH, record: { [KEY_POSTE]: 'LAB-OLD-01', 'Équipe': 'Labo Mécanique', 'Statut': 'Non conforme', 'Score conformité': '60%' } });
+        { month: MONTH, record: { [KEY_POSTE]: 'LAB-OLD-01', 'Équipe': 'Labo Mécanique', 'Bâtiment / Labo': 'Bâtiment C',
+          'IT Decathlon': 'Oui', 'EDR Decathlon': 'Non', 'Statut': 'Non conforme', 'Score conformité': '60%' } });
       assert.ok((await toasts(page)).includes('Poste «\u202fLAB-OLD-01\u202f» ajouté à l’historique de mai 2026.'));
+      assert.deepEqual(app.errors, []);
+    });
+  });
+});
+
+describe('« Nouveau poste »: « Enchaîner avec un autre poste »', () => {
+  test('ticked: a fresh form opens after each poste, the box stays ticked; Annuler ends the run', async () => {
+    await withApp(LIVE, async (app) => {
+      const { page } = app;
+      await openForm(app);
+      assert.equal(await page.isChecked(`${PANEL} .form-panel-again input`), false);
+      await page.check(`${PANEL} .form-panel-again input`);
+      await page.fill(field(KEY_POSTE), 'LAB-RUN-01');
+      await chooseOption(page, field('Équipe'), 'Labo Textile');
+      await footerButton(page, 'Créer le poste');
+      await page.waitForFunction((sel) => {
+        const n = document.querySelector(sel);
+        return n && n.value === '' && document.querySelectorAll('.drawer').length === 1;
+      }, field(KEY_POSTE));
+      await app.waitIdle();
+      assert.equal((await callsNamed(app, 'api_addPoste')).length, 1);
+      assert.equal(await page.isChecked(`${PANEL} .form-panel-again input`), true);
+      assert.ok((await rowIds(page, 'postes')).length > 0);
+      await footerButton(page, 'Annuler');
+      await waitPanelGone(page);
       assert.deepEqual(app.errors, []);
     });
   });
@@ -501,12 +562,39 @@ describe('« Nouveau poste »: schema variants', () => {
 
 // --------------------------------------------------------------------------------------------- applications
 
+describe('« Nouvelle application »: score prévu', () => {
+  test('the score the table would give, live: criteria, threshold, required fields still empty', async () => {
+    await withApp({ page: 'apps' }, async (app) => {
+      const { page } = app;
+      await openForm(app, '#apps-add');
+      const value = () => page.textContent('#app-score-value');
+      const crit = () => page.$$eval('#app-score-preview [data-crit] .mark', (ns) => ns.map((n) =>
+        [n.closest('[data-crit]').dataset.crit, n.classList.contains('mark-ok') ? 'ok' : 'ko']));
+      assert.equal((await value()).trim(), '0\u202f%');
+      assert.match(await page.textContent('#app-score-preview'), /Sous le seuil de 80\u202f%/);
+      assert.match(await page.textContent('#app-score-missing'), /^Champs : Éditeur, Type, Équipe… à remplir\.$/);
+      const yes = (name) => `${PANEL} [data-field="${name}"] .yesno-btn[data-value="Oui"]`;
+      for (const c of ['Contrat', 'SIP', 'Galink', 'IDP']) await page.click(yes(c));
+      assert.equal((await value()).trim(), '80\u202f%');
+      assert.equal(await page.$eval('#app-score-value', (n) => n.classList.contains('is-ok')), true);
+      assert.match(await page.textContent('#app-score-preview'), /Conforme/);
+      assert.deepEqual(await crit(), [['contrat', 'ok'], ['sip', 'ok'], ['idp', 'ok'], ['galink', 'ok'], ['champs', 'ko']]);
+      // Typing counts too: the required fields one by one.
+      await page.fill(field('Éditeur'), 'Microsoft');
+      assert.match(await page.textContent('#app-score-missing'), /^Champs : Type, Équipe, Installé sur poste… à remplir\.$/);
+      await page.click(yes('Contrat'));   // a second click clears it
+      assert.equal((await value()).trim(), '60\u202f%');
+      assert.deepEqual(app.errors, []);
+    });
+  });
+});
+
 describe('« Nouvelle application »', () => {
   test('the same panel: sections, footer note, tokens for the postes', async () => {
     await withApp({ page: 'apps', currentMonth: MONTH }, async (app) => {
       const { page } = app;
       await openForm(app, '#apps-add');
-      assert.equal((await page.textContent(`${PANEL} .drawer-title`)).trim(), 'Nouvelle application — mai 2026');
+      assert.equal((await page.textContent(`${PANEL} .drawer-title`)).trim(), 'Nouvelle application');
       assert.deepEqual(await sections(page), [
         { id: 'identification', title: 'Identification', open: true },
         { id: 'usage', title: 'Usage', open: true },
@@ -515,15 +603,15 @@ describe('« Nouvelle application »', () => {
       ]);
       assert.deepEqual(await fieldsOf(page, 'identification'), [KEY_APP, 'Éditeur', 'Type', 'Équipe', 'Date']);
       assert.deepEqual(await fieldsOf(page, 'conformite'), ['Contrat', 'SIP', 'Galink', 'IDP', 'Niveau de risque']);
-      assert.equal((await page.textContent(`${PANEL} .drawer-footer-note`)).trim(),
-        'Écrit dans le Google Sheet source (Galink et IDP restent dans l’application).');
+      assert.equal((await page.textContent(`${PANEL} .drawer-subtitle`)).trim(),
+        'Mai 2026 · écrit dans le Google Sheet source (Galink et IDP restent dans l’application)');
       assert.equal(await page.getAttribute(field('Installé sur poste'), 'role'), 'combobox');
       assert.ok(await page.$(`${field('Installé sur poste')}.mono`));
       assert.equal((await page.textContent(`${PANEL} .drawer-footer .btn-primary`)).trim(), 'Ajouter l’application');
       await assertNoNativeControls(page);
       // Only the filled fields are sent.
       await page.fill(field(KEY_APP), 'Teams');
-      await chooseOption(page, field('Données sensibles exposées'), 'Oui');
+      await pick(page, 'Données sensibles exposées', 'Oui');
       await footerButton(page, 'Ajouter l’application');
       await waitPanelGone(page);
       await app.waitIdle();
@@ -553,12 +641,12 @@ describe('form panel at 390px', () => {
         const body = p.querySelector('.drawer-body');
         return r.left >= 0 && r.right <= window.innerWidth && body.scrollWidth <= body.clientWidth;
       }), 'panel');
-      const boxes = await page.$$eval(`${PANEL} .drawer-footer-note, ${PANEL} .drawer-footer button`, (ns) => ns.map((n) => {
+      const boxes = await page.$$eval(`${PANEL} .form-panel-again, ${PANEL} .drawer-footer button`, (ns) => ns.map((n) => {
         const r = n.getBoundingClientRect();
         return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
       }));
       for (const b of boxes) assert.ok(b.left >= 0 && b.right <= 390 && b.bottom <= 844, JSON.stringify(b));
-      // The note on its own line, the buttons under it on the right.
+      // The « Enchaîner » box on its own line, the buttons under it on the right.
       assert.ok(boxes[1].top >= boxes[0].bottom);
       assert.ok(boxes[2].right > 390 - 24);
       assert.deepEqual(app.errors, []);

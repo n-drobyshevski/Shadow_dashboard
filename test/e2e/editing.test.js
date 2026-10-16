@@ -162,10 +162,11 @@ describe('editing switches: controls', () => {
       assert.equal((await callsNamed(app, 'api_addAction')).length, 1);
 
       await app.goto('settings');
+      assert.equal(await page.isVisible('#settings-threshold-submit'), true);
+      await page.click('#settings-tab-saisie');
       await page.waitForSelector('#settings-editing-edit');
       assert.deepEqual(await page.$$eval('#settings-editing [role="switch"]', (ns) => ns.map((n) => n.getAttribute('aria-checked'))),
         ['false', 'false', 'false']);
-      assert.equal(await page.isVisible('#settings-threshold-submit'), true);
       assert.equal((await toasts(page)).some((t) => /Erreur/.test(t)), false);
       assert.deepEqual(app.errors, []);
     });

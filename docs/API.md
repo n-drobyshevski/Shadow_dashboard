@@ -313,7 +313,7 @@ Config.get({fresh?})         -> {dataId:''|id, sourceId:''|id, sourceTitle:''|ti
                                  (PROP_SOURCE_INFO), threshold:int (Core.THRESHOLD when unset),
                                  schemaVersion:''|version recorded for dataId (PROP_SCHEMA),
                                  access:{users:[...], domainRole:'none'|'lecteur'}} (unreadable JSON -> empty list),
-                                 editing:{edit, create, delete} (PROP_EDITING; all true unless stored false)}
+                                 editing:{edit, create, delete} (PROP_EDITING; all false unless stored true)}
                                 A new object on every call, built from ONE getProperties per execution (memo);
                                 `fresh` reads the properties again. The memo is dropped by every setter below,
                                 by Config.clearMemo_() (start of each api_* call and of syncHourly,
@@ -321,7 +321,7 @@ Config.get({fresh?})         -> {dataId:''|id, sourceId:''|id, sourceTitle:''|ti
                                 read-modify-write under the lock (access list, first-run creation) starts
                                 from the stored values.
 Config.PROP_EDITING = 'EDITING_JSON'  (JSON {edit, create, delete}: the switches of Paramètres › « Saisie dans
-                        l’application ». Only an explicit false turns one off: missing or unreadable = all on.
+                        l’application ». Off by default: only an explicit true turns one on; missing or unreadable = all off.
                         Read with the other properties, so Config.get needs no extra read.)
 Config.EDITING_KEYS   = ['edit', 'create', 'delete']
 Config.setEditing(editing)   (the three switches as booleans; api_setEditing, under the lock, after merging)
@@ -760,7 +760,7 @@ State.set(patch)                 -> shallow merge + notify subscribers (fn(state
 State.subscribe(fn)              -> unsubscribe()
 state = { page:'dashboard', configured:false, months:[], month:'', currentMonth:'', dataUrl:'', sourceUrl:'',
           sourceTitle:'', filters:{equipes:[], batiments:[]}, loading:false, threshold:80,
-          user:{email:'', role:'', isOwner:false}, prefs:{}, sync:SyncStatus|null,
+          user:{email:'', role:'', isOwner:false}, readerView:false, prefs:{}, sync:SyncStatus|null,
           editing:{edit:true, create:true, delete:true} (Editing, §3; a new object only when a switch changes),
           from:'' (start of the period, '' = one month; `month` is its END), preset:'' (shortcut in use) }
 State.period()                   -> {from, to, months:[synchronised months inside], single:bool} (to = state.month)
@@ -771,7 +771,13 @@ Fmt.periodShort(a, b)            -> 'Avr. – oct. 2026' / 'Déc. 2025 – oct. 
 UI.sparkline(values)             -> inline SVG line of a month series (aria-hidden), null under two points
 Fmt.stamp('2026-05-04 10:30')    -> '10:30' today, '04/05 10:30' this year, else '04/05/2026 10:30'
 Fmt.syncChange(changes)          -> '+2 postes · 1 application modifiée' / 'mois créé' / '' (Changes, §3)
-State.canEdit()                  -> true for admins (pages hide every write control otherwise)
+State.isAdmin()                  -> the account's real role is admin (whatever the view)
+State.canEdit()                  -> true for admins outside the lecteur view (pages hide every write control otherwise)
+State.setReaderView(on)          -> an admin previews the app as a lecteur sees it (state.readerView: no write control,
+                                    no Paramètres, no spreadsheet links), and back. The sidebar role button (#side-user-role,
+                                    aria-pressed) and « Vue lecteur · revenir en admin » in the app bar call it. Display
+                                    only: this tab, until reload; no server call, the account keeps its rights. Ignored
+                                    for other roles; reset when a bootstrap says the account is no longer admin.
 State.can(kind)                  -> canEdit() && state.editing[kind] ('edit' | 'create' | 'delete'): the controls of
                                     that write on Postes / Applications (cells and « Renommer »; « Nouveau poste »,
                                     « Poste générique », « Nouvelle application »; « Supprimer »). Every other write
@@ -822,6 +828,9 @@ UI.scoreBadge(score)      -> badge with fmtPct, tone ok if >= 80 else ko, neutra
 UI.riskBadge(level)       -> badge colored with Core.RISK_COLORS
 UI.card({title, value, sub?, tone?})       -> metric card
 UI.section(title, ...children)             -> section with h2
+UI.lede(text, more?, {id?, small?}?)       -> div.lede: one short line (p.page-lede, or p.field-help when small; id on
+                                              it), then `more` (string | Node | array) behind « En savoir plus » (native
+                                              <details>, closed). Help text stays one line; the detail is one click away.
 UI.asyncBlock(box, {load, render, placeholder?, error?, small?, errorId?, live?}) -> Promise (see js_ui.html)
 UI.monthError(month)      -> {prefix:'Impossible de charger mai 2026', retry} for asyncBlock
 UI.monthHeader({title, month, kickerId, actions?}) -> page header with the « Mai 2026 · Export 2026-05 » kicker
@@ -835,11 +844,16 @@ UI.formModal({title, fields:[{name, label, type:'text'|'textarea'|'select'|'date
               required?, placeholder?, allowCustom?}], submitLabel?}) -> Promise<values|null>
     type 'date' shows <input type=date> but the value in/out is 'DD/MM/YYYY' (Core.frToIso/isoToFr).
     'select' with allowCustom renders <input list> + <datalist>.
-UI.formFields({fields, groups?, onEnter?}) -> {form, control(name), values(), collect(), check(name), showError(err),
+UI.formFields({fields, groups?, onEnter?, onChange?}) -> {form, control(name), values(), collect(), check(name), showError(err),
               clearErrors(), isDirty(), focusFirst(), firstField(), setValues(values)}
-    The field loop of UI.formModal / UI.formPanel (same field types and keys, plus `group`). groups:
-    [{id, title, open?, note?}] -> one <details class="form-section" data-group=id> per group (summary.form-section-title
-    with the +/− marker, div.form of its fields, p.form-section-note); a group with no field and no note is left out.
+    The field loop of UI.formModal / UI.formPanel (same field types and keys, plus `group`). Extra types: 'yesno'
+    (two buttons Oui / Non in a labelled group, aria-pressed, Oui in the ok tone and Non in the ko tone; a second
+    click on the pressed one clears an optional field) and 'choice' (`options` as buttons, e.g. Basse / Moyenne /
+    Haute). Date fields take `quick: [{label, value:'DD/MM/YYYY'}]`: shortcut buttons under the field.
+    onChange(name) runs after any change (typing, a pick, a click). groups: [{id, title, open?, note?, hint?, tally?}]
+    -> one <details class="form-section" data-group=id> per group (summary.form-section-title with the +/− marker,
+    span.form-section-hint while closed (what it holds), span.form-section-tally « 3 sur 4 à Oui » of its yesno fields
+    when tally, div.form of its fields, p.form-section-note); a group with no field and no note is left out.
     collect() checks every field, opens the sections of the invalid ones and focuses the first (values | null);
     showError(err): err.field -> under that field (its section opened, the field focused), else an alert on top;
     isDirty(): a field's text differs from the one it was built with. UI.formModal is built on it.
@@ -847,11 +861,16 @@ UI.formFields({fields, groups?, onEnter?}) -> {form, control(name), values(), co
     'addEventListener' or 'submit' would shadow that member of the <form>), ids are counters (field-N); the name is
     on data-name (the focusable control) and data-field (div.form-field). values() / collect() return objects with
     no prototype (Object.create(null)): a column named '__proto__' is a key like the others.
-UI.drawer({title, body:Node, onClose?, footer?, canClose?, className?, initialFocus?}) -> {close, node, requestClose}
+UI.drawer({title, subtitle?, subtitleTone?, body:Node, onClose?, footer?, canClose?, className?, initialFocus?})
+         -> {close, node, requestClose}
+    subtitle: p.drawer-subtitle under the title (subtitleTone 'warn': the frozen-month tone).
     Right-side panel. footer: div.drawer-footer under the scrolling body. canClose() vetoes the user's closes (×,
     Escape, backdrop, requestClose) when it returns false (it may start its own confirm and call close() later);
     close() always closes. initialFocus: an element or a function returning one (default: the × button).
-UI.formPanel({title, className?, submitLabel?, note?, load, onSubmit?, open?, reloadLabel?}) -> Promise<values|null>
+UI.formPanel({title, subtitle?, subtitleTone?, className?, submitLabel?, note?, load, onSubmit?, open?, reloadLabel?,
+              live?, again?}) -> Promise<values|null>
+    live(values) -> Node|null: div.form-panel-live, sticky at the top of the form, rebuilt on every change.
+    again: {label, checked}: label.form-panel-again checkbox in the footer; its state is written back to again.checked.
     A creation form in a drawer (`open` = UI.drawer or a page's ctx.drawer). load({force}) -> Promise<{fields, groups?,
     alert?, meta?}>: skeleton meanwhile (submit disabled), error + « Réessayer » on failure; reloadLabel: a quiet button
     after `meta` that loads again with {force:true}, typed values kept. Footer: `note` left, « Annuler » + the primary
@@ -948,18 +967,24 @@ only declares its spec (columns, nouns, CSV, create buttons, drawer).
 button?})` (same file) is the creation form of both pages, in a `UI.formPanel` opened through `ctx.drawer`:
 - fields from `State.loadFormSchema(entity, month)` (api_getFormSchema): strict list → dropdown; other list →
   combobox (a list without options suggests `Core.uniqueSorted` of the month's values); date → `UI.dateField`;
-  checkbox → Oui / Non (or its options); text. `presentation` adds textarea, tokens (+ suggestions) and mono to
-  text / open-list columns;
+  checkbox or strict Oui / Non list → 'yesno' (two buttons); text. `presentation` adds textarea, tokens
+  (+ suggestions) and mono to text / open-list columns;
 - computed columns are no fields: « Score conformité, Niveau de risque, Statut : calculés par le Google Sheet. »
   closes the « Conformité » section (else the first one);
 - `sections` [{id, title, open, columns}] place the columns (by `Core.normKey`, in that order); unknown columns go
-  to « Autres colonnes » (open); a section holding a required field or a prefilled value opens; Équipe /
-  Bâtiment / Labo default to the single active filter value;
+  to « Autres colonnes » (open); a section holding a required field or a prefilled value opens; a closed one shows
+  its first fields as a hint; « Conformité » counts its Oui (« 2 sur 4 à Oui »); Équipe / Bâtiment / Labo default to
+  the single active filter value; postes: picking an Équipe fills an empty Bâtiment / Labo with the one its postes
+  use most this month (postes sections: Identification, Conformité open; Équipement, Visite, Suivi closed);
 - origin 'fallback': the schema's warning as an alert above the form; a meta line names where the columns come
   from, with « Relire les colonnes » (force, `fresh:true`);
-- footer note: « Écrit dans le Google Sheet source. » (applications: « … (Galink et IDP restent dans
-  l’application). »), past month « Mois figé : ajouté à l’historique de <mois> seulement, le Google Sheet source
-  n’est pas modifié. »;
+- title « Nouveau poste » / « Nouvelle application »; under it (`subtitle`) « Mai 2026 · écrit dans le Google Sheet
+  source » (applications: « … (Galink et IDP restent dans l’application) »), past month « Mai 2026 · mois figé :
+  historique seulement, le Google Sheet source n’est pas modifié » in the warn tone;
+- postes: `again` « Enchaîner avec un autre poste » (footer box): after a success, a fresh form opens, box still
+  ticked; applications: `live` « Score prévu » (`#app-score-preview`): `Core.scoreApplication` of the typed values
+  (`#app-score-value`, ok / ko against the threshold, « Conforme » / « Sous le seuil de 80 % »), the five criteria
+  (`[data-crit]`) and the required fields still empty (`#app-score-missing`);
 - only non-blank values are sent; on success `State.extendColumns` + `State.addRecord`, the table refreshed (rebuilt
   when a column was added), `toast(name, {live, hidden, month})`, the new row scrolled into view and the focus back
   on the button (several records in a row). The schema is prefetched when the pointer or the focus reaches the
@@ -1104,7 +1129,11 @@ created or completed inside the period and the replacements dated inside it; « 
 compares the first and last months by default.
 1. `Actions de remédiation`: filters (statut, type, équipe, search), counts per status, table (target, type,
    équipe, action, responsable, priorité, deadline (overdue → ko badge), statut badge, dates).
-   `➕ Nouvelle action` / row click → formModal edit → api_updateAction; delete with confirm.
+   `➕ Nouvelle action` / row click → formModal edit → api_updateAction; delete with confirm. The form puts first
+   Cible (its type follows a known poste / application), Action, Priorité (three buttons, 'choice') and Échéance
+   (shortcuts « Dans 1 semaine », « Fin du mois », « Dans 3 mois »); the rest under « Plus d’options » (data-group
+   'more': type, statut, équipe, responsable, mois source, dates, commentaire), closed for a new action, open when
+   editing; submit « Créer l’action » / « Enregistrer ».
    Quick status change select in-row is optional.
 2. `Remplacements de postes`: table + `➕ Remplacement` (formModal: old poste (datalist from postes of the
    current month), new poste, équipe, responsable, date, comment) + edit/delete.
@@ -1115,15 +1144,31 @@ compares the first and last months by default.
    exists); same for Applications (retirées / ajoutées / actions résolues).
 
 ### Paramètres (`settings`) — admin only
-Five sections, each saved on its own (`js_page_settings.html`): « Source de données », « Synchronisation »,
-« Seuil de conformité », « Saisie dans l’application » (`#settings-editing`), « Accès ». The editing section: intro
-« Ces réglages s’appliquent à tous les administrateurs et à tous les mois, en cours comme passés, pour les postes et
-les applications. Le suivi des actions et les remplacements ne sont pas concernés. », then three `UI.toggle`:
-`#settings-editing-edit` « Modifier les entrées », `#settings-editing-create` « Créer des entrées »,
-`#settings-editing-delete` « Supprimer des entrées » (each with its description). A toggle calls
-`api_setEditing({<key>: bool})` once, then `State.setEditing` and a toast (« Création d’entrées désactivée. »…);
-on failure the switch goes back and an error toast shows. The switches follow `state.editing` changes made
-elsewhere (poll, bootstrap reload).
+Three tabs (`js_page_settings.html`; ARIA tabs `#settings-tab-general|saisie|acces` → `#settings-panel-*`, roving
+tabindex, arrows / Home / End; the selected tab is kept while the app is open), each a stack of cards
+(`section.settings-card`: h2 `.card-title`, an optional status or button on its right, then `UI.lede` and the
+content), each saved on its own:
+- **Général**: « Source de données » (the form waits behind `#settings-source-toggle` « Changer de source » once a
+  source exists; shown at once without one; owner only), « Synchronisation » (`#settings-sync-auto` status beside the
+  title, three figures, « Synchroniser maintenant », and `#settings-sync-log-toggle` « Journal des synchronisations »:
+  `api_getImportLog` is read only when the journal is first opened; it stays open across visits;
+  `Pages.settings.showJournal()`, used by the sync panel's « Journal », opens Général with it shown and focused),
+  « Seuil de conformité ».
+- **Saisie**: « Saisie dans l’application » (`#settings-editing`): one line « Pour tous les administrateurs, sur tous
+  les mois. » (the rest behind « En savoir plus »), then three `UI.toggle`: `#settings-editing-edit` « Modifier les
+  entrées », `#settings-editing-create` « Créer des entrées », `#settings-editing-delete` « Supprimer des entrées »
+  (each with its description). A toggle calls `api_setEditing({<key>: bool})` once, then `State.setEditing` and a toast
+  (« Création d’entrées désactivée. »…); on failure the switch goes back and an error toast shows. The switches follow
+  `state.editing` changes made elsewhere (poll, bootstrap reload), hidden tab or not.
+- **Accès**: « Qui d’autre peut ouvrir l’application ? » (`#settings-domain`: `#settings-domain-none` /
+  `#settings-domain-lecteur`, `aria-pressed`, → `api_setDomainRole`), then « Personnes et groupes »
+  (`#settings-access`): one `#access-table` of accounts (rows `data-email`, owner first) and groups (rows
+  `data-group`), `#access-search`, filter chips `#access-filter-all|admin|lecteur|group`, `#access-count`
+  (« 3 comptes · 1 groupe », « 2 sur 4 » while filtered), role dropdowns (`api_saveUser` / `api_saveGroup`) and
+  « Retirer » (`api_removeUser` / `api_removeGroup`). `#access-add-open` « Ajouter » opens « Ajouter un accès »:
+  tabs `#add-tab-one|many|group` (`#add-email` → `api_saveUser`; `#bulk-emails` with the `#bulk-preview` →
+  `api_addUsers`; `#add-group` → `api_saveGroup`), role radios `#add-role-lecteur|admin`; Enter in a field
+  submits; a refusal shows on the field (`#<field>-err`) and keeps the dialog open. Added rows get `.is-new`.
 
 ---------------------------------------------------------------------------------------------------
 ## 7. Tests
@@ -1171,7 +1216,8 @@ elsewhere (poll, bootstrap reload).
   `formSchema: {columns:{postes:[…]}, fallback, delayMs}` and `delays: {api_name: ms}` (also `window.__mock`);
   `editing: {edit?, create?, delete?}` (the switches, same refusals as the server; `window.__mock.db.editing` at run
   time).
-- `test/integration/editing.test.js` — the editing switches: defaults (corrupt property = all on),
+- `test/integration/editing.test.js` — the editing switches: defaults (missing or corrupt property = all off; the
+  sandbox starts with them on unless `editingUnset`),
   `api_setEditing` (validation, partial patch, one property write, lecteur, BUSY), and for each switch, current and
   past month, the gated endpoints refused with their message without opening the source or changing the snapshot
   while the others still work; actions, remplacements, threshold and sync unaffected.

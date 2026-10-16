@@ -248,13 +248,36 @@
     });
   }
 
-  /** "lea.reader@decathlon.com" over "Lecteur · lecture seule" at the foot of the sidebar. */
+  /**
+   * "lea.reader@decathlon.com" over "Lecteur · lecture seule" at the foot of the sidebar. For an admin the role
+   * is a toggle button: one click shows the app as a lecteur sees it (State.setReaderView), the next one
+   * comes back to the admin view.
+   */
   function userLine(user) {
     if (!user || !user.email) return null;
     var role = ROLE_LABELS[user.role] || user.role;
+    var roleNode;
+    if (State.isAdmin()) {
+      var preview = !!State.get().readerView;
+      roleNode = el('button', { type: 'button', class: ['side-user-role', 'side-user-switch', preview ? 'is-preview' : null],
+        id: 'side-user-role', 'aria-pressed': preview ? 'true' : 'false',
+        onClick: function () { toggleReaderView('side-user-role'); } },
+        preview ? 'Vue lecteur · lecture seule' : role);
+      UI.tooltip(roleNode, preview ? 'Revenir à la vue ' + role.toLowerCase() : 'Voir l’application comme un lecteur',
+        { placement: 'right' });
+    } else {
+      roleNode = el('span', { class: 'side-user-role' }, role + ' · lecture seule');
+    }
     return el('p', { class: 'side-user', id: 'side-user' },
-      el('span', { class: 'side-user-email mono' }, user.email),
-      el('span', { class: 'side-user-role' }, user.role === 'admin' ? role : role + ' · lecture seule'));
+      el('span', { class: 'side-user-email mono' }, user.email), roleNode);
+  }
+
+  /** Flips the lecteur preview; the shell re-renders, so focus goes back to the control (by id) that did it. */
+  function toggleReaderView(focusId) {
+    UI.tooltip(document.getElementById('side-user-role'), null); // its node is replaced: no stale tooltip left
+    State.setReaderView(!State.get().readerView);
+    var back = document.getElementById(focusId) || document.getElementById('side-user-role');
+    if (back) back.focus();
   }
 
   function brand() {
@@ -302,11 +325,13 @@
           counted ? el('span', { class: 'nav-count', dataset: { count: n.id } }) : null));
       })));
 
-    // Spreadsheet links are only sent to admins (the sheets are private to the deployer).
+    // Spreadsheet links are only sent to admins (the sheets are private to the deployer), so the lecteur
+    // view hides them too.
+    var links = !s.readerView;
     var footer = el('div', { class: 'sidebar-footer' },
       syncChip(),
-      s.dataUrl ? UI.extLink(s.dataUrl, 'Données (Google Sheet)', { class: 'side-link', id: 'link-data' }) : null,
-      s.sourceUrl ? UI.extLink(s.sourceUrl, 'Source', { class: 'side-link', id: 'link-source',
+      links && s.dataUrl ? UI.extLink(s.dataUrl, 'Données (Google Sheet)', { class: 'side-link', id: 'link-data' }) : null,
+      links && s.sourceUrl ? UI.extLink(s.sourceUrl, 'Source', { class: 'side-link', id: 'link-source',
         'aria-label': s.sourceTitle ? 'Source : ' + s.sourceTitle : null }) : null,
       userLine(s.user));
 
@@ -359,6 +384,11 @@
     appbar.appendChild(el('div', { class: 'filters-anchor', id: 'filters-anchor' }, toggle, filtersBox));
     appbar.appendChild(el('p', { class: 'filters-summary', id: 'filters-summary', 'aria-hidden': 'true' }));
     appbar.appendChild(el('p', { class: 'appbar-count', id: 'appbar-count', role: 'status', hidden: true }));
+    // Lecteur preview: said here too, where it shows at every width (the sidebar may be a rail or closed).
+    if (s.readerView) {
+      appbar.appendChild(el('button', { type: 'button', class: 'btn btn-secondary btn-sm reader-view-exit', id: 'reader-view-exit',
+        onClick: function () { toggleReaderView('reader-view-exit'); } }, 'Vue lecteur · revenir en admin'));
+    }
     appbar.appendChild(el('span', { class: 'appbar-progress', id: 'appbar-progress', 'aria-hidden': 'true' }));
     syncPeriodButton();
     setFiltersOpen(false);
@@ -507,7 +537,11 @@
       actions.appendChild(run);
       if (syncing) UI.busy(run, true, 'Synchronisation…');
       actions.appendChild(el('button', { type: 'button', class: 'btn btn-link btn-sm', id: 'sync-journal',
-        onClick: function () { closeSyncPanel(); go('settings'); } }, 'Journal'));
+        onClick: function () {
+          closeSyncPanel();
+          if (pages().settings && pages().settings.showJournal) pages().settings.showJournal();
+          go('settings');
+        } }, 'Journal'));
     }
     if (actions.childNodes.length) box.appendChild(actions);
     return box;
@@ -932,8 +966,7 @@
     main.appendChild(el('div', { class: 'page page-config page-denied', dataset: { page: 'denied' } },
       UI.pageHeader({ kicker: BRAND + ' · accès', title: 'Accès refusé' }),
       el('p', { class: 'page-lede', id: 'denied-message' }, UI.errorText(err)),
-      el('p', { class: 'field-help' }, 'Les accès sont gérés dans Paramètres par un administrateur de ' +
-        'l’application. Une fois l’accès accordé, actualisez la page.'),
+      el('p', { class: 'field-help' }, 'Demandez l’accès à un administrateur de l’application, puis « Réessayer ».'),
       el('div', { class: 'form-actions' },
         el('button', { type: 'button', class: 'btn btn-secondary', onClick: reboot }, 'Réessayer'))));
   }
@@ -976,11 +1009,11 @@
         el('p', { class: 'field-help config-settings-link' }, 'Les accès et le seuil de conformité se règlent dans ',
           el('button', { type: 'button', class: 'btn btn-link', id: 'config-open-settings',
             onClick: function () { go('settings'); } }, 'Paramètres'), '.'),
-        el('p', { id: 'config-help', class: 'page-lede' },
-          'Collez l’URL (ou l’identifiant) du Google Sheet source « ShadowIT_Industry ». Il doit contenir les onglets « ' +
-          Core.SOURCE_TABS.postes + ' », « ' + Core.SOURCE_TABS.applications + ' » et « ' +
-          Core.SOURCE_TABS.referentiel + ' ». L’application le relit toutes les heures : le mois en cours suit la source, ' +
-          'les mois passés restent figés. Les modifications faites ici sont écrites dans la source.'),
+        UI.lede('Collez l’URL (ou l’identifiant) du Google Sheet source « ShadowIT_Industry ».', [
+          'Il doit contenir les onglets « ' + Core.SOURCE_TABS.postes + ' », « ' + Core.SOURCE_TABS.applications +
+            ' » et « ' + Core.SOURCE_TABS.referentiel + ' ».',
+          'L’application le relit toutes les heures : le mois en cours suit la source, les mois passés restent figés. ' +
+            'Les modifications faites ici sont écrites dans la source.'], { id: 'config-help' }),
         form)));
     setTimeout(function () { input.focus(); }, 0);
   }
@@ -998,7 +1031,7 @@
 
   function onStateChange(s, changed) {
     if (!booted) return;
-    if (has(changed, 'configured') || has(changed, 'user')) { renderAll(); return; }
+    if (has(changed, 'configured') || has(changed, 'user') || has(changed, 'readerView')) { renderAll(); return; }
     if (!s.configured) {
       // Before the first source: only Paramètres <-> configuration screen.
       if (has(changed, 'page')) renderAll();

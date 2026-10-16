@@ -24,10 +24,13 @@
     loading: false,
     threshold: 80,
     user: { email: '', role: '', isOwner: false },
+    // An admin previewing the app as a lecteur sees (sidebar role button, State.setReaderView): canEdit() is
+    // false meanwhile. Display only, this tab, until reload; the server keeps the account's real rights.
+    readerView: false,
     prefs: {},                 // the account's interface preferences (api_bootstrap.prefs)
     // Paramètres › « Saisie dans l’application » (api_bootstrap / api_getSyncStatus / api_setEditing .editing):
     // what admins may do on Postes / Applications. Replaced only when a switch changes (State.setEditing).
-    editing: { edit: true, create: true, delete: true },
+    editing: { edit: false, create: false, delete: false },
     sync: null                 // hourly synchronisation status (api_bootstrap.sync / api_getSyncStatus)
   };
   var subscribers = [];
@@ -338,11 +341,11 @@
 
   var EDITING_KEYS = ['edit', 'create', 'delete'];
 
-  /** Server editing switches -> {edit, create, delete} (only an explicit false is off); null when not an object. */
+  /** Server editing switches -> {edit, create, delete} (only an explicit true is on); null when not an object. */
   function normEditing(e) {
     if (!e || typeof e !== 'object') return null;
     var out = {};
-    EDITING_KEYS.forEach(function (k) { out[k] = e[k] !== false; });
+    EDITING_KEYS.forEach(function (k) { out[k] = e[k] === true; });
     return out;
   }
 
@@ -378,8 +381,9 @@
       sourceTitle: b.sourceTitle || '',
       threshold: threshold,
       user: prev.email === user.email && prev.role === user.role && prev.isOwner === user.isOwner ? prev : user,
+      readerView: state.readerView && user.role === 'admin',
       prefs: b.prefs && typeof b.prefs === 'object' ? b.prefs : {},
-      editing: sameEditing(state.editing, normEditing(b.editing) || { edit: true, create: true, delete: true }),
+      editing: sameEditing(state.editing, normEditing(b.editing) || { edit: false, create: false, delete: false }),
       sync: b.sync && typeof b.sync === 'object' ? b.sync : null,
       loading: false
     });
@@ -405,9 +409,27 @@
     set({ month: b, from: a === b ? '' : a, preset: preset || '' });
   }
 
-  /** Admins edit; lecteurs only read (the server refuses their writes anyway, FORBIDDEN). */
-  function canEdit() {
+  /** The account's real role is admin (whatever the view): only admins get the lecteur preview switch. */
+  function isAdmin() {
     return !!(state.user && state.user.role === 'admin');
+  }
+
+  /**
+   * Admins edit; lecteurs only read (the server refuses their writes anyway, FORBIDDEN). An admin previewing
+   * the lecteur view (state.readerView) reads only too.
+   */
+  function canEdit() {
+    return isAdmin() && !state.readerView;
+  }
+
+  /**
+   * State.setReaderView(on): an admin switches to what a lecteur sees, and back. Ignored for other roles.
+   * Leaves an admin-only page (Paramètres) for the dashboard in the same change.
+   */
+  function setReaderView(on) {
+    var next = !!on && isAdmin();
+    if (next === state.readerView) return;
+    set(next && state.page === 'settings' ? { readerView: true, page: 'dashboard' } : { readerView: next });
   }
 
   /**
@@ -416,7 +438,7 @@
    * (actions, settings, sync) stay on canEdit().
    */
   function can(kind) {
-    return canEdit() && !!state.editing && state.editing[kind] !== false;
+    return canEdit() && !!state.editing && state.editing[kind] === true;
   }
 
   /**
@@ -433,7 +455,9 @@
     get: get,
     period: period,
     setPeriod: setPeriod,
+    isAdmin: isAdmin,
     canEdit: canEdit,
+    setReaderView: setReaderView,
     can: can,
     setEditing: setEditing,
     afterWriteError: afterWriteError,

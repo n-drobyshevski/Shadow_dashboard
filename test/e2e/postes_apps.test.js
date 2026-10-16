@@ -392,9 +392,11 @@ describe('postes page', () => {
       await page.click('#drawer-add-action');
       await page.waitForSelector('.modal form');
       assert.equal((await page.textContent('.modal .modal-title')).trim(), 'Nouvelle action');
+      // What matters first; the rest under « Plus d’options » (closed for a new action).
       assert.deepEqual(await page.$$eval('.modal .form-field .field-label', (ls) => ls.map((l) => l.textContent.replace(' *', ''))), [
-        'Type de cible', 'Cible (poste ou application)', 'Équipe', 'Responsable', 'Action', 'Priorité', 'Statut', 'Échéance',
-        'Mois source', 'Date de création', 'Date de réalisation', 'Commentaire']);
+        'Cible (poste ou application)', 'Action', 'Priorité', 'Échéance',
+        'Type de cible', 'Statut', 'Équipe', 'Responsable', 'Mois source', 'Date de création', 'Date de réalisation', 'Commentaire']);
+      assert.equal(await page.$eval('.modal details[data-group="more"]', (d) => d.open), false);
       assert.equal(await dropdownValue(page, '.modal [data-name="target_type"]'), 'poste');
       assert.equal(await page.isDisabled('.modal [data-name="target_type"]'), true);
       assert.equal(await page.inputValue('.modal [data-name="target_name"]'), 'LAB-MEC-01');
@@ -403,19 +405,19 @@ describe('postes page', () => {
       assert.equal(await page.inputValue('.modal [data-name="date_created"]'), todayFr());
       assert.equal(await page.inputValue('.modal [data-name="source_month"]'), MONTH);
       await page.fill('.modal [data-name="action"]', 'Migrer vers Ubuntu 24.04');
-      await chooseOption(page, '.modal [data-name="priorite"]', 'Haute');
+      await page.click('.modal [data-field="priorite"] .choice-btn[data-value="Haute"]');
 
       // Server error: the modal stays open (values kept), the error is shown inside it, no toast.
       await page.evaluate(() => { window.__mock.failNext.api_addAction = { code: 'BUSY', message: 'Verrou occupé' }; });
-      await modalButton(page, 'Enregistrer');
+      await modalButton(page, 'Créer l’action');
       await app.waitIdle();
       await page.waitForSelector('.modal .form-alert .alert-error');
       assert.equal((await page.textContent('.modal .form-alert .alert-error')).trim(), 'Erreur : Verrou occupé');
       assert.equal(await page.inputValue('.modal [data-name="action"]'), 'Migrer vers Ubuntu 24.04');
-      assert.equal(await dropdownValue(page, '.modal [data-name="priorite"]'), 'Haute');
+      assert.equal(await page.getAttribute('.modal [data-field="priorite"] .choice-btn[data-value="Haute"]', 'aria-pressed'), 'true');
       assert.equal((await toasts(page)).some((t) => /Verrou/.test(t)), false);
 
-      await modalButton(page, 'Enregistrer');
+      await modalButton(page, 'Créer l’action');
       await app.waitIdle();
       await page.waitForSelector('.modal', { state: 'detached' });
 
@@ -518,20 +520,20 @@ describe('applications page', () => {
         await page.click('#apps-add');
         await page.waitForSelector('.drawer.form-panel .form-sections');
         await app.waitIdle();
-        assert.equal((await page.textContent('.form-panel .drawer-title')).trim(), 'Nouvelle application — mai 2026');
+        assert.equal((await page.textContent('.form-panel .drawer-title')).trim(), 'Nouvelle application');
         await page.fill(`.form-panel [data-name="${KEY_APP}"]`, name);
         await page.fill('.form-panel [data-name="Éditeur"]', 'Salesforce');
         await chooseOption(page, '.form-panel [data-name="Type"]', 'SaaS');            // combobox (free text allowed)
         await chooseOption(page, '.form-panel [data-name="Équipe"]', 'R&D Vélo');
         await chooseOption(page, '.form-panel [data-name="Installé sur poste"]', 'RD-VEL-01');   // multi-token combobox
         await page.keyboard.press('Tab');   // the token list stays open for the next poste: Tab commits and closes it
-        await chooseOption(page, '.form-panel [data-name="Contrat"]', 'Oui');
-        await chooseOption(page, '.form-panel [data-name="SIP"]', 'Oui');
+        await page.click('.form-panel [data-field="Contrat"] .yesno-btn[data-value="Oui"]');   // Oui / Non: two buttons
+        await page.click('.form-panel [data-field="SIP"] .yesno-btn[data-value="Oui"]');   // Oui / Non: two buttons
         // A past month's snapshot has no list for this column (the live source has one): a text field here.
         await page.fill('.form-panel [data-name="Données sensibles exposées"]', 'Non');
         await chooseOption(page, '.form-panel [data-name="Niveau de risque"]', 'Faible');
-        await chooseOption(page, '.form-panel [data-name="Galink"]', 'Oui');
-        await chooseOption(page, '.form-panel [data-name="IDP"]', 'Non');
+        await page.click('.form-panel [data-field="Galink"] .yesno-btn[data-value="Oui"]');   // Oui / Non: two buttons
+        await page.click('.form-panel [data-field="IDP"] .yesno-btn[data-value="Non"]');   // Oui / Non: two buttons
         await assertNoNativeControls(page);
         await page.click('.form-panel .drawer-footer button:has-text("Ajouter l’application")');
         await app.waitIdle();
@@ -561,7 +563,7 @@ describe('applications page', () => {
       assert.match(await page.textContent(`.form-panel .form-field[data-field="${KEY_APP}"] .field-error`), /existe déjà/);
       assert.equal(await page.inputValue(nameField), 'slack');
       assert.equal(await page.inputValue('.form-panel [data-name="Type"]'), 'SaaS');
-      assert.equal(await dropdownValue(page, '.form-panel [data-name="Galink"]'), 'Oui');
+      assert.equal(await page.getAttribute('.form-panel [data-field="Galink"] .yesno-btn[data-value="Oui"]', 'aria-pressed'), 'true');
       assert.equal((await toasts(page)).some((t) => /^Erreur/.test(t)), false);
       // Typed values: « Annuler » asks first; « Abandonner » closes without saving.
       await page.click('.form-panel .drawer-footer button:has-text("Annuler")');

@@ -110,8 +110,9 @@ function mockMain(FIX, OPTS) {
     actions: OPTS.empty ? [] : clone(FIX.ACTIONS),
     replacements: OPTS.empty ? [] : clone(FIX.REPLACEMENTS),
     threshold: 80,
-    // Editing switches (Config EDITING_JSON): only an explicit false in OPTS.editing turns one off.
-    editing: { edit: true, create: true, delete: true },
+    // Editing switches (Config EDITING_JSON): off by default like the server; OPTS.editing (an object) turns
+    // them on, except the keys it sets to false.
+    editing: { edit: false, create: false, delete: false },
     // Visitor: OPTS.email ('' = identity not passed); default = the owner (deployer).
     email: OPTS.email === undefined ? OWNER : OPTS.email,
     prefs: {},           // email -> {sidebar}
@@ -149,11 +150,11 @@ function mockMain(FIX, OPTS) {
   function syncStatus() { var st = clone(db.sync); st.month = currentMonth(); return st; }
   function editingView() {
     var out = {};
-    EDITING_KEYS.forEach(function (k) { out[k] = db.editing[k] !== false; });
+    EDITING_KEYS.forEach(function (k) { out[k] = db.editing[k] === true; });
     return out;
   }
   function requireEditing(kind) {
-    if (db.editing[kind] === false) fail('FORBIDDEN', EDITING_REFUSED[kind]);
+    if (db.editing[kind] !== true) fail('FORBIDDEN', EDITING_REFUSED[kind]);
   }
 
   if (!OPTS.empty) {
@@ -908,7 +909,8 @@ function mockMain(FIX, OPTS) {
  *   prefs: the visitor's stored
  *   preferences ({sidebar:'collapsed'}). currentMonth: the month the sync follows (default: today's).
  *   sync: fields of the synchronisation status to override ({lastError:{at, code, message}}, …).
- *   editing: the editing switches of Paramètres ({edit:false} turns modification off; default all on).
+ *   editing: the editing switches of Paramètres: null / absent = unset (all off, the server's default); an object
+ *   turns them on except the keys it sets to false ({edit:false} = create and delete only).
  *   email: the visitor (default the owner, admin). 'lea.reader@decathlon.com' is a lecteur,
  *   'sam.admin@decathlon.com' a second admin, any other address has no access, '' = identity not passed.
  * @returns {string} browser JavaScript (no surrounding <script> tag)

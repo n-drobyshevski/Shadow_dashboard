@@ -183,12 +183,36 @@
     }
   };
 
+  var PREVIEW_CRITERIA = [['contrat', 'Contrat'], ['sip', 'SIP'], ['idp', 'IDP'], ['galink', 'Galink'], ['champs', 'Champs']];
+
+  /**
+   * Top of the « Nouvelle application » form: the score the application would get (Core.scoreApplication, the
+   * table's own rule), conforme or not against the threshold, each criterion, and the required fields still empty.
+   */
+  function scorePreview(values) {
+    var s = Core.scoreApplication(values);
+    var t = Core.threshold();
+    var ok = s.score >= t;
+    var missing = Core.APP_REQUIRED_FIELDS.filter(function (f) { return Core.isBlank(values[f]); });
+    return el('div', { class: 'score-preview', id: 'app-score-preview' },
+      el('div', { class: 'score-preview-main' },
+        el('span', { class: 'label' }, 'Score prévu'),
+        el('span', { class: ['score-preview-value', ok ? 'is-ok' : 'is-ko'], id: 'app-score-value' }, s.score + UI.NNBSP + '%'),
+        UI.statusMark(ok ? 'Conforme' : 'Sous le seuil de ' + t + UI.NNBSP + '%', ok ? 'ok' : 'ko')),
+      el('ul', { class: 'score-preview-crit', 'aria-label': 'Critères' }, PREVIEW_CRITERIA.map(function (c) {
+        return el('li', { dataset: { crit: c[0] } }, UI.statusMark(c[1], s.criteria[c[0]] ? 'ok' : 'ko'));
+      })),
+      missing.length ? el('p', { class: 'field-help score-preview-missing', id: 'app-score-missing' },
+        'Champs : ' + missing.slice(0, 3).join(', ') + (missing.length > 3 ? '…' : '') + ' à remplir.') : null);
+  }
+
   function addApplication(ctx, button) {
     return EntityForm.open(ctx, {
       entity: 'applications',
       keyField: KEY,
-      title: 'Nouvelle application — ' + Fmt.monthLong(ctx.month),
+      title: 'Nouvelle application',
       submitLabel: 'Ajouter l’application',
+      live: scorePreview,
       api: 'api_addApplication',
       sections: APP_SECTIONS,
       presentation: APP_PRESENTATION,

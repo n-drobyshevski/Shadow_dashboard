@@ -285,6 +285,22 @@
     return el('div', { class: 'kpi-strip', role: 'group' }, (items || []).map(function (it) { return card(it); }));
   }
 
+  /**
+   * UI.lede(text, more?, {id?, small?}?) -> div.lede: the one line a section needs (p.page-lede, or p.field-help
+   * when small; id on it), then, when `more` is given, the rest behind « En savoir plus » (a native
+   * <details>, keyboard and screen-reader ready). Settings read at a glance; the detail stays one click away.
+   */
+  function lede(text, more, o) {
+    var opts = o || {};
+    return el('div', { class: ['lede', opts.small ? 'lede-small' : null] },
+      el('p', { class: opts.small ? 'field-help' : 'page-lede', id: opts.id || null }, text),
+      more ? el('details', { class: 'more' },
+        el('summary', { class: 'more-summary' }, 'En savoir plus'),
+        el('div', { class: 'more-body' }, [].concat(more).map(function (m) {
+          return typeof m === 'string' ? el('p', null, m) : m;
+        }))) : null);
+  }
+
   function section(title) {
     var children = Array.prototype.slice.call(arguments, 1);
     return el('section', { class: 'section' }, title ? el('h2', { class: 'section-title' }, title) : null, children);
@@ -708,8 +724,47 @@
   }
 
   /**
-   * UI.formFields({fields, groups?, onEnter?}) -> {form, control(name), values(), collect(), check(name),
+   * A short list as buttons in a labelled group (form field types 'yesno' — Oui / Non, the pressed Oui in the ok
+   * tone and Non in the ko tone — and 'choice' — f.options, e.g. Basse / Moyenne / Haute). A second click on the
+   * pressed one clears an optional field. -> group div with getValue(), setValue(v), first (its first button).
+   */
+  function choiceGroup(id, labelId, f, value, onChange, options) {
+    var values = options.map(function (o) { return Core.str(o && typeof o === 'object' ? o.value : o); });
+    var labels = options.map(function (o) { return Core.str(o && typeof o === 'object' ? (o.label || o.value) : o); });
+    var current = values.indexOf(value) >= 0 ? value : '';
+    var buttons = [];
+    var group = el('div', { class: ['choice', f.type === 'yesno' ? 'yesno' : null], role: 'group', id: id,
+      'aria-labelledby': labelId });
+    function set(v) {
+      current = values.indexOf(Core.str(v)) >= 0 ? Core.str(v) : '';
+      buttons.forEach(function (b, i) { b.setAttribute('aria-pressed', values[i] === current ? 'true' : 'false'); });
+    }
+    values.forEach(function (v, i) {
+      var tone = f.type === 'yesno' ? (v === 'Oui' ? ' is-yes' : ' is-no') : '';
+      var b = el('button', { type: 'button', class: 'choice-btn' + (f.type === 'yesno' ? ' yesno-btn' : '') + tone,
+        disabled: !!f.disabled, dataset: { value: v },
+        onClick: function () {
+          set(current === v && !f.required ? '' : v);
+          onChange();
+        } }, labels[i]);
+      buttons.push(b);
+      group.appendChild(b);
+    });
+    set(current);
+    group.getValue = function () { return current; };
+    group.setValue = set;
+    group.first = buttons[0];
+    return group;
+  }
+
+  /**
+   * UI.formFields({fields, groups?, onEnter?, onChange?}) -> {form, control(name), values(), collect(), check(name),
    *   showError(err), clearErrors(), isDirty(), focusFirst(), firstField(), setValues(values)}
+   * type 'choice': f.options as buttons (choiceGroup). date fields: f.quick = [{label, value}] shortcut buttons.
+   * type 'yesno': two buttons Oui / Non (aria-pressed, in a labelled group; a second click on the pressed one
+   * clears an optional field). onChange(name) runs after any field changes (typing, a pick, a click).
+   * groups[].hint: a muted line in the summary while the section is closed (what it holds); groups[].tally: the
+   * summary counts its yesno fields at Oui (« 3 sur 4 à Oui »), live.
    * The fields of UI.formModal and UI.formPanel. fields: see UI.formModal, plus group (a groups[].id).
    * groups: [{id, title, open?, note?}] -> one <details class="form-section" data-group=id> per group: a small-caps
    * <summary class="form-section-title"> with the +/− marker, then a div.form of its fields and the optional
@@ -731,6 +786,11 @@
     var initial = Object.create(null);
     /** Passed to a select field's onChange(value, form): form.control(name) = another field's control. */
     var formApi = { control: function (name) { return controls[name] ? controls[name].control : null; } };
+    var tallies = [];   // {group, node}: « N sur M à Oui » of the groups with tally
+    function changed(name) {
+      tallies.forEach(updateTally);
+      if (opts.onChange) opts.onChange(name);
+    }
     var alertBox = el('div', { class: 'form-alert', hidden: true });
     var form = el('form', { class: groups ? 'form-sections' : 'form', novalidate: true,
       onSubmit: function (e) { e.preventDefault(); if (opts.onEnter) opts.onEnter(); } }, alertBox);
@@ -741,8 +801,11 @@
     (groups || []).forEach(function (g) {
       var grid = el('div', { class: 'form' });
       grids[g.id] = grid;
+      var tally = g.tally ? el('span', { class: 'form-section-tally' }) : null;
+      if (tally) tallies.push({ group: g.id, node: tally });
       sections.push({ group: g, grid: grid, node: el('details', { class: 'form-section', dataset: { group: g.id }, open: g.open !== false },
-        el('summary', { class: 'form-section-title' }, el('span', { class: 'form-section-label' }, g.title || '')),
+        el('summary', { class: 'form-section-title' }, el('span', { class: 'form-section-label' }, g.title || ''),
+          g.hint ? el('span', { class: 'form-section-hint' }, g.hint) : null, tally),
         grid, g.note ? el('p', { class: 'form-section-note' }, g.note) : null) });
     });
     function hostOf(f) {
@@ -769,6 +832,12 @@
         control = focusEl = el('textarea', Object.assign(common, { rows: 3, value: value }));
         get = function () { return String(control.value || '').trim(); };
         raw = function () { return String(control.value || ''); };
+      } else if (type === 'yesno' || type === 'choice') {
+        control = choiceGroup(id, labelId, f, value, function () { changed(f.name); },
+          type === 'yesno' ? ['Oui', 'Non'] : (f.options || []));
+        focusEl = control.first;
+        get = function () { return control.getValue(); };
+        raw = get;
       } else if (type === 'select') {
         var ops = normOptions(f.options);
         if (!f.allowCustom && value && !ops.some(function (op) { return op.value === value; })) ops.push({ value: value, label: value });
@@ -776,7 +845,7 @@
           combobox: !!f.allowCustom, tokens: !!(f.allowCustom && f.tokens), mono: !!f.mono, disabled: !!f.disabled,
           allowEmpty: !f.allowCustom && !f.required, emptyLabel: '—',
           placeholder: f.placeholder || (!f.allowCustom && f.required ? 'Choisir…' : null),
-          onChange: f.onChange ? function (v) { f.onChange(v, formApi); } : null });
+          onChange: function (v) { if (f.onChange) f.onChange(v, formApi); changed(f.name); } });
         focusEl = control.control;
         get = function () { return Core.str(control.getValue()); };
         raw = get;
@@ -801,19 +870,35 @@
         label.addEventListener('click', function (e) { e.preventDefault(); if (!focusEl.disabled) focusEl.focus(); });
       }
       var hint = f.hint ? el('p', { class: 'field-help', id: id + '-help' }, f.hint) : null;
+      // Date shortcuts (« Fin du mois »…): f.quick = [{label, value: 'DD/MM/YYYY'}].
+      var quick = type === 'date' && f.quick && f.quick.length ? el('div', { class: 'date-quick', role: 'group',
+        'aria-label': 'Raccourcis : ' + (f.label || f.name) }, f.quick.map(function (q) {
+          return el('button', { type: 'button', class: 'date-quick-btn', disabled: !!f.disabled,
+            onClick: function () { control.setValue(q.value); UI.fieldError(control, ''); changed(f.name); } }, q.label);
+        })) : null;
       if (hint) focusEl.setAttribute('aria-describedby', ((focusEl.getAttribute('aria-describedby') || '') + ' ' + id + '-help').trim());
       var err = el('p', { class: 'field-error', id: id + '-err', hidden: true });
       focusEl.setAttribute('aria-describedby', ((focusEl.getAttribute('aria-describedby') || '') + ' ' + id + '-err').trim());
       controls[f.name] = { field: f, control: control, focusEl: focusEl, type: type, get: get, raw: raw };
+      if (type === 'text' || type === 'textarea') control.addEventListener('input', function () { changed(f.name); });
+      else if (type === 'date' || type === 'month') control.addEventListener('input', function () { changed(f.name); });
       names.push(f.name);
       hostOf(f).appendChild(el('div', { class: 'form-field' + (type === 'textarea' ? ' form-field-wide' : ''), dataset: { field: f.name } },
-        label, control, hint, err));
+        label, control, quick, hint, err));
     });
     if (groups) {
       if (loose) form.appendChild(loose);
       sections.forEach(function (s) { if (s.grid.firstChild || s.group.note) form.appendChild(s.node); });
     }
     names.forEach(function (name) { initial[name] = controls[name].raw(); });
+    tallies.forEach(updateTally);
+
+    /** « 3 sur 4 à Oui » for a group's yesno fields (empty when it has none). */
+    function updateTally(t) {
+      var yn = names.filter(function (n) { return controls[n].type === 'yesno' && controls[n].field.group === t.group; });
+      var yes = yn.filter(function (n) { return controls[n].get() === 'Oui'; }).length;
+      t.node.textContent = yn.length ? yes + ' sur ' + yn.length + ' à Oui' : '';
+    }
 
     // Enter in a single-line field submits (dropdowns and comboboxes consume Enter while their list is open).
     form.addEventListener('keydown', function (e) {
@@ -898,9 +983,10 @@
         var c = controls[name];
         var v = map[name];
         if (!c || v === null || v === undefined || v === '') return;
-        if (c.type === 'select' || c.type === 'date' || c.type === 'month') c.control.setValue(v);
+        if (c.type === 'select' || c.type === 'date' || c.type === 'month' || c.type === 'yesno' || c.type === 'choice') c.control.setValue(v);
         else c.focusEl.value = v;
       });
+      tallies.forEach(updateTally);
     }
 
     return {
@@ -919,7 +1005,8 @@
   }
 
   /**
-   * UI.formModal({title, fields, submitLabel?, onSubmit?, wide?}) -> Promise<values|null>
+   * UI.formModal({title, fields, groups?, submitLabel?, onSubmit?, wide?}) -> Promise<values|null>
+   * groups: as UI.formFields (fields with a group go in its collapsible section; e.g. « Plus d’options »).
    * fields: [{name, label, type:'text'|'textarea'|'select'|'date'|'month', options?, value?, required?,
    *           placeholder?, allowCustom?, tokens?, hint?, min?, max?, mono?, disabled?, onChange?}]
    * onChange(value, form) (select fields): form.control(name) is another field's control (e.g. setOptions).
@@ -937,7 +1024,7 @@
       var busyNow = false;
       var m;
       var submitBtn;
-      var ff = formFields({ fields: fields, onEnter: function () { submit(); } });
+      var ff = formFields({ fields: fields, groups: opts.groups || null, onEnter: function () { submit(); } });
 
       function submit() {
         if (busyNow) return;
@@ -983,7 +1070,9 @@
 
   var openDrawers = [];
   /**
-   * UI.drawer({title, body, onClose?, footer?, canClose?, className?, initialFocus?}) -> {close, node, requestClose}
+   * UI.drawer({title, subtitle?, subtitleTone?, body, onClose?, footer?, canClose?, className?, initialFocus?})
+   *   -> {close, node, requestClose}
+   * subtitle: a short line under the title (p.drawer-subtitle; subtitleTone 'warn' for a frozen month).
    * Right-side panel. Opening a drawer closes the previous one. footer (Node | [Node]): div.drawer-footer under
    * the scrolling body. canClose() vetoes the user's closes (×, Escape, backdrop, requestClose) when it returns
    * false; it may start its own flow (a confirm) and call close() later. close() always closes.
@@ -1000,7 +1089,10 @@
     var panel = el('aside', { class: ['drawer'].concat(opts.className || []), role: 'dialog', 'aria-modal': 'true',
       'aria-labelledby': titleId },
       el('div', { class: 'drawer-header' },
-        el('h2', { id: titleId, class: 'drawer-title' }, opts.title || ''),
+        opts.subtitle ? el('div', { class: 'drawer-heading' },
+          el('h2', { id: titleId, class: 'drawer-title' }, opts.title || ''),
+          el('p', { class: ['drawer-subtitle', opts.subtitleTone ? 'is-' + opts.subtitleTone : null] }, opts.subtitle)) :
+          el('h2', { id: titleId, class: 'drawer-title' }, opts.title || ''),
         closeBtn),
       el('div', { class: 'drawer-body' }, opts.body || null),
       opts.footer ? el('div', { class: 'drawer-footer' }, opts.footer) : null);
@@ -1020,7 +1112,11 @@
   }
 
   /**
-   * UI.formPanel({title, className?, submitLabel?, note?, load, onSubmit?, open?, reloadLabel?}) -> Promise<values|null>
+   * UI.formPanel({title, subtitle?, subtitleTone?, className?, submitLabel?, note?, load, onSubmit?, open?, reloadLabel?,
+   *   live?, again?}) -> Promise<values|null>
+   * live(values) -> Node | null: a preview kept at the top of the form (div.form-panel-live), rebuilt on every
+   *   change (e.g. the score an application would get). again: {label, checked} -> a checkbox in the footer
+   *   (« Enchaîner avec un autre poste »); its state is written back to again.checked for the caller.
    * A creation form in a side panel (UI.drawer, or `open` = a function taking the same options, e.g. a page's
    * ctx.drawer). load({force}) -> Promise<{fields, groups?, alert?, meta?}> (UI.formFields; alert: a warning line
    * above the form; meta: a short line under it). A skeleton shows while it runs and the submit button stays
@@ -1047,10 +1143,22 @@
         onClick: function () { submit(); } }, opts.submitLabel || 'Enregistrer');
       var cancelBtn = el('button', { type: 'button', class: 'btn btn-secondary form-panel-cancel',
         onClick: function () { handle.requestClose(); } }, 'Annuler');
+      var againBox = opts.again ? el('input', { type: 'checkbox', class: 'form-panel-again-box', checked: !!opts.again.checked,
+        onChange: function () { opts.again.checked = againBox.checked; } }) : null;
       var footer = [
         opts.note ? el('p', { class: 'drawer-footer-note' }, opts.note) : null,
+        againBox ? el('label', { class: 'form-panel-again' }, againBox, ' ' + opts.again.label) : null,
         el('div', { class: 'drawer-footer-buttons' }, cancelBtn, submitBtn)
       ];
+      var liveBox = opts.live ? el('div', { class: 'form-panel-live', role: 'status', 'aria-live': 'polite' }) : null;
+      function updateLive() {
+        if (!liveBox || !ff) return;
+        var node = null;
+        try { node = opts.live(ff.values()); } catch (e) { console.error(e); }
+        clear(liveBox);
+        if (node) liveBox.appendChild(node);
+        liveBox.hidden = !node;
+      }
 
       function canClose() {
         if (busyNow || asking) return false;
@@ -1067,6 +1175,8 @@
       var open = typeof opts.open === 'function' ? opts.open : drawer;
       var handle = open({
         title: opts.title || 'Formulaire',
+        subtitle: opts.subtitle || null,
+        subtitleTone: opts.subtitleTone || null,
         body: body,
         footer: footer,
         className: ['form-panel'].concat(opts.className || []),
@@ -1108,11 +1218,13 @@
         // The focus is still where the panel put it (× or nothing yet): the first field takes it.
         var a = document.activeElement;
         var untouched = !a || a === document.body || a === closeButton() || !panel.contains(a) || body.contains(a);
-        ff = formFields({ fields: res.fields || [], groups: res.groups || null, onEnter: function () { submit(); } });
+        ff = formFields({ fields: res.fields || [], groups: res.groups || null, onEnter: function () { submit(); },
+          onChange: updateLive });
         if (keep) ff.setValues(keep);
         clear(body);
         body.setAttribute('aria-busy', 'false');
         if (res.alert) body.appendChild(el('div', { class: 'alert alert-warning form-panel-alert', role: 'status' }, el('p', null, res.alert)));
+        if (liveBox) { body.appendChild(liveBox); updateLive(); }
         body.appendChild(ff.form);
         if (res.meta || opts.reloadLabel) {
           body.appendChild(el('p', { class: 'form-panel-meta' }, res.meta || null, opts.reloadLabel ?
@@ -1779,6 +1891,7 @@
     quote: quote,
     frSpacing: frSpacing,
     section: section,
+    lede: lede,
     empty: empty,
     noData: noData,
     filterNote: filterNote,
