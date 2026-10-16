@@ -22,7 +22,8 @@ function apiWrap_(fn, name, minRole) {
       Config.clearMemo_();
       release = Access.throttle(name);
       var cfg = Config.get();
-      user = Access.requireRole(minRole || 'lecteur', cfg.access);
+      // 'none': any identified account of the domain, with or without a role (« Demander l’accès »).
+      user = minRole === 'none' ? Access.currentUser(cfg.access) : Access.requireRole(minRole || 'lecteur', cfg.access);
       authMs = Date.now() - t0;
       Core.setThreshold(cfg.threshold);
       var args = parseArgs_(argsJson);
@@ -312,7 +313,8 @@ var ApiImpl_ = (function () {
       user: { email: user.email, role: user.role, isOwner: user.isOwner },
       prefs: Config.getPrefs(user.email),
       editing: cfg.editing,
-      sync: syncFor_(Sync.status(), user)
+      sync: syncFor_(Sync.status(), user),
+      accessRequests: admin ? cfg.requests.length : 0
     };
   }
 
@@ -815,7 +817,7 @@ var ApiImpl_ = (function () {
     return deleteRowById_(Config.TABS.replacements, args, 'Remplacement');
   }
 
-  function accessView_(access, owner) {
+  function accessView_(access, owner, requests) {
     function entries(list) {
       return (list || []).map(function (e) {
         return { email: Access.normEmail(e.email), role: e.role, added_at: e.added_at, added_by: e.added_by };
@@ -823,17 +825,28 @@ var ApiImpl_ = (function () {
         .sort(function (a, b) { return a.email < b.email ? -1 : a.email > b.email ? 1 : 0; });
     }
     return { owner: owner, users: entries(access.users), groups: entries(access.groups),
-      domainRole: access.domainRole === 'lecteur' ? 'lecteur' : 'none' };
+      domainRole: access.domainRole === 'lecteur' ? 'lecteur' : 'none', requests: (requests || []).slice().reverse() };
+  }
+
+  // Requests answered by the new list: an explicit entry for that account, or the whole domain let in.
+  function openRequests_(requests, access) {
+    if (access.domainRole === 'lecteur') return [];
+    var listed = {};
+    access.users.forEach(function (u) { listed[Access.normEmail(u.email)] = true; });
+    return requests.filter(function (r) { return !listed[r.email]; });
   }
 
   /** change(access) returns false when there is nothing to write; check(access) may throw to refuse. */
   function mutateAccess_(user, change, check) {
     return Store.withLock(function () {
-      var access = Config.get({ fresh: true }).access;
+      var cfg = Config.get({ fresh: true });
+      var access = cfg.access;
       var changed = change(access) !== false;
       if (check) check(access);
       if (changed) Config.setAccess(access);
-      return accessView_(access, user.owner);
+      var requests = openRequests_(cfg.requests, access);
+      if (requests.length !== cfg.requests.length) requests = Config.setAccessRequests(requests);
+      return accessView_(access, user.owner, requests);
     });
   }
 
@@ -862,7 +875,7 @@ var ApiImpl_ = (function () {
       defaultThreshold: Core.THRESHOLD,
       source: source,
       dataUrl: cfg.dataId ? Store.dataUrl() : '',
-      access: accessView_(cfg.access, user.owner),
+      access: accessView_(cfg.access, user.owner, cfg.requests),
       me: user.email,
       editing: cfg.editing,
       sync: Sync.verifiedStatus()
@@ -985,6 +998,37 @@ var ApiImpl_ = (function () {
     });
   }
 
+  // Open to any identified account of the domain, with or without a role. One pending request per account;
+  // asking again only updates the message.
+  function requestAccess(args, user) {
+    if (user.role) return { status: 'granted' };
+    var message = args.message === undefined || args.message === null ? '' : args.message;
+    if (typeof message !== 'string') throw invalid_('Message invalide.');
+    message = message.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+    if (message.length > Config.MAX_REQUEST_MESSAGE) {
+      throw Core.makeError('VALIDATION', 'Message trop long : ' + Config.MAX_REQUEST_MESSAGE + ' caractères au plus.', 'message');
+    }
+    return Store.withLock(function () {
+      var requests = Config.get({ fresh: true }).requests;
+      var mine = requests.filter(function (r) { return r.email === user.email; })[0];
+      var already = !!mine;
+      if (mine) mine.message = message || mine.message;
+      else requests.push(mine = { email: user.email, requested_at: Config.nowStamp(), message: message });
+      Config.setAccessRequests(requests);
+      return { status: 'pending', requested_at: mine.requested_at, already: already };
+    });
+  }
+
+  function dismissAccessRequest(args) {
+    var email = Access.checkEmail(args.email);
+    return Store.withLock(function () {
+      var requests = Config.get({ fresh: true }).requests;
+      var left = requests.filter(function (r) { return r.email !== email; });
+      if (left.length === requests.length) throw Core.makeError('NOT_FOUND', 'Aucune demande d’accès de ' + email + '.');
+      return { requests: Config.setAccessRequests(left).slice().reverse() };
+    });
+  }
+
   function setDomainRole(args, user) {
     var role = Access.checkRole(args.role, Access.DOMAIN_ROLES);
     return mutateAccess_(user, function (access) { access.domainRole = role; });
@@ -1012,6 +1056,8 @@ var ApiImpl_ = (function () {
     getImportLog: getImportLog,
     getAccessLog: getAccessLog,
     notePages: notePages,
+    requestAccess: requestAccess,
+    dismissAccessRequest: dismissAccessRequest,
     savePostes: savePostes,
     addGenericPoste: addGenericPoste,
     addPoste: addPoste,
@@ -1053,6 +1099,8 @@ function api_enableSync(argsJson) { return apiWrap_(ApiImpl_.enableSync, 'api_en
 function api_getImportLog(argsJson) { return apiWrap_(ApiImpl_.getImportLog, 'api_getImportLog', 'lecteur')(argsJson); }
 function api_getAccessLog(argsJson) { return apiWrap_(ApiImpl_.getAccessLog, 'api_getAccessLog', 'admin')(argsJson); }
 function api_notePages(argsJson) { return apiWrap_(ApiImpl_.notePages, 'api_notePages', 'lecteur')(argsJson); }
+function api_requestAccess(argsJson) { return apiWrap_(ApiImpl_.requestAccess, 'api_requestAccess', 'none')(argsJson); }
+function api_dismissAccessRequest(argsJson) { return apiWrap_(ApiImpl_.dismissAccessRequest, 'api_dismissAccessRequest', 'admin')(argsJson); }
 function api_savePostes(argsJson) { return apiWrap_(ApiImpl_.savePostes, 'api_savePostes', 'admin')(argsJson); }
 function api_addGenericPoste(argsJson) { return apiWrap_(ApiImpl_.addGenericPoste, 'api_addGenericPoste', 'admin')(argsJson); }
 function api_addPoste(argsJson) { return apiWrap_(ApiImpl_.addPoste, 'api_addPoste', 'admin')(argsJson); }

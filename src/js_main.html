@@ -298,11 +298,16 @@
     var s = State.get();
     var md = s.month ? State.getMonthData(s.month) : null;
     var f = md ? State.filtered(md) : null;
-    var counts = { postes: f ? f.postes.length : null, apps: f ? f.applications.length : null };
+    var counts = { postes: f ? f.postes.length : null, apps: f ? f.applications.length : null,
+      settings: s.accessRequests || null };
     if (sidebar) {
       Array.prototype.forEach.call(sidebar.querySelectorAll('.nav-count'), function (n) {
         var v = counts[n.dataset.count];
         n.textContent = v === null || v === undefined ? '' : UI.fmtNum(v);
+        if (n.dataset.count === 'settings') {
+          n.hidden = !v;
+          if (v) n.setAttribute('aria-label', UI.plural(v, 'demande d’accès', 'demandes d’accès'));
+        }
       });
     }
     var line = document.getElementById('appbar-count');
@@ -319,12 +324,12 @@
     UI.clear(sidebar);
     var nav = el('nav', { class: 'nav', 'aria-label': 'Pages' },
       el('ul', { class: 'nav-list' }, visibleNav().map(function (n) {
-        var counted = n.id === 'postes' || n.id === 'apps';
+        var counted = n.id === 'postes' || n.id === 'apps' || n.id === 'settings';
         return el('li', null, el('button', { type: 'button', class: 'nav-link', dataset: { page: n.id },
           onClick: function () { go(n.id); } },
           el('span', { class: 'nav-glyph', 'aria-hidden': 'true' }, icon(n.id)),
           el('span', { class: 'nav-label' }, n.title),
-          counted ? el('span', { class: 'nav-count', dataset: { count: n.id } }) : null));
+          counted ? el('span', { class: ['nav-count', n.id === 'settings' ? 'is-alert' : null], dataset: { count: n.id } }) : null));
       })));
 
     // Sheet links are only sent to admins, so the lecteur preview hides them too.
@@ -922,12 +927,47 @@
   // FORBIDDEN at boot. The server message names the account.
   function renderDeniedScreen(err) {
     bareShell();
+    // Without an identity (another domain, a consumer account) the server cannot tell who asks.
+    var known = !/Identité Google non transmise/.test(UI.errorText(err));
     main.appendChild(el('div', { class: 'page page-config page-denied', dataset: { page: 'denied' } },
       UI.pageHeader({ kicker: BRAND + ' · accès', title: 'Accès refusé' }),
       el('p', { class: 'page-lede', id: 'denied-message' }, UI.errorText(err)),
-      el('p', { class: 'field-help' }, 'Demandez l’accès à un administrateur de l’application, puis « Réessayer ».'),
+      known ? requestAccessForm() :
+        el('p', { class: 'field-help' }, 'Demandez l’accès à un administrateur de l’application, puis « Réessayer ».'),
       el('div', { class: 'form-actions' },
-        el('button', { type: 'button', class: 'btn btn-secondary', onClick: reboot }, 'Réessayer'))));
+        el('button', { type: 'button', class: 'btn btn-secondary', id: 'denied-retry', onClick: reboot }, 'Réessayer'))));
+  }
+
+  // « Demander l’accès »: one pending request per account, shown to admins in Paramètres → Accès.
+  function requestAccessForm() {
+    var box = el('div', { class: 'denied-request', id: 'denied-request' });
+    var message = el('textarea', { class: 'input', id: 'request-message', rows: 3, maxlength: 200,
+      placeholder: 'Ex. : responsable qualité du Labo Textile, pour suivre les postes de l’équipe.',
+      'aria-describedby': 'request-help' });
+    var send = el('button', { type: 'submit', class: 'btn btn-primary', id: 'request-send' }, 'Demander l’accès');
+
+    function sent(res) {
+      UI.clear(box).appendChild(el('div', { class: 'denied-sent', id: 'request-sent', role: 'status' },
+        el('p', { class: 'denied-sent-title' }, res.already ?
+          'Demande déjà envoyée le ' + Fmt.dateTime(res.requested_at) + '.' : 'Demande envoyée.'),
+        el('p', { class: 'field-help' }, 'Un administrateur la verra dans Paramètres → Accès. Une fois l’accès donné, ' +
+          'cliquez sur « Réessayer ».')));
+    }
+
+    box.appendChild(el('form', { class: 'denied-request-form', novalidate: true, onSubmit: function (e) {
+      e.preventDefault();
+      UI.fieldError(message, '');
+      var p = api.call('api_requestAccess', { message: message.value });
+      UI.busy(send, p, 'Envoi…').then(function (res) {
+        if (res && res.status === 'granted') { reboot(); return; }
+        sent(res || {});
+      }, function (err) { UI.fieldError(message, UI.errorText(err)); message.focus(); });
+    } },
+      el('label', { class: 'field-label', for: 'request-message' }, 'Message aux administrateurs (facultatif)'),
+      message,
+      el('p', { class: 'field-help', id: 'request-help' }, 'Votre adresse est jointe à la demande. 200 caractères au plus.'),
+      el('div', { class: 'form-actions' }, send)));
+    return box;
   }
 
   function reboot() {
@@ -996,6 +1036,7 @@
       return;
     }
     if (has(changed, 'sync')) updateSyncChip();
+    if (has(changed, 'accessRequests')) updateNavCounts();
     if (has(changed, 'months') || has(changed, 'dataUrl') || has(changed, 'sourceUrl') || has(changed, 'sourceTitle')) {
       renderSidebar();
       renderAppbar();

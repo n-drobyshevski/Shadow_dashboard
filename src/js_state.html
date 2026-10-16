@@ -21,6 +21,7 @@
     user: { email: '', role: '', isOwner: false },
     // Admin previewing the lecteur view; display only, the server still applies the real role.
     readerView: false,
+    accessRequests: 0,   // pending « Demander l’accès », admins only
     prefs: {},
     // Replaced only when a switch actually changes, so subscribers see no spurious 'editing' change.
     editing: { edit: false, create: false, delete: false },
@@ -347,6 +348,7 @@
       prefs: b.prefs && typeof b.prefs === 'object' ? b.prefs : {},
       editing: sameEditing(state.editing, normEditing(b.editing) || { edit: false, create: false, delete: false }),
       sync: b.sync && typeof b.sync === 'object' ? b.sync : null,
+      accessRequests: Number(b.accessRequests) || 0,
       loading: false
     });
     return state;

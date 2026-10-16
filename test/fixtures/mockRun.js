@@ -136,6 +136,7 @@ function mockMain(FIX, OPTS) {
     months: {},          // month -> {postes, applications, referentiel, columns}
     importLog: [],       // insertion order
     accessLog: OPTS.empty ? [] : sampleAccessLog(),   // insertion order
+    requests: OPTS.requests ? clone(OPTS.requests) : [],   // « Demander l’accès », oldest first
     actions: OPTS.empty ? [] : clone(FIX.ACTIONS),
     replacements: OPTS.empty ? [] : clone(FIX.REPLACEMENTS),
     threshold: 80,
@@ -478,7 +479,8 @@ function mockMain(FIX, OPTS) {
         user: user,
         prefs: clone(db.prefs[user.email] || {}),
         editing: editingView(),
-        sync: syncStatus()
+        sync: syncStatus(),
+        accessRequests: admin ? db.requests.length : 0
       };
     },
 
@@ -818,6 +820,28 @@ function mockMain(FIX, OPTS) {
       return accessView();
     },
 
+    api_requestAccess: function (args) {
+      var email = normEmail(db.email);
+      if (roleOf(email)) return { status: 'granted' };
+      var message = obj(args).message === undefined || obj(args).message === null ? '' : obj(args).message;
+      if (typeof message !== 'string') fail('VALIDATION', 'Message invalide.');
+      message = message.trim();
+      if (message.length > 200) fail('VALIDATION', 'Message trop long : 200 caractères au plus.', 'message');
+      var mine = db.requests.filter(function (r) { return r.email === email; })[0];
+      var already = !!mine;
+      if (mine) mine.message = message || mine.message;
+      else db.requests.push(mine = { email: email, requested_at: '2026-05-12 09:02', message: message });
+      return { status: 'pending', requested_at: mine.requested_at, already: already };
+    },
+
+    api_dismissAccessRequest: function (args) {
+      var email = normEmail(obj(args).email);
+      var left = db.requests.filter(function (r) { return r.email !== email; });
+      if (left.length === db.requests.length) fail('NOT_FOUND', 'Aucune demande d’accès de ' + email + '.');
+      db.requests = left;
+      return { requests: clone(left).reverse() };
+    },
+
     api_setDomainRole: function (args) {
       var role = obj(args).role;
       if (['none', 'lecteur'].indexOf(role) < 0) fail('VALIDATION', 'Rôle invalide : « ' + s(role) + ' ».');
@@ -845,7 +869,9 @@ function mockMain(FIX, OPTS) {
     users.sort(function (a, b) { return a.email < b.email ? -1 : a.email > b.email ? 1 : 0; });
     var groups = clone(db.access.groups);
     groups.sort(function (a, b) { return a.email < b.email ? -1 : a.email > b.email ? 1 : 0; });
-    return { owner: OWNER, users: users, groups: groups, domainRole: db.access.domainRole };
+    if (db.access.domainRole === 'lecteur') db.requests = [];
+    db.requests = db.requests.filter(function (r) { return !users.some(function (u) { return u.email === r.email; }); });
+    return { owner: OWNER, users: users, groups: groups, domainRole: db.access.domainRole, requests: clone(db.requests).reverse() };
   }
   function editableEmail(v) {
     var email = normEmail(v);
@@ -864,6 +890,7 @@ function mockMain(FIX, OPTS) {
         'Google Workspace que son propriétaire.');
     }
     var role = roleOf(email);
+    if (name === 'api_requestAccess') return { email: email, role: role, isOwner: email === OWNER };
     if (!role) fail('FORBIDDEN', 'Accès refusé pour ' + email + '. Demandez l’accès à un administrateur.');
     if (role !== 'admin' && LECTEUR_APIS.indexOf(name) < 0) fail('FORBIDDEN', 'Action réservée aux administrateurs.');
     Core().setThreshold(db.threshold);
@@ -969,7 +996,7 @@ function mockMain(FIX, OPTS) {
  * @returns {string} browser JavaScript (no surrounding <script> tag)
  */
 function buildMockScript({ empty = false, configured = true, delayMs = 0, email, failNext, prefs, currentMonth, sync,
-  formSchema, delays, editing } = {}) {
+  formSchema, delays, editing, requests } = {}) {
   const fixtures = {
     POSTES_HEADERS: data.POSTES_HEADERS,
     APPS_HEADERS: data.APPS_HEADERS,
@@ -986,7 +1013,7 @@ function buildMockScript({ empty = false, configured = true, delayMs = 0, email,
     .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
   return '(' + mockMain.toString() + ')(' + json(fixtures) + ', ' + json({ empty, configured, delayMs, email, failNext: failNext || {}, prefs: prefs || null,
     currentMonth: currentMonth || null, sync: sync || null, formSchema: formSchema || null, delays: delays || null,
-    editing: editing || null }) + ');';
+    editing: editing || null, requests: requests || null }) + ');';
 }
 
 /**

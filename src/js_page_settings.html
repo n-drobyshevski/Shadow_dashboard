@@ -172,6 +172,16 @@
   border: 1px solid var(--rule); border-radius: 3px; font-family: var(--font-mono); font-size: 10px; color: var(--ink-3); }
 .page-settings .visit-pg.is-on { background: var(--ink); border-color: var(--ink); color: var(--on-ink); }
 .page-settings .metric-card.tone-ko .metric-value { color: var(--ko); }
+.page-settings .access-requests { border-color: var(--ko); }
+.page-settings .request-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.page-settings .request-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s2) var(--s4);
+  padding: var(--s2) 0; border-top: 1px solid var(--rule); }
+.page-settings .request-who { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--s2); min-width: 0; }
+.page-settings .request-message { flex-basis: 100%; color: var(--ink-2); font-size: 13px; overflow-wrap: anywhere;
+  quotes: "«\202f" "\202f»"; }
+@media (max-width: 700px) { .page-settings .request-item { grid-template-columns: 1fr; } }
+.page-settings .request-actions { display: flex; align-items: center; gap: var(--s2); }
+.page-settings .settings-card[hidden] { display: none; }
 </style>
 <script>
 // Pages.settings: the admin-only « Paramètres » page, in three tabs (Général, Saisie, Accès).
@@ -720,6 +730,8 @@
     var query = '';
     var filterId = 'all';
     var fresh = {};
+    var requestsBox = el('section', { class: 'section settings-card access-requests', id: 'settings-requests', hidden: true,
+      'aria-labelledby': 'settings-requests-title' });
     var lastVisits = null; // email -> {at, n30}, once the access log is in
     var logCard = accessLogCard(s.me);
 
@@ -818,7 +830,48 @@
         })));
     }
 
+    // « Demander l’accès »: shown first while any request waits; adding the account answers it.
+    function renderRequests() {
+      var list = view.requests || [];
+      State.set({ accessRequests: list.length });
+      UI.clear(requestsBox);
+      requestsBox.hidden = !list.length;
+      if (!list.length) return;
+      requestsBox.appendChild(el('div', { class: 'card-head' },
+        el('h2', { class: 'section-title card-title', id: 'settings-requests-title' }, 'Demandes d’accès'),
+        el('span', { class: 'field-help' }, UI.plural(list.length, 'demande en attente', 'demandes en attente'))));
+      requestsBox.appendChild(el('ul', { class: 'request-list', 'aria-labelledby': 'settings-requests-title' },
+        list.map(function (r) {
+          var grant = el('button', { type: 'button', class: 'btn btn-primary btn-sm', dataset: { grant: r.email },
+            onClick: function () {
+              UI.busy(grant, api.call('api_saveUser', { email: r.email, role: 'lecteur' })).then(function (next) {
+                if (!alive()) return;
+                UI.toast('Accès donné — ' + r.email + ' (Lecteur).', 'success');
+                apply(next, [r.email]);
+              }, function (err) { if (alive()) UI.errorToast(err); });
+            } }, 'Ajouter comme lecteur');
+          var dismiss = el('button', { type: 'button', class: 'btn btn-quiet btn-sm', dataset: { dismiss: r.email },
+            'aria-label': 'Ignorer la demande de ' + r.email,
+            onClick: function () {
+              UI.busy(dismiss, api.call('api_dismissAccessRequest', { email: r.email })).then(function (res) {
+                if (!alive()) return;
+                UI.toast('Demande ignorée — ' + r.email + '.', 'success');
+                view.requests = res.requests;
+                s.access = view;
+                renderRequests();
+              }, function (err) { if (alive()) UI.errorToast(err); });
+            } }, 'Ignorer');
+          return el('li', { class: 'request-item', dataset: { email: r.email } },
+            el('div', { class: 'request-who' },
+              el('span', { class: 'mono' }, r.email),
+              el('span', { class: 'access-note' }, 'le ' + Fmt.dateTime(r.requested_at)),
+              r.message ? el('q', { class: 'request-message' }, r.message) : null),
+            el('div', { class: 'request-actions' }, grant, dismiss));
+        })));
+    }
+
     function render() {
+      renderRequests();
       renderDomain();
       UI.clear(wrap);
       var me = s.me;
@@ -942,7 +995,7 @@
           'l’adresse des autres.'], { id: 'access-help' }),
       wrap);
     list.id = 'settings-access';
-    return [domainBox, list, logCard];
+    return [requestsBox, domainBox, list, logCard];
   }
 
   // Access log: the last 500 visits, grouped by day and person. Times are 'YYYY-MM-DD HH:mm', Paris time.

@@ -141,7 +141,7 @@ async function waitIdle(page, timeout = 10000) {
  */
 async function openApp({ empty = false, configured = true, page: pageId = 'dashboard',
   viewport = { width: 1400, height: 900 }, delayMs = 0, email, readySelector, failNext, beforeGoto, currentMonth, sync,
-  idle = true, prefs, boot, inlinePage, plotly = {}, formSchema, delays, editing } = {}) {
+  idle = true, prefs, boot, inlinePage, plotly = {}, formSchema, delays, editing, requests } = {}) {
   const browser = await launchBrowser();
   const context = await browser.newContext({ viewport, locale: 'fr-FR', timezoneId: 'Europe/Paris' });
   const page = await context.newPage();
@@ -175,7 +175,7 @@ async function openApp({ empty = false, configured = true, page: pageId = 'dashb
     return route.abort();
   });
 
-  const mockOptions = { empty, configured, delayMs, email, failNext, prefs, currentMonth, sync, formSchema, delays,
+  const mockOptions = { empty, configured, delayMs, email, failNext, prefs, currentMonth, sync, formSchema, delays, requests,
     editing: editing === undefined ? {} : (editing === 'unset' ? null : editing) };
   let html = renderIndex({
     inject: '<script>' + buildMockScript(mockOptions) + '</script>',
