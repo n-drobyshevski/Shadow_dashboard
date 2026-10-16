@@ -159,7 +159,10 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
   or a lecteur calls an admin endpoint) and applies the effective threshold (`Core.setThreshold`), then
   catches errors: `err.code` in `Core.ERROR_CODES` → that code, else `INTERNAL`; message in French when
   produced by us; `console.error` the stack (`console.warn` and no stack for `FORBIDDEN` and throttle
-  refusals). Every call ends with one timing line
+  refusals). An `INTERNAL` message carries the first line of the error only for an admin caller; anyone
+  else (including a caller refused or not identified yet) gets « Erreur interne du serveur. Réessayez ;
+  si le problème persiste, prévenez un administrateur. » (Google's text can name a spreadsheet id).
+  Every call ends with one timing line
   `{api, ms, authMs, ok, code?}` (§4 Perf). Every call starts with empty per-execution read memos
   (`Store.clearMemo_()`, `Config.clearMemo_()`, §4): one call = one execution in Apps Script, and the
   reset keeps the test sandbox, which runs many calls in one context, honest.
@@ -206,6 +209,8 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
   ('YYYY-MM-DD HH:mm' | ''), lastChange:{month, at, created, postes:Diff, applications:Diff, referentiel}|null,
   lastError:{at, code, message}|null, warnings:[string], authError?:string}` (`SYNC_STATE` Script Property;
   `authError` only from `api_getSettings` / `api_setConfig` when the deployer has not granted the ScriptApp scope).
+  For anyone but an admin (`api_bootstrap`, `api_getSyncStatus`), `lastError.message` is replaced by « La
+  synchronisation a échoué. Un administrateur en voit le détail dans Paramètres. » (time and code kept).
 - **Editing**: `{edit:bool, create:bool, delete:bool}` — the switches of Paramètres › « Saisie dans l’application »
   (`EDITING_JSON` Script Property, §4 Config), for every admin and every month; all `true` by default.
 
@@ -214,8 +219,8 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 | Function | Args | Returns `data` | Errors |
 |---|---|---|---|
 | `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:'', threshold:int, user:{email, role:'admin'|'lecteur', isOwner:bool}, prefs:{sidebar?, period?}, editing:Editing, sync:SyncStatus}` (`dataUrl` / `sourceUrl` / `sourceTitle` are `''` for lecteurs: the spreadsheets are private to the deployer). Never opens the source: the URLs are built from the ids and `sourceTitle` is the stored one (`SOURCE_INFO`, refreshed by every sync; `''` until the first sync on a deployment that predates it), so it can be one sync old and says nothing about access — Paramètres checks the source live. | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
-| `api_savePrefs` | `{sidebar:'open'\|'collapsed', period:'month'\|'last3'\|'last6'\|'year'\|'all'}` (any subset of the known keys) | `{prefs}` = the caller's stored preferences. Every role (lecteurs included): interface state only, per account (`PREFS_<email>` Script Property). | `VALIDATION` (unknown key or value, nothing to save, no identity) |
-| `api_setConfig` | `{source:'url or id'}` | `{sourceId, sourceTitle, sourceUrl, tabsFound:{postes:bool, applications:bool, referentiel:bool}, sync:SyncStatus}` — also creates the hourly trigger (`sync.authError` when ScriptApp is not authorised; the source is saved anyway). The client then calls `api_syncNow`. | `VALIDATION` (bad id), `SOURCE_ERROR` (cannot open / no postes+apps tab). Saved only on success. |
+| `api_savePrefs` | `{sidebar:'open'\|'collapsed', period:'month'\|'last3'\|'last6'\|'year'\|'all'}` (any subset of the known keys) | `{prefs}` = the caller's stored preferences. Every role (lecteurs included): interface state only, per account (`PREFS_<email>` Script Property; at most `Config.MAX_PREFS` = 300 accounts, the least recently saved dropped first). | `VALIDATION` (unknown key or value, nothing to save, no identity) |
+| `api_setConfig` | `{source:'url or id'}` — **owner only** (`FORBIDDEN` for other admins: the deployer's rights open the file) | `{sourceId, sourceTitle, sourceUrl, tabsFound:{postes:bool, applications:bool, referentiel:bool}, sync:SyncStatus}` — also creates the hourly trigger (`sync.authError` when ScriptApp is not authorised; the source is saved anyway). The client then calls `api_syncNow`. | `VALIDATION` (bad id), `SOURCE_ERROR` (cannot open / no postes+apps tab). Saved only on success. |
 | `api_getMonthData` | `{month}` | `{month, postes:[rec], applications:[rec], referentiel:{cat:[v]}, columns:{postes:[h], applications:[h]}, importInfo:{imported_at, warnings:[]}\|null}` | `VALIDATION`, `NOT_FOUND` (month not imported). `columns.applications` always ends with `Galink`, `IDP` if missing from the source headers. |
 | `api_getSyncStatus` | – | `SyncStatus` plus `editing:Editing` (the client polls it every 10 min: other admins' open pages pick up a switch change) | – |
 | `api_syncNow` | – | `{status:SyncStatus, result:SyncResult}` — synchronises the current month now. `SyncResult = {month, counts:{postes, applications, referentiel}, overwritten:bool, carriedOver:n, warnings:[...], changed:bool, changes:Changes}`; nothing is written when `changed` is false. | `NOT_CONFIGURED`, `SOURCE_ERROR`, `BUSY` (recorded in `lastError`, except `BUSY`) |
@@ -339,10 +344,11 @@ Config.bumpSourceStamp()     -> new stamp = max(Date.now(), previous + 1), never
                                 under the lock only: by Store.withLock (after a write-back) and by
                                 Importer.importMonth (before writing a snapshot).
 Config.setSchemaVersion(dataId, version)   (Store.ensure, once Meta is known to carry `version`)
-Config.PROP_PREFS_PREFIX = 'PREFS_'  (+ lower-cased email: JSON of that account's interface preferences)
+Config.PROP_PREFS_PREFIX = 'PREFS_'  (+ lower-cased email: JSON of that account's interface preferences + at, ms of the save)
+Config.MAX_PREFS      = 300  (accounts kept; a new account beyond it drops the least recently saved, no `at` first)
 Config.PREF_VALUES    = {sidebar:['open','collapsed']}
 Config.getPrefs(email) -> {} | {sidebar}  (from the same memo)
-Config.setPrefs(email, patch) -> merged with the stored value (fresh read), stored, returned
+Config.setPrefs(email, patch) -> merged with the stored value (fresh read), stored with `at`, returned (without `at`)
 Config.PROP_FAVICON   = 'FAVICON_URL'  (optional https URL of the tab icon; '-' = none)
 Config.faviconUrl()          -> FAVICON_URL when it is an https URL, '' for '-', else DEFAULT_FAVICON_URL
                                 (assets/favicon.png embedded as a data:image/png;base64 URI).

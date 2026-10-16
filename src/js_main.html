@@ -907,17 +907,22 @@
     UI.clear(main);
   }
 
-  /** Lecteur on an app without source: nothing to do but wait for an admin. */
+  /**
+   * App without source, for anyone but the owner (only the owner may choose it, see ApiImpl_.setConfig):
+   * nothing to do but wait. An admin can still open Paramètres (accesses, threshold).
+   */
   function renderWaitingScreen() {
     bareShell();
     var u = State.get().user || {};
     main.appendChild(el('div', { class: 'page page-config', dataset: { page: 'unconfigured' } },
       UI.pageHeader({ kicker: BRAND + ' · configuration', title: 'Source de données' }),
-      el('p', { class: 'page-lede' }, 'L’application n’est pas encore configurée. Un administrateur doit d’abord ' +
-        'définir le classeur source ; les données arrivent ensuite toutes les heures.'),
+      el('p', { class: 'page-lede' }, 'L’application n’est pas encore configurée. Son propriétaire (le compte qui ' +
+        'l’a déployée) doit d’abord définir le classeur source ; les données arrivent ensuite toutes les heures.'),
       u.email ? el('p', { class: 'field-help' }, 'Connecté en tant que ', el('span', { class: 'mono' }, u.email),
         ' · ' + (ROLE_LABELS[u.role] || u.role) + '.') : null,
       el('div', { class: 'form-actions' },
+        State.canEdit() ? el('button', { type: 'button', class: 'btn btn-secondary', id: 'waiting-open-settings',
+          onClick: function () { go('settings'); } }, 'Paramètres') : null,
         el('button', { type: 'button', class: 'btn btn-secondary', onClick: reboot }, 'Actualiser'))));
   }
 
@@ -939,7 +944,7 @@
   }
 
   function renderConfigScreen() {
-    if (!State.canEdit()) { renderWaitingScreen(); return; }
+    if (!State.canEdit() || !(State.get().user || {}).isOwner) { renderWaitingScreen(); return; }
     bareShell();
     var input = el('input', { type: 'text', id: 'config-source', class: 'input', required: true,
       placeholder: 'https://docs.google.com/spreadsheets/d/…', autocomplete: 'off',

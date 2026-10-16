@@ -34,11 +34,15 @@ var Config = (function () {
    */
   var PROP_SOURCE_STAMP = 'SOURCE_WRITE_STAMP';
   /**
-   * Per-account interface preferences, one Script Property per account: PREFS_<email> = JSON. The page
-   * also keeps them in localStorage, but that storage is refused in the Apps Script frame when the
-   * browser blocks third-party storage. PREF_VALUES = the only keys and values accepted.
+   * Per-account interface preferences, one Script Property per account: PREFS_<email> = JSON (the
+   * PREF_VALUES keys, plus `at`, the ms of the last save). The page also keeps them in localStorage, but
+   * that storage is refused in the Apps Script frame when the browser blocks third-party storage.
+   * PREF_VALUES = the only keys and values accepted. At most MAX_PREFS accounts are kept: saving for a new
+   * account beyond that drops the least recently saved ones (they fall back to the defaults), so the
+   * ~500 KB Script Properties store cannot fill up on a large domain.
    */
   var PROP_PREFS_PREFIX = 'PREFS_';
+  var MAX_PREFS = 300;
   /**
    * Switches of Paramètres › « Saisie dans l’application », for every admin and every month: JSON
    * {edit, create, delete} (booleans). edit = cells of Postes / Applications and renaming an
@@ -354,11 +358,26 @@ var Config = (function () {
 
   /** Merges `patch` (already validated) into the account's preferences; returns the stored object. */
   function setPrefs(email, patch) {
-    all_(true); // read-modify-write: start from the stored value, not this execution's memo
+    var all = all_(true); // read-modify-write: start from the stored value, not this execution's memo
+    var key = prefsKey_(email);
     var next = cleanPrefs_(Object.assign(getPrefs(email), patch || {}));
+    if (!Object.prototype.hasOwnProperty.call(all, key)) evictPrefs_(all, MAX_PREFS - 1);
     clearMemo_();
-    props_().setProperty(prefsKey_(email), JSON.stringify(next));
+    props_().setProperty(key, JSON.stringify(Object.assign({}, next, { at: Date.now() })));
     return next;
+  }
+
+  /** Deletes the least recently saved PREFS_ entries (no `at` first) until at most `keep` remain. */
+  function evictPrefs_(all, keep) {
+    var keys = Object.keys(all).filter(function (k) { return k.indexOf(PROP_PREFS_PREFIX) === 0; });
+    if (keys.length <= keep) return;
+    var at = function (k) {
+      try { return Number(JSON.parse(all[k]).at) || 0; } catch (e) { return 0; }
+    };
+    keys.map(function (k) { return { k: k, at: at(k) }; })
+      .sort(function (a, b) { return a.at - b.at; })
+      .slice(0, keys.length - keep)
+      .forEach(function (o) { props_().deleteProperty(o.k); });
   }
 
   /** @return {string} favicon URL for doGet: FAVICON_URL (https), '' for '-', else the embedded ghost. */
@@ -379,6 +398,7 @@ var Config = (function () {
     PROP_SOURCE_INFO: PROP_SOURCE_INFO,
     PROP_SOURCE_STAMP: PROP_SOURCE_STAMP,
     PROP_PREFS_PREFIX: PROP_PREFS_PREFIX,
+    MAX_PREFS: MAX_PREFS,
     PROP_EDITING: PROP_EDITING,
     EDITING_KEYS: EDITING_KEYS,
     PREF_VALUES: PREF_VALUES,

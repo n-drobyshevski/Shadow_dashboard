@@ -467,6 +467,9 @@ function mockMain(FIX, OPTS) {
     },
 
     api_setConfig: function (args) {
+      if (normEmail(db.email) !== OWNER) {
+        fail('FORBIDDEN', 'Seul le propriétaire de l’application (le compte qui l’a déployée) peut choisir le classeur source.');
+      }
       var id = Core().extractSpreadsheetId(obj(args).source);
       if (!id) fail('VALIDATION', 'URL ou identifiant de Google Sheet invalide.');
       // Convention for tests: an id containing "MISSING" cannot be opened.
