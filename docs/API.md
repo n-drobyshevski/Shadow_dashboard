@@ -80,7 +80,7 @@ Core.ERROR_CODES         = ['NOT_CONFIGURED','MONTH_EXISTS','NOT_FOUND','BUSY','
 Core.FORM_REQUIRED       = { postes:['Nom du poste','Équipe'], applications:['Nom du logiciel / service'] }  // creation forms
 Core.FORM_DATE_HINTS     = ['Date visite','Prochaine revue',"Date d'achat",'Deadline','Date']  // date columns by name
 Core.LIMITS              = { cellChars:5000, headerChars:200, sourceColumns:500, sourceRecords:5000,
-                             refCategories:100, refValues:500, recordJsonChars:45000 }
+                             sourceRecordsWarn:4000, refCategories:100, refValues:500, recordJsonChars:45000 }
                            // import sizes (rowsToRecords, parseReferentiel, Importer.importMonth) and admin
                            // free text (cellChars, api_*): a Sheets cell holds at most 50 000 characters
 ```
@@ -104,8 +104,8 @@ All functions are **total**: they never throw on null/undefined/blank input unle
 | `extractSpreadsheetId(urlOrId)` | Accepts a full Sheets URL (`/spreadsheets/d/<ID>/...`) or a bare ID (`[A-Za-z0-9-_]{20,}`) → ID string, else `null`. |
 | `escapeFormula(v)` | If `v` is a string beginning with `=`, `+`, `-` or `@` → `"'" + v`; otherwise `v` unchanged. |
 | `findHeaderRow(rows, anchors, maxScan=15)` | `rows` = 2D array. Returns the index of the first row (within `maxScan`) where some cell's `normKey` equals the `normKey` of any anchor; `-1` if none. |
-| `rowsToRecords(opts)` | `opts = {display, raw, anchors, keyField, fmtDate, tab}` (`tab`: the sheet name, for messages). `display`/`raw` are same-shape 2D arrays (`raw` may be omitted). Finds header row via `findHeaderRow(display, anchors)`; if `-1` throws `makeError('SOURCE_ERROR', ...)`. More than `LIMITS.sourceColumns` non-blank header cells → `SOURCE_ERROR` (`'Onglet « <tab> » : 612 colonnes ont un en-tête, au plus 500 sont acceptées. …'`). Headers = `str(cell)` (NBSP→space, trimmed); columns with blank headers are dropped; headers starting with `_` (reserved for the app's `_id`, `_updated_at`…) are dropped with a warning (`'Colonne « _id » ignorée : les noms commençant par « _ » sont réservés à l’application.'`); headers longer than `LIMITS.headerChars` are truncated (warning); duplicate headers get suffix `" (2)"`, `" (3)"` (smallest free suffix, linear time). For each data row: value = if `raw` cell is a `Date` → `fmtDate(rawCell)` (fallback `Core.fmtDDMMYYYY`), else `str(displayCell)`, with `''` stored as `null`; a value longer than `LIMITS.cellChars` is truncated (warning `'« <key> », colonne « <col> » : valeur tronquée à 5000 caractères.'`, the first 5, then a count). Rows where **all** values are null are dropped silently. Rows whose `keyField` is blank are dropped and counted. More than `LIMITS.sourceRecords` records → `SOURCE_ERROR`. Returns `{headers:[...], records:[{header:value|null}], warnings:[string], headerRow, rows, columns}`; warning text (French) e.g. `"3 ligne(s) sans « Nom du poste » ignorée(s)"`; names in warnings are cut at 60 characters. |
-| `parseReferentiel(display)` | Transposed sheet: first non-empty row = category names; each column below = values (ragged, blanks skipped, trimmed, de-duplicated preserving order). Returns `{category:[values]}` (category key = trimmed header). Categories are truncated to `LIMITS.headerChars`, values to `LIMITS.cellChars`. `SOURCE_ERROR` naming the « Référentiel » tab beyond `LIMITS.sourceColumns` non-blank header cells, `LIMITS.refCategories` categories or `LIMITS.refValues` distinct values in one category. |
+| `rowsToRecords(opts)` | `opts = {display, raw, anchors, keyField, fmtDate, tab}` (`tab`: the sheet name, for messages). `display`/`raw` are same-shape 2D arrays (`raw` may be omitted). Finds header row via `findHeaderRow(display, anchors)`; if `-1` throws `makeError('SOURCE_ERROR', ...)`. More than `LIMITS.sourceColumns` non-blank header cells → `SOURCE_ERROR` (`'Onglet « <tab> » : 612 colonnes ont un en-tête, au plus 500 sont acceptées. …'`). Headers = `str(cell)` (NBSP→space, trimmed); columns with blank headers are dropped; headers starting with `_` (reserved for the app's `_id`, `_updated_at`…) are dropped with a warning (`'Colonne « _id » ignorée : les noms commençant par « _ » sont réservés à l’application.'`); headers longer than `LIMITS.headerChars` are truncated (warning); duplicate headers get suffix `" (2)"`, `" (3)"` (smallest free suffix, linear time). For each data row: value = if `raw` cell is a `Date` → `fmtDate(rawCell)` (fallback `Core.fmtDDMMYYYY`), else `str(displayCell)`, with `''` stored as `null`; a value longer than `LIMITS.cellChars` is truncated (warning `'« <key> », colonne « <col> » : valeur tronquée à 5000 caractères.'`, the first 5, then a count); in « Installé sur poste » (a comma-separated list) the cut falls after the last whole poste name, never inside one. The write-back refuses to overwrite a source cell longer than `LIMITS.cellChars` (`Importer.writeEdits`). Rows where **all** values are null are dropped silently. Rows whose `keyField` is blank are dropped and counted. More than `LIMITS.sourceRecords` records → `SOURCE_ERROR`; from `LIMITS.sourceRecordsWarn` records, a warning (`'Onglet « <tab> » : 4000 lignes importées, la limite est de 5000 : au-delà, la synchronisation sera refusée.'`). Returns `{headers:[...], records:[{header:value|null}], warnings:[string], headerRow, rows, columns}`; warning text (French) e.g. `"3 ligne(s) sans « Nom du poste » ignorée(s)"`; names in warnings are cut at 60 characters. |
+| `parseReferentiel(display, warnings?)` | Transposed sheet: first non-empty row = category names; each column below = values (ragged, blanks skipped, trimmed, de-duplicated preserving order). Returns `{category:[values]}` (category key = trimmed header). Categories are truncated to `LIMITS.headerChars`, values to `LIMITS.cellChars`. A category keeps its first `LIMITS.refValues` distinct values; beyond, the others are left out and one warning per category is pushed onto `warnings` (an array, optional): `'Onglet « Référentiel » : la catégorie « X » a plus de 500 valeurs, seules les 500 premières sont gardées.'`. `SOURCE_ERROR` naming the « Référentiel » tab beyond `LIMITS.sourceColumns` non-blank header cells or `LIMITS.refCategories` categories. |
 | `scoreApplication(rec)` | `{score, criteria:{contrat, sip, idp, galink, champs}}` — each criterion boolean, 20 pts each: `str(Contrat)==='Oui'`, `str(SIP)==='Oui'`, `str(IDP)==='Oui'`, `str(Galink)==='Oui'`, all of `APP_REQUIRED_FIELDS` non-blank. |
 | `enrichPostes(list)` | returns **new** objects: `{...rec, _score: parseScore(rec['Score conformité']), _conforme: _score !== null && _score >= 80}` |
 | `enrichApplications(list)` | returns **new** objects: `{...rec, _score, _conforme: _score >= 80, _criteria}` from `scoreApplication`. |
@@ -150,7 +150,10 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 - All wrapped by `apiWrap_(fn, name, minRole)` which first calls `Access.throttle(name)`, before any Script
   Property is read: `FORBIDDEN` when the identity is not passed, `BUSY` « Trop de requêtes. Réessayez dans une
   minute. » when the account (any account but the deployer, with or without a role) has used its 120 units of
-  the current minute (1 per call, 5 for `api_getTimeline`, `api_getDiff`, `api_getImportLog`). It then checks
+  the current minute (1 per call, 5 for `api_getTimeline`, `api_getDiff`, `api_getImportLog`), `BUSY` « Trop de
+  requêtes en cours. Réessayez dans quelques instants. » when 6 calls of the account are already running (the
+  release `Access.throttle` returns runs in `finally`). `doGet` goes through the same throttle (`'doGet'`, before
+  the template is rendered and `FAVICON_URL` read) and answers a refusal with a short static page. It then checks
   the caller's role
   (`Access.requireRole(minRole)`: `FORBIDDEN` when the identity is not passed, the account has no access,
   or a lecteur calls an admin endpoint) and applies the effective threshold (`Core.setThreshold`), then
@@ -218,14 +221,14 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 | `api_syncNow` | – | `{status:SyncStatus, result:SyncResult}` — synchronises the current month now. `SyncResult = {month, counts:{postes, applications, referentiel}, overwritten:bool, carriedOver:n, warnings:[...], changed:bool, changes:Changes}`; nothing is written when `changed` is false. | `NOT_CONFIGURED`, `SOURCE_ERROR`, `BUSY` (recorded in `lastError`, except `BUSY`) |
 | `api_enableSync` | – | as `api_syncNow`, after creating the hourly trigger if it is missing | `NOT_CONFIGURED` (ScriptApp not authorised: the deployer must run `setup` in the editor), then as `api_syncNow` |
 | `api_getImportLog` | `{limit?}` (integer 1–500, default 12) | `[{month, imported_at, counts, warnings, changes}]`: the `limit` latest ImportLog entries, newest first, with the fields the « Journal des synchronisations » shows only (no `source_id`, no headers). Read from the bottom of the tab (`Store.recentImportLog`). | `VALIDATION` (bad `limit`) |
-| `api_savePostes` | `{month, changes:[{id, updates:{col:value}}]}` | `{updated:[rec], sourceUpdated:bool}` (`true` = current month, written into the source) | `FORBIDDEN` (switch `edit` off), `VALIDATION` (keys starting with `_` or the key column are rejected; a source cell computed by a formula, or in a column an array formula fills; a value refused by the source cell's data validation), `NOT_FOUND`, `SOURCE_ERROR` (row not found in the source: renamed or deleted since the last sync; a name several source rows share: « « X » apparaît 2 fois dans l’onglet « … » du Google Sheet source : corrigez d’abord les doublons dans le Google Sheet, puis synchronisez. », nothing written) |
+| `api_savePostes` | `{month, changes:[{id, updates:{col:value}}]}` | `{updated:[rec], sourceUpdated:bool}` (`true` = current month, written into the source) | `FORBIDDEN` (switch `edit` off), `VALIDATION` (keys starting with `_` or the key column are rejected; a source cell computed by a formula, or in a column an array formula fills; a value refused by the source cell's data validation), `NOT_FOUND`, `SOURCE_ERROR` (row not found in the source: renamed or deleted since the last sync; a name several source rows share: « « X » apparaît 2 fois dans l’onglet « … » du Google Sheet source : corrigez d’abord les doublons dans le Google Sheet, puis synchronisez. »; a name several records of the month's snapshot share — one of the rows removed from the source since the last sync —: « « X » apparaît 2 fois dans les données synchronisées (onglet « … ») : corrigez les doublons dans le Google Sheet source, synchronisez, puis réessayez. », nothing written). Also `VALIDATION` with the field for a source cell longer than `Core.LIMITS.cellChars` (truncated by the import: « « X », colonne « Y » : la cellule du Google Sheet source a plus de 5000 caractères et l’application n’en a que le début : modifiez-la dans le Google Sheet source. »). An edit made only of fields without a source column (`Galink` / `IDP`) does not look the source row up: it is saved even for a duplicated name. |
 | `api_addGenericPoste` | `{month}` | `{created:bool, record:rec}` (existing record if already present; current month: also appended to the source with `Importer.appendRecord(…, {strict:false})`: no rule enforced, computed columns left to their formulas and their values read back into the record) | `FORBIDDEN` (switch `create` off), `NOT_FOUND` |
 | `api_getFormSchema` | `{entity:'postes'\|'applications', month, fresh?:bool}` | `FormSchema = {entity, month, live:bool, origin:'source'\|'fallback'\|'snapshot', keyField, readAt:'YYYY-MM-DD HH:mm'\|'', warning?:string, columns:[FormColumn]}` — the fields of a creation form. Current month (`live`): read from the source OUTSIDE the lock (`Importer.readFormSchema`, cached 5 min per entity and source; `fresh:true` reads again), `origin:'source'`, applications completed with `Galink` / `IDP` (`appOnly`) when the source has no such column; when the source is not configured or cannot be read: the snapshot's columns (`Core.snapshotFormColumns` over the month's ImportLog headers and Référentiel, nothing cached), `origin:'fallback'` with a French `warning` (never fails). Past month: `Core.snapshotFormColumns` (`origin:'snapshot'`), the source is never opened. `readAt` = when the source was read (`'source'`) or the month synchronised. | `FORBIDDEN` (switch `create` off), `VALIDATION` (`entity`, month), `NOT_FOUND` (past month not imported) |
 | `api_addPoste` | `{month, record:{col:value}}` | `rec` (enriched poste; current month: appended to the source first, with the computed columns as the sheet shows them right after the write) | `FORBIDDEN` (switch `create` off), `VALIDATION` with `error.field` (blank name / missing `Équipe`, name already in the month — snapshot — or in the source tab — normKey —, a column that does not exist, a value for a computed column, a value outside a rejecting list, a date that is no real day, a value the source sheet refuses itself), `NOT_FOUND`, `SOURCE_ERROR` |
 | `api_saveApplications` | `{month, changes:[{id, updates}]}` | `{updated:[rec], sourceUpdated:bool}` | as `api_savePostes` (switch `edit`) |
 | `api_addApplication` | `{month, record:{...}}` | `rec` (current month: also appended to the source tab, below its last application) — same path and checks as `api_addPoste` (only the name is required; `Galink` / `IDP` must be Oui/Non/blank and stay in the snapshot when the source has no such column) | `FORBIDDEN` (switch `create` off), `VALIDATION` with `error.field` (as `api_addPoste`), `NOT_FOUND`, `SOURCE_ERROR` |
-| `api_deleteApplication` | `{month, id}` | `{deleted:true, id}` (current month: its source row is deleted too, when there is one) | `FORBIDDEN` (switch `delete` off), `NOT_FOUND`, `VALIDATION` (current month: the source row holds an array formula — « La ligne de « X » contient la formule qui calcule la colonne « Y » de tout l’onglet « … » : déplacez la formule puis supprimez la ligne dans le Google Sheet source. »), `SOURCE_ERROR` (a name several source rows share, as `api_savePostes`) — nothing deleted on a refusal |
-| `api_renameApplication` | `{month, id, newName}` | `{record:rec, actionsUpdated:n}` — also renames `target_name` of every Action with `target_type==='application'` and `target_name===oldName`; current month: the source key cell too | `FORBIDDEN` (switch `edit` off), `VALIDATION` (blank; duplicate in the month — snapshot — or, current month, in the source tab — normKey, another row than the renamed one —, `error.field` = the key column), `NOT_FOUND`, `SOURCE_ERROR` (as `api_savePostes`: row not found, or the old name shared by several source rows) |
+| `api_deleteApplication` | `{month, id}` | `{deleted:true, id}` (current month: its source row is deleted too, when there is one) | `FORBIDDEN` (switch `delete` off), `NOT_FOUND`, `VALIDATION` (current month: the source row holds an array formula — « La ligne de « X » contient la formule qui calcule la colonne « Y » de tout l’onglet « … » : déplacez la formule puis supprimez la ligne dans le Google Sheet source. »), `SOURCE_ERROR` (a name several source rows, or several records of the month's snapshot, share, as `api_savePostes`) — nothing deleted on a refusal |
+| `api_renameApplication` | `{month, id, newName}` | `{record:rec, actionsUpdated:n}` — also renames `target_name` of every Action with `target_type==='application'` and `target_name===oldName`; current month: the source key cell too | `FORBIDDEN` (switch `edit` off), `VALIDATION` (blank; duplicate in the month — snapshot — or, current month, in the source tab — normKey, another row than the renamed one —, `error.field` = the key column), `NOT_FOUND`, `SOURCE_ERROR` (as `api_savePostes`: row not found, or the old name shared by several source rows or several records of the month's snapshot) |
 | `api_getTimeline` | – | `[{month, postes:[slim], applications:[slim]}]` asc by month. Slim poste = `{'Équipe','Bâtiment / Labo','EDR Decathlon','IT Decathlon','Réseau Decathlon','Niveau de risque',_score,_conforme}`; slim app = `{'Équipe','SIP','Contrat','Galink','IDP','Niveau de risque',_score,_conforme}` (so `Core.filterData` / `computeKpis` / `riskCounts` work on them). | – |
 | `api_getActions` | – | `{actions:[Action], replacements:[Replacement]}` | – |
 | `api_addAction` | `{target_type, target_name, equipe, action, responsable?, date_created?, date_completed?, deadline?, priorite?, status?, source_month?, comment?}` | `Action` (`id` generated, `status` default `'À faire'`, `date_created` default today DD/MM/YYYY, `recorded_at` today ISO) | `VALIDATION` (`target_type` not poste/application, blank `target_name` or `action`) |
@@ -246,11 +249,15 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 | `api_setDomainRole` | `{role:'none'\|'lecteur'}` | `AccessView` | `VALIDATION` |
 
 `FormColumn` = `{name, kind:'text'|'select'|'date'|'checkbox', options:[string]|null, strict:bool, computed:bool,
-required:bool, appOnly?:true, rule?:string}`: `options` = the values of the column's dropdown (data validation list or
+required:bool, arrayFormula?:true, appOnly?:true, rule?:string}`: `options` = the values of the column's dropdown (data validation list or
 range, at most 500 values of at most 200 characters; Référentiel / Oui-Non in snapshot columns); `strict` = a value
 outside `options` is refused (the rule does not allow invalid data); `computed` = a formula fills the column (a formula
-in the last record row, or an array formula — `ARRAYFORMULA`, `={…}`, `BYROW`, `MAP` — in the header row or the first
-data row): not a form input; `required` = `Core.FORM_REQUIRED`; `appOnly` = Galink / IDP kept in the snapshot only;
+in the last record row, or an array formula — `ARRAYFORMULA`, `={…}`, `BYROW`, `MAP`, a spilling function such as
+`QUERY`, `FILTER`, `SORT`, `UNIQUE`, `SEQUENCE`, `IMPORTRANGE`, `VSTACK`, `TOCOL`, `SCAN`, `MAKEARRAY`, `LAMBDA`, or any
+formula over an open-ended range such as `A2:A` — in the header row or the first data row): not a form input;
+`arrayFormula` = the column is filled by such an array formula, so computed in every row: the current month's table
+shows only these columns read-only (a formula in the last record row may be that row's only; the write-back checks
+each edited cell); `required` = `Core.FORM_REQUIRED`; `appOnly` = Galink / IDP kept in the snapshot only;
 `rule` = the data validation criteria (`'VALUE_IN_LIST'`, `'VALUE_IN_RANGE'`, `'CHECKBOX'`, `'DATE_IS_VALID_DATE'`…)
 of a source column that has one. Past months (`origin:'snapshot'`): nothing is computed (computed columns are ordinary
 optional fields, no sheet computes them) and only Oui/Non lists are strict.
@@ -380,14 +387,21 @@ Access.isGroupMember(group, email) -> GroupsApp hasUser, sub-groups up to 3 leve
 Access.checkGroup(v)         -> normalised group email, or VALIDATION if unknown / members hidden from the owner
 Access.currentUser(access?)  -> {email, role, isOwner, owner}
 Access.requireRole(minRole, access?) -> currentUser or FORBIDDEN
-Access.throttle(name)        -> per-account rate limit, called by apiWrap_ before Config.get: FORBIDDEN when
-                               activeEmail() is '' (same message as requireRole); nothing for the deployer; else
-                               'rl:<minute>|<email>' (minute = floor(Date.now() / 60000)) counts the units used
-                               this minute: THROTTLE_WEIGHTS[name] (5 for api_getTimeline, api_getDiff,
-                               api_getImportLog) or 1. Above THROTTLE_PER_MIN = 120: BUSY « Trop de requêtes.
-                               Réessayez dans une minute. » (err.throttled, logged as a warning), nothing written.
-                               One cache get + one put (120 s) per call that goes through; not atomic (concurrent
-                               calls may count once); a cache failure lets the call through (fail open).
+Access.throttle(name)        -> release function. Per-account limits, called by apiWrap_ (and doGet) before
+                               Config.get: FORBIDDEN when activeEmail() is '' (same message as requireRole);
+                               nothing for the deployer (release = no-op); else 'rl:<minute>|<email>' (minute =
+                               floor(Date.now() / 60000)) counts the units used this minute: THROTTLE_WEIGHTS[name]
+                               (5 for api_getTimeline, api_getDiff, api_getImportLog) or 1, and 'if:<email>' holds
+                               the start times (ms) of the account's running calls. Above THROTTLE_PER_MIN = 120:
+                               BUSY « Trop de requêtes. Réessayez dans une minute. »; with THROTTLE_IN_FLIGHT = 6
+                               calls running: BUSY « Trop de requêtes en cours. Réessayez dans quelques
+                               instants. » (err.throttled, logged as a warning), nothing written. A start time
+                               older than 360 s (an execution killed before its finally) no longer counts. Both
+                               counters are read in one getAll and written in one putAll (360 s) under
+                               LockService.getUserLock() (tryLock 3 s; never the script lock of Store's writes;
+                               counted without it, with a warning, when it cannot be had); the release (run by
+                               the caller in finally) removes the call's start time (one get + one put, same
+                               lock). A cache failure lets the call through (fail open).
 Access.checkEmail(v) / Access.checkRole(v, allowed?) -> normalised value or VALIDATION
 Access.cacheGet(key) -> string|null / Access.cachePut(key, value, ttlS) -> the script CacheService for other modules
                                (Importer.readFormSchema); best effort: a failing cache reads as a miss, a failed put is ignored
@@ -511,13 +525,14 @@ Importer.readSource()       -> {sourceId, title, postes:{headers,records,warning
                                Date cells formatted 'dd/MM/yyyy' in ss.getSpreadsheetTimeZone().
                                Missing postes AND applications tab -> SOURCE_ERROR. The size limits of
                                Core.LIMITS (rowsToRecords, parseReferentiel: columns, records,
-                               Référentiel categories / values) are SOURCE_ERROR here, outside the lock;
+                               Référentiel categories) are SOURCE_ERROR here, outside the lock (a Référentiel
+                               category over LIMITS.refValues values keeps its first ones, with a warning);
                                `_` columns are dropped by rowsToRecords and every `_` field of the
                                records again here (ids and stamps only ever come from the Store).
                                Keys (normKey) that several records of a tab share add a warning ('Noms en
                                double dans l’onglet « … » : « Minitab » (2 lignes)… ', at most 10 names
-                               listed): those rows cannot be edited or deleted from the app (writeEdits /
-                               deleteRecord).
+                               listed, each cut at 60 characters): those rows cannot be edited or deleted
+                               from the app (writeEdits / deleteRecord).
 Importer.importMonth(month, overwrite, {skipUnchanged?}) -> SyncResult (see §3). Notes
                                Config.sourceStamp(), reads the source (readSource) OUTSIDE the lock,
                                then takes Store.withLock (BUSY after 20 s, as before) to read the stored
@@ -557,14 +572,20 @@ Importer.importMonth(month, overwrite, {skipUnchanged?}) -> SyncResult (see §3)
                                an import that cannot be stored in full writes nothing. On overwrite,
                                the stored `_id`s are matched by key (normKey); incoming `_` fields are
                                ignored.
-Importer.writeEdits(entity, [{name, fields}]) -> cells written. entity 'postes'|'applications'; locates
-                               each row by key (normKey) in the source tab, checks every cell first (row
-                               found -> else SOURCE_ERROR; the only row with that key -> else SOURCE_ERROR
-                               « … apparaît N fois … »; a new key (rename) on no other row -> else
+Importer.writeEdits(entity, [{name, fields, snapshotCount?}]) -> cells written. entity 'postes'|'applications';
+                               fields without a source column are skipped (snapshot only): an edit made of
+                               them alone does not look the row up at all. For the others it locates the row
+                               by key (normKey) in the source tab and checks every cell first (row found ->
+                               else SOURCE_ERROR; the only row with that key -> else SOURCE_ERROR « … apparaît
+                               N fois … »; snapshotCount (records of the month's stored snapshot sharing the
+                               name, given by the api) at most 1 -> else SOURCE_ERROR « … apparaît N fois dans
+                               les données synchronisées … »; a new key (rename) on no other row -> else
                                VALIDATION, field = key; no formula in the cell and no array formula filling
-                               its column -> else VALIDATION « calculée par une formule », field), then
-                               setValue per cell (Core.escapeFormula: text stays text). Fields without a source column
-                               are skipped (snapshot only). A value refused by data validation -> VALIDATION.
+                               its column -> else VALIDATION « calculée par une formule », field; the source
+                               cell holds at most Core.LIMITS.cellChars characters -> else VALIDATION, field:
+                               the import truncated it, the snapshot holds only its start), then setValue per
+                               cell (Core.escapeFormula: text stays text). A value refused by data validation
+                               -> VALIDATION.
                                Writes stay one setValue per edited cell: a block setValues would rewrite
                                the cells between edited ones (formulas, validated cells, concurrent hand
                                edits) and lose the refused value in the message.
@@ -600,20 +621,23 @@ Importer.appendRecord(entity, rec, {strict?}) -> {values, computed}. New source 
                                the new row: computed = the computed columns as shown (blank or « Loading… » /
                                « Chargement… » -> null); values = what was written (dates 'DD/MM/YYYY' when
                                strict). Duplicate key -> VALIDATION (field = the key column).
-Importer.deleteRecord(entity, name) -> bool (false when the source has no such row). Refused before anything
-                               is written: a key several rows share (SOURCE_ERROR, as writeEdits) and a row
+Importer.deleteRecord(entity, name, {snapshotCount?}) -> bool (false when the source has no such row). Refused
+                               before anything is written: a key several rows share, or several records of the
+                               month's snapshot (SOURCE_ERROR, as writeEdits), and a row
                                holding an array formula (VALIDATION, names its column: deleting it would
                                empty the whole column).
                                Reads of the three write-backs: getDataRange() for the size, the first 15
                                rows (header row, Core.findHeaderRow's scan depth) and the key column below
                                the header (getDisplayValues), then only what the write touches:
-                               writeEdits the formulas of the edited rows (rows at most 5 apart in one
-                               block; more than 3 blocks -> one block from the first to the last edited
-                               row) and of the header row + first data row (array formulas: one more block,
+                               writeEdits the formulas and display values of the edited rows (rows at most 5
+                               apart in one block; more than 3 blocks -> one block from the first to the last
+                               edited row) and the formulas of the header row + first data row (array formulas: one more block,
                                joined to the first one when it is at most 5 rows away), appendRecord the
                                reads of readFormSchema (without lists), the row below the last record and the
                                new row once written, deleteRecord the deleted row's formulas. Never the whole
-                               tab. All three run
+                               tab. The header row of the write-backs and of readFormSchema goes through
+                               Core.rowsToRecords: more than LIMITS.sourceColumns non-blank header cells is
+                               SOURCE_ERROR naming the tab there too. All three run
                                under Store.withLock (re-entrant) and call Store.noteSourceWrite() before their
                                first write. A cell refused by data validation (writeEdits), a formula cell or
                                a cell of an array-formula column is VALIDATION with the field.
@@ -664,9 +688,12 @@ console's « Verbose » level); the difference between `[rpc]` and the server's 
 
 ### Code (`src/Code.js`)
 ```
-doGet(e)        -> HtmlService.createTemplateFromFile('index') with template.page = e.parameter.page || '',
-                   .evaluate().setTitle('Shadow IT — Tableau de bord')
-                   .addMetaTag('viewport','width=device-width, initial-scale=1')
+doGet(e)        -> Access.throttle('doGet') first (before the template and the FAVICON_URL property): FORBIDDEN
+                   (no identity) or BUSY -> a short static HtmlOutput with the message (refusedPage_), nothing
+                   else read; else HtmlService.createTemplateFromFile('index') with template.page =
+                   e.parameter.page || '', .evaluate().setTitle('Shadow IT — Tableau de bord')
+                   .addMetaTag('viewport','width=device-width, initial-scale=1'); the throttle's release runs
+                   in finally
 include(name)   -> HtmlService.createHtmlOutputFromFile(name).getContent()
 coreScript()    -> 'var Core = (' + CoreFactory_.toString() + ')();'   (output must not contain '</script')
 inlineBoot_()   -> (template, #boot-data) inlineJson_(api_bootstrap('null')) when that envelope is ok, else ''
@@ -839,8 +866,9 @@ UI.editableTable({columns, rows, rowKey='_id', search=true, pageSize=50, onSave?
     The dirty map (id -> {column: value}) and `updates` have no prototype: an id or a column named '__proto__'
     is an entry, never Object.prototype.
     Sorting by header click, text search across visible columns, pagination. lockColumns(keys): those columns
-    become read-only once the table is shown (`editable` set to false, their unsaved values dropped, header and
-    rows re-rendered — after the cell being edited closes, if any); true when a column changed.
+    become read-only once the table is shown (`editable` set to false, their unsaved values dropped with a toast
+    naming those columns, header and rows re-rendered — after the cell being edited closes, if any); true when a
+    column changed.
 UI.toggle({id, label, description?, checked, onChange?(checked) -> Promise|void, disabled?}) -> div.toggle-row
     A setting saved at once: label + description left, <button role=switch aria-checked> right (drawn track and
     thumb aria-hidden, visible « Activé » / « Désactivé »; aria-labelledby id-label, aria-describedby id-desc).
@@ -1018,8 +1046,9 @@ instead of the configuration form.
   ajouté à l’historique de avril 2026. ». Toolbar: search, `Conformité` select (Toutes / Conformes / Non conformes).
 - `UI.editableTable` over filtered postes; columns = `columns.postes` order (key column first, not
   editable) + computed `Score` (`UI.scoreBadge`) + `Applis` count; options via `Core.optionsForColumn`.
-  Current month: the source columns the creation form's schema marks `computed` (a formula, or an array formula
-  filling the column; `api_getFormSchema` origin `'source'`) are not editable inline, as the server refuses them:
+  Current month: the source columns the creation form's schema marks `arrayFormula` (an array formula fills the
+  whole column; `api_getFormSchema` origin `'source'`) are not editable inline, as the server refuses them (a
+  column `computed` only by the last row's own formula stays editable: the server checks each cell):
   at once when `State.peekFormSchema` has the schema, else as soon as the form or its hover prefetch reads it
   (`table.lockColumns`; no extra request: without `create` only the server-side refusal applies).
   Period: the last month's inventory, kicker « … · inventaire fin octobre », computed column `_evo`
@@ -1104,7 +1133,8 @@ elsewhere (poll, bootstrap reload).
   (Sheets, Properties and Cache calls), `env.__state.opened` (ids passed to `openById`),
   `env.__state.propertyWrites` (keys written)
   and `env.__state.cells` (cells read per read method); `env.__state.reads` logs every range read
-  (spreadsheet, sheet, method, A1, cells, whether the script lock was held); `env.__state.onWaitLock = fn`
+  (spreadsheet, sheet, method, A1, cells, whether the script lock was held); `LockService.getUserLock()` is a lock
+  of its own (`env.__state.userLock`, `env.__state.userLockTimeout = true` makes tryLock fail); `env.__state.onWaitLock = fn`
   runs fn once before the next lock acquisition (another execution taking the lock first). Data validation:
   `getDataValidations` / `setDataValidation(s)` / `clearDataValidations`, `SpreadsheetApp.newDataValidation()` and
   `DataValidationCriteria`, fixture `validations` per tab; a write refused by a rejecting rule throws the Sheets
@@ -1117,8 +1147,9 @@ elsewhere (poll, bootstrap reload).
   of the main flows on a large generated data spreadsheet, bounded by today's numbers (`BASELINE`);
   `PERF_OUT=<file>` writes the measurement as JSON.
 - `test/integration/quota.test.js` — quota and abuse limits: the per-account throttle (counter per minute,
-  weights, BUSY message, fail open, no identity refused first), stale-on-error group answers and the one-entry
-  "no role" answer.
+  weights, BUSY message, fail open, no identity refused first; the calls running at once, freed at the end of each
+  call, stale entries ignored, under the user lock; `doGet` throttled with a static page), stale-on-error group
+  answers and the one-entry "no role" answer.
 - `test/helpers/render.js` — renders `src/index.html` (scriptlets `include`/`coreScript`, and
   `inlineBoot_`/`inlinePage_` run from the real `Code.js` over the `boot` envelope / `page` options, '' when
   left out) to static HTML; optional injection of `test/fixtures/mockRun.js` + data for the browser.
@@ -1129,7 +1160,8 @@ elsewhere (poll, bootstrap reload).
   over in-memory data from `data.js` (records enriched with `Core`), recording calls in
   `window.__calls`. Creation forms: `api_getFormSchema` / `api_addPoste` / `api_addApplication` follow the server
   (`Core.snapshotFormColumns`, `Core.checkFormRecord`, duplicates with `error.field`); in the current month the
-  postes' Score conformité / Niveau de risque / Statut are computed and Oui/Non / Criticité lists strict; option
+  postes' Score conformité / Niveau de risque / Statut are computed (the first two `arrayFormula`) and Oui/Non /
+  Criticité lists strict; option
   `formSchema: {columns:{postes:[…]}, fallback, delayMs}` and `delays: {api_name: ms}` (also `window.__mock`);
   `editing: {edit?, create?, delete?}` (the switches, same refusals as the server; `window.__mock.db.editing` at run
   time).
@@ -1144,9 +1176,14 @@ elsewhere (poll, bootstrap reload).
 - `test/integration/writeback.test.js` — write-back integrity: a name several source rows share (sync warning,
   edit / rename / delete of either record refused before any write, a change to the second row detected, swapped
   rows no change), a rename to a name only the source has, array-formula columns (edit of a spilled cell refused
-  with its field, the row holding the formula not deletable).
+  with its field, the row holding the formula not deletable; FILTER / SORT / LAMBDA over open-ended ranges too),
+  Galink / IDP of a duplicated name saved without looking the row up, duplicates left in the snapshot only (every
+  write-back refused until the next sync), a source cell longer than `cellChars` never overwritten, the duplicates
+  warning's names cut at 60 characters, the header-width limit naming the tab, and a record « __proto__ » / a
+  column « constructor » compared like the others by the sync.
 - `test/e2e/forms.test.js` — the creation forms' client half: the panel (sections, notes, focus, prefetch and
-  cache, « Relire les colonnes », the schema's computed columns read-only in the live table), saving (exact `api_addPoste` arguments, row and toast, field errors opening their
+  cache, « Relire les colonnes », the schema's array-formula columns read-only in the live table, with a toast for
+  the unsaved values dropped), saving (exact `api_addPoste` arguments, row and toast, field errors opening their
   section), closing (unsaved-changes confirm, locked while saving), schema variants (new column, fallback, past
   month), the applications form and the 390px layout.
 - `npm test` → `test/unit/**` + `test/integration/**`; `npm run test:e2e` → Playwright smoke tests.

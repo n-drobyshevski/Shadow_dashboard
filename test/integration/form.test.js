@@ -143,7 +143,8 @@ test('getFormSchema (current month): the source columns in order, kinds, lists, 
   assert.deepEqual(s.columns.map((c) => c.name), headersOf(sb.env, POSTES_TAB).filter((h) => h), 'sheet order');
   for (const c of s.columns) {
     const keys = Object.keys(c).sort();
-    assert.deepEqual(keys.filter((k) => k !== 'rule'), ['computed', 'kind', 'name', 'options', 'required', 'strict'], c.name);
+    assert.deepEqual(keys.filter((k) => k !== 'rule' && k !== 'arrayFormula'), ['computed', 'kind', 'name', 'options', 'required', 'strict'], c.name);
+    if ('arrayFormula' in c) assert.equal(c.arrayFormula, true, c.name);
     assert.ok(['text', 'select', 'date', 'checkbox'].includes(c.kind), c.name);
   }
   // Lists: VALUE_IN_LIST values, VALUE_IN_RANGE values from the Référentiel; strict = !allowInvalid.
@@ -163,6 +164,8 @@ test('getFormSchema (current month): the source columns in order, kinds, lists, 
   // Computed: formulas of the last record row, and the ARRAYFORMULA column of the first data row.
   assert.deepEqual(s.columns.filter((c) => c.computed).map((c) => c.name),
     ['Score conformité', 'Niveau de risque', 'Statut', 'Ancienneté']);
+  // Only the array formula fills its column in every row (the table locks just that one).
+  assert.deepEqual(s.columns.filter((c) => c.arrayFormula).map((c) => c.name), ['Ancienneté']);
   assert.deepEqual(s.columns.filter((c) => c.required).map((c) => c.name), ['Équipe', KEY_POSTE]);
   assert.ok(s.columns.every((c) => !c.appOnly));
 
@@ -170,6 +173,7 @@ test('getFormSchema (current month): the source columns in order, kinds, lists, 
   const a = ok(sb.ctx, 'api_getFormSchema', { entity: 'applications', month: '2026-05' });
   assert.equal(a.keyField, KEY_APP);
   assert.deepEqual(a.columns.filter((c) => c.computed).map((c) => c.name), ['Doublon']);
+  assert.equal(col(a, 'Doublon').arrayFormula, true);
   assert.deepEqual(a.columns.filter((c) => c.required).map((c) => c.name), [KEY_APP]);
   assert.deepEqual(plain(a.columns.slice(-2)), ['Galink', 'IDP'].map((name) => ({ name, kind: 'select', options: ['Oui', 'Non'],
     strict: true, computed: false, required: false, appOnly: true })));

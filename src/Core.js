@@ -60,8 +60,9 @@ function CoreFactory_() {
     headerChars: 200,        // an imported header or Référentiel category (truncated beyond)
     sourceColumns: 500,      // non-blank header cells of a source tab (SOURCE_ERROR beyond)
     sourceRecords: 5000,     // records of a source entity tab (SOURCE_ERROR beyond)
+    sourceRecordsWarn: 4000, // records of a source entity tab from which the import warns (the limit is near)
     refCategories: 100,      // Référentiel categories (SOURCE_ERROR beyond)
-    refValues: 500,          // values of one Référentiel category (SOURCE_ERROR beyond)
+    refValues: 500,          // values of one Référentiel category (the first ones kept, with a warning, beyond)
     recordJsonChars: 45000   // JSON of one stored record, or of an entity's headers (SOURCE_ERROR from)
   };
 
@@ -316,13 +317,28 @@ function CoreFactory_() {
   }
 
   /**
+   * `value` cut to LIMITS.cellChars. In a list column (« Installé sur poste », comma-separated), the cut
+   * falls after the last whole item, so that no half poste name is kept (a single item longer than the
+   * limit is cut as it is).
+   */
+  function cutValue_(value, isList) {
+    var max = LIMITS.cellChars;
+    var cut = value.slice(0, max);
+    if (!isList) return cut;
+    var at = value.charAt(max) === ',' ? max : cut.lastIndexOf(',');
+    return at > 0 ? cut.slice(0, at).replace(/\s+$/, '') : cut;
+  }
+
+  /**
    * Converts a sheet (display values + optional raw values) into records.
    * opts = {display, raw?, anchors?, keyField?, fmtDate?, tab?} (tab: the sheet name, for messages).
    * Throws SOURCE_ERROR when no header row is found, when keyField is given but no header matches it,
    * when the header row has more than LIMITS.sourceColumns non-blank cells, or beyond
-   * LIMITS.sourceRecords records. Headers starting with '_' (reserved for the app's own fields) are
-   * ignored; headers longer than LIMITS.headerChars and values longer than LIMITS.cellChars are
-   * truncated. Each case adds a warning.
+   * LIMITS.sourceRecords records (from LIMITS.sourceRecordsWarn records, a warning says the limit is near).
+   * Headers starting with '_' (reserved for the app's own fields) are ignored; headers longer than
+   * LIMITS.headerChars and values longer than LIMITS.cellChars are truncated (cutValue_: « Installé sur
+   * poste » after its last whole item). Each case adds a warning. The write-back refuses to overwrite a
+   * source cell longer than LIMITS.cellChars (the snapshot holds only its start, see Importer.writeEdits).
    */
   function rowsToRecords(opts) {
     var o = opts || {};
@@ -384,6 +400,8 @@ function CoreFactory_() {
     var rows = [];
     var missingKey = 0;
     var cut = []; // {name, column} of the values truncated to LIMITS.cellChars
+    var installedNorm = normKey(F_INSTALLED_ON);
+    var isList = headers.map(function (name) { return normKey(name) === installedNorm; });
     for (var r = headerIdx + 1; r < display.length; r++) {
       var dRow = Array.isArray(display[r]) ? display[r] : [];
       var rRow = raw && Array.isArray(raw[r]) ? raw[r] : [];
@@ -399,7 +417,7 @@ function CoreFactory_() {
         } else {
           allNull = false;
           if (value.length > LIMITS.cellChars) {
-            value = value.slice(0, LIMITS.cellChars);
+            value = cutValue_(value, isList[i]);
             cutCols.push(headers[i]);
           }
         }
@@ -422,6 +440,10 @@ function CoreFactory_() {
     }
 
     var warnings = [];
+    if (records.length >= LIMITS.sourceRecordsWarn) {
+      warnings.push(where + ' : ' + records.length + ' lignes importées, la limite est de ' + LIMITS.sourceRecords +
+        ' : au-delà, la synchronisation sera refusée.');
+    }
     if (missingKey > 0) {
       warnings.push(missingKey + ' ligne(s) sans « ' + keyField + ' » ignorée(s)');
     }
@@ -448,11 +470,12 @@ function CoreFactory_() {
   /**
    * Parses the transposed Référentiel tab: first non-empty row = category names, each column below
    * holds the category values (ragged; blanks skipped; trimmed; de-duplicated preserving order).
-   * Category names are truncated to LIMITS.headerChars, values to LIMITS.cellChars. SOURCE_ERROR (naming
-   * the tab) beyond LIMITS.sourceColumns non-blank header cells, LIMITS.refCategories categories or
-   * LIMITS.refValues values in one category.
+   * Category names are truncated to LIMITS.headerChars, values to LIMITS.cellChars. A category keeps its
+   * first LIMITS.refValues distinct values: beyond, the others are left out and a warning is pushed onto
+   * `warnings` (optional array). SOURCE_ERROR (naming the tab) beyond LIMITS.sourceColumns non-blank header
+   * cells or LIMITS.refCategories categories.
    */
-  function parseReferentiel(display) {
+  function parseReferentiel(display, warnings) {
     var out = {};
     if (!Array.isArray(display)) return out;
     var h = -1;
@@ -465,6 +488,7 @@ function CoreFactory_() {
     var where = 'Onglet « ' + SOURCE_TABS.referentiel + ' »';
     checkWidth_(header, where);
     var seen = {}; // category -> {value: true}, for a linear de-duplication
+    var full = Object.create(null); // category -> true once LIMITS.refValues values are kept and more come
     var cats = 0;
     for (var c = 0; c < header.length; c++) {
       var cat = cleanLabel_(header[c]);
@@ -487,8 +511,14 @@ function CoreFactory_() {
         if (v.length > LIMITS.cellChars) v = v.slice(0, LIMITS.cellChars);
         if (known[v] === true) continue;
         if (values.length >= LIMITS.refValues) {
-          throw makeError('SOURCE_ERROR', where + ' : la catégorie ' + quote_(cat) + ' a plus de ' + LIMITS.refValues +
-            ' valeurs, au plus ' + LIMITS.refValues + ' sont acceptées.');
+          if (full[cat] !== true) {
+            full[cat] = true;
+            if (Array.isArray(warnings)) {
+              warnings.push(where + ' : la catégorie ' + quote_(cat) + ' a plus de ' + LIMITS.refValues +
+                ' valeurs, seules les ' + LIMITS.refValues + ' premières sont gardées.');
+            }
+          }
+          continue;
         }
         known[v] = true;
         values.push(v);

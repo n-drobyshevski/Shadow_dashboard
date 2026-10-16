@@ -33,12 +33,16 @@
  * by the list of groups (any change to it is a new key), read in the same getAll as the groups: a refused
  * caller does not walk every group again on each call.
  *
- * Throttle (throttle, called by apiWrap_ before anything else): at most THROTTLE_PER_MIN units per account
- * and per minute, one per call and HEAVY_WEIGHT for the full-history reads (THROTTLE_WEIGHTS), counted in
- * the script cache, then BUSY. It runs before the Script Properties are read, so an account, with or
- * without a role, can neither spend the deployer's daily quotas without limit nor keep many executions
- * busy at once. Best effort: the counter is not atomic (concurrent calls may count once) and a cache
- * failure lets the call through.
+ * Throttle (throttle, called by apiWrap_ and doGet before anything else): at most THROTTLE_PER_MIN units
+ * per account and per minute, one per call and HEAVY_WEIGHT for the full-history reads (THROTTLE_WEIGHTS),
+ * and at most THROTTLE_IN_FLIGHT calls of the account running at once (the start time of each running call
+ * is kept, removed by the release function the caller runs in `finally`; an entry older than
+ * IN_FLIGHT_MAX_S, left by an execution killed before its `finally`, no longer counts), counted in the
+ * script cache, then BUSY. The counters are read and written under the user lock (LockService.getUserLock,
+ * never the script lock that Store's writes hold for long), so concurrent calls of one account each
+ * count. It runs before the Script Properties are read, so an account, with or without a role, can neither
+ * spend the deployer's daily quotas without limit nor keep many executions busy at once. A cache failure
+ * lets the call through; a lock not obtained within THROTTLE_LOCK_MS counts without it (best effort).
  *
  * Load-order safe: the IIFE only defines values and functions; GAS services are touched lazily.
  */
@@ -55,6 +59,9 @@ var Access = (function () {
   var THROTTLE_PER_MIN = 120;    // units per account and per minute (one per call, see THROTTLE_WEIGHTS)
   var HEAVY_WEIGHT = 5;          // units of a full-history read
   var THROTTLE_WEIGHTS = { api_getTimeline: HEAVY_WEIGHT, api_getDiff: HEAVY_WEIGHT, api_getImportLog: HEAVY_WEIGHT };
+  var THROTTLE_IN_FLIGHT = 6;    // calls of one account running at once at most
+  var IN_FLIGHT_MAX_S = 360;     // a running call older than this (the 6 min execution limit) no longer counts
+  var THROTTLE_LOCK_MS = 3000;   // wait for the lock around the counters
   var MAX_KEY = 240;             // CacheService keys are limited to 250 characters
 
   function normEmail(v) {
@@ -127,34 +134,94 @@ var Access = (function () {
       'même domaine Google Workspace que son propriétaire.');
   }
 
+  function noop_() {}
+
+  function busy_(message) {
+    var err = Core.makeError('BUSY', message);
+    err.throttled = true;
+    return err;
+  }
+
+  /** fn() under the user lock (THROTTLE_LOCK_MS wait); without it when it cannot be had (best effort). */
+  function withCounterLock_(fn) {
+    var lock = null;
+    try {
+      lock = LockService.getUserLock();
+      if (!lock.tryLock(THROTTLE_LOCK_MS)) lock = null;
+    } catch (e) {
+      lock = null;
+    }
+    if (!lock) console.warn('Access: throttle lock not obtained, counted without it');
+    try {
+      return fn();
+    } finally {
+      if (lock) {
+        try { lock.releaseLock(); } catch (e) { /* released when the execution ends */ }
+      }
+    }
+  }
+
+  /** Start times (ms) of an account's running calls from a cached value; [] for anything malformed. */
+  function inFlight_(value) {
+    var list;
+    try { list = JSON.parse(typeof value === 'string' ? value : '[]'); } catch (e) { list = []; }
+    return Array.isArray(list) ? list.filter(function (v) { return typeof v === 'number' && isFinite(v); }) : [];
+  }
+
   /**
-   * Per-account rate limit, called by apiWrap_ before the Script Properties are read: FORBIDDEN without
-   * an identity (as requireRole would), BUSY when the account has used THROTTLE_PER_MIN units in the
-   * current minute (`name` costs THROTTLE_WEIGHTS[name], else 1). The deployer is not limited (their own
-   * calls spend their own quotas, and they keep a way in). Costs one cache get and, when the call goes
-   * through, one put (a refused call writes nothing). A cache failure lets the call through (fail open).
+   * Per-account limits, called by apiWrap_ (and doGet) before the Script Properties are read: FORBIDDEN
+   * without an identity (as requireRole would); BUSY when the account has used THROTTLE_PER_MIN units in
+   * the current minute (`name` costs THROTTLE_WEIGHTS[name], else 1) or already has THROTTLE_IN_FLIGHT calls
+   * running. The deployer is not limited (their own calls spend their own quotas, and they keep a way in).
+   * Costs one cache getAll and, when the call goes through, one putAll (a refused call writes nothing).
+   * Returns the release function the caller must run when the call ends (in `finally`): it removes the
+   * call from the running ones (one get and one put). A cache failure lets the call through (fail open).
+   * @return {function()} release
    */
   function throttle(name) {
     var email = activeEmail();
     if (!email) throw noIdentity_();
-    if (email === ownerEmail()) return;
+    if (email === ownerEmail()) return noop_;
     var cache = cache_();
-    if (!cache) return;
-    var key = cacheKey_('rl:' + Math.floor(Date.now() / 60000) + '|' + email);
-    var used;
-    try {
-      used = Number(cache.get(key)) || 0;
-    } catch (e) {
-      console.warn('Access: throttle cache not readable (' + (e && e.message) + '), call let through');
-      return;
-    }
-    var cost = THROTTLE_WEIGHTS[name] || 1;
-    if (used + cost > THROTTLE_PER_MIN) {
-      var err = Core.makeError('BUSY', 'Trop de requêtes. Réessayez dans une minute.');
-      err.throttled = true;
-      throw err;
-    }
-    cachePut_(cache, key, String(used + cost), 120);
+    if (!cache) return noop_;
+    var started = Date.now();
+    var rateKey = cacheKey_('rl:' + Math.floor(started / 60000) + '|' + email);
+    var flightKey = cacheKey_('if:' + email);
+    var counted = withCounterLock_(function () {
+      var got;
+      try {
+        got = cache.getAll([rateKey, flightKey]) || {};
+      } catch (e) {
+        console.warn('Access: throttle cache not readable (' + (e && e.message) + '), call let through');
+        return false;
+      }
+      var used = Number(got[rateKey]) || 0;
+      var cost = THROTTLE_WEIGHTS[name] || 1;
+      if (used + cost > THROTTLE_PER_MIN) throw busy_('Trop de requêtes. Réessayez dans une minute.');
+      var running = inFlight_(got[flightKey]).filter(function (t) {
+        return t <= started && started - t < IN_FLIGHT_MAX_S * 1000;
+      });
+      if (running.length >= THROTTLE_IN_FLIGHT) {
+        throw busy_('Trop de requêtes en cours. Réessayez dans quelques instants.');
+      }
+      running.push(started);
+      var values = {};
+      values[rateKey] = String(used + cost);
+      values[flightKey] = JSON.stringify(running);
+      try { cache.putAll(values, IN_FLIGHT_MAX_S); } catch (e) { return false; /* not stored: nothing to release */ }
+      return true;
+    });
+    if (!counted) return noop_;
+    return function release() {
+      withCounterLock_(function () {
+        var running;
+        try { running = inFlight_(cache.get(flightKey)); } catch (e) { return; /* the entry expires on its own */ }
+        var i = running.indexOf(started);
+        if (i < 0) return;
+        running.splice(i, 1);
+        cachePut_(cache, flightKey, JSON.stringify(running), IN_FLIGHT_MAX_S);
+      });
+    };
   }
 
   /**
@@ -385,6 +452,7 @@ var Access = (function () {
     GROUP_ERROR_CACHE_S: GROUP_ERROR_CACHE_S,
     GROUP_OK_CACHE_S: GROUP_OK_CACHE_S,
     THROTTLE_PER_MIN: THROTTLE_PER_MIN,
+    THROTTLE_IN_FLIGHT: THROTTLE_IN_FLIGHT,
     THROTTLE_WEIGHTS: THROTTLE_WEIGHTS
   };
 })();

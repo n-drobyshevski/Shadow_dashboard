@@ -602,6 +602,31 @@ test('import: a record too large for one cell is SOURCE_ERROR naming it, and not
   assert.equal(env.__state.lock.held, false);
 });
 
+test('import: a Référentiel category over LIMITS.refValues values keeps its first ones, with a warning; the sync goes on', () => {
+  const { ctx, env } = configured();
+  const lim = ctx.Core.LIMITS;
+  const def = source('2026-04');
+  const ref = def.sheets['Référentiel'];
+  const c = ref.display[0].length;
+  const rows = Math.max(ref.display.length, lim.refValues + 2);
+  for (const grid of [ref.values, ref.display]) {
+    for (let r = 0; r < rows; r++) {
+      if (!grid[r]) grid[r] = Array(c).fill('');
+      while (grid[r].length < c) grid[r].push('');
+      grid[r][c] = r === 0 ? 'Éditeurs' : 'Éditeur ' + r;
+    }
+  }
+  swapSource(env, def);
+  const d = ok(ctx, 'api_importMonth', { month: '2026-04' });
+  const warning = 'Onglet « Référentiel » : la catégorie « Éditeurs » a plus de ' + lim.refValues + ' valeurs, seules les ' +
+    lim.refValues + ' premières sont gardées.';
+  assert.ok(d.warnings.includes(warning), JSON.stringify(d.warnings));
+  assert.ok(d.counts.postes > 0 && d.counts.applications > 0, 'postes and applications imported');
+  const kept = ok(ctx, 'api_getMonthData', { month: '2026-04' }).referentiel['Éditeurs'];
+  assert.equal(kept.length, lim.refValues);
+  assert.equal(kept[0], 'Éditeur 1');
+});
+
 test('import: too many source columns / Référentiel categories -> SOURCE_ERROR naming the tab, before the lock', () => {
   const { ctx, env } = configured();
   const lim = ctx.Core.LIMITS;

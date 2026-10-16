@@ -146,6 +146,91 @@ test('throttle: no identity is FORBIDDEN before any Properties or cache call; a 
   assert.equal(propertyReads(sb), before, 'past the limit, no Properties read');
 });
 
+const running = (sb, email) => JSON.parse(sb.env.__state.cache.get('if:' + email) || '[]');
+
+test('throttle: at most THROTTLE_IN_FLIGHT calls of an account running at once; the end of a call frees its place', (t) => {
+  const sb = setup(t);
+  const st = sb.env.__state;
+  const max = sb.ctx.Access.THROTTLE_IN_FLIGHT;
+  as(sb, READER);
+  ok(sb.ctx, 'api_getActions');
+  assert.deepEqual(running(sb, READER), [], 'released at the end of the call');
+  // Seen from inside a call: it counts as running, under the user lock (not the script lock).
+  let inside = null;
+  const orig = sb.ctx.Store.listRows;
+  sb.ctx.Store.listRows = function () { inside = inside || running(sb, READER); return orig.apply(this, arguments); };
+  ok(sb.ctx, 'api_getActions');
+  sb.ctx.Store.listRows = orig;
+  assert.deepEqual(inside, [Date.now()]);
+  assert.ok(st.userLock.acquired >= 4, 'entry and release of both calls under the user lock');
+  assert.equal(st.userLock.held, false);
+
+  // Other calls of the account still running (parallel google.script.run calls): the next one is refused.
+  st.cache.set('if:' + READER, JSON.stringify(Array(max).fill(Date.now() - 1000)));
+  const puts = (st.calls.cachePut || 0) + (st.calls.cachePutAll || 0);
+  const reads = propertyReads(sb);
+  const err = fail(sb.ctx, 'api_getTimeline', null, 'BUSY');
+  assert.equal(err.message, 'Trop de requêtes en cours. Réessayez dans quelques instants.');
+  assert.equal(propertyReads(sb), reads, 'no Script Property read');
+  assert.equal((st.calls.cachePut || 0) + (st.calls.cachePutAll || 0), puts, 'a refused call writes nothing');
+  assert.equal(running(sb, READER).length, max, 'and frees nothing');
+  // Another account is not concerned.
+  as(sb, OTHER);
+  ok(sb.ctx, 'api_getActions');
+  // One of them ends: a place is free again.
+  as(sb, READER);
+  st.cache.set('if:' + READER, JSON.stringify(Array(max - 1).fill(Date.now() - 1000)));
+  ok(sb.ctx, 'api_getActions');
+  assert.equal(running(sb, READER).length, max - 1, 'its own entry removed at its end');
+  // An entry left by an execution killed before its end (older than 6 min) no longer counts.
+  st.cache.set('if:' + READER, JSON.stringify(Array(max).fill(Date.now() - 361 * 1000)));
+  ok(sb.ctx, 'api_getActions');
+  assert.deepEqual(running(sb, READER), []);
+  // A failing call frees its place too.
+  fail(sb.ctx, 'api_getMonthData', { month: 'nope' }, 'VALIDATION');
+  assert.deepEqual(running(sb, READER), []);
+});
+
+test('throttle: concurrent calls of one account each count (the counters are read and written under the user lock)', (t) => {
+  const sb = setup(t);
+  const st = sb.env.__state;
+  as(sb, READER);
+  // The lock cannot be had: the call is counted without it (best effort), with a warning.
+  st.userLockTimeout = true;
+  ok(sb.ctx, 'api_getActions');
+  assert.equal(counter(sb, READER), '1');
+  assert.ok(st.console.some((c) => c.level === 'warn' && /throttle lock not obtained/.test(c.args[0])));
+  st.userLockTimeout = false;
+  // The script lock (Store's writes) is never taken by the throttle.
+  const scriptLocks = st.lock.acquired;
+  ok(sb.ctx, 'api_getActions');
+  assert.equal(st.lock.acquired, scriptLocks);
+});
+
+test('doGet: throttled like the api_* calls; refused, a static page with the message and no Script Property read', (t) => {
+  const sb = setup(t);
+  const st = sb.env.__state;
+  as(sb, READER);
+  for (let i = 0; i < 120; i++) ok(sb.ctx, 'api_getActions');
+  const reads = propertyReads(sb);
+  const page = sb.ctx.doGet({}).getContent();
+  assert.match(page, /Trop de requêtes\. Réessayez dans une minute\./);
+  assert.doesNotMatch(page, /boot-data/);
+  assert.equal(propertyReads(sb), reads, 'no FAVICON_URL read, no bootstrap');
+  // Without an identity: the identity message, nothing read.
+  as(sb, '');
+  const cache = (st.calls.cacheGet || 0) + (st.calls.cacheGetAll || 0);
+  assert.match(sb.ctx.doGet({}).getContent(), /Identité Google non transmise/);
+  assert.equal(propertyReads(sb), reads);
+  assert.equal((st.calls.cacheGet || 0) + (st.calls.cacheGetAll || 0), cache);
+  // Within the limits, the page load counts one call and frees its place at the end.
+  sb.clock.now += 60 * 1000;
+  as(sb, READER);
+  try { sb.ctx.doGet({}); } catch (e) { if (!/No HTML file named/.test(e.message)) throw e; }
+  assert.ok(Number(counter(sb, READER)) >= 1);
+  assert.deepEqual(running(sb, READER), []);
+});
+
 // ------------------------------------------------------------------------------ groups: quota
 
 const grp = (group, email) => 'grp:' + group + '|' + email;
@@ -228,8 +313,8 @@ test('groups: a refused account costs one cache read per call (one "no role" ent
   st.cache.delete(grp(ADMINS, NOBODY));
   const before = { getAll: st.calls.cacheGetAll, get: st.calls.cacheGet, groups: st.groupCalls };
   fail(sb.ctx, 'api_bootstrap', null, 'FORBIDDEN');
-  assert.equal(st.calls.cacheGetAll - before.getAll, 1);
-  assert.equal(st.calls.cacheGet - before.get, 1, 'the throttle counter only');
+  assert.equal(st.calls.cacheGetAll - before.getAll, 2, 'the throttle counters and the "no role" entry');
+  assert.equal(st.calls.cacheGet - before.get, 1, 'the throttle release only');
   assert.equal(st.groupCalls, before.groups);
 
   // An explicit entry or the domain role applies at once (checked before the entry).

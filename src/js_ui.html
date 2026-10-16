@@ -1698,17 +1698,28 @@
 
     /**
      * Makes the columns whose key is in `keys` read-only from now on (found computed after the table was
-     * shown): their unsaved values are dropped, header and rows re-render (once a cell being edited
-     * closes). Returns true when a column changed.
+     * shown): their unsaved values are dropped, and a toast names those columns (the source would refuse
+     * them anyway), header and rows re-render (once a cell being edited closes). Returns true when a column
+     * changed.
      */
     function lockColumns(keys) {
       var locked = columns.filter(function (col) { return col.editable && (keys || []).indexOf(col.key) >= 0; });
       if (!locked.length) return false;
       locked.forEach(function (col) { col.editable = false; });
+      var dropped = [];
       Object.keys(dirty).forEach(function (id) {
-        locked.forEach(function (col) { delete dirty[id][col.key]; });
+        locked.forEach(function (col) {
+          if (!Object.prototype.hasOwnProperty.call(dirty[id], col.key)) return;
+          delete dirty[id][col.key];
+          if (dropped.indexOf(col.label) < 0) dropped.push(col.label);
+        });
         if (!Object.keys(dirty[id]).length) delete dirty[id];
       });
+      if (dropped.length) {
+        toast('Modifications non enregistrées annulées dans ' + (dropped.length > 1 ? 'les colonnes « ' : 'la colonne « ') +
+          dropped.join(' », « ') + ' » : ' + (dropped.length > 1 ? 'elles sont calculées' : 'elle est calculée') +
+          ' par une formule dans le Google Sheet source.');
+      }
       renderHead();
       if (tbody.querySelector('.cell-editing')) {
         staleBody = true;

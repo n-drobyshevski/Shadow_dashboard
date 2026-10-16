@@ -418,13 +418,14 @@ test('groups: every group a call may need is read from the cache in ONE getAll',
   const count = (k) => calls[k] || 0;
   const before = { getAll: count('cacheGetAll'), get: count('cacheGet'), groups: sb.env.__state.groupCalls };
   ok(sb.ctx, 'api_getActions');
-  assert.equal(count('cacheGetAll') - before.getAll, 1, 'cold: one getAll for the 4 groups');
+  // + one getAll of the throttle counters (rate and running calls) per call.
+  assert.equal(count('cacheGetAll') - before.getAll, 2, 'cold: one getAll for the 4 groups');
   assert.ok(sb.env.__state.groupCalls > before.groups, 'cold: checked live');
   const warm = { getAll: count('cacheGetAll'), groups: sb.env.__state.groupCalls };
   assert.equal(ok(sb.ctx, 'api_bootstrap').user.role, 'lecteur');
-  assert.equal(count('cacheGetAll') - warm.getAll, 1, 'warm: one getAll');
+  assert.equal(count('cacheGetAll') - warm.getAll, 2, 'warm: one getAll');
   assert.equal(sb.env.__state.groupCalls, warm.groups, 'warm: no GroupsApp call');
-  assert.equal(count('cacheGet') - before.get, 2, 'never one get per group: only the throttle counter, once per call');
+  assert.equal(count('cacheGet') - before.get, 2, 'never one get per group: only the throttle release, once per call');
 });
 
 test('groups: a cached membership slides with use but is re-verified after 1 h at most', (t) => {

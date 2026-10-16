@@ -48,6 +48,7 @@
  *   reads [{spreadsheetId, sheet, method, a1, cells, lockHeld}] (one entry per range read, in order:
  *   which rows / columns a flow reads, and whether the script lock was held at that moment),
  *   lock {acquired, released, timeouts, held}, logs [], console [], lockTimeout (mutable),
+ *   userLock {acquired, held} (LockService.getUserLock, a lock of its own), userLockTimeout (mutable),
  *   opened [ids passed to openById, in order], propertyWrites [keys written by setProperty / setProperties].
  * state.onWaitLock = fn runs fn ONCE, at the start of the next waitLock / tryLock, before the lock is
  * taken: a test simulates another execution that takes the lock first (e.g. a save landing while an
@@ -799,9 +800,26 @@ function createGasEnv(options) {
     },
     hasLock() { return state.lock.held; },
   };
+  // The user lock (Access.throttle's counters) is another lock than the script lock (Store.withLock).
+  // state.userLockTimeout = true makes tryLock answer false.
+  state.userLock = { held: false, acquired: 0 };
+  const userLock = {
+    tryLock() {
+      count('userTryLock');
+      if (state.userLockTimeout) return false;
+      state.userLock.acquired++;
+      state.userLock.held = true;
+      return true;
+    },
+    waitLock() {
+      if (!this.tryLock()) throw new Error('Lock timeout: another process was holding the lock for too long.');
+    },
+    releaseLock() { count('userReleaseLock'); state.userLock.held = false; },
+    hasLock() { return state.userLock.held; },
+  };
   const LockService = {
     getScriptLock() { return lock; },
-    getUserLock() { return lock; },
+    getUserLock() { return userLock; },
     getDocumentLock() { return null; },
   };
 

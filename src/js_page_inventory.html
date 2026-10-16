@@ -161,14 +161,16 @@
   ];
 
   /**
-   * {normKey(column): true} for the computed columns of a form schema read from the source for `month`
-   * (api_getFormSchema origin 'source': the current month); {} for anything else (none, a fallback, a past
-   * month, whose computed columns are ordinary snapshot fields).
+   * {normKey(column): true} for the columns an array formula fills (`arrayFormula`: computed in every row)
+   * in a form schema read from the source for `month` (api_getFormSchema origin 'source': the current
+   * month); empty for anything else (none, a fallback, a past month, whose computed columns are ordinary
+   * snapshot fields). A column computed only by the sample row's own formula stays editable: the server
+   * checks the formula of each edited cell. No prototype: a column named « constructor » is an ordinary key.
    */
   function computedKeys(schema, month) {
-    var out = {};
+    var out = Object.create(null);
     if (!schema || schema.origin !== 'source' || schema.month !== month) return out;
-    (schema.columns || []).forEach(function (c) { if (c && c.computed) out[Core.normKey(c.name)] = true; });
+    (schema.columns || []).forEach(function (c) { if (c && c.arrayFormula === true) out[Core.normKey(c.name)] = true; });
     return out;
   }
 
@@ -341,7 +343,7 @@
       ctx.lockComputed = function (schema) {
         if (!ctx.live() || !ctx.table) return;
         var keys = computedKeys(schema, month);
-        ctx.table.lockColumns(cols.filter(function (c) { return keys[Core.normKey(c)]; }));
+        ctx.table.lockColumns(cols.filter(function (c) { return keys[Core.normKey(c)] === true; }));
       };
       /** Same, on the table of the page as it is now. */
       ctx.lockComputedPage = function (schema) { if (view && view.ctx) view.ctx.lockComputed(schema); };
@@ -424,7 +426,7 @@
           } };
         }
         // Read view: Statut / Niveau de risque as status marks, « Non » criteria in --ko (the editor is unchanged).
-        return { key: c, label: c, editable: !computedCols[Core.normKey(c)], mono: !!mono[c], numeric: !!numeric[c],
+        return { key: c, label: c, editable: computedCols[Core.normKey(c)] !== true, mono: !!mono[c], numeric: !!numeric[c],
           options: Core.optionsForColumn(c, md.referentiel),
           render: numeric[c] ? function (row) {
             var n = Core.parseScore(row[c]);

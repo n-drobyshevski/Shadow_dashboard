@@ -6,8 +6,34 @@
  * Web app entry: renders the index template. The page also carries the bootstrap envelope
  * (inlineBoot_) and the requested page (`?page=`, inlinePage_), so the client boots without waiting
  * for a google.script.run round trip or for google.script.url.getLocation.
+ * Like every api_* call, a page load first goes through Access.throttle('doGet'), before the template is
+ * rendered or any Script Property read (FAVICON_URL): without an identity (FORBIDDEN) or past the
+ * account's limits (BUSY), a short static page with the message is returned instead.
  */
 function doGet(e) {
+  var release;
+  try {
+    release = Access.throttle('doGet');
+  } catch (err) {
+    if (!err || (err.code !== 'BUSY' && err.code !== 'FORBIDDEN')) throw err;
+    console.warn('[doGet] ' + err.code + ': ' + err.message);
+    return refusedPage_(err.message);
+  }
+  try {
+    return renderIndex_(e);
+  } finally {
+    release();
+  }
+}
+
+/** Minimal static page for a refused page load: the message as text, nothing else read or rendered. */
+function refusedPage_(message) {
+  var text = String(message).replace(/[&<>"']/g, function (ch) { return '&#' + ch.charCodeAt(0) + ';'; });
+  return HtmlService.createHtmlOutput('<!doctype html><meta charset="utf-8"><p style="font-family:sans-serif;' +
+    'margin:2rem">' + text + '</p>').setTitle('Shadow IT — Tableau de bord');
+}
+
+function renderIndex_(e) {
   var template = HtmlService.createTemplateFromFile('index');
   // Template variable read by the <?!= inlinePage_(page) ?> scriptlet.
   template.page = (e && e.parameter && e.parameter.page) || '';

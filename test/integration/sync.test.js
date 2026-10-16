@@ -690,7 +690,9 @@ test('a live save reads the header block, the key column and the edited rows onl
 
   let reads = edit(['POSTE-020']);
   assert.ok(reads.every((r) => r.lockHeld));
-  assert.deepEqual(reads.map((r) => r.method), ['getDisplayValues', 'getDisplayValues', 'getFormulas', 'getFormulas']);
+  // + the display values of the edited row (a source cell longer than Core.LIMITS.cellChars is never overwritten).
+  assert.deepEqual(reads.map((r) => r.method), ['getDisplayValues', 'getDisplayValues', 'getFormulas', 'getFormulas',
+    'getDisplayValues']);
   assert.equal(reads[0].a1, 'A1:' + lastCol + '15', 'the header block');
   assert.match(reads[1].a1, /^([A-Z])3:\1\d+$/, 'one column: the key, from the first row below the header');
   const row = sourceRow(env, 'POSTE-020');
@@ -698,7 +700,8 @@ test('a live save reads the header block, the key column and the edited rows onl
   const head = 'A2:' + lastCol + '3';
   assert.deepEqual(formulaRows(reads), [head, 'A' + row + ':' + lastCol + row]);
   const height = sourceSheet(env, POSTES_TAB).getDataRange().getNumRows();
-  assert.deepEqual(reads.map((r) => r.cells), [15 * width, height - 2, 2 * width, width],
+  assert.deepEqual(reads[4].a1, 'A' + row + ':' + lastCol + row);
+  assert.deepEqual(reads.map((r) => r.cells), [15 * width, height - 2, 2 * width, width, width],
     'not the whole tab twice (' + 2 * height * width + ' cells)');
   assert.equal(byName(sourceRecords(sb.ctx, 'postes'), KEY_POSTE, 'POSTE-020').Commentaires, 'Vu');
 

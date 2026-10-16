@@ -51,10 +51,12 @@ poste générique, ajout / renommage / suppression d'une application) sont **éc
 source**, puis dans l'instantané : la synchronisation suivante les relit. Galink et IDP, absents de la
 source, restent dans l'application. Une cellule calculée par une formule dans la source n'est pas
 modifiable depuis l'application, pas plus qu'une colonne remplie par une formule matricielle
-(`ARRAYFORMULA`, `={…}`) ; la ligne qui porte une telle formule ne peut pas être supprimée depuis
-l'application. Un nom présent sur plusieurs lignes de la source (« Minitab » et « MINITAB ») ne peut
-être ni modifié, ni renommé, ni supprimé tant que les doublons ne sont pas corrigés dans le Google Sheet
-(la synchronisation les signale). Les modifications d'un mois passé ne changent que son historique.
+(`ARRAYFORMULA`, `={…}`, `FILTER`, `QUERY`, `SORT`… ou une plage ouverte comme `A2:A`) ; la ligne qui
+porte une telle formule ne peut pas être supprimée depuis l'application. Une cellule de plus de 5 000
+caractères (tronquée dans l'application) ne peut être modifiée que dans le Google Sheet. Un nom présent
+sur plusieurs lignes de la source (« Minitab » et « MINITAB ») ne peut être ni modifié, ni renommé, ni
+supprimé tant que les doublons ne sont pas corrigés dans le Google Sheet puis synchronisés (la
+synchronisation les signale) ; Galink et IDP restent modifiables. Les modifications d'un mois passé ne changent que son historique.
 
 | Onglet | Contenu |
 |---|---|
@@ -335,14 +337,20 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
 - [ ] Écriture dans la source, colonnes calculées : dans une colonne `ARRAYFORMULA` (formule dans la
       ligne d'en-tête ou la première ligne de données), modifier une cellule d'une autre ligne depuis le
       tableau du mois en cours : refus « La colonne « … » est calculée par une formule dans le Google
-      Sheet source », la colonne reste intacte (pas de `#REF!`). Après ouverture du formulaire « Nouveau
-      poste » (ou survol du bouton), les colonnes calculées ne sont plus modifiables dans le tableau.
+      Sheet source », la colonne reste intacte (pas de `#REF!`). Même essai avec un `FILTER(…)` ou un
+      `SORT(…)` en première ligne de données. Après ouverture du formulaire « Nouveau poste » (ou survol
+      du bouton), les colonnes remplies par une formule matricielle ne sont plus modifiables dans le
+      tableau (une valeur non enregistrée y est annulée avec un message) ; une colonne dont seule la
+      dernière ligne porte une formule reste modifiable.
       Supprimer l'application dont la ligne porte la formule : refus, rien n'est supprimé.
 - [ ] Écriture dans la source, doublons : ajouter dans la source une ligne « MINITAB » (même nom à la
       casse près qu'une ligne existante), synchroniser : le journal signale « Noms en double … ».
       Modifier, renommer ou supprimer l'une ou l'autre depuis l'application : refus « … apparaît 2 fois
-      … », aucune ligne de la source ne change. Renommer une application avec un nom ajouté dans la
-      source depuis la dernière synchronisation : refus « … existe déjà dans l’onglet … ».
+      … », aucune ligne de la source ne change. Supprimer ensuite la ligne « MINITAB » dans la source
+      et, avant la synchronisation suivante, modifier ou supprimer « MINITAB » dans l'application : refus
+      « … apparaît 2 fois dans les données synchronisées … », la ligne « Minitab » reste. Renommer une
+      application avec un nom ajouté dans la source depuis la dernière synchronisation : refus « … existe
+      déjà dans l’onglet … ».
 - [ ] Le déclencheur `syncHourly` apparaît dans l'éditeur (Déclencheurs) et s'exécute toutes les
       heures (Exécutions) ; une synchronisation sans changement n'ajoute rien au journal.
 - [ ] Mesures : dans Exécutions, un appel (par exemple l'ouverture de l'application) montre ses lignes
@@ -480,9 +488,12 @@ Modèle de menace, résultats et exceptions : [docs/SECURITY.md](docs/SECURITY.m
 - Chaque mois ajoute une ligne par poste et par application au classeur de données (le mois en cours
   est réécrit, pas dupliqué) ; Google Sheets plafonne à 10 millions de cellules par classeur.
 - **Taille du classeur source** : au plus 500 colonnes avec un en-tête et 5 000 lignes par onglet de
-  suivi, 100 catégories de 500 valeurs au plus dans le Référentiel ; au-delà, la synchronisation est
-  refusée (« Onglet « … » : … ») sans rien écrire. Une cellule de plus de 5 000 caractères (200 pour un
-  en-tête) est tronquée, avec un avertissement dans le journal des synchronisations ; une ligne dont
+  suivi (un avertissement dès 4 000), 100 catégories dans le Référentiel ; au-delà, la synchronisation
+  est refusée (« Onglet « … » : … ») sans rien écrire. Une catégorie du Référentiel garde ses 500
+  premières valeurs, avec un avertissement. Une cellule de plus de 5 000 caractères (200 pour un
+  en-tête) est tronquée, avec un avertissement dans le journal des synchronisations (« Installé sur
+  poste » après le dernier nom de poste entier), et ne peut plus être modifiée depuis l'application ;
+  une ligne dont
   l'ensemble dépasse 45 000 caractères est refusée en la nommant. Les colonnes dont le nom commence par
   « _ » sont réservées à l'application et ignorées. Dans l'application, un texte saisi est limité à
   5 000 caractères.
@@ -527,8 +538,9 @@ to an account whose membership a live check confirmed in the last 6 hours: an ex
 does not lock every member out), an account with no role at all is remembered 10 minutes in one entry
 keyed by the list of groups, all of a call's group entries are read in one `CacheService.getAll`, and a
 cache failure only means a live check. Every account but the deployer is throttled to 120 calls a
-minute (full-history reads count 5) before any Script Property is read; above it, `BUSY` « Trop de
-requêtes. Réessayez dans une minute. ». After pulling this
+minute (full-history reads count 5) and 6 calls running at once, before any Script Property is read
+(page loads included); above it, `BUSY` « Trop de requêtes. Réessayez dans une minute. » / « Trop de
+requêtes en cours. … ». After pulling this
 version, run `setup()` again to grant the new groups scope. The list lives in the `ACCESS_JSON_N` /
 `ACCESS_JSON_0..` script properties (split because one property holds 9 KB), the compliance threshold (default 80 %) in `COMPLIANCE_THRESHOLD`. For a personal Gmail
 deployer, set `"access": "MYSELF"` in `src/appsscript.json`.

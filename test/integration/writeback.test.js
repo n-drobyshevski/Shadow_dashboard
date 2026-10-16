@@ -293,3 +293,199 @@ test('the source row holding an array formula cannot be deleted from the app; th
   assert.equal(grid.some((r) => r[k] === 'LabVIEW'), false);
   assert.equal(sourceSheet(sb.env, APPS_TAB).getRange(3, grid[1].indexOf('Rang') + 1).getFormula().slice(0, 13), '=ARRAYFORMULA');
 });
+
+// ------------------------------------------------------------------------------- review follow-ups
+
+/** Sets `header` of the application `name` in a source definition (display = raw value). */
+function setAppCell(def, name, header, value) {
+  const tab = def.sheets[APPS_TAB];
+  const headers = tab.display[1].map((h) => h.trim());
+  const k = headers.indexOf(KEY_APP);
+  const r = tab.display.findIndex((row) => row[k] === name);
+  tab.values[r][headers.indexOf(header)] = tab.display[r][headers.indexOf(header)] = value;
+}
+
+/** Adds a column `header` to the applications tab of a source definition (values by record name, else ''). */
+function addAppColumn(def, header, byRecord) {
+  const tab = def.sheets[APPS_TAB];
+  const k = tab.display[1].map((h) => h.trim()).indexOf(KEY_APP);
+  const last = lastRecordRow(tab, KEY_APP);
+  for (const grid of [tab.values, tab.display]) {
+    grid.forEach((row, r) => {
+      const name = tab.display[r][k];
+      row.push(r === 1 ? header : (r > 1 && r <= last && byRecord && name in byRecord ? byRecord[name] : ''));
+    });
+  }
+}
+
+test('Galink / IDP (no source column) of a name the source holds twice are saved: the source row is not looked up', () => {
+  const sb = withDuplicate();
+  const apps = monthApps(sb.ctx);
+  const source = JSON.stringify([sourceGrid(sb.env, APPS_TAB), sourceGrid(sb.env, POSTES_TAB)]);
+  const minitab = byName(apps, KEY_APP, 'MINITAB');
+  const saved = ok(sb.ctx, 'api_saveApplications', { month: LIVE, changes: [{ id: minitab._id, updates: { Galink: 'Non', IDP: 'Oui' } }] });
+  assert.equal(saved.sourceUpdated, true);
+  assert.deepEqual([saved.updated[0].Galink, saved.updated[0].IDP], ['Non', 'Oui']);
+  // A batch with another record's source edit goes through as a whole.
+  ok(sb.ctx, 'api_saveApplications', { month: LIVE, changes: [
+    { id: byName(apps, KEY_APP, 'Minitab')._id, updates: { Galink: 'Non' } },
+    { id: byName(apps, KEY_APP, 'Figma')._id, updates: { Commentaires: 'Vu' } }] });
+  const k = sourceGrid(sb.env, APPS_TAB)[1].indexOf(KEY_APP);
+  assert.equal(byName(monthApps(sb.ctx), KEY_APP, 'Minitab').Galink, 'Non');
+  assert.equal(sourceGrid(sb.env, APPS_TAB).find((r) => r[k] === 'Figma')[sourceGrid(sb.env, APPS_TAB)[1].indexOf('Commentaires')], 'Vu');
+  const after = JSON.parse(source);
+  after[0].find((r) => r[k] === 'Figma')[after[0][1].indexOf('Commentaires')] = 'Vu';
+  assert.equal(JSON.stringify([sourceGrid(sb.env, APPS_TAB), sourceGrid(sb.env, POSTES_TAB)]), JSON.stringify(after),
+    'only Figma\'s cell was written');
+  // A source field of a duplicated name is still refused.
+  fail(sb.ctx, 'api_saveApplications', { month: LIVE, changes: [{ id: minitab._id, updates: { Galink: 'Oui', Commentaires: 'x' } }] },
+    'SOURCE_ERROR', undefined);
+});
+
+test('duplicates left in the snapshot only (one row removed from the source, not synchronised yet): every write-back is refused', () => {
+  const sb = withDuplicate();
+  const apps = monthApps(sb.ctx);
+  const grid = sourceGrid(sb.env, APPS_TAB);
+  const k = grid[1].indexOf(KEY_APP);
+  // The owner fixes the duplicate in the Google Sheet, as the warning asks: « MINITAB » is gone from the source.
+  sourceSheet(sb.env, APPS_TAB).deleteRow(grid.findIndex((r) => r[k] === 'MINITAB') + 1);
+  const before = everything(sb);
+  const msg = (name) => '« ' + name + ' » apparaît 2 fois dans les données synchronisées (onglet « Suivi des applications ») : ' +
+    'corrigez les doublons dans le Google Sheet source, synchronisez, puis réessayez.';
+  for (const name of ['MINITAB', 'Minitab']) {
+    const rec = byName(apps, KEY_APP, name);
+    // Each of these would otherwise hit the remaining « Minitab » row, whichever record was meant.
+    let e = fail(sb.ctx, 'api_deleteApplication', { month: LIVE, id: rec._id }, 'SOURCE_ERROR', undefined);
+    assert.equal(e.message, msg(name));
+    e = fail(sb.ctx, 'api_saveApplications', { month: LIVE, changes: [{ id: rec._id, updates: { Commentaires: 'Vu' } }] },
+      'SOURCE_ERROR', undefined);
+    assert.equal(e.message, msg(name));
+    e = fail(sb.ctx, 'api_renameApplication', { month: LIVE, id: rec._id, newName: 'Minitab 22' }, 'SOURCE_ERROR', undefined);
+    assert.equal(e.message, msg(name));
+  }
+  fail(sb.ctx, 'api_saveApplications', { month: LIVE, changes: [
+    { id: byName(apps, KEY_APP, 'Minitab')._id, updates: { Commentaires: 'A' } },
+    { id: byName(apps, KEY_APP, 'MINITAB')._id, updates: { Commentaires: 'B' } }] }, 'SOURCE_ERROR', undefined);
+  assert.equal(everything(sb), before, 'the source and the snapshot are untouched');
+  assert.deepEqual(sourceGrid(sb.env, APPS_TAB).filter((r) => /^minitab$/i.test(r[k])).map((r) => r[k]), ['Minitab']);
+
+  // Once synchronised, the remaining record is written back as usual.
+  ok(sb.ctx, 'api_syncNow');
+  const rec = byName(monthApps(sb.ctx), KEY_APP, 'Minitab');
+  ok(sb.ctx, 'api_saveApplications', { month: LIVE, changes: [{ id: rec._id, updates: { Commentaires: 'Vu' } }] });
+  assert.equal(sourceGrid(sb.env, APPS_TAB).find((r) => r[k] === 'Minitab')[grid[1].indexOf('Commentaires')], 'Vu');
+});
+
+test('a source cell longer than Core.LIMITS.cellChars (truncated in the snapshot) is never overwritten from the app', () => {
+  const def = source();
+  const sbProbe = loadGas();
+  const max = sbProbe.ctx.Core.LIMITS.cellChars;
+  const long = 'Commentaire. '.repeat(Math.ceil((max + 3000) / 13));
+  setAppCell(def, 'Figma', 'Commentaires', long);
+  const sb = synced(def);
+  const figma = byName(monthApps(sb.ctx), KEY_APP, 'Figma');
+  assert.equal(figma.Commentaires.length, max, 'truncated in the snapshot');
+  const before = everything(sb);
+  // The admin edits the start the app shows: refused, the source keeps its full text.
+  const e = fail(sb.ctx, 'api_saveApplications', { month: LIVE, changes: [{ id: figma._id,
+    updates: { Commentaires: figma.Commentaires.slice(0, 100) } }] }, 'VALIDATION', 'Commentaires');
+  assert.equal(e.message, '« Figma », colonne « Commentaires » : la cellule du Google Sheet source a plus de ' + max +
+    ' caractères et l’application n’en a que le début : modifiez-la dans le Google Sheet source.');
+  assert.equal(everything(sb), before, 'the source and the snapshot are untouched');
+  const grid = sourceGrid(sb.env, APPS_TAB);
+  const k = grid[1].indexOf(KEY_APP);
+  assert.equal(grid.find((r) => r[k] === 'Figma')[grid[1].indexOf('Commentaires')], long);
+  // Another column of the same row is written as usual.
+  ok(sb.ctx, 'api_saveApplications', { month: LIVE, changes: [{ id: figma._id, updates: { 'Éditeur': 'Figma Inc.' } }] });
+  assert.equal(sourceGrid(sb.env, APPS_TAB).find((r) => r[k] === 'Figma')[grid[1].indexOf('Éditeur')], 'Figma Inc.');
+});
+
+test('spilling formulas (FILTER, SORT, open-ended ranges) in the first data row are array-formula columns too', () => {
+  const def = source({ form: true });
+  const tab = def.sheets[APPS_TAB];
+  const k = tab.display[1].map((h) => h.trim()).indexOf(KEY_APP);
+  const first = tab.display[2][k];
+  addAppColumn(def, 'Filtre', {});
+  addAppColumn(def, 'Tri', {});
+  addAppColumn(def, 'Lambda', {});
+  const w = tab.values[1].length;
+  tab.values[2][w - 3] = '=FILTER(Data!C2:C, Data!A2:A<>"")';
+  tab.values[2][w - 2] = '=SORT(B3:B)';
+  tab.values[2][w - 1] = '=LAMBDA(x, x * 2)($B$3:$B)';
+  const sb = synced(def);
+  const apps = monthApps(sb.ctx);
+  const other = apps.find((a) => a[KEY_APP] !== first);
+  const before = everything(sb);
+  for (const col of ['Filtre', 'Tri', 'Lambda']) {
+    const e = fail(sb.ctx, 'api_saveApplications', { month: LIVE, changes: [{ id: other._id, updates: { [col]: 'x' } }] },
+      'VALIDATION', col);
+    assert.match(e.message, /calculée par une formule/);
+  }
+  assert.equal(everything(sb), before);
+  const schema = ok(sb.ctx, 'api_getFormSchema', { entity: 'applications', month: LIVE });
+  assert.deepEqual(schema.columns.filter((c) => c.arrayFormula).map((c) => c.name), ['Doublon', 'Filtre', 'Tri', 'Lambda']);
+  // The row holding them cannot be deleted either.
+  fail(sb.ctx, 'api_deleteApplication', { month: LIVE, id: byName(apps, KEY_APP, first)._id }, 'VALIDATION', undefined);
+});
+
+test('duplicate-names warning: names are cut at 60 characters, so the ImportLog warnings cell stays small', () => {
+  const def = source();
+  const names = [];
+  for (let i = 0; i < 10; i++) {
+    const name = String(i) + 'N'.repeat(4999);
+    names.push(name);
+    addAppRow(def, 'Figma', name);
+    addAppRow(def, 'Figma', name.toLowerCase());
+  }
+  const sb = synced(def);
+  const warning = sb.firstSync.result.warnings.find((w) => /^Noms en double/.test(w));
+  assert.ok(warning.includes('« 0' + 'N'.repeat(59) + '… » (2 lignes)'), warning.slice(0, 300));
+  assert.ok(!warning.includes('N'.repeat(61)));
+  const json = JSON.stringify(sb.firstSync.result.warnings);
+  assert.ok(json.length < 2000, String(json.length));
+  assert.equal(JSON.stringify(ok(sb.ctx, 'api_getMonthData', { month: LIVE }).importInfo.warnings), json);
+});
+
+test('the write-back header-width limit names the tab', () => {
+  const sb = synced(source());
+  const sheet = sourceSheet(sb.env, POSTES_TAB);
+  const width = sheet.getDataRange().getNumColumns();
+  sheet.insertColumnsAfter(sheet.getMaxColumns(), width + 501 - sheet.getMaxColumns());
+  sheet.getRange(2, width + 1, 1, 501).setValues([Array.from({ length: 501 }, (_, i) => 'Extra ' + i)]);
+  const id = ok(sb.ctx, 'api_getMonthData', { month: LIVE }).postes[0]._id;
+  const e = fail(sb.ctx, 'api_savePostes', { month: LIVE, changes: [{ id, updates: { Commentaires: 'Vu' } }] }, 'SOURCE_ERROR', undefined);
+  assert.match(e.message, /^Onglet « Suivi des postes » : \d+ colonnes ont un en-tête, au plus 500 sont acceptées\./);
+});
+
+test('sync: a record named « __proto__ » and a column named « constructor » are compared like the others', () => {
+  const def = source();
+  addAppColumn(def, 'constructor', { Figma: 'v1' });
+  addAppRow(def, 'Figma', '__proto__', { constructor: 'p1' });
+  const sb = synced(def);
+  assert.equal(byName(monthApps(sb.ctx), KEY_APP, '__proto__').constructor, 'p1');
+  const grid = sourceGrid(sb.env, APPS_TAB);
+  const k = grid[1].indexOf(KEY_APP);
+  const c = grid[1].indexOf('constructor');
+  const sheet = sourceSheet(sb.env, APPS_TAB);
+  const rowOf = (name) => sourceGrid(sb.env, APPS_TAB).findIndex((r) => r[k] === name) + 1;
+  // A change in the « constructor » column only.
+  sheet.getRange(rowOf('Figma'), c + 1).setValue('v2');
+  let res = ok(sb.ctx, 'api_syncNow');
+  assert.equal(res.result.changed, true);
+  assert.deepEqual(plain(res.result.changes.applications), { added: 0, removed: 0, changed: 1, values: 1 });
+  // A change of the « __proto__ » record.
+  sheet.getRange(rowOf('__proto__'), grid[1].indexOf('Éditeur') + 1).setValue('Proto Inc.');
+  res = ok(sb.ctx, 'api_syncNow');
+  assert.deepEqual(plain(res.result.changes.applications), { added: 0, removed: 0, changed: 1, values: 1 });
+  assert.equal(byName(monthApps(sb.ctx), KEY_APP, '__proto__')['Éditeur'], 'Proto Inc.');
+  // A second « __proto__ » row: one record added, and the duplicates warning names it.
+  sheet.getRange(rowOf('__proto__') + 1, 1, 1, grid[1].length).setValues(sheet.getRange(rowOf('__proto__'), 1, 1, grid[1].length).getValues());
+  res = ok(sb.ctx, 'api_syncNow');
+  assert.deepEqual(plain(res.result.changes.applications), { added: 1, removed: 0, changed: 0, values: 0 });
+  assert.match(res.result.warnings.join(' '), /« __proto__ » \(2 lignes\)/);
+  // Both removed.
+  sheet.deleteRow(rowOf('__proto__'));
+  sheet.deleteRow(rowOf('__proto__'));
+  res = ok(sb.ctx, 'api_syncNow');
+  assert.deepEqual(plain(res.result.changes.applications), { added: 0, removed: 2, changed: 0, values: 0 });
+});

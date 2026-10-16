@@ -19,7 +19,8 @@
 /**
  * Wraps an implementation `fn(args, user) -> data` into the JSON envelope. Before anything is read,
  * Access.throttle(name) refuses a call without identity (FORBIDDEN) and an account above its per-minute
- * rate (BUSY), so neither reaches the Script Properties. The caller's role is then
+ * rate or with too many calls running (BUSY), so neither reaches the Script Properties; the release it
+ * returns runs in `finally` (the call no longer counts as running). The caller's role is then
  * checked (Access.requireRole, FORBIDDEN otherwise) and the effective compliance threshold is
  * applied to Core for the duration of the call. Errors whose `.code` is one of Core.ERROR_CODES are
  * reported as-is (their messages are ours, in French), VALIDATION ones with their `.field` when they
@@ -39,10 +40,11 @@ function apiWrap_(fn, name, minRole) {
     var authMs = null;
     var ok = false;
     var code = null;
+    var release = null;
     try {
       Store.clearMemo_();
       Config.clearMemo_();
-      Access.throttle(name);
+      release = Access.throttle(name);
       var cfg = Config.get();
       var user = Access.requireRole(minRole || 'lecteur', cfg.access);
       authMs = Date.now() - t0;
@@ -64,6 +66,7 @@ function apiWrap_(fn, name, minRole) {
       if (code === 'VALIDATION' && typeof e.field === 'string' && e.field !== '') error.field = e.field;
       return JSON.stringify({ ok: false, error: error });
     } finally {
+      if (release) release();
       var line = { api: name || 'api', ms: Date.now() - t0, authMs: authMs, ok: ok };
       if (code) line.code = code;
       Perf.log(line);
@@ -463,6 +466,15 @@ var ApiImpl_ = (function () {
     return month === Sync.currentMonth();
   }
 
+  /**
+   * How many records of `list` (a stored month) share the key of `rec` (normKey): passed to the
+   * write-back (Importer snapshotCount), which refuses a name the snapshot holds more than once.
+   */
+  function snapshotCount_(list, rec, keyField) {
+    var k = Core.normKey(rec[keyField]);
+    return list.filter(function (r) { return Core.normKey(r[keyField]) === k; }).length;
+  }
+
   function saveEntities_(tab, entity, keyField, enrich, args) {
     requireEditing_('edit');
     var month = requireMonth_(args.month);
@@ -476,7 +488,7 @@ var ApiImpl_ = (function () {
         Importer.writeEdits(entity, changes.map(function (c) {
           var rec = findById_(stored, c.id);
           if (!rec) throw notFound_(entity === 'postes' ? 'Poste' : 'Application');
-          return { name: Core.str(rec[keyField]), fields: c.updates };
+          return { name: Core.str(rec[keyField]), fields: c.updates, snapshotCount: snapshotCount_(stored, rec, keyField) };
         }));
       }
       return { updated: enrich(Store.updateEntityRows(tab, month, changes)), sourceUpdated: live };
@@ -665,8 +677,8 @@ var ApiImpl_ = (function () {
   }
 
   /**
-   * Current month: the source row goes first (Importer.deleteRecord refuses a name several source rows
-   * share and a row holding an array formula), then the snapshot row.
+   * Current month: the source row goes first (Importer.deleteRecord refuses a name several source rows or
+   * several records of the month's snapshot share, and a row holding an array formula), then the snapshot row.
    */
   function deleteApplication(args) {
     requireEditing_('delete');
@@ -674,9 +686,11 @@ var ApiImpl_ = (function () {
     var id = requireId_(args.id);
     return Store.withLock(function () {
       if (isLive_(month)) {
-        var rec = findById_(Store.readEntityMonth(Config.TABS.applications, month), id);
+        var apps = Store.readEntityMonth(Config.TABS.applications, month);
+        var rec = findById_(apps, id);
         if (!rec) throw notFound_('Application');
-        Importer.deleteRecord('applications', Core.str(rec[Core.KEY_APP]));
+        Importer.deleteRecord('applications', Core.str(rec[Core.KEY_APP]),
+          { snapshotCount: snapshotCount_(apps, rec, Core.KEY_APP) });
       }
       if (!Store.deleteEntityRow(Config.TABS.applications, month, id)) throw notFound_('Application');
       return { deleted: true, id: id };
@@ -686,7 +700,7 @@ var ApiImpl_ = (function () {
   /**
    * Renames an application and the target_name of every Action pointing to its old name. Current month:
    * the source key cell first (Importer.writeEdits also refuses a name another source row has, and an old
-   * name several source rows share).
+   * name several source rows or several records of the month's snapshot share).
    */
   function renameApplication(args) {
     requireEditing_('edit');
@@ -705,7 +719,10 @@ var ApiImpl_ = (function () {
 
       var upd = {};
       upd[Core.KEY_APP] = newName;
-      if (isLive_(month)) Importer.writeEdits('applications', [{ name: oldName, fields: upd }]);
+      if (isLive_(month)) {
+        Importer.writeEdits('applications', [{ name: oldName, fields: upd,
+          snapshotCount: snapshotCount_(apps, current, Core.KEY_APP) }]);
+      }
       var updated = Store.updateEntityRows(Config.TABS.applications, month, [{ id: id, updates: upd }])[0];
       var n = Store.updateRowsWhere(Config.TABS.actions,
         function (a) { return a.target_type === 'application' && a.target_name === oldName; },

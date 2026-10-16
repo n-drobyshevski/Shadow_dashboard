@@ -265,6 +265,24 @@ describe('postes page', () => {
     });
   });
 
+  test('a source column named « constructor » or « __proto__ » is editable like the others (no prototype lookup)', async () => {
+    await withApp({}, async (app) => {
+      const { page } = app;
+      await page.evaluate(() => {
+        const m = window.__mock.db.months['2026-05'];
+        m.columns.postes.push('constructor', '__proto__');
+        m.postes.forEach((p) => { p.constructor = 'c'; Object.defineProperty(p, '__proto__', { value: 'p', enumerable: true }); });
+        window.State.invalidate();
+      });
+      await app.goto('postes');
+      await page.waitForSelector('#postes-table');
+      const heads = await page.$$eval('#postes-table thead th.th-editable', (ths) => ths.map((th) => th.textContent.trim()));
+      assert.ok(heads.includes('constructor'), heads.join(' | '));
+      assert.ok(heads.includes('__proto__'), heads.join(' | '));
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
   test('conformity filter, global équipe filter and CSV export', async () => {
     await withApp({ page: 'postes' }, async (app) => {
       const { page } = app;

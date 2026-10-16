@@ -232,6 +232,43 @@ test('rowsToRecords: more than LIMITS.sourceRecords records -> SOURCE_ERROR nami
       e.message === 'Onglet « Suivi des applications » : plus de 5000 lignes à importer, au plus 5000 sont acceptées.');
 });
 
+test('rowsToRecords: from LIMITS.sourceRecordsWarn records, a warning says the limit is near', () => {
+  const { sourceRecords, sourceRecordsWarn } = Core.LIMITS;
+  assert.ok(sourceRecordsWarn < sourceRecords);
+  const display = [['Nom du poste']];
+  for (let i = 0; i < sourceRecordsWarn - 1; i++) display.push(['P' + i]);
+  assert.deepEqual(Core.rowsToRecords({ display, keyField: 'Nom du poste', tab: 'Suivi des postes' }).warnings, []);
+  display.push(['P-last']);
+  assert.deepEqual(Core.rowsToRecords({ display, keyField: 'Nom du poste', tab: 'Suivi des postes' }).warnings,
+    ['Onglet « Suivi des postes » : ' + sourceRecordsWarn + ' lignes importées, la limite est de ' + sourceRecords +
+      ' : au-delà, la synchronisation sera refusée.']);
+});
+
+test('rowsToRecords: « Installé sur poste » beyond LIMITS.cellChars is cut after its last whole poste name', () => {
+  const max = Core.LIMITS.cellChars;
+  const names = [];
+  for (let i = 0; names.join(', ').length <= max + 200; i++) names.push('POSTE-' + String(i).padStart(5, '0'));
+  const list = names.join(', ');
+  const display = [['Nom du logiciel / service', 'Installé sur poste', 'Commentaires'], ['Minitab', list, list]];
+  const rec = Core.rowsToRecords({ display, keyField: 'Nom du logiciel / service' }).records[0];
+  const kept = rec['Installé sur poste'];
+  assert.ok(kept.length <= max && kept.length > max - 20, String(kept.length));
+  const keptNames = kept.split(',').map((s) => s.trim());
+  assert.deepEqual(keptNames, names.slice(0, keptNames.length), 'whole names only, none cut in the middle');
+  assert.equal(rec.Commentaires.length, max, 'another column is cut at the limit');
+  // A cut that falls just before a comma keeps the whole list up to it; one item longer than the limit is cut.
+  const exact = 'A'.repeat(max - 3) + ', B';
+  assert.equal(Core.rowsToRecords({ display: [['Nom du logiciel / service', 'Installé sur poste'],
+    ['X', 'A'.repeat(max) + ',B']], keyField: 'Nom du logiciel / service' }).records[0]['Installé sur poste'], 'A'.repeat(max));
+  assert.equal(Core.rowsToRecords({ display: [['Nom du logiciel / service', 'Installé sur poste'],
+    ['X', exact + 'B'.repeat(10)]], keyField: 'Nom du logiciel / service' }).records[0]['Installé sur poste'], 'A'.repeat(max - 3));
+  assert.equal(Core.rowsToRecords({ display: [['Nom du logiciel / service', 'Installé sur poste'],
+    ['X', 'L'.repeat(max + 5)]], keyField: 'Nom du logiciel / service' }).records[0]['Installé sur poste'], 'L'.repeat(max));
+  // The relation then only lists postes that exist.
+  const rel = Core.buildPosteAppsRelation([rec]);
+  assert.ok(rel.relations.every((r) => names.includes(r.poste)));
+});
+
 test('rowsToRecords: values beyond LIMITS.cellChars and headers beyond LIMITS.headerChars are truncated, with warnings', () => {
   const { cellChars, headerChars } = Core.LIMITS;
   const longHeader = 'H'.repeat(headerChars + 50);
@@ -268,13 +305,21 @@ test('parseReferentiel: limits on categories, values per category and lengths', 
     (e) => e.code === 'SOURCE_ERROR' && e.message === 'Onglet « Référentiel » : plus de ' + refCategories +
       ' catégories, au plus ' + refCategories + ' sont acceptées.');
 
-  const col = [['OS']];
-  for (let i = 0; i < refValues; i++) col.push(['v' + i], ['v' + i]); // duplicates do not count
-  assert.equal(Core.parseReferentiel(col).OS.length, refValues);
-  col.push(['v' + refValues]);
-  assert.throws(() => Core.parseReferentiel(col),
-    (e) => e.code === 'SOURCE_ERROR' && e.message === 'Onglet « Référentiel » : la catégorie « OS » a plus de ' +
-      refValues + ' valeurs, au plus ' + refValues + ' sont acceptées.');
+  const col = [['OS', 'Équipe']];
+  for (let i = 0; i < refValues; i++) col.push(['v' + i, 'e'], ['v' + i, '']); // duplicates do not count
+  const none = [];
+  assert.equal(Core.parseReferentiel(col, none).OS.length, refValues);
+  assert.deepEqual(none, []);
+  // Beyond: the first refValues values are kept, one warning per category (the import goes on).
+  col.push(['v' + refValues, 'f'], ['v' + (refValues + 1), '']);
+  const warnings = [];
+  const ref = Core.parseReferentiel(col, warnings);
+  assert.equal(ref.OS.length, refValues);
+  assert.equal(ref.OS[refValues - 1], 'v' + (refValues - 1));
+  assert.deepEqual(ref['Équipe'], ['e', 'f']);
+  assert.deepEqual(warnings, ['Onglet « Référentiel » : la catégorie « OS » a plus de ' + refValues +
+    ' valeurs, seules les ' + refValues + ' premières sont gardées.']);
+  assert.equal(Core.parseReferentiel(col).OS.length, refValues, 'without a warnings array');
 
   const wide = [Array.from({ length: Core.LIMITS.sourceColumns + 1 }, () => 'Même catégorie')];
   assert.throws(() => Core.parseReferentiel(wide), (e) => e.code === 'SOURCE_ERROR' && /^Onglet « Référentiel » : 501 colonnes/.test(e.message));

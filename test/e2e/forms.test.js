@@ -152,17 +152,19 @@ describe('« Nouveau poste »: the panel', () => {
     });
   });
 
-  test('current month: once the schema is read, its computed columns are read-only in the table (also after a re-mount)', async () => {
+  test('current month: once the schema is read, its array-formula columns are read-only in the table (also after a re-mount)', async () => {
     await withApp(LIVE, async (app) => {
       const { page } = app;
       await page.waitForSelector('#postes-table');
       const editableHeads = () => page.$$eval('#postes-table thead th.th-editable', (ths) => ths.map((th) => th.textContent.trim()));
       const editableCells = (col) => page.$$eval(`#postes-table td.cell-editable[data-col="${col}"]`, (tds) => tds.length);
-      const COMPUTED = ['Score conformité', 'Niveau de risque', 'Statut'];
+      // Score / Niveau de risque: filled by an array formula (every row computed). Statut: the last row's own
+      // formula only (other rows may hold values): it stays editable, the server checks each cell.
+      const COMPUTED = ['Score conformité', 'Niveau de risque'];
       const id = await page.evaluate(() => window.State.getMonthData('2026-05').postes.find((p) => p['Nom du poste'] === 'LAB-MEC-01')._id);
       const cell = (col) => `#postes-table tbody tr[data-id="${id}"] td[data-col="${col}"]`;
       // Not read yet: every source column is editable.
-      for (const c of COMPUTED.concat('Responsable')) assert.ok((await editableHeads()).includes(c), c);
+      for (const c of COMPUTED.concat('Responsable', 'Statut')) assert.ok((await editableHeads()).includes(c), c);
       // A computed cell edited (dirty), then another cell being edited when the schema arrives (hover prefetch).
       await page.click(cell('Score conformité'));
       await page.fill(`${cell('Score conformité')} .cell-editor-host input`, '85%');
@@ -174,11 +176,17 @@ describe('« Nouveau poste »: the panel', () => {
       assert.equal((await callsNamed(app, 'api_getFormSchema')).length, 1);
       assert.deepEqual((await editableHeads()).filter((h) => COMPUTED.includes(h)), [], 'locked');
       assert.ok((await editableHeads()).includes('Responsable'));
+      assert.ok((await editableHeads()).includes('Statut'), 'a per-row formula does not lock the column');
+      // The dropped unsaved value is announced.
+      const toast = (await page.textContent('.toast-msg')).replace(/[\u00a0\u202f]/g, ' ');
+      assert.equal(toast, 'Modifications non enregistrées annulées dans la colonne « Score conformité » : elle est ' +
+        'calculée par une formule dans le Google Sheet source.');
       assert.ok(await page.$(`${cell('Responsable')} .cell-editor-host input`), 'the open editor stays');
       await page.press(`${cell('Responsable')} .cell-editor-host input`, 'Enter');
       await page.waitForSelector(`${cell('Responsable')} .cell-editor-host`, { state: 'detached' });
       for (const c of COMPUTED) assert.equal(await editableCells(c), 0, c);
       assert.ok(await editableCells('Responsable') > 0);
+      assert.ok(await editableCells('Statut') > 0);
       // The unsaved value of the locked column is dropped; the other one is saved.
       assert.equal((await page.textContent('#postes-table .etable-save')).trim(), 'Enregistrer (1)');
       await page.click('#postes-table .etable-save');
