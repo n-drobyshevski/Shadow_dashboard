@@ -878,8 +878,9 @@
     var months = Core.sortMonths(s.months || []);
     var note = UI.filterNote('actions');
     if (note) panel.appendChild(note);
-    panel.appendChild(el('p', { class: 'page-lede diff-intro' }, 'Compare deux exports mensuels : postes et applications ' +
-      'retirés ou ajoutés, champs modifiés, et actions correctives disparues (considérées comme résolues).'));
+    panel.appendChild(UI.lede('Ce qui a changé entre deux exports mensuels.',
+      'Postes et applications retirés ou ajoutés, champs modifiés, et actions correctives disparues (considérées ' +
+        'comme résolues).', { id: 'diff-intro' }));
     var options = months.map(function (m) { return { value: m, label: Fmt.monthTitle(m) }; });
 
     if (months.length < 2) {

@@ -828,6 +828,9 @@ UI.scoreBadge(score)      -> badge with fmtPct, tone ok if >= 80 else ko, neutra
 UI.riskBadge(level)       -> badge colored with Core.RISK_COLORS
 UI.card({title, value, sub?, tone?})       -> metric card
 UI.section(title, ...children)             -> section with h2
+UI.lede(text, more?, {id?, small?}?)       -> div.lede: one short line (p.page-lede, or p.field-help when small; id on
+                                              it), then `more` (string | Node | array) behind « En savoir plus » (native
+                                              <details>, closed). Help text stays one line; the detail is one click away.
 UI.asyncBlock(box, {load, render, placeholder?, error?, small?, errorId?, live?}) -> Promise (see js_ui.html)
 UI.monthError(month)      -> {prefix:'Impossible de charger mai 2026', retry} for asyncBlock
 UI.monthHeader({title, month, kickerId, actions?}) -> page header with the « Mai 2026 · Export 2026-05 » kicker

@@ -481,6 +481,22 @@ body.unconfigured .sync-chip { display: none; }
 .page-header-row { display: flex; align-items: center; justify-content: space-between; gap: var(--s4); flex-wrap: wrap; min-height: 32px; }
 .page-header-actions { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; }
 .page-lede { color: var(--ink-2); max-width: 64ch; }
+/* UI.lede: one line, then « En savoir plus » (details) for the rest */
+.lede { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.lede > p { margin: 0; }
+.more-summary {
+  display: inline-flex; align-items: center; gap: var(--s1); min-height: 24px; cursor: pointer; list-style: none;
+  font-size: 12px; color: var(--ink-3); user-select: none;
+}
+.more-summary::-webkit-details-marker { display: none; }
+.more-summary::before { content: '+'; width: 10px; font-family: var(--font-mono); }
+details.more[open] > .more-summary::before { content: '−'; }
+.more-summary:hover { color: var(--ink); }
+.more-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.more-body { max-width: 64ch; padding: 2px 0 var(--s1) calc(10px + var(--s1)); font-size: 13px; color: var(--ink-2); }
+.more-body > p { margin: 0; }
+.more-body > p + p { margin-top: var(--s1); }
+.lede-small .more-body { font-size: 12px; color: var(--ink-3); }
 
 /* ------------------------------------------------------------------ sections (one pattern) */
 .section, .card, .chart-card, .drawer-section, .diff-group, .diff-section {

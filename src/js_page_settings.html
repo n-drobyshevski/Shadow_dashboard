@@ -2,7 +2,7 @@
 /* Paramètres (admin only). Sections, dl.kv, ledger table, inline forms and buttons come from css.html;
    only the column widths of the forms and the access table are specific to this page. */
 .page-settings .settings-body { display: flex; flex-direction: column; gap: var(--s6); max-width: 880px; }
-.page-settings .section > .page-lede, .page-settings .section > .field-help { margin: 0; }
+.page-settings .section > .page-lede, .page-settings .section > .field-help, .page-settings .section > .lede { margin: 0; }
 .page-settings .access-body { display: flex; flex-direction: column; gap: var(--s4); }
 .page-settings .settings-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2) var(--s3); }
 .page-settings .settings-form .form-field { min-width: 0; }
@@ -29,7 +29,7 @@
 .page-settings .access-nomatch { margin: 0; color: var(--ink-2); }
 .page-settings .access-body > .subsection-title { margin: var(--s3) 0 0; }
 .page-settings .access-groups { display: flex; flex-direction: column; gap: var(--s3); }
-.page-settings .access-groups > .field-help { margin: 0; max-width: 72ch; }
+.page-settings .access-groups > .lede { margin: 0; max-width: 72ch; }
 /* Bulk add dialog */
 .access-bulk .access-bulk-text { width: 100%; min-height: 168px; font-family: var(--font-mono); font-size: 13px; }
 .access-bulk .access-bulk-role { max-width: 200px; }
@@ -136,11 +136,12 @@
     // The server refuses a source change from anyone but the owner (the deployer's rights open the file).
     var owner = !!(State.get().user || {}).isOwner;
     return UI.section('Source de données',
-      el('p', { class: 'page-lede', id: 'settings-source-help' }, 'Le classeur « ShadowIT_Industry », relu toutes ' +
-        'les heures. Changer de source ne modifie pas les mois passés : le mois en cours suit la nouvelle source.'),
+      UI.lede('Le classeur « ShadowIT_Industry », relu toutes les heures.',
+        'Changer de source ne modifie pas les mois passés : seul le mois en cours suit la nouvelle source.',
+        { id: 'settings-source-help' }),
       info,
-      owner ? form : el('p', { class: 'field-help', id: 'settings-source-owner-only' }, 'Seul le propriétaire de ' +
-        'l’application (le compte qui l’a déployée) peut changer de classeur source.'));
+      owner ? form : el('p', { class: 'field-help', id: 'settings-source-owner-only' },
+        'Seul le propriétaire de l’application (le compte qui l’a déployée) peut changer de source.'));
   }
 
   // ------------------------------------------------------------------------------ synchronisation
@@ -245,9 +246,10 @@
     loadSyncLog(logBox);
 
     var section = UI.section('Synchronisation',
-      el('p', { class: 'page-lede' }, 'Toutes les heures, le mois en cours est relu depuis la source ; le 1er du mois, ' +
-        'le mois précédent est figé tel qu’à sa dernière synchronisation. Les modifications du mois en cours faites ' +
-        'dans l’application sont écrites dans la source ; celles d’un mois passé ne changent que son historique.'),
+      UI.lede('Le mois en cours est relu toutes les heures depuis la source.', [
+        'Le 1er du mois, le mois précédent est figé tel qu’à sa dernière synchronisation.',
+        'Les modifications du mois en cours faites dans l’application sont écrites dans la source ; celles d’un ' +
+          'mois passé ne changent que son historique.'], { id: 'settings-sync-help' }),
       statusBox, actions,
       el('h3', { class: 'subsection-title' }, 'Journal des synchronisations'),
       logBox);
@@ -302,9 +304,9 @@
       el('div', { class: 'form-actions' }, button, reset));
 
     return UI.section('Seuil de conformité',
-      el('p', { class: 'page-lede', id: 'settings-threshold-help' }, 'Un poste ou une application est conforme ' +
-        'quand son score atteint le seuil. Il s’applique à tous les mois : indicateurs, jauges, histogrammes et ' +
-        'suivi temporel. Valeur par défaut : ' + pct(s.defaultThreshold) + '.'),
+      UI.lede('Score à atteindre pour être conforme. Par défaut : ' + pct(s.defaultThreshold) + '.',
+        'Vaut pour les postes et les applications, sur tous les mois : indicateurs, jauges, histogrammes et suivi temporel.',
+        { id: 'settings-threshold-help' }),
       form);
   }
 
@@ -313,14 +315,13 @@
   /** The three switches of « Saisie dans l’application »: State / api_setEditing key, copy, toasts. */
   var EDITING_SWITCHES = [
     { key: 'edit', label: 'Modifier les entrées',
-      description: 'Modification des cellules des tableaux Postes et Applications (Galink et IDP compris) et ' +
-        '« Renommer » une application.',
+      description: 'Cellules des tableaux et « Renommer » une application.',
       on: 'Modification des entrées activée.', off: 'Modification des entrées désactivée.' },
     { key: 'create', label: 'Créer des entrées',
-      description: '« Nouveau poste », « Poste générique » et « Nouvelle application ».',
+      description: 'Nouveaux postes, postes génériques et nouvelles applications.',
       on: 'Création d’entrées activée.', off: 'Création d’entrées désactivée.' },
     { key: 'delete', label: 'Supprimer des entrées',
-      description: '« Supprimer » une application. Les postes ne se suppriment pas depuis l’application.',
+      description: '« Supprimer » une application (les postes ne se suppriment pas ici).',
       on: 'Suppression d’entrées activée.', off: 'Suppression d’entrées désactivée.' }
   ];
 
@@ -344,9 +345,9 @@
       return toggles[sw.key];
     }));
     var section = UI.section('Saisie dans l’application',
-      el('p', { class: 'page-lede', id: 'settings-editing-help' }, 'Ces réglages s’appliquent à tous les ' +
-        'administrateurs et à tous les mois, en cours comme passés, pour les postes et les applications. Le suivi ' +
-        'des actions et les remplacements ne sont pas concernés.'),
+      UI.lede('Pour tous les administrateurs, sur tous les mois.',
+        'Concerne les postes et les applications, mois en cours comme mois passés. Le suivi des actions et les ' +
+          'remplacements restent modifiables.', { id: 'settings-editing-help' }),
       list);
     section.id = 'settings-editing';
     // Switches changed elsewhere (another tab's poll, a refused write's bootstrap reload): show them.
@@ -419,10 +420,10 @@
       title: 'Ajouter plusieurs comptes',
       wide: true,
       body: el('div', { class: 'access-bulk' },
-        el('p', { class: 'field-help', id: 'bulk-help' }, 'Collez les adresses : une par ligne (colonne d’un ' +
-          'Google Sheet), séparées par des virgules ou des points-virgules, ou copiées depuis le champ « À » d’un ' +
-          'e-mail (« Nom <adresse> »). Les doublons et les mots sans « @ » sont ignorés. ' +
-          '500 adresses au plus par ajout.'),
+        UI.lede('Une adresse par ligne, ou séparées par des virgules. 500 au plus.',
+          'Une colonne de Google Sheet ou le champ « À » d’un e-mail (« Nom <adresse> ») se collent tels quels. ' +
+            'Les points-virgules séparent aussi ; les doublons et les mots sans « @ » sont ignorés.',
+          { id: 'bulk-help', small: true }),
         el('div', { class: 'form-field' }, el('label', { for: 'bulk-emails', class: 'field-label' }, 'Adresses'), text),
         role, preview),
       actions: [
@@ -620,10 +621,9 @@
     function groupsBlock() {
       var groups = view.groups || [];
       var block = el('div', { class: 'access-groups' });
-      block.appendChild(el('p', { class: 'field-help', id: 'groups-help' }, 'Chaque membre d’un groupe reçoit son ' +
-        'rôle, sous-groupes compris ; si un compte a plusieurs rôles, le plus élevé l’emporte. Le propriétaire du ' +
-        'déploiement doit pouvoir voir les membres du groupe. Un changement de membres dans Google est pris en ' +
-        'compte sous 10 minutes.'));
+      block.appendChild(UI.lede('Chaque membre reçoit le rôle du groupe ; le plus élevé l’emporte.', [
+        'Sous-groupes compris. Le propriétaire du déploiement doit pouvoir voir les membres du groupe.',
+        'Un changement de membres dans Google est pris en compte sous 10 minutes.'], { id: 'groups-help', small: true }));
       if (groups.length) {
         block.appendChild(UI.table({
           id: 'groups-table',
@@ -664,12 +664,12 @@
 
     render();
     return UI.section('Accès',
-      el('p', { class: 'page-lede' }, 'L’application s’ouvre avec un compte Google du domaine. Les administrateurs ' +
-        'modifient les données et ces paramètres ; les lecteurs consultent uniquement.'),
-      wrap,
-      el('p', { class: 'field-help', id: 'access-help' }, 'Le propriétaire du déploiement (' + view.owner + ') est ' +
-        'toujours administrateur, et personne ne peut modifier son propre accès. Google ne transmet l’adresse que ' +
-        'pour les comptes du même domaine Workspace : les autres comptes ne peuvent pas ouvrir l’application.'));
+      UI.lede('Les administrateurs modifient données et paramètres ; les lecteurs consultent.', [
+        'Le propriétaire du déploiement (' + view.owner + ') est toujours administrateur, et personne ne peut ' +
+          'modifier son propre accès.',
+        'Seuls les comptes Google du domaine Workspace peuvent ouvrir l’application : Google ne transmet pas ' +
+          'l’adresse des autres.'], { id: 'access-help' }),
+      wrap);
   }
 
   // ------------------------------------------------------------------------------ page

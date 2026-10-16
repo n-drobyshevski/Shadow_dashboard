@@ -285,6 +285,22 @@
     return el('div', { class: 'kpi-strip', role: 'group' }, (items || []).map(function (it) { return card(it); }));
   }
 
+  /**
+   * UI.lede(text, more?, {id?, small?}?) -> div.lede: the one line a section needs (p.page-lede, or p.field-help
+   * when small; id on it), then, when `more` is given, the rest behind « En savoir plus » (a native
+   * <details>, keyboard and screen-reader ready). Settings read at a glance; the detail stays one click away.
+   */
+  function lede(text, more, o) {
+    var opts = o || {};
+    return el('div', { class: ['lede', opts.small ? 'lede-small' : null] },
+      el('p', { class: opts.small ? 'field-help' : 'page-lede', id: opts.id || null }, text),
+      more ? el('details', { class: 'more' },
+        el('summary', { class: 'more-summary' }, 'En savoir plus'),
+        el('div', { class: 'more-body' }, [].concat(more).map(function (m) {
+          return typeof m === 'string' ? el('p', null, m) : m;
+        }))) : null);
+  }
+
   function section(title) {
     var children = Array.prototype.slice.call(arguments, 1);
     return el('section', { class: 'section' }, title ? el('h2', { class: 'section-title' }, title) : null, children);
@@ -1779,6 +1795,7 @@
     quote: quote,
     frSpacing: frSpacing,
     section: section,
+    lede: lede,
     empty: empty,
     noData: noData,
     filterNote: filterNote,

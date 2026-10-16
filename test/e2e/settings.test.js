@@ -342,9 +342,14 @@ describe('settings: « Saisie dans l’application »', () => {
     await withApp({ page: 'settings', editing: { create: false } }, async (app) => {
       const { page } = app;
       await page.waitForSelector('#settings-editing');
-      assert.equal(await page.textContent('#settings-editing-help'), 'Ces réglages s’appliquent à tous les administrateurs ' +
-        'et à tous les mois, en cours comme passés, pour les postes et les applications. Le suivi des actions et les ' +
-        'remplacements ne sont pas concernés.');
+      // One line; the rest behind « En savoir plus » (closed).
+      assert.equal(await page.textContent('#settings-editing-help'), 'Pour tous les administrateurs, sur tous les mois.');
+      const more = '#settings-editing details.more';
+      assert.equal(await page.$eval(more, (d) => d.open), false);
+      assert.equal(await page.isVisible(more + ' .more-body'), false);
+      await page.click(more + ' > summary');
+      assert.match(await page.textContent(more + ' .more-body'), /Le suivi des actions et les remplacements restent modifiables\./);
+      assert.equal(await page.$eval(more, (d) => d.open), true);
       assert.deepEqual(await switchState(page), [
         ['settings-editing-edit', 'true', 'Activé'],
         ['settings-editing-create', 'false', 'Désactivé'],
@@ -357,12 +362,10 @@ describe('settings: « Saisie dans l’application »', () => {
         return [n.tagName, n.type, label.textContent, desc.textContent, n.querySelector('.toggle-track').getAttribute('aria-hidden')];
       }));
       assert.deepEqual(a11y, [
-        ['BUTTON', 'button', 'Modifier les entrées', 'Modification des cellules des tableaux Postes et Applications ' +
-          '(Galink et IDP compris) et «\u202fRenommer\u202f» une application.', 'true'],
-        ['BUTTON', 'button', 'Créer des entrées', '«\u202fNouveau poste\u202f», «\u202fPoste générique\u202f» et ' +
-          '«\u202fNouvelle application\u202f».', 'true'],
-        ['BUTTON', 'button', 'Supprimer des entrées', '«\u202fSupprimer\u202f» une application. Les postes ne se ' +
-          'suppriment pas depuis l’application.', 'true'],
+        ['BUTTON', 'button', 'Modifier les entrées', 'Cellules des tableaux et «\u202fRenommer\u202f» une application.', 'true'],
+        ['BUTTON', 'button', 'Créer des entrées', 'Nouveaux postes, postes génériques et nouvelles applications.', 'true'],
+        ['BUTTON', 'button', 'Supprimer des entrées', '«\u202fSupprimer\u202f» une application (les postes ne se ' +
+          'suppriment pas ici).', 'true'],
       ]);
       // Before « Accès », after « Seuil de conformité ».
       const order = await page.$$eval('#settings-body > .section', (ns) => ns.map((n) => n.id || n.querySelector('.section-title').textContent));

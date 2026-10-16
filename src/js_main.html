@@ -962,8 +962,7 @@
     main.appendChild(el('div', { class: 'page page-config page-denied', dataset: { page: 'denied' } },
       UI.pageHeader({ kicker: BRAND + ' · accès', title: 'Accès refusé' }),
       el('p', { class: 'page-lede', id: 'denied-message' }, UI.errorText(err)),
-      el('p', { class: 'field-help' }, 'Les accès sont gérés dans Paramètres par un administrateur de ' +
-        'l’application. Une fois l’accès accordé, actualisez la page.'),
+      el('p', { class: 'field-help' }, 'Demandez l’accès à un administrateur de l’application, puis « Réessayer ».'),
       el('div', { class: 'form-actions' },
         el('button', { type: 'button', class: 'btn btn-secondary', onClick: reboot }, 'Réessayer'))));
   }
@@ -1006,11 +1005,11 @@
         el('p', { class: 'field-help config-settings-link' }, 'Les accès et le seuil de conformité se règlent dans ',
           el('button', { type: 'button', class: 'btn btn-link', id: 'config-open-settings',
             onClick: function () { go('settings'); } }, 'Paramètres'), '.'),
-        el('p', { id: 'config-help', class: 'page-lede' },
-          'Collez l’URL (ou l’identifiant) du Google Sheet source « ShadowIT_Industry ». Il doit contenir les onglets « ' +
-          Core.SOURCE_TABS.postes + ' », « ' + Core.SOURCE_TABS.applications + ' » et « ' +
-          Core.SOURCE_TABS.referentiel + ' ». L’application le relit toutes les heures : le mois en cours suit la source, ' +
-          'les mois passés restent figés. Les modifications faites ici sont écrites dans la source.'),
+        UI.lede('Collez l’URL (ou l’identifiant) du Google Sheet source « ShadowIT_Industry ».', [
+          'Il doit contenir les onglets « ' + Core.SOURCE_TABS.postes + ' », « ' + Core.SOURCE_TABS.applications +
+            ' » et « ' + Core.SOURCE_TABS.referentiel + ' ».',
+          'L’application le relit toutes les heures : le mois en cours suit la source, les mois passés restent figés. ' +
+            'Les modifications faites ici sont écrites dans la source.'], { id: 'config-help' }),
         form)));
     setTimeout(function () { input.focus(); }, 0);
   }
