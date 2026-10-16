@@ -631,15 +631,22 @@
       }
     }
 
-    /** One address (account or group): apiName({email, role}); the error stays on the field. */
+    /**
+     * One address (account or group): apiName({email, role}); the error stays on the field. The toast and the
+     * highlighted row name the entry as the server stored it (normalised), never the typed text.
+     */
     function addOne(close, input, apiName, empty, done) {
       var value = input.value.trim();
       if (!value) { UI.fieldError(input, empty); input.focus(); return null; }
       var r = role;
+      var key = value.toLowerCase();
       return api.call(apiName, { email: value, role: r }).then(function (next) {
         close();
-        UI.toast(done + ' — ' + value.toLowerCase() + ' (' + roleLabel(r) + ').', 'success');
-        onDone(next, [value.toLowerCase()]);
+        var list = (apiName === 'api_saveGroup' ? next && next.groups : next && next.users) || [];
+        var saved = list.filter(function (e) { return e.email === key; })[0];
+        var name = saved ? saved.email : '';
+        UI.toast(done + (name ? ' — ' + name : '') + ' (' + roleLabel(r) + ').', 'success');
+        onDone(next, name ? [name] : []);
       }, function (err) {
         UI.fieldError(input, UI.errorText(err));
         input.focus();

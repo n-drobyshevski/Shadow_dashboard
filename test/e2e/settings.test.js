@@ -221,7 +221,8 @@ describe('settings (admin)', () => {
       assert.ok(!(await accessEmails(page)).includes(ACCOUNTS.LECTEUR));
 
       await page.click('#settings-domain-lecteur');
-      assert.match(await lastToast(page), /Tout compte du domaine/);
+      // The previous toast (« Accès retiré ») may still be the last one: wait for this one.
+      await page.waitForFunction(() => [...document.querySelectorAll('.toast .toast-msg')].some((t) => /Tout compte du domaine/.test(t.textContent)));
       await app.waitIdle();
       assert.equal(await page.getAttribute('#settings-domain-lecteur', 'aria-pressed'), 'true');
       assert.equal(await page.getAttribute('#settings-domain-none', 'aria-pressed'), 'false');
