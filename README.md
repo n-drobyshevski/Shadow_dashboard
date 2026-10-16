@@ -79,9 +79,10 @@ visiteur par son adresse : Google ne transmet cette adresse que pour les comptes
 Workspace que le déployeur. Avec un compte Gmail personnel, seul le déployeur peut l'utiliser (voir
 « Accès » ci-dessous).
 
-1. **Installer les outils**
+1. **Installer les outils** : `npm ci` installe exactement les versions de `package-lock.json`, sans
+   le modifier (clasp envoie le code avec vos droits Google ; pas de version non relue).
    ```sh
-   npm install
+   npm ci
    ```
 2. **Activer l'API Apps Script** pour votre compte :
    <https://script.google.com/home/usersettings> → « API Google Apps Script » → Activé.
@@ -210,6 +211,7 @@ erreur d'autorisation.
 Pour publier une nouvelle version **sur la même URL**, réutiliser l'ID de déploiement de l'étape 7 :
 
 ```sh
+npm ci                              # après une mise à jour du dépôt : outils de package-lock.json
 export DEPLOYMENT_ID=AKfy...        # une fois par session (npm run deployments pour le retrouver)
 npm run deploy                      # clasp push -f, puis nouvelle version sur ce déploiement
 npm run open                        # ouvre l'application web
@@ -436,10 +438,19 @@ polices ; sans eux, le harnais utilise des substituts.
 
 `npm run security` lance localement les mêmes analyses que la CI (`.github/workflows/security.yml`) :
 Semgrep (règles du registre + `security/semgrep.yml`), gitleaks (historique complet) et osv-scanner
-(`package-lock.json`). Il faut `semgrep` (`pip install semgrep`), `gitleaks` et `osv-scanner` dans le
-`PATH` ; un outil absent est signalé et ignoré. Les règles propres au projet tournent aussi dans
-`npm test` (`test/integration/security.test.js`). Modèle de menace, résultats et exceptions :
-[docs/SECURITY.md](docs/SECURITY.md).
+(`package-lock.json`). Il faut `semgrep`, `gitleaks` et `osv-scanner` dans le `PATH` ; un outil
+absent est signalé et ignoré. Le script prend le `semgrep` trouvé dans le `PATH`, quelle que soit sa
+version ; pour celle de la CI (Semgrep et ses dépendances figés et vérifiés par SHA-256,
+`security/requirements-semgrep.txt`) :
+
+```sh
+python3.12 -m venv ~/.venv-semgrep
+~/.venv-semgrep/bin/pip install --require-hashes --no-deps --only-binary :all: -r security/requirements-semgrep.txt
+PATH="$HOME/.venv-semgrep/bin:$PATH" npm run security
+```
+
+Les règles propres au projet tournent aussi dans `npm test` (`test/integration/security.test.js`).
+Modèle de menace, résultats et exceptions : [docs/SECURITY.md](docs/SECURITY.md).
 
 ## Correspondance avec l'application Streamlit
 
@@ -488,7 +499,7 @@ app's own `ShadowIT_AppData` spreadsheet (tabs `Postes`, `Applications`, `Refere
 `Replacements`, `ImportLog`, `Meta`); past months stay frozen. Edits of the current month made in the app
 are written into the source first, so the next sync reads them back (Galink / IDP stay app-only).
 
-First deployment: `npm install`; enable the Apps Script API at
+First deployment: `npm ci` (exactly the versions in `package-lock.json`); enable the Apps Script API at
 <https://script.google.com/home/usersettings>; `npm run login`; create a project (in the browser, or
 with `clasp create-script --type webapp` run in an empty directory, since it refuses an existing
 `.clasp.json` and pulls default files into `rootDir`) and put its `scriptId` in `.clasp.json`;

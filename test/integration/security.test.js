@@ -92,6 +92,38 @@ test('server: public entry points other than api_* refuse browser calls (setup) 
   assert.match(src, /function syncHourly\(e\) \{[\s\S]*?if \(!Sync\.isTriggerEvent\(e\)\) return;/);
 });
 
+test('supply chain: CI tools pinned (actions by SHA, Semgrep and its deps by hash), Dependabot cooldown, README uses npm ci', () => {
+  const repo = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
+  const wfDir = path.join(ROOT, '.github', 'workflows');
+  for (const f of fs.readdirSync(wfDir)) {
+    for (const m of repo('.github/workflows/' + f).matchAll(/uses:\s*(\S+)/g)) {
+      assert.match(m[1], /@[0-9a-f]{40}$/, f + ': action not pinned by commit SHA: ' + m[1]);
+    }
+  }
+  const pips = repo('.github/workflows/security.yml').split('\n').filter((l) => /\bpip3? install\b/.test(l) && !/^\s*#/.test(l));
+  assert.ok(pips.length > 0);
+  for (const l of pips) assert.match(l, /--require-hashes --no-deps --only-binary :all: -r security\/requirements-semgrep\.txt/, 'unhashed pip install: ' + l.trim());
+
+  // One block per package: "name==version \" then its --hash lines.
+  const blocks = repo('security/requirements-semgrep.txt').split(/\n(?=[^\s#])/).filter((b) => /^[^\s#]/.test(b));
+  assert.ok(blocks.length > 1);
+  for (const b of blocks) {
+    assert.match(b, /^[A-Za-z0-9._-]+==[^\s;]+/, 'not pinned: ' + b.split('\n')[0]);
+    assert.match(b, /--hash=sha256:[0-9a-f]{64}/, 'no hash: ' + b.split('\n')[0]);
+  }
+  const want = repo('security/requirements-semgrep.in').match(/^semgrep==(\S+)$/m);
+  assert.ok(want && blocks.some((b) => b.startsWith('semgrep==' + want[1] + ' ')), 'requirements-semgrep.txt is stale: regenerate it from the .in');
+
+  const dependabot = repo('.github/dependabot.yml');
+  const ecosystems = dependabot.match(/package-ecosystem:/g).length;
+  assert.equal((dependabot.match(/^\s+default-days: 7$/gm) || []).length, ecosystems, 'every ecosystem has a 7-day cooldown');
+  assert.match(dependabot, /exclude-patterns: \['@google\/clasp'\]/, 'clasp updates come in their own PR');
+
+  const readme = repo('README.md');
+  assert.doesNotMatch(readme, /\bnpm install\b/, 'the deploy toolchain is installed with npm ci (lockfile-exact)');
+  assert.match(readme, /\bnpm ci\b/);
+});
+
 test('manifest: access and scopes are the reviewed ones', () => {
   const manifest = JSON.parse(read('appsscript.json'));
   assert.deepEqual(manifest.webapp, { executeAs: 'USER_DEPLOYING', access: 'DOMAIN' },

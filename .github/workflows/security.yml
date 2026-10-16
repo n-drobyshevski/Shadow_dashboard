@@ -46,7 +46,12 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - run: pip install semgrep==1.181.0
+      # Semgrep and every transitive dependency, pinned by version and SHA-256, wheels only (no build
+      # step). The set is complete (pip check passes), hence --no-deps. To change the version: edit
+      # security/requirements-semgrep.in, then, with pip-tools installed for Python 3.12 on Linux, run
+      # the command in the header of security/requirements-semgrep.txt.
+      - run: 'pip install --require-hashes --no-deps --only-binary :all: -r security/requirements-semgrep.txt'
+      - run: semgrep --version
       # The browser code lives in <script> blocks of src/*.html: copied out (same line numbers) so the
       # JavaScript rules can parse it. Server code (src/*.js) is scanned as is.
       - run: |

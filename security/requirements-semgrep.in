@@ -1,0 +1,4 @@
+# Semgrep for the CI SAST job (.github/workflows/security.yml). CI installs the locked, hashed set in
+# security/requirements-semgrep.txt; to change the version, edit it here and regenerate that file
+# (the command is in its header).
+semgrep==1.181.0

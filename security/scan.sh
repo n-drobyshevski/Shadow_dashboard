@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Local run of the CI security scans (.github/workflows/security.yml). Each tool must be on PATH:
-# semgrep (pip install semgrep), gitleaks, osv-scanner. A missing tool is reported and skipped.
+# semgrep, gitleaks, osv-scanner. A missing tool is reported and skipped.
+# This script uses whatever semgrep is first on PATH, at whatever version: it does not install it.
+# For the version CI pins, install it in a venv:
+#   python3.12 -m venv ~/.venv-semgrep
+#   ~/.venv-semgrep/bin/pip install --require-hashes --no-deps --only-binary :all: -r security/requirements-semgrep.txt
+#   PATH="$HOME/.venv-semgrep/bin:$PATH" npm run security
 set -u
 cd "$(dirname "$0")/.."
 status=0
@@ -9,7 +14,7 @@ have() { command -v "$1" >/dev/null 2>&1 || { echo "-- $1: not installed, skippe
 if have semgrep; then
   dir=$(mktemp -d)
   node security/extract-client-js.js "$dir/src" && cp src/*.js "$dir/src/"
-  echo "== Semgrep"
+  echo "== Semgrep $(semgrep --version 2>/dev/null) ($(command -v semgrep); CI pins $(sed -n 's/^semgrep==//p' security/requirements-semgrep.in))"
   (cd "$dir" && semgrep scan --metrics=off --error --quiet \
     --config p/javascript --config p/security-audit --config p/secrets --config p/xss --config p/nodejsscan \
     --config "$OLDPWD/security/semgrep.yml" \

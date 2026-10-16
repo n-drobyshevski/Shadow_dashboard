@@ -1,13 +1,22 @@
 version: 2
 updates:
+  # cooldown: a release is proposed only once it is 7 days old, so a hijacked publish is usually
+  # pulled before it reaches a PR. Security updates are not delayed.
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+    # clasp pushes and deploys the code with the owner's Google rights: its updates come alone, one PR
+    # each, so they are reviewed on their own. Everything else is grouped.
     groups:
       dev-tooling:
         patterns: ['*']
+        exclude-patterns: ['@google/clasp']
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
