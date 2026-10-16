@@ -1,67 +1,23 @@
-/**
- * Access — who is calling, with which role (docs/API.md §4, « Accès »).
- *
- * The web app runs as the deployer (executeAs USER_DEPLOYING) with access DOMAIN: the data and
- * source spreadsheets stay private to the deployer and the app is the only way in. The caller's
- * identity is Session.getActiveUser(), which Google fills in for accounts of the deployer's Google
- * Workspace; for anyone else it is '' and the call is refused.
- *
- * Roles: 'admin' (everything, incl. Paramètres) and 'lecteur' (read only). The deployer
- * (Session.getEffectiveUser()) is always admin and is not stored in the list, so nobody can lock
- * the app. A caller's role is the highest of: their own entry, the Google Groups they belong to
- * (GroupsApp, sub-groups up to GROUP_DEPTH levels, run as the deployer who must be able to see the
- * members), and `domainRole` ('none' by default, or 'lecteur') for any account of the domain.
- * Group membership cache (CacheService, one key per group and account, read for every group a call
- * may need in ONE getAll):
- *   - "member": sliding GROUP_CACHE_S seconds (renewed on every hit) but re-verified with GroupsApp at
- *     least every GROUP_MAX_AGE_S seconds (the value carries the time of the last live check), so
- *     removing someone from a group in Google applies within 1 h even for an account in daily use;
- *   - "not a member": fixed GROUP_CACHE_S seconds, so adding someone applies within 10 min;
- *   - group not readable (deleted, members hidden from the deployer, quota): fixed GROUP_ERROR_CACHE_S
- *     seconds, during which the group grants nothing, except to a confirmed member (stale on error, below);
- *   - a cache failure (read or write) only means a live GroupsApp check, never an access granted.
- * Removing a group from the access list applies at once (the cache is only read for listed groups).
- * Stale on error: every live check that confirms a membership also writes a long-lived "confirmed"
- * entry (GROUP_OK_CACHE_S, 6 h after that check). When GroupsApp then fails for that group (any error:
- * daily "Groups read" quota used up, group deleted, members hidden), the call is answered from it instead
- * of denying, and the error is logged: a quota used up by others does not lock out every group-based
- * user. It only ever answers on an error, and a live "not a member" removes it, so a removal from the
- * group still applies within 1 h; only while GroupsApp fails can a removed member keep access, for at
- * most 6 h after their last confirmed membership.
- * No role at all: an account that gets nothing from its entry, the domain role or any listed group
- * (every group answered "not a member", no error) is remembered GROUP_CACHE_S seconds in ONE entry keyed
- * by the list of groups (any change to it is a new key), read in the same getAll as the groups: a refused
- * caller does not walk every group again on each call.
- *
- * Throttle (throttle, called by apiWrap_ and doGet before anything else): at most THROTTLE_PER_MIN units
- * per account and per minute, one per call and HEAVY_WEIGHT for the full-history reads (THROTTLE_WEIGHTS),
- * and at most THROTTLE_IN_FLIGHT calls of the account running at once (the start time of each running call
- * is kept, removed by the release function the caller runs in `finally`; an entry older than
- * IN_FLIGHT_MAX_S, left by an execution killed before its `finally`, no longer counts), counted in the
- * script cache, then BUSY. The counters are read and written under the user lock (LockService.getUserLock,
- * never the script lock that Store's writes hold for long), so concurrent calls of one account each
- * count. It runs before the Script Properties are read, so an account, with or without a role, can neither
- * spend the deployer's daily quotas without limit nor keep many executions busy at once. A cache failure
- * lets the call through; a lock not obtained within THROTTLE_LOCK_MS counts without it (best effort).
- *
- * Load-order safe: the IIFE only defines values and functions; GAS services are touched lazily.
- */
+// Access: who is calling and with which role ('admin' or 'lecteur').
+// The app runs as the deployer, so the data stays private to them. Session.getActiveUser() is only
+// filled in for accounts of the deployer's Workspace domain; anyone else gets '' and is refused.
+// The deployer is always admin and is never stored in the list, so nobody can lock the app.
 var Access = (function () {
   var ROLES = ['admin', 'lecteur'];
   var DOMAIN_ROLES = ['none', 'lecteur'];
   var RANK = { lecteur: 1, admin: 2 };
-  var GROUP_DEPTH = 3;           // the group itself + 2 levels of sub-groups
-  var GROUP_CACHE_S = 600;       // membership cache (seconds; sliding for "member")
-  var GROUP_MAX_AGE_S = 3600;    // a cached "member" is re-verified at least this often (seconds)
-  var GROUP_ERROR_CACHE_S = 120; // an unreadable group is retried after this delay (denies meanwhile, but stale on error)
-  var MAX_GROUP_CHECKS = 30;     // GroupsApp calls per membership test at most (wide nested trees)
-  var GROUP_OK_CACHE_S = 21600;  // a confirmed membership answers for GroupsApp errors this long (6 h, cache max)
-  var THROTTLE_PER_MIN = 120;    // units per account and per minute (one per call, see THROTTLE_WEIGHTS)
-  var HEAVY_WEIGHT = 5;          // units of a full-history read
+  var GROUP_DEPTH = 3;           // the group itself plus 2 levels of sub-groups
+  var GROUP_CACHE_S = 600;
+  var GROUP_MAX_AGE_S = 3600;    // a cached "member" is re-verified at least this often
+  var GROUP_ERROR_CACHE_S = 120;
+  var MAX_GROUP_CHECKS = 30;     // caps GroupsApp calls on wide nested trees
+  var GROUP_OK_CACHE_S = 21600;  // 6 h, the CacheService maximum
+  var THROTTLE_PER_MIN = 120;
+  var HEAVY_WEIGHT = 5;          // cost of a full-history read
   var THROTTLE_WEIGHTS = { api_getTimeline: HEAVY_WEIGHT, api_getDiff: HEAVY_WEIGHT, api_getImportLog: HEAVY_WEIGHT };
-  var THROTTLE_IN_FLIGHT = 10;   // calls of one account running at once at most (a boot sends ~5; two tabs)
-  var IN_FLIGHT_MAX_S = 360;     // a running call older than this (the 6 min execution limit) no longer counts
-  var THROTTLE_LOCK_MS = 3000;   // wait for the lock around the counters
+  var THROTTLE_IN_FLIGHT = 10;   // a boot sends about 5 calls, so this allows two tabs
+  var IN_FLIGHT_MAX_S = 360;     // the 6 min execution limit
+  var THROTTLE_LOCK_MS = 3000;
   var MAX_KEY = 240;             // CacheService keys are limited to 250 characters
 
   function normEmail(v) {
@@ -84,22 +40,18 @@ var Access = (function () {
     try { return CacheService.getScriptCache(); } catch (e) { return null; }
   }
 
-  /**
-   * Script cache for the other modules (this file owns CacheService): the value of `key`, or null when
-   * absent, expired or when the cache fails (never throws).
-   */
+  // Other modules reach CacheService only through cacheGet/cachePut. Neither throws.
   function cacheGet(key) {
     var cache = cache_();
     if (!cache) return null;
     try { return cache.get(key); } catch (e) { return null; }
   }
 
-  /** Best-effort put (ttlS seconds); a full or unavailable cache is ignored. */
   function cachePut(key, value, ttlS) {
     cachePut_(cache_(), key, value, ttlS);
   }
 
-  /** 32-bit FNV-1a of `s`, base 36: short, stable cache keys (not a security measure). */
+  // FNV-1a, for short stable cache keys only (not a security measure).
   function hash_(s) {
     var h = 0x811c9dc5;
     for (var i = 0; i < s.length; i++) {
@@ -109,7 +61,6 @@ var Access = (function () {
     return h.toString(36);
   }
 
-  /** `key` as is when CacheService accepts it, else its start and a hash of the whole (very long addresses). */
   function cacheKey_(key) {
     return key.length <= MAX_KEY ? key : key.slice(0, MAX_KEY - 10) + '#' + hash_(key);
   }
@@ -118,12 +69,11 @@ var Access = (function () {
     return cacheKey_('grp:' + group + '|' + email);
   }
 
-  /** Long-lived entry written when a live check confirms the membership: '<ms of that check>'. */
   function groupOkKey_(group, email) {
     return cacheKey_('grpok:' + group + '|' + email);
   }
 
-  /** "No role" entry of `email` for this list of groups: any change to the groups or their roles is a new key. */
+  // Keyed by the group list, so any change to the groups or their roles invalidates it.
   function noRoleKey_(groups, email) {
     var sig = (groups || []).map(function (g) { return normEmail(g.email) + '=' + g.role; }).sort().join(',');
     return cacheKey_('nr:' + hash_(sig) + '|' + email);
@@ -142,7 +92,7 @@ var Access = (function () {
     return err;
   }
 
-  /** fn() under the user lock (THROTTLE_LOCK_MS wait); without it when it cannot be had (best effort). */
+  // The user lock, not the script lock that Store's writes hold for long. Runs without it on timeout.
   function withCounterLock_(fn) {
     var lock = null;
     try {
@@ -161,7 +111,6 @@ var Access = (function () {
     }
   }
 
-  /** Start times (ms) of an account's running calls from a cached value; [] for anything malformed. */
   function inFlight_(value) {
     var list;
     try { list = JSON.parse(typeof value === 'string' ? value : '[]'); } catch (e) { list = []; }
@@ -169,14 +118,9 @@ var Access = (function () {
   }
 
   /**
-   * Per-account limits, called by apiWrap_ (and doGet) before the Script Properties are read: FORBIDDEN
-   * without an identity (as requireRole would); BUSY when the account has used THROTTLE_PER_MIN units in
-   * the current minute (`name` costs THROTTLE_WEIGHTS[name], else 1) or already has THROTTLE_IN_FLIGHT calls
-   * running. The deployer is not limited (their own calls spend their own quotas, and they keep a way in).
-   * Costs one cache getAll and, when the call goes through, one putAll (a refused call writes nothing).
-   * Returns the release function the caller must run when the call ends (in `finally`): it removes the
-   * call from the running ones (one get and one put). A cache failure lets the call through (fail open).
-   * @return {function()} release
+   * Per-account rate and concurrency limit, run before the Script Properties are read so no account can
+   * burn the deployer's quotas. Throws FORBIDDEN or BUSY. The caller must run the returned release
+   * function in `finally`. A cache failure lets the call through.
    */
   function throttle(name) {
     var email = activeEmail();
@@ -208,14 +152,14 @@ var Access = (function () {
       var values = {};
       values[rateKey] = String(used + cost);
       values[flightKey] = JSON.stringify(running);
-      try { cache.putAll(values, IN_FLIGHT_MAX_S); } catch (e) { return false; /* not stored: nothing to release */ }
+      try { cache.putAll(values, IN_FLIGHT_MAX_S); } catch (e) { return false; }
       return true;
     });
     if (!counted) return noop_;
     return function release() {
       withCounterLock_(function () {
         var running;
-        try { running = inFlight_(cache.get(flightKey)); } catch (e) { return; /* the entry expires on its own */ }
+        try { running = inFlight_(cache.get(flightKey)); } catch (e) { return; }
         var i = running.indexOf(started);
         if (i < 0) return;
         running.splice(i, 1);
@@ -224,10 +168,7 @@ var Access = (function () {
     };
   }
 
-  /**
-   * Cached values of `keys` read in ONE getAll. {} when there is no cache or it fails: every group is
-   * then checked live (a cache failure never grants anything).
-   */
+  // A cache failure returns {} so every group is checked live, never granted.
   function cachedGroups_(cache, keys) {
     if (!cache || !keys.length) return {};
     try {
@@ -240,16 +181,10 @@ var Access = (function () {
 
   function cachePut_(cache, key, value, ttl) {
     if (!cache) return;
-    try { cache.put(key, value, ttl); } catch (e) { /* cache full or unavailable: checked live next time */ }
+    try { cache.put(key, value, ttl); } catch (e) { /* checked live next time */ }
   }
 
-  /**
-   * Answer carried by a cached value at `now` (ms): true / false, or null when it cannot be used (absent,
-   * unknown format such as an older version's value, or a "member" last verified GROUP_MAX_AGE_S ago or
-   * more, or in the future): the group is then checked live.
-   * Values: 'm:<ms of the last live check>' member, 'n' not a member, 'e' group not readable (denies;
-   * memberCached_ answers it from the "confirmed" entry first).
-   */
+  // Values: 'm:<ms of last live check>' member, 'n' not a member, 'e' unreadable. null means check live.
   function cachedAnswer_(value, now) {
     if (value === 'n' || value === 'e') return false;
     var m = /^m:(\d{1,15})$/.exec(typeof value === 'string' ? value : '');
@@ -258,14 +193,12 @@ var Access = (function () {
     return age >= 0 && age < GROUP_MAX_AGE_S * 1000 ? true : null;
   }
 
-  /** True when a "confirmed" value ('<ms of a live check>') is usable at `now`: less than GROUP_OK_CACHE_S old. */
   function confirmed_(value, now) {
     if (!/^\d{1,15}$/.test(typeof value === 'string' ? value : '')) return false;
     var age = now - Number(value);
     return age >= 0 && age < GROUP_OK_CACHE_S * 1000;
   }
 
-  /** Answer for a group that cannot be read: true from a confirmed membership, else false (and info.uncertain). */
   function staleAnswer_(confirmedValue, now, info) {
     if (confirmed_(confirmedValue, now)) return true;
     if (info) info.uncertain = true;
@@ -273,13 +206,9 @@ var Access = (function () {
   }
 
   /**
-   * Is `email` a member of `group` (normalised), using the values `cached` read beforehand
-   * (cachedGroups_: the group's entry and its "confirmed" entry) and checking live on a miss. A "member"
-   * hit renews its GROUP_CACHE_S lifetime, never beyond GROUP_MAX_AGE_S after its live check. A live
-   * "member" also writes the "confirmed" entry (GROUP_OK_CACHE_S), a live "not a member" removes it.
-   * Errors (group gone, members hidden from the deployer, quota) are logged, never thrown, and cached
-   * GROUP_ERROR_CACHE_S seconds ('e'); they are answered from the "confirmed" entry when there is one
-   * (stale on error), else count as "not a member" and set `info.uncertain` (no "no role" entry then).
+   * A "member" hit slides but is re-verified hourly, so a removal from the group applies within 1 h.
+   * When GroupsApp fails (quota, deleted group, hidden members), a membership confirmed in the last 6 h
+   * still answers, so a quota used up by others does not lock out group-based users.
    */
   function memberCached_(group, email, cache, cached, info) {
     var key = groupKey_(group, email);
@@ -310,10 +239,9 @@ var Access = (function () {
 
   function cacheRemove_(cache, key) {
     if (!cache) return;
-    try { cache.remove(key); } catch (e) { /* cache unavailable: the entry expires on its own */ }
+    try { cache.remove(key); } catch (e) { /* expires on its own */ }
   }
 
-  /** Is `email` a member of `groupEmail` (directly or through sub-groups)? Cached, see memberCached_. */
   function isGroupMember(groupEmail, email) {
     var group = normEmail(groupEmail);
     var cache = cache_();
@@ -335,10 +263,8 @@ var Access = (function () {
   }
 
   /**
-   * Role of `email` for the given access list ('' = no access): the highest of the explicit entry,
-   * the groups (only checked when they can raise the role) and the domain role. Without an entry or a
-   * domain role, the "no role" entry is read in the same getAll as the groups: on a hit no group is
-   * checked; it is written when every group answered "not a member" without an error.
+   * Highest of the explicit entry, the domain role and the groups. '' means no access. A refused caller
+   * is remembered for GROUP_CACHE_S so it does not walk every group on each call.
    */
   function roleOf(email, owner, access) {
     if (!email) return '';
@@ -346,7 +272,7 @@ var Access = (function () {
     var hit = (access.users || []).filter(function (u) { return normEmail(u.email) === email; })[0];
     var role = hit && RANK[hit.role] ? hit.role : '';
     if (role !== 'admin' && access.domainRole === 'lecteur') role = 'lecteur';
-    // Groups whose role is above the current one, best role first; their cache entries in one read.
+    // Only groups that could raise the role, best role first.
     var groups = [];
     ['admin', 'lecteur'].forEach(function (groupRole) {
       if (role && RANK[role] >= RANK[groupRole]) return;
@@ -373,10 +299,7 @@ var Access = (function () {
     return role;
   }
 
-  /**
-   * Validated group address or VALIDATION: the group must exist and its members must be visible to
-   * the deployer (the app checks memberships with the deployer's account).
-   */
+  // Memberships are checked as the deployer, so they must be able to see the group's members.
   function checkGroup(v) {
     var email = checkEmail(v);
     try {
@@ -389,7 +312,6 @@ var Access = (function () {
     return email;
   }
 
-  /** @return {{email: string, role: string, isOwner: boolean, owner: string}} */
   function currentUser(access) {
     var email = activeEmail();
     var owner = ownerEmail();
@@ -397,10 +319,7 @@ var Access = (function () {
     return { email: email, role: roleOf(email, owner, list), isOwner: !!email && email === owner, owner: owner };
   }
 
-  /**
-   * Throws FORBIDDEN unless the caller has at least `minRole` ('lecteur' | 'admin').
-   * @return {{email: string, role: string, isOwner: boolean, owner: string}} the caller
-   */
+  /** Throws FORBIDDEN unless the caller has at least `minRole`. Returns the currentUser() object. */
   function requireRole(minRole, access) {
     var user = currentUser(access);
     if (!user.email) throw noIdentity_();
@@ -413,7 +332,6 @@ var Access = (function () {
     return user;
   }
 
-  /** Validated, normalised email or VALIDATION. */
   function checkEmail(v) {
     var email = normEmail(v);
     if (!Core.isEmail(email)) {
