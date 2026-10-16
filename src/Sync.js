@@ -1,18 +1,6 @@
 /**
- * Sync — keeps the current month in step with the source spreadsheet (docs/API.md §4).
- *
- * A time-driven trigger calls syncHourly() (Code.js) every hour: the current month (Europe/Paris) is
- * re-imported with Importer.importMonth(month, true, {skipUnchanged:true}). On the 1st, the first run
- * creates the new month; the previous one keeps its last synchronised state (frozen). A run that
- * changes nothing writes nothing, and the source is read before the script lock is taken, so such a
- * run never keeps a save waiting. The outcome of the last runs is kept in the SYNC_STATE Script
- * Property (status shown in the app bar) and every run that changed something has an ImportLog entry
- * (the « Journal des synchronisations » in Paramètres).
- *
- * The trigger belongs to the deploying account (the web app executes as it), so it can be created
- * from any admin's session. ScriptApp needs the script.scriptapp scope (appsscript.json).
- *
- * Load-order safe: the IIFE only defines values and functions.
+ * Sync: keeps the current month in step with the source spreadsheet, run hourly by syncHourly().
+ * The trigger belongs to the deploying account and needs the script.scriptapp scope.
  */
 var Sync = (function () {
   var HANDLER = 'syncHourly';
@@ -22,7 +10,6 @@ var Sync = (function () {
     return PropertiesService.getScriptProperties();
   }
 
-  /** {enabled, lastRunAt, lastOkAt, lastChangeAt, lastChange, lastError, warnings} ('' / null when unknown). */
   function readState_() {
     var raw = null;
     try { raw = JSON.parse(props_().getProperty(PROP_STATE) || 'null'); } catch (e) { raw = null; }
@@ -49,7 +36,6 @@ var Sync = (function () {
     return Config.today().slice(0, 7);
   }
 
-  /** Status for the client: the stored state + the current month. */
   function status() {
     var s = readState_();
     s.month = currentMonth();
@@ -60,11 +46,8 @@ var Sync = (function () {
     return ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === HANDLER; });
   }
 
-  /**
-   * Status with `enabled` checked against the real triggers (Paramètres): someone may have deleted the
-   * trigger in the Apps Script editor. Never throws: without the ScriptApp authorisation, `enabled`
-   * stays as stored and `authError` says why.
-   */
+  // The trigger may have been deleted in the editor. Never throws: without ScriptApp authorisation,
+  // `enabled` stays as stored and `authError` says why.
   function verifiedStatus() {
     var s = status();
     try {
@@ -77,10 +60,8 @@ var Sync = (function () {
     return s;
   }
 
-  /**
-   * An « execute as me » web app runs with the deployer's existing grant: opening it never asks for a
-   * new scope, only a run from the editor (setup) does.
-   */
+  // The web app runs with the deployer's existing grant, so only running setup from the editor can
+  // add a missing scope.
   function authMessage_(e) {
     console.warn('Sync: ScriptApp unavailable (' + (e && e.message) + ')');
     return 'Autorisation Google manquante pour la synchronisation automatique. Le compte qui a déployé ' +
@@ -88,16 +69,11 @@ var Sync = (function () {
       'accepter l’autorisation demandée (déclencheurs).';
   }
 
-  /**
-   * The editor's consent screen is granular (each scope can be left unchecked) and does not ask again
-   * for a scope already declined: requireAllScopes ends the run and shows the consent screen for every
-   * scope of the manifest still missing. Only meaningful from the editor (setup).
-   */
+  // The editor's granular consent screen does not ask again for a declined scope; this forces it.
   function requireScopes() {
     if (typeof ScriptApp.requireAllScopes === 'function') ScriptApp.requireAllScopes(ScriptApp.AuthMode.FULL);
   }
 
-  /** Creates the hourly trigger (once; duplicates are removed). */
   function enable() {
     var existing;
     try {
@@ -111,21 +87,14 @@ var Sync = (function () {
     return status();
   }
 
-  /** Summary kept for the status line: {month, at, created, postes, applications, referentiel}. */
   function changeSummary_(res, at) {
     var c = res.changes || {};
     return { month: res.month, at: at, created: !!c.created, postes: c.postes || null,
       applications: c.applications || null, referentiel: !!c.referentiel };
   }
 
-  /**
-   * Synchronises the current month. Errors are recorded in the state (lastError) and rethrown, so a
-   * failed hourly run also triggers Google's failure e-mail to the owner. BUSY (a user operation held
-   * the lock for 20 s) is not recorded: the next run retries.
-   * Logs {stage:'sync', ms, import, state, month, changed, ok:true} or {stage:'sync', ms, month, ok:false,
-   * code} (Perf).
-   * @return {{status: Object, result: Object}}
-   */
+  // Returns {status, result}. Errors are recorded and rethrown so Google e-mails the owner on a failed
+  // hourly run. BUSY is not recorded since the next run retries.
   function run() {
     if (!Config.get().sourceId) {
       throw Core.makeError('NOT_CONFIGURED', 'Aucun classeur source n’est configuré. Renseignez-le dans « Paramètres ».');
@@ -139,7 +108,7 @@ var Sync = (function () {
     } catch (e) {
       if (e && e.code !== 'BUSY') {
         writeState_({ lastRunAt: at, lastError: { at: at, code: String(e.code || 'INTERNAL'),
-          message: String((e && e.message) || e).split('\n')[0].slice(0, 300) } });
+          message: String(e.message || e).split('\n')[0].slice(0, 300) } });
       }
       t.end({ ok: false, code: String((e && e.code) || 'INTERNAL') });
       throw e;
@@ -157,12 +126,8 @@ var Sync = (function () {
     return out;
   }
 
-  /** The hourly run: nothing to do without a source; errors are logged and rethrown (owner e-mail). */
-  /**
-   * True when `e` is the event of one of this project's hourly triggers. syncHourly is a public
-   * function, so google.script.run can call it from any visitor's browser; only a real trigger run
-   * carries the triggerUid of an existing trigger (ids never leave the server).
-   */
+  // syncHourly is public, so any visitor can call it; only a real trigger run carries the uid of an
+  // existing trigger, and trigger ids never leave the server.
   function isTriggerEvent(e) {
     var uid = e && typeof e === 'object' && typeof e.triggerUid === 'string' ? e.triggerUid : '';
     if (!uid) return false;
