@@ -558,14 +558,13 @@
   function syncNow(button, opts) {
     if (syncing) return Promise.resolve(null);
     syncing = true;
-    pickGhost();
-    document.body.classList.add('is-syncing');
+    setGhostBusy(true);
     updateSyncChip();
     var p = api.call(opts && opts.enable ? 'api_enableSync' : 'api_syncNow', null);
     if (button) UI.busy(button, p, 'Synchronisation…').then(null, function () {});
     return p.then(function (res) {
       syncing = false;
-      document.body.classList.remove('is-syncing');
+      setGhostBusy(isLoading());
       var r = res.result || {};
       State.set({ sync: res.status });
       UI.toast(r.changed ? 'Synchronisé — ' + Fmt.syncChange(r.changes) + '.' : 'Synchronisé — aucune modification.', 'success');
@@ -575,7 +574,7 @@
       return res;
     }, function (err) {
       syncing = false;
-      document.body.classList.remove('is-syncing');
+      setGhostBusy(isLoading());
       UI.errorToast(err, 'Synchronisation impossible');
       return refreshSyncStatus().then(function () { return null; });
     });
@@ -1115,9 +1114,17 @@
     if ((info.id === 'dashboard' && !per.single) || info.id === 'timeline') State.loadTimeline().catch(ignore);
   }
 
-  // The ghost logo either floats or looks around while data loads, drawn again at each wait.
+  // The ghost logo moves while data loads, with one loop drawn at random for each wait. index.html
+  // draws the first one, for the splash, from the same list.
+  var GHOSTS = ['float', 'look', 'fade', 'peek', 'drift', 'echo', 'jelly', 'spin'];
   function pickGhost() {
-    document.documentElement.setAttribute('data-ghost', Math.random() < 0.5 ? 'float' : 'look');
+    document.documentElement.setAttribute('data-ghost', GHOSTS[Math.floor(Math.random() * GHOSTS.length)]);
+  }
+
+  function setGhostBusy(on) {
+    var root = document.documentElement;
+    if (on && !root.classList.contains('ghost-busy')) pickGhost();
+    root.classList.toggle('ghost-busy', on);
   }
 
   function isLoading() {
@@ -1144,12 +1151,7 @@
   }
 
   function watchLoading() {
-    var was = false;
-    new MutationObserver(function () {
-      var now = isLoading();
-      if (now && !was) pickGhost();
-      was = now;
-    }).observe(main, { subtree: true, attributes: true, attributeFilter: ['aria-busy'], childList: true });
+    new MutationObserver(function () { setGhostBusy(syncing || isLoading()); }).observe(main, { subtree: true, attributes: true, attributeFilter: ['aria-busy'], childList: true });
   }
 
   function boot() {

@@ -271,8 +271,10 @@ with the system fallbacks above. The stylesheet must not block the first paint (
   log only (docs/API.md §4 Perf), never to the interface. Judge loading changes on those numbers.
 - **Ghost logo**: while something loads (the splash, a month change, any `aria-busy` block in the page,
   a sync started from this tab) the ghost in the sidebar, the top bar and the splash foot moves. Each
-  wait draws one of two loops at random (`html[data-ghost]`): it floats and blinks, or it looks left
-  and right and sways. It is still the rest of the time. A click on the ghost of the sidebar or the
+  wait draws one of eight loops at random (`html[data-ghost]`, `html.ghost-busy` while it lasts): it
+  floats and blinks, looks left and right and sways, fades and comes back, sinks under the edge and
+  peeks out, drifts side to side, rises with two faint echoes, wobbles like a sheet, or turns on
+  itself. It is still the rest of the time. A click on the ghost of the sidebar or the
   top bar plays one trick at random (hop, look around, « boo », spin, fade, wiggle; never the same twice
   in a row), over the loading loop if one runs.
 

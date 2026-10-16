@@ -1059,28 +1059,43 @@ details.form-section[open] > :not(summary), details.more[open] > :not(summary), 
 @keyframes pop-in-up { from { opacity: 0; transform: translateY(4px); } }
 @keyframes reveal { from { opacity: 0; transform: translateY(-4px); } }
 
-/* The ghost moves while data loads: the splash, a month change, a block loading, a sync.
-   data-ghost (js_main.html) picks floating or looking around for each wait; looking is the default. */
-.splash .brand-logo:not([data-trick]), body.is-syncing .brand-logo:not([data-trick]),
-.app:has(#main[aria-busy="true"], #main [aria-busy="true"]:not(button)) .brand-logo:not([data-trick]) {
-  transform-origin: 50% 90%; animation: ghost-sway 2.4s ease-in-out infinite;
-}
-.splash .brand-logo:not([data-trick]) .icon-fill, body.is-syncing .brand-logo:not([data-trick]) .icon-fill,
-.app:has(#main[aria-busy="true"], #main [aria-busy="true"]:not(button)) .brand-logo:not([data-trick]) .icon-fill {
-  transform-box: fill-box; animation: ghost-look 2.4s ease-in-out infinite;
-}
-html[data-ghost="float"] .splash .brand-logo:not([data-trick]), html[data-ghost="float"] body.is-syncing .brand-logo:not([data-trick]),
-html[data-ghost="float"] .app:has(#main[aria-busy="true"], #main [aria-busy="true"]:not(button)) .brand-logo:not([data-trick]) {
-  animation: ghost-float 1.8s ease-in-out infinite;
-}
-html[data-ghost="float"] .splash .brand-logo:not([data-trick]) .icon-fill, html[data-ghost="float"] body.is-syncing .brand-logo:not([data-trick]) .icon-fill,
-html[data-ghost="float"] .app:has(#main[aria-busy="true"], #main [aria-busy="true"]:not(button)) .brand-logo:not([data-trick]) .icon-fill {
-  transform-origin: center; animation: ghost-blink 3.6s ease-in-out infinite;
-}
+/* The ghost moves while data loads: on the splash, and in the app while html.ghost-busy is set
+   (js_main.html: a month change, a block loading, a sync). html[data-ghost] names the loop drawn for
+   this wait; looking around is the default. */
+:is(.splash, .ghost-busy .app) .brand-logo:not([data-trick]) { transform-origin: 50% 90%; animation: ghost-sway 2.4s ease-in-out infinite; }
+:is(.splash, .ghost-busy .app) .brand-logo:not([data-trick]) .icon-fill { transform-box: fill-box; transform-origin: center; animation: ghost-look 2.4s ease-in-out infinite; }
+[data-ghost="float"] :is(.splash, .ghost-busy .app) .brand-logo:not([data-trick]) { animation: ghost-float 1.8s ease-in-out infinite; }
+[data-ghost="float"] :is(.splash, .ghost-busy .app) .brand-logo:not([data-trick]) .icon-fill { animation: ghost-blink 3.6s ease-in-out infinite; }
+[data-ghost="fade"] :is(.splash, .ghost-busy .app) .brand-logo:not([data-trick]) { animation: ghost-fade 1.6s ease-in-out infinite; }
+[data-ghost="peek"] :is(.splash, .ghost-busy .app) .brand-logo:not([data-trick]) { overflow: hidden; animation: none; }
+[data-ghost="peek"] :is(.splash, .ghost-busy .app) .brand-logo:not([data-trick]) path { animation: ghost-peek 2.2s var(--ease-out) infinite; }
+[data-ghost="peek"] :is(.splash, .ghost-busy .app) .brand-logo:not([data-trick]) .icon-fill { animation: ghost-peek-eyes 2.2s var(--ease-out) infinite; }
+[data-ghost="drift"] :is(.splash, .ghost-busy .app) .brand-logo:not([data-trick]) { animation: ghost-drift 2.6s ease-in-out infinite; }
+[data-ghost="drift"] :is(.splash, .ghost-busy .app) .brand-logo:not([data-trick]) .icon-fill { animation: ghost-drift-eyes 2.6s ease-in-out infinite; }
+[data-ghost="echo"] :is(.splash, .ghost-busy .app) .brand-logo:not([data-trick]) { animation: ghost-echo 1.8s ease-in-out infinite; }
+[data-ghost="jelly"] :is(.splash, .ghost-busy .app) .brand-logo:not([data-trick]) { animation: ghost-jelly 1.4s ease-in-out infinite; }
+[data-ghost="spin"] :is(.splash, .ghost-busy .app) .brand-logo:not([data-trick]) { transform-origin: 50% 50%; animation: ghost-spin 2.4s var(--ease-out) infinite; }
+:is([data-ghost="fade"], [data-ghost="echo"], [data-ghost="jelly"], [data-ghost="spin"]) :is(.splash, .ghost-busy .app) .brand-logo:not([data-trick]) .icon-fill { animation: none; }
 @keyframes ghost-sway { 0%, 100% { transform: none; } 35% { transform: rotate(-4deg); } 65% { transform: rotate(4deg); } }
 @keyframes ghost-float { 0%, 100% { transform: none; } 50% { transform: translateY(-12%); } }
 @keyframes ghost-blink { 0%, 44%, 52%, 100% { transform: none; } 48% { transform: scaleY(.1); } }
 @keyframes ghost-look { 0%, 15%, 85%, 100% { transform: none; } 30%, 45% { transform: translateX(-60%); } 60%, 75% { transform: translateX(60%); } }
+@keyframes ghost-fade { 0%, 100% { opacity: 1; transform: none; } 50% { opacity: .25; transform: translateY(-6%) scale(.96); } }
+/* Peek: the body sinks under the bottom edge of the logo, the eyes look both ways, then it pops back. */
+@keyframes ghost-peek { 0%, 20% { transform: none; } 35%, 60% { transform: translateY(9.6px); } 72% { transform: translateY(-2px); } 82%, 100% { transform: none; } }
+@keyframes ghost-peek-eyes {
+  0%, 20% { transform: none; } 35% { transform: translateY(9.6px); } 42%, 48% { transform: translate(-1.2px, 9.6px); }
+  54% { transform: translate(1.2px, 9.6px); } 60% { transform: translateY(9.6px); } 72% { transform: translateY(-2px); } 82%, 100% { transform: none; }
+}
+@keyframes ghost-drift { 0%, 100% { transform: translateX(-18%) rotate(6deg); } 50% { transform: translateX(18%) rotate(-6deg); } }
+@keyframes ghost-drift-eyes { 0%, 100% { transform: translateX(1.2px); } 50% { transform: translateX(-1.2px); } }
+@keyframes ghost-echo {
+  0%, 100% { transform: none; filter: none; }
+  50% { transform: translateY(-14%); filter: drop-shadow(0 2px 0 color-mix(in srgb, currentColor 35%, transparent))
+    drop-shadow(0 4px 0 color-mix(in srgb, currentColor 15%, transparent)); }
+}
+@keyframes ghost-jelly { 0%, 100% { transform: none; } 25% { transform: skewX(7deg) scaleY(.94); } 50% { transform: scaleY(1.05); } 75% { transform: skewX(-7deg) scaleY(.94); } }
+@keyframes ghost-spin { 0%, 45% { transform: none; } 75%, 100% { transform: rotateY(360deg); } }
 
 /* A click on the ghost plays one trick at random (js_main.html sets data-trick, then clears it). */
 .sidebar .brand-logo, .topbar-brand .brand-logo { cursor: pointer; }
