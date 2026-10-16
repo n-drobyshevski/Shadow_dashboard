@@ -46,9 +46,9 @@ var Config = (function () {
   /**
    * Switches of Paramètres › « Saisie dans l’application », for every admin and every month: JSON
    * {edit, create, delete} (booleans). edit = cells of Postes / Applications and renaming an
-   * application, create = new postes and applications, delete = deleting an application. Only an
-   * explicit false turns a switch off: a missing or unreadable value means all on (the behaviour before
-   * the switches existed). Read with the other properties (Config.get, same memo, no extra read).
+   * application, create = new postes and applications, delete = deleting an application. Off by default:
+   * only an explicit true turns a switch on, a missing or unreadable value means all off (an admin turns
+   * them on in Paramètres). Read with the other properties (Config.get, same memo, no extra read).
    */
   var PROP_EDITING = 'EDITING_JSON';
   var EDITING_KEYS = ['edit', 'create', 'delete'];
@@ -134,7 +134,8 @@ var Config = (function () {
    *           editing: {edit: boolean, create: boolean, delete: boolean}}}
    *   ids are '' when unset; sourceTitle is the stored title of sourceId (SOURCE_INFO), '' when none is;
    *   threshold is Core.THRESHOLD when unset or invalid; schemaVersion is the version recorded for dataId
-   *   (setSchemaVersion), '' when none is; editing is EDITING_JSON (all true when unset or unreadable).
+   *   (setSchemaVersion), '' when none is; editing is EDITING_JSON (all false when unset or unreadable: an
+   *   admin turns them on in Paramètres).
    */
   function get(opts) {
     var p = all_(!!(opts && opts.fresh));
@@ -152,13 +153,13 @@ var Config = (function () {
     };
   }
 
-  /** EDITING_JSON -> {edit, create, delete}: each true unless the stored value says false. */
+  /** EDITING_JSON -> {edit, create, delete}: each false unless the stored value says true (off by default). */
   function editingOf_(raw) {
     var v = null;
     try { v = raw ? JSON.parse(raw) : null; } catch (e) { v = null; }
     var out = {};
     EDITING_KEYS.forEach(function (k) {
-      out[k] = !(v && typeof v === 'object' && v[k] === false);
+      out[k] = !!(v && typeof v === 'object' && v[k] === true);
     });
     return out;
   }
@@ -272,7 +273,7 @@ var Config = (function () {
    */
   function setEditing(editing) {
     var out = {};
-    EDITING_KEYS.forEach(function (k) { out[k] = editing[k] !== false; });
+    EDITING_KEYS.forEach(function (k) { out[k] = editing[k] === true; });
     clearMemo_();
     props_().setProperty(PROP_EDITING, JSON.stringify(out));
   }

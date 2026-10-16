@@ -162,7 +162,9 @@ synchronisation horaire ». Les mois déjà importés sont conservés.
   les mois (en cours comme passés), sur les postes et les applications : « Modifier les entrées » (cellules
   des tableaux, Galink et IDP compris, et « Renommer » une application), « Créer des entrées » (« Nouveau
   poste », « Poste générique », « Nouvelle application »), « Supprimer des entrées » (« Supprimer » une
-  application ; les postes ne se suppriment pas depuis l'application). Tous activés par défaut. Un
+  application ; les postes ne se suppriment pas depuis l'application). **Tous désactivés par défaut** :
+  un administrateur les active dans Paramètres › Saisie (un déploiement existant qui ne les avait jamais
+  touchés repasse aussi en lecture seule pour les postes et les applications). Un
   interrupteur désactivé masque ses boutons pour tous les administrateurs, et le serveur refuse aussi
   l'appel. Le suivi des actions, les remplacements, la synchronisation et les autres paramètres ne sont
   pas concernés. Les autres administrateurs voient le changement à leur prochaine écriture (refusée, la
@@ -544,7 +546,7 @@ account of the users' domain). Each caller is identified by `Session.getActiveUs
 every server call: **admin** (everything, incl. Paramètres) or **lecteur** (read only); the deployer is
 always admin and nobody can edit their own access. Paramètres › « Saisie dans l’application » has three
 switches for every admin and every month (edit / create / delete postes and applications; the
-`EDITING_JSON` script property, all on by default): a switch that is off hides its controls and the server
+`EDITING_JSON` script property, all off by default — an admin turns them on): a switch that is off hides its controls and the server
 refuses the call (actions, remplacements and the sync are not concerned). Unlisted domain accounts get no access by default,
 or lecteur if « Qui d’autre peut ouvrir l’application ? » says « Tous, en lecture ». « Ajouter » ›
 « Plusieurs comptes » takes a pasted

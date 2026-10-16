@@ -22,6 +22,7 @@ const TODAY = '2026-05-15';
 const LIVE = '2026-05';
 const PAST = '2026-04';
 const ALL_ON = { edit: true, create: true, delete: true };
+const ALL_OFF = { edit: false, create: false, delete: false };
 
 const REFUSED = {
   edit: 'La modification des postes et des applications est désactivée dans les Paramètres.',
@@ -93,17 +94,28 @@ const GATED = {
 
 // ------------------------------------------------------------------------------------ defaults
 
-test('defaults: every switch on, also when EDITING_JSON is missing or unreadable; only an explicit false turns one off', () => {
-  for (const raw of [undefined, '', '{oops', 'null', '[]', '"x"', '{"edit":"false","create":0,"delete":null}']) {
-    const { ctx } = loadGas({ props: raw === undefined ? undefined : { EDITING_JSON: raw } });
-    assert.deepEqual(plain(ctx.Config.get().editing), ALL_ON, 'EDITING_JSON = ' + raw);
+test('defaults: every switch off, also when EDITING_JSON is missing or unreadable; only an explicit true turns one on', () => {
+  for (const raw of [undefined, '', '{oops', 'null', '[]', '"x"', '{"edit":"true","create":1,"delete":null}']) {
+    const { ctx } = loadGas({ editingUnset: true, props: raw === undefined ? undefined : { EDITING_JSON: raw } });
+    assert.deepEqual(plain(ctx.Config.get().editing), ALL_OFF, 'EDITING_JSON = ' + raw);
   }
-  const { ctx } = loadGas({ props: { EDITING_JSON: '{"edit":false}' } });
-  assert.deepEqual(plain(ctx.Config.get().editing), { edit: false, create: true, delete: true });
+  const { ctx } = loadGas({ props: { EDITING_JSON: '{"edit":true}' } });
+  assert.deepEqual(plain(ctx.Config.get().editing), { edit: true, create: false, delete: false });
+});
+
+test('a fresh deployment refuses every gated write until an admin turns the switches on', () => {
+  const sb = loadGas({ editingUnset: true, sources: [buildSourceSpreadsheet(LIVE)] });
+  sb.ctx.Config.today = () => TODAY;
+  ok(sb.ctx, 'api_setConfig', { source: SOURCE_ID });
+  ok(sb.ctx, 'api_syncNow');
+  assert.deepEqual(ok(sb.ctx, 'api_bootstrap').editing, ALL_OFF);
+  assert.equal(fail(sb.ctx, 'api_addGenericPoste', { month: LIVE }, 'FORBIDDEN').message, REFUSED.create);
+  ok(sb.ctx, 'api_setEditing', { create: true });
+  ok(sb.ctx, 'api_addGenericPoste', { month: LIVE });
 });
 
 test('editing is part of api_bootstrap, api_getSettings and api_getSyncStatus (lecteurs read it too)', () => {
-  const sb = setup({ EDITING_JSON: '{"create":false}' });
+  const sb = setup({ EDITING_JSON: '{"edit":true,"delete":true}' });
   const want = { edit: true, create: false, delete: true };
   assert.deepEqual(ok(sb.ctx, 'api_bootstrap').editing, want);
   assert.deepEqual(ok(sb.ctx, 'api_getSettings').editing, want);

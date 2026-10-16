@@ -313,7 +313,7 @@ Config.get({fresh?})         -> {dataId:''|id, sourceId:''|id, sourceTitle:''|ti
                                  (PROP_SOURCE_INFO), threshold:int (Core.THRESHOLD when unset),
                                  schemaVersion:''|version recorded for dataId (PROP_SCHEMA),
                                  access:{users:[...], domainRole:'none'|'lecteur'}} (unreadable JSON -> empty list),
-                                 editing:{edit, create, delete} (PROP_EDITING; all true unless stored false)}
+                                 editing:{edit, create, delete} (PROP_EDITING; all false unless stored true)}
                                 A new object on every call, built from ONE getProperties per execution (memo);
                                 `fresh` reads the properties again. The memo is dropped by every setter below,
                                 by Config.clearMemo_() (start of each api_* call and of syncHourly,
@@ -321,7 +321,7 @@ Config.get({fresh?})         -> {dataId:''|id, sourceId:''|id, sourceTitle:''|ti
                                 read-modify-write under the lock (access list, first-run creation) starts
                                 from the stored values.
 Config.PROP_EDITING = 'EDITING_JSON'  (JSON {edit, create, delete}: the switches of Paramètres › « Saisie dans
-                        l’application ». Only an explicit false turns one off: missing or unreadable = all on.
+                        l’application ». Off by default: only an explicit true turns one on; missing or unreadable = all off.
                         Read with the other properties, so Config.get needs no extra read.)
 Config.EDITING_KEYS   = ['edit', 'create', 'delete']
 Config.setEditing(editing)   (the three switches as booleans; api_setEditing, under the lock, after merging)
@@ -1216,7 +1216,8 @@ content), each saved on its own:
   `formSchema: {columns:{postes:[…]}, fallback, delayMs}` and `delays: {api_name: ms}` (also `window.__mock`);
   `editing: {edit?, create?, delete?}` (the switches, same refusals as the server; `window.__mock.db.editing` at run
   time).
-- `test/integration/editing.test.js` — the editing switches: defaults (corrupt property = all on),
+- `test/integration/editing.test.js` — the editing switches: defaults (missing or corrupt property = all off; the
+  sandbox starts with them on unless `editingUnset`),
   `api_setEditing` (validation, partial patch, one property write, lecteur, BUSY), and for each switch, current and
   past month, the gated endpoints refused with their message without opening the source or changing the snapshot
   while the others still work; actions, remplacements, threshold and sync unaffected.

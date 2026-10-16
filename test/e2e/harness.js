@@ -135,8 +135,9 @@ async function waitIdle(page, timeout = 10000) {
  *   then the answer is the cached build byte for byte, or with {sri:true, tampered:true} a modified file.
  *   formSchema / delays: see buildMockScript (extra source columns or a fallback answer of api_getFormSchema,
  *   extra answer delay per api name); both can also be changed at run time through window.__mock.
- *   editing: the editing switches of Paramètres ({edit:false, create:false}; default all on), changeable at
- *   run time through window.__mock.db.editing.
+ *   editing: the editing switches of Paramètres ({edit:false, create:false} turns those off; default all on, as
+ *   on a deployment whose admin turned them on; 'unset' = never set: all off, the server's default), changeable
+ *   at run time through window.__mock.db.editing.
  */
 async function openApp({ empty = false, configured = true, page: pageId = 'dashboard',
   viewport = { width: 1400, height: 900 }, delayMs = 0, email, readySelector, failNext, beforeGoto, currentMonth, sync,
@@ -174,7 +175,8 @@ async function openApp({ empty = false, configured = true, page: pageId = 'dashb
     return route.abort();
   });
 
-  const mockOptions = { empty, configured, delayMs, email, failNext, prefs, currentMonth, sync, formSchema, delays, editing };
+  const mockOptions = { empty, configured, delayMs, email, failNext, prefs, currentMonth, sync, formSchema, delays,
+    editing: editing === undefined ? {} : (editing === 'unset' ? null : editing) };
   let html = renderIndex({
     inject: '<script>' + buildMockScript(mockOptions) + '</script>',
     boot: boot === true ? bootstrapEnvelope(mockOptions) : boot,

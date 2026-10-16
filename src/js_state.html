@@ -30,7 +30,7 @@
     prefs: {},                 // the account's interface preferences (api_bootstrap.prefs)
     // Paramètres › « Saisie dans l’application » (api_bootstrap / api_getSyncStatus / api_setEditing .editing):
     // what admins may do on Postes / Applications. Replaced only when a switch changes (State.setEditing).
-    editing: { edit: true, create: true, delete: true },
+    editing: { edit: false, create: false, delete: false },
     sync: null                 // hourly synchronisation status (api_bootstrap.sync / api_getSyncStatus)
   };
   var subscribers = [];
@@ -341,11 +341,11 @@
 
   var EDITING_KEYS = ['edit', 'create', 'delete'];
 
-  /** Server editing switches -> {edit, create, delete} (only an explicit false is off); null when not an object. */
+  /** Server editing switches -> {edit, create, delete} (only an explicit true is on); null when not an object. */
   function normEditing(e) {
     if (!e || typeof e !== 'object') return null;
     var out = {};
-    EDITING_KEYS.forEach(function (k) { out[k] = e[k] !== false; });
+    EDITING_KEYS.forEach(function (k) { out[k] = e[k] === true; });
     return out;
   }
 
@@ -383,7 +383,7 @@
       user: prev.email === user.email && prev.role === user.role && prev.isOwner === user.isOwner ? prev : user,
       readerView: state.readerView && user.role === 'admin',
       prefs: b.prefs && typeof b.prefs === 'object' ? b.prefs : {},
-      editing: sameEditing(state.editing, normEditing(b.editing) || { edit: true, create: true, delete: true }),
+      editing: sameEditing(state.editing, normEditing(b.editing) || { edit: false, create: false, delete: false }),
       sync: b.sync && typeof b.sync === 'object' ? b.sync : null,
       loading: false
     });
@@ -438,7 +438,7 @@
    * (actions, settings, sync) stay on canEdit().
    */
   function can(kind) {
-    return canEdit() && !!state.editing && state.editing[kind] !== false;
+    return canEdit() && !!state.editing && state.editing[kind] === true;
   }
 
   /**

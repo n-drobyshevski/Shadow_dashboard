@@ -518,6 +518,31 @@ describe('settings: « Saisie dans l’application »', () => {
     });
   });
 
+  test('never set: every switch off (the default), the Postes page without its write controls', async () => {
+    await withApp({ page: 'settings', editing: 'unset' }, async (app) => {
+      const { page } = app;
+      await tab(page, 'saisie');
+      assert.deepEqual(await switchState(page), [
+        ['settings-editing-edit', 'false', 'Désactivé'],
+        ['settings-editing-create', 'false', 'Désactivé'],
+        ['settings-editing-delete', 'false', 'Désactivé'],
+      ]);
+      assert.deepEqual(await page.evaluate(() => State.get().editing), { edit: false, create: false, delete: false });
+      await page.click('#sidebar .nav-link[data-page="postes"]');
+      await page.waitForSelector('#postes-table');
+      assert.equal(await page.$('#postes-add'), null);
+      assert.equal(await page.$('#postes-add-generic'), null);
+      // Turned on in Paramètres: the create buttons come back.
+      await page.click('#sidebar .nav-link[data-page="settings"]');
+      await tab(page, 'saisie');
+      await page.click('#settings-editing-create');
+      await app.waitIdle();
+      await page.click('#sidebar .nav-link[data-page="postes"]');
+      await page.waitForSelector('#postes-add');
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
   test('a click saves at once: one api_setEditing call, aria-checked, toast, State and the other pages follow', async () => {
     await withApp({ page: 'settings' }, async (app) => {
       const { page } = app;

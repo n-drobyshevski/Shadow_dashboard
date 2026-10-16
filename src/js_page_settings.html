@@ -500,8 +500,9 @@
     }));
     var section = card('Saisie dans l’application', null,
       UI.lede('Pour tous les administrateurs, sur tous les mois.',
-        'Concerne les postes et les applications, mois en cours comme mois passés. Le suivi des actions et les ' +
-          'remplacements restent modifiables.', { id: 'settings-editing-help' }),
+        ['Concerne les postes et les applications, mois en cours comme mois passés. Le suivi des actions et les ' +
+          'remplacements restent modifiables.', 'Désactivés par défaut : activez ceux dont vous avez besoin.'],
+        { id: 'settings-editing-help' }),
       list);
     section.id = 'settings-editing';
     // Switches changed elsewhere (another tab's poll, a refused write's bootstrap reload): show them.

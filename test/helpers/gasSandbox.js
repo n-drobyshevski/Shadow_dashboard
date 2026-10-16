@@ -29,10 +29,14 @@ const { createGasEnv } = require('./gasFakes');
 
 const SRC_DIR = path.resolve(__dirname, '..', '..', 'src');
 
+/** The editing switches of Paramètres all on: a deployment whose admin turned them on (they are off by default). */
+const EDITING_ON = JSON.stringify({ edit: true, create: true, delete: true });
+
 /**
  * @param {{sources?:object[], props?:Object<string,string>, lockTimeout?:boolean, timeZone?:string,
- *          srcDir?:string, echoConsole?:boolean, env?:object}} [options] env: reuse an existing env
- *          (a new execution); the env-building options are then ignored
+ *          srcDir?:string, echoConsole?:boolean, env?:object, editingUnset?:boolean}} [options] env: reuse an
+ *          existing env (a new execution); the env-building options are then ignored. A new env starts with
+ *          EDITING_JSON all on (props may override it); editingUnset: true leaves it unset (Config's default: off).
  * @returns {{ctx: object, env: object, files: string[]}}
  */
 function loadGas(options) {
@@ -46,7 +50,10 @@ function loadGas(options) {
     echoConsole: opts.echoConsole,
     scriptAppDenied: opts.scriptAppDenied,
   });
-  if (opts.props && !opts.env) env.PropertiesService.getScriptProperties().setProperties(opts.props);
+  if (!opts.env) {
+    const props = Object.assign(opts.editingUnset ? {} : { EDITING_JSON: EDITING_ON }, opts.props || {});
+    if (Object.keys(props).length) env.PropertiesService.getScriptProperties().setProperties(props);
+  }
 
   const ctx = vm.createContext({
     SpreadsheetApp: env.SpreadsheetApp,
