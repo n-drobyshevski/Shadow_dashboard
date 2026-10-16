@@ -486,6 +486,63 @@ describe('access (shell)', () => {
     });
   });
 
+  test('admin: the role in the sidebar switches to the lecteur view and back', async () => {
+    await withApp({ page: 'settings' }, async (app) => {
+      const { page } = app;
+      const nav = () => page.$$eval('#sidebar .nav-link', (ns) => ns.map((n) => n.dataset.page));
+      assert.equal(await page.getAttribute('#side-user-role', 'aria-pressed'), 'false');
+      assert.equal((await page.textContent('#side-user-role')).trim(), 'Administrateur');
+      assert.equal(await page.$('#reader-view-exit'), null);
+
+      // On: what a lecteur sees (Paramètres gone, so the page falls back to the dashboard; no sheet links).
+      await page.click('#side-user-role');
+      await page.waitForSelector('#main .page[data-page="dashboard"]');
+      assert.equal(await page.getAttribute('#side-user-role', 'aria-pressed'), 'true');
+      assert.match((await page.textContent('#side-user-role')).trim(), /^Vue lecteur · lecture seule$/);
+      assert.equal(await page.evaluate(() => document.activeElement && document.activeElement.id), 'side-user-role');
+      assert.deepEqual(await nav(), ['dashboard', 'postes', 'apps', 'timeline', 'actions']);
+      assert.equal(await page.$('#link-data'), null);
+      assert.equal(await page.$('#link-source'), null);
+      assert.ok(await page.isVisible('#reader-view-exit'));
+      await page.evaluate(() => App.go('settings'));
+      await page.waitForSelector('#main .page[data-page="dashboard"]');
+      await page.evaluate(() => App.go('postes'));
+      await page.waitForSelector('#main .page[data-page="postes"]');
+      assert.equal(await page.$('#postes-add'), null, 'no write control in the lecteur view');
+      await page.evaluate(() => App.go('actions'));
+      await page.waitForSelector('#main .page[data-page="actions"]');
+      assert.equal(await page.$('#action-add'), null);
+
+      // Off again, from the sidebar: the admin controls are back on the same page.
+      await page.click('#side-user-role');
+      await page.waitForSelector('#action-add');
+      assert.equal(await page.getAttribute('#side-user-role', 'aria-pressed'), 'false');
+      assert.equal(await page.$('#reader-view-exit'), null);
+      assert.deepEqual(await nav(), ['dashboard', 'postes', 'apps', 'timeline', 'actions', 'settings']);
+      assert.ok(await page.$('#link-data'));
+
+      // The app bar button leaves the preview too (it shows even when the sidebar is a rail).
+      await page.click('#side-user-role');
+      await page.waitForSelector('#reader-view-exit');
+      await page.click('#reader-view-exit');
+      await page.waitForSelector('#action-add');
+      assert.equal(await page.getAttribute('#side-user-role', 'aria-pressed'), 'false');
+      // Display only: nothing was asked of the server.
+      assert.equal((await app.calls()).filter((c) => /Role|Prefs|Config/.test(c.name)).length, 0);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('lecteur: the role is plain text, not a switch', async () => {
+    await withApp({ email: ACCOUNTS.LECTEUR }, async (app) => {
+      const { page } = app;
+      assert.equal(await page.$('#side-user-role'), null);
+      assert.equal(await page.$('#side-user button'), null);
+      assert.equal(await page.evaluate(() => { State.setReaderView(true); return State.get().readerView; }), false);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
   test('unknown account: « Accès refusé » naming the account, nothing else loaded', async () => {
     await withApp({ email: 'stranger@decathlon.com', readySelector: '.page-denied' }, async (app) => {
       const { page } = app;

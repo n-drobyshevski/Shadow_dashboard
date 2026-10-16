@@ -154,6 +154,10 @@ synchronisation horaire ». Les mois déjà importés sont conservés.
     conformité et la liste des accès ;
   - **Lecteur** : consultation seulement (tableaux, graphiques, historique, comparaison, export CSV).
     Le serveur refuse toute écriture d'un lecteur, même appelée hors de l'interface.
+  - **Vue lecteur** : un administrateur clique sur son rôle, en bas du menu, pour voir l'application
+    comme un lecteur (sans boutons de modification, sans Paramètres ni liens vers les classeurs) ; un
+    second clic, ou « Vue lecteur · revenir en admin » en haut de la page, le ramène en administrateur.
+    Affichage seulement : ses droits ne changent pas, et un rechargement de la page revient en administrateur.
 - **Saisie dans l'application** (Paramètres) : trois interrupteurs, pour tous les administrateurs et tous
   les mois (en cours comme passés), sur les postes et les applications : « Modifier les entrées » (cellules
   des tableaux, Galink et IDP compris, et « Renommer » une application), « Créer des entrées » (« Nouveau

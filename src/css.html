@@ -280,6 +280,15 @@ html { scroll-padding-top: var(--sticky-top); }
 .side-user { display: flex; flex-direction: column; gap: 2px; margin: var(--s2) 0 0; padding-top: var(--s2); border-top: 1px solid var(--rule); width: 100%; }
 .side-user-email { font-size: 12px; color: var(--ink-2); overflow-wrap: anywhere; }
 .side-user-role { font-size: 12px; color: var(--ink-3); }
+/* an admin's role is the switch to the lecteur preview (and back) */
+.side-user-switch {
+  align-self: flex-start; min-height: 24px; padding: 0; border: 0; background: none; font: inherit; font-size: 12px;
+  text-align: left; cursor: pointer;
+}
+.side-user-switch:hover { color: var(--accent); text-decoration: underline; }
+.side-user-switch.is-preview { color: var(--accent); font-weight: 600; }
+.reader-view-exit { flex: 0 0 auto; }
+.appbar-count[hidden] + .reader-view-exit { margin-left: auto; }
 
 body.unconfigured .sidebar, body.unconfigured .appbar { display: none !important; }
 body.unconfigured .app { background: var(--paper); }

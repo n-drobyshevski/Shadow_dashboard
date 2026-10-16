@@ -760,7 +760,7 @@ State.set(patch)                 -> shallow merge + notify subscribers (fn(state
 State.subscribe(fn)              -> unsubscribe()
 state = { page:'dashboard', configured:false, months:[], month:'', currentMonth:'', dataUrl:'', sourceUrl:'',
           sourceTitle:'', filters:{equipes:[], batiments:[]}, loading:false, threshold:80,
-          user:{email:'', role:'', isOwner:false}, prefs:{}, sync:SyncStatus|null,
+          user:{email:'', role:'', isOwner:false}, readerView:false, prefs:{}, sync:SyncStatus|null,
           editing:{edit:true, create:true, delete:true} (Editing, §3; a new object only when a switch changes),
           from:'' (start of the period, '' = one month; `month` is its END), preset:'' (shortcut in use) }
 State.period()                   -> {from, to, months:[synchronised months inside], single:bool} (to = state.month)
@@ -771,7 +771,13 @@ Fmt.periodShort(a, b)            -> 'Avr. – oct. 2026' / 'Déc. 2025 – oct. 
 UI.sparkline(values)             -> inline SVG line of a month series (aria-hidden), null under two points
 Fmt.stamp('2026-05-04 10:30')    -> '10:30' today, '04/05 10:30' this year, else '04/05/2026 10:30'
 Fmt.syncChange(changes)          -> '+2 postes · 1 application modifiée' / 'mois créé' / '' (Changes, §3)
-State.canEdit()                  -> true for admins (pages hide every write control otherwise)
+State.isAdmin()                  -> the account's real role is admin (whatever the view)
+State.canEdit()                  -> true for admins outside the lecteur view (pages hide every write control otherwise)
+State.setReaderView(on)          -> an admin previews the app as a lecteur sees it (state.readerView: no write control,
+                                    no Paramètres, no spreadsheet links), and back. The sidebar role button (#side-user-role,
+                                    aria-pressed) and « Vue lecteur · revenir en admin » in the app bar call it. Display
+                                    only: this tab, until reload; no server call, the account keeps its rights. Ignored
+                                    for other roles; reset when a bootstrap says the account is no longer admin.
 State.can(kind)                  -> canEdit() && state.editing[kind] ('edit' | 'create' | 'delete'): the controls of
                                     that write on Postes / Applications (cells and « Renommer »; « Nouveau poste »,
                                     « Poste générique », « Nouvelle application »; « Supprimer »). Every other write
