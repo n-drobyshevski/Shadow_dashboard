@@ -661,6 +661,10 @@ var ApiImpl_ = (function () {
     return out;
   }
 
+  /**
+   * Current month: the source row goes first (Importer.deleteRecord refuses a name several source rows
+   * share and a row holding an array formula), then the snapshot row.
+   */
   function deleteApplication(args) {
     requireEditing_('delete');
     var month = requireMonth_(args.month);
@@ -676,7 +680,11 @@ var ApiImpl_ = (function () {
     });
   }
 
-  /** Renames an application and the target_name of every Action pointing to its old name. */
+  /**
+   * Renames an application and the target_name of every Action pointing to its old name. Current month:
+   * the source key cell first (Importer.writeEdits also refuses a name another source row has, and an old
+   * name several source rows share).
+   */
   function renameApplication(args) {
     requireEditing_('edit');
     var month = requireMonth_(args.month);

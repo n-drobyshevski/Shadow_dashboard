@@ -89,7 +89,35 @@ var Importer = (function () {
       tab: tabName
     });
     parsed.records = parsed.records.map(sourceFields_);
+    var dup = duplicatesWarning_(parsed.records, keyField, tabName);
+    if (dup) parsed.warnings.push(dup);
     return parsed;
+  }
+
+  var DUPLICATES_LISTED = 10; // names listed in the duplicates warning
+
+  /**
+   * Warning naming the keys (normKey) that several records of the tab share, or '': the write-back
+   * refuses to edit or delete such a row (it could not tell which one is meant, see sourceTable_).
+   */
+  function duplicatesWarning_(records, keyField, tabName) {
+    var seen = {};
+    var order = [];
+    records.forEach(function (r) {
+      var k = Core.normKey(r[keyField]);
+      if (k === '') return;
+      if (!Object.prototype.hasOwnProperty.call(seen, k)) {
+        seen[k] = { name: Core.str(r[keyField]), n: 0 };
+        order.push(k);
+      }
+      seen[k].n++;
+    });
+    var dups = order.filter(function (k) { return seen[k].n > 1; });
+    if (!dups.length) return '';
+    var names = dups.slice(0, DUPLICATES_LISTED).map(function (k) { return '« ' + seen[k].name + ' » (' + seen[k].n + ' lignes)'; });
+    if (dups.length > DUPLICATES_LISTED) names.push('et ' + (dups.length - DUPLICATES_LISTED) + ' autre(s)');
+    return 'Noms en double dans l’onglet « ' + tabName + ' » : ' + names.join(', ') + '. Ces lignes ne peuvent être ' +
+      'ni modifiées ni supprimées depuis l’application tant que les doublons ne sont pas corrigés dans le Google Sheet source.';
   }
 
   /**
@@ -214,33 +242,52 @@ var Importer = (function () {
 
   /**
    * What a re-import would change in a stored month: {added, removed, changed, values} for records
-   * matched by key (normKey, first occurrence wins). `changed` counts records, `values` the cells
-   * that differ (compared with Core.str). Pure row-order changes are not changes.
+   * matched by key (normKey). Records sharing a key (duplicates in the source) are matched among
+   * themselves: identical records first, then the others in sheet order; the extra ones are added /
+   * removed. `changed` counts records, `values` the cells that differ (compared with Core.str). Pure
+   * row-order changes are not changes.
    */
   function diffRecords_(fresh, stored, keyField) {
-    function index(list) {
+    var hasOwn = Object.prototype.hasOwnProperty;
+    function group(list) {
       var out = {};
       (list || []).forEach(function (r) {
         var k = Core.normKey(r[keyField]);
-        if (k !== '' && !Object.prototype.hasOwnProperty.call(out, k)) out[k] = r;
+        if (k === '') return;
+        if (!hasOwn.call(out, k)) out[k] = [];
+        out[k].push(r);
       });
       return out;
     }
-    var a = index(stored);
-    var b = index(fresh);
-    var res = { added: 0, removed: 0, changed: 0, values: 0 };
-    Object.keys(b).forEach(function (k) {
-      if (!Object.prototype.hasOwnProperty.call(a, k)) { res.added++; return; }
+    function differing(x, y) {
       var seen = {};
       var n = 0;
-      dataFields_(a[k]).concat(dataFields_(b[k])).forEach(function (f) {
+      dataFields_(x).concat(dataFields_(y)).forEach(function (f) {
         if (seen[f]) return;
         seen[f] = true;
-        if (Core.str(a[k][f]) !== Core.str(b[k][f])) n++;
+        if (Core.str(x[f]) !== Core.str(y[f])) n++;
       });
-      if (n) { res.changed++; res.values += n; }
+      return n;
+    }
+    var a = group(stored);
+    var b = group(fresh);
+    var res = { added: 0, removed: 0, changed: 0, values: 0 };
+    Object.keys(b).forEach(function (k) {
+      var olds = hasOwn.call(a, k) ? a[k].slice() : [];
+      var news = b[k].filter(function (r) {
+        for (var i = 0; i < olds.length; i++) {
+          if (!differing(olds[i], r)) { olds.splice(i, 1); return false; }
+        }
+        return true;
+      });
+      news.forEach(function (r, i) {
+        if (i >= olds.length) { res.added++; return; }
+        res.changed++;
+        res.values += differing(olds[i], r);
+      });
+      if (olds.length > news.length) res.removed += olds.length - news.length;
     });
-    Object.keys(a).forEach(function (k) { if (!Object.prototype.hasOwnProperty.call(b, k)) res.removed++; });
+    Object.keys(a).forEach(function (k) { if (!hasOwn.call(b, k)) res.removed += a[k].length; });
     return res;
   }
 
@@ -437,9 +484,10 @@ var Importer = (function () {
   // ------------------------------------------------------------------------------- write-back
   //
   // Reading discipline: the header row is located in the first HEADER_SCAN_ROWS rows, the records by
-  // ONE read of the key column, then only the rows a write touches are read (formulas of the edited rows;
-  // for an append, readSample_ and the row below the last record, then the new row once written): never
-  // the whole tab.
+  // ONE read of the key column, then only the rows a write touches are read (formulas of the edited rows,
+  // plus the header row and the first data row for array formulas; for an append, readSample_ and the row
+  // below the last record, then the new row once written; for a delete, the deleted row's formulas):
+  // never the whole tab.
   //
   // Writing discipline: one setValue per edited cell. A block setValues would also rewrite the cells
   // between the edited ones (a formula, a data-validated cell, a value someone just typed in the
@@ -453,13 +501,19 @@ var Importer = (function () {
   var HEADER_SCAN_ROWS = 15; // = Core.findHeaderRow's default scan depth
   var ROW_GAP = 5;           // touched rows at most this far apart are read in one block
   var MAX_ROW_BLOCKS = 3;    // more blocks than this: one block from the first to the last touched row
+  // An array formula (ARRAYFORMULA, ={…}, BYROW, MAP) fills its whole column from one cell, in the header
+  // row or the first data row; the cells it spills into hold no formula of their own (getFormulas: '').
+  var ARRAY_FORMULA_RE = /^=\s*\{|(?:^|[^A-Za-z0-9_.])(?:ARRAYFORMULA|BYROW|MAP)\s*\(/i;
 
   /**
    * The source tab of an entity, located for writing: {sheet, tabName, keyField, headers, columns
    * (grid column of each header), headerRow, width, height (data range), rows (grid row of each record,
-   * in sheet order), find(name) -> index in rows or -1}. Records are the rows below the header whose
-   * key is not blank (as Core.rowsToRecords sees them). SOURCE_ERROR when the tab or its header row is
-   * missing. `timer` (Perf.start) gets the sourceOpen and sourceRead laps.
+   * in sheet order), indexes(name) -> indexes in rows of every record with that key (normKey), find(name)
+   * -> its index in rows or -1}. Records are the rows below the header whose key is not blank (as
+   * Core.rowsToRecords sees them). find refuses a key that several rows share (SOURCE_ERROR, before
+   * anything is written): the write would hit the first of them, not necessarily the record meant.
+   * SOURCE_ERROR when the tab or its header row is missing. `timer` (Perf.start) gets the sourceOpen and
+   * sourceRead laps.
    */
   function sourceTable_(entity, timer) {
     var keyField = entity === 'postes' ? Core.KEY_POSTE : Core.KEY_APP;
@@ -498,18 +552,33 @@ var Importer = (function () {
       width: width,
       height: height,
       rows: rows,
+      indexes: indexes,
       find: function (name) {
-        return norms.indexOf(Core.normKey(name));
+        var found = indexes(name);
+        if (found.length > 1) {
+          throw Core.makeError('SOURCE_ERROR', '« ' + Core.str(name) + ' » apparaît ' + found.length + ' fois dans l’onglet « ' +
+            tabName + ' » du Google Sheet source : corrigez d’abord les doublons dans le Google Sheet, puis synchronisez.');
+        }
+        return found.length ? found[0] : -1;
       }
     };
+
+    function indexes(name) {
+      var k = Core.normKey(name);
+      var out = [];
+      norms.forEach(function (n, i) { if (n === k) out.push(i); });
+      return out;
+    }
   }
 
   /**
    * Formulas of the given grid rows (0-based) across the data range: {gridRow: [formula or '' per
    * column]}. One getFormulas per block of nearby rows (ROW_GAP); when that makes more than
-   * MAX_ROW_BLOCKS calls, one block from the first to the last row instead.
+   * MAX_ROW_BLOCKS calls, one block from the first to the last row instead. `headRows` (optional: rows
+   * above all the others, e.g. the header row and the first data row) make one more block, joined to the
+   * first one when it is near, never stretched down to the last row.
    */
-  function rowFormulas_(t, gridRows) {
+  function rowFormulas_(t, gridRows, headRows) {
     var sorted = gridRows.slice().sort(function (a, b) { return a - b; });
     var blocks = [];
     sorted.forEach(function (r) {
@@ -518,12 +587,48 @@ var Importer = (function () {
       else blocks.push({ from: r, to: r });
     });
     if (blocks.length > MAX_ROW_BLOCKS) blocks = [{ from: blocks[0].from, to: blocks[blocks.length - 1].to }];
+    if (headRows && headRows.length) {
+      var head = { from: Math.min.apply(null, headRows), to: Math.max.apply(null, headRows) };
+      if (blocks.length && blocks[0].from - head.to <= ROW_GAP) {
+        blocks[0].from = Math.min(blocks[0].from, head.from);
+        blocks[0].to = Math.max(blocks[0].to, head.to);
+      } else {
+        blocks.unshift(head);
+      }
+    }
     var out = {};
     blocks.forEach(function (b) {
       var grid = t.sheet.getRange(b.from + 1, 1, b.to - b.from + 1, t.width).getFormulas();
       for (var r = b.from; r <= b.to; r++) out[r] = grid[r - b.from];
     });
     return out;
+  }
+
+  /**
+   * Grid columns {gridCol: true} filled by an array formula in the header row or the first data row
+   * (`formulas`: rowFormulas_ of both). Their cells below are computed although they hold no formula.
+   */
+  function arrayCols_(t, formulas) {
+    var out = {};
+    [t.headerRow, t.headerRow + 1].forEach(function (r) {
+      (formulas[r] || []).forEach(function (f, c) { if (f && ARRAY_FORMULA_RE.test(String(f))) out[c] = true; });
+    });
+    return out;
+  }
+
+  /** Header of a grid column (0-based), else its A1 letters. */
+  function columnName_(t, c) {
+    var j = t.columns.indexOf(c);
+    if (j >= 0) return t.headers[j];
+    var s = '';
+    for (var n = c + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s;
+    return s;
+  }
+
+  /** VALIDATION (field = the key column): another source row already has `name` (normKey). */
+  function takenName_(t, name) {
+    return Core.makeError('VALIDATION', '« ' + Core.str(name) + ' » existe déjà dans l’onglet « ' + t.tabName +
+      ' » du Google Sheet source.', t.keyField);
   }
 
   /** Cell value as written into the source: '' for blank, formula-looking text kept as text. */
@@ -540,8 +645,11 @@ var Importer = (function () {
    * Writes edits of the current month into the source, before the snapshot is updated:
    * edits = [{name, fields:{header: value}}] (name = the record's key in the snapshot). Fields that
    * have no column in the source (Galink / IDP when the source has none) are skipped: they live in
-   * the snapshot only. Every edit is checked first (row found, no formula in the cell: the formulas
-   * of the edited rows only are read), then written cell by cell.
+   * the snapshot only. Every edit is checked first, then written cell by cell: its row is found and is
+   * the only one with that key (sourceTable_ find), a new key (rename) is no other row's, the cell holds
+   * no formula and its column is not filled by an array formula (arrayCols_: a value typed into a spilled
+   * cell breaks the whole column). Reads the formulas of the edited rows and of the header row + first
+   * data row (rowFormulas_ blocks), never the whole tab.
    * Like appendRecord / deleteRecord, logs {stage:'writeBack', ms, sourceOpen, sourceRead, cellWrites,
    * op, entity} (Perf) when it completes; a refused write is reported by the caller's api line.
    * @return {number} cells written
@@ -555,6 +663,10 @@ var Importer = (function () {
       edits.forEach(function (e) {
         var i = t.find(e.name);
         if (i < 0) throw missingRow_(t, e.name);
+        if (Object.prototype.hasOwnProperty.call(e.fields, t.keyField) &&
+            t.indexes(e.fields[t.keyField]).some(function (j) { return j !== i; })) {
+          throw takenName_(t, e.fields[t.keyField]);
+        }
         Object.keys(e.fields).forEach(function (f) {
           var h = t.headers.indexOf(f);
           if (h < 0) return;
@@ -562,10 +674,11 @@ var Importer = (function () {
         });
       });
       if (cells.length) {
-        var formulas = rowFormulas_(t, cells.map(function (cell) { return cell.row - 1; }));
+        var formulas = rowFormulas_(t, cells.map(function (cell) { return cell.row - 1; }), [t.headerRow, t.headerRow + 1]);
+        var arrays = arrayCols_(t, formulas);
         timer.lap('sourceRead');
         cells.forEach(function (cell) {
-          if (formulas[cell.row - 1][cell.col - 1]) {
+          if (formulas[cell.row - 1][cell.col - 1] || arrays[cell.col - 1]) {
             throw Core.makeError('VALIDATION', 'La colonne « ' + cell.field + ' » est calculée par une formule dans ' +
               'le Google Sheet source : modifiez-la là-bas.', cell.field);
           }
@@ -627,7 +740,6 @@ var Importer = (function () {
   var LIST_MAX_COLS = 30;
   var LIST_MAX_OPTIONS = 500;        // options kept per list
   var LIST_MAX_CHARS = 200;          // longer option values are left out
-  var ARRAY_FORMULA_RE = /^=\s*\{|(?:^|[^A-Za-z0-9_.])(?:ARRAYFORMULA|BYROW|MAP)\s*\(/i;
 
   function isDateValue_(v) {
     return Object.prototype.toString.call(v) === '[object Date]';
@@ -649,10 +761,7 @@ var Importer = (function () {
     if (firstData < maxRows) wanted.push(firstData);
     if (sampleRow >= 0 && wanted.indexOf(sampleRow) < 0) wanted.push(sampleRow);
     var formulas = rowFormulas_(t, wanted);
-    var arrayCols = {};
-    [t.headerRow, firstData].forEach(function (r) {
-      (formulas[r] || []).forEach(function (f, c) { if (f && ARRAY_FORMULA_RE.test(String(f))) arrayCols[c] = true; });
-    });
+    var arrayCols = arrayCols_(t, formulas);
     var out = { lastIdx: lastIdx, sampleRow: sampleRow, arrayCols: arrayCols, formulas: [], rules: [], raw: [] };
     if (sampleRow >= 0) {
       var range = t.sheet.getRange(sampleRow + 1, 1, 1, t.width);
@@ -915,10 +1024,7 @@ var Importer = (function () {
     return Store.withLock(function () {
       var timer = Perf.start('writeBack', { op: 'append', entity: entity });
       var t = sourceTable_(entity, timer);
-      if (t.find(rec[t.keyField]) >= 0) {
-        throw Core.makeError('VALIDATION', '« ' + Core.str(rec[t.keyField]) + ' » existe déjà dans l’onglet « ' +
-          t.tabName + ' » du Google Sheet source.', t.keyField);
-      }
+      if (t.indexes(rec[t.keyField]).length) throw takenName_(t, rec[t.keyField]);
       var sample = readSample_(t);
       var lastIdx = sample.lastIdx;
       var at = (lastIdx >= 0 ? lastIdx : t.headerRow) + 2; // 1-based row just below the last record (or the header)
@@ -986,13 +1092,29 @@ var Importer = (function () {
     });
   }
 
-  /** Deletes the source row of `name`; false when the source has no such row (nothing to delete). */
+  /**
+   * Deletes the source row of `name`; false when the source has no such row (nothing to delete). Refused
+   * before anything is written: a name several rows share (SOURCE_ERROR, sourceTable_ find) and a row
+   * holding an array formula (VALIDATION: deleting it would empty the whole column). Reads that row's
+   * formulas.
+   */
   function deleteRecord(entity, name) {
     return Store.withLock(function () {
       var timer = Perf.start('writeBack', { op: 'delete', entity: entity });
       var t = sourceTable_(entity, timer);
       var i = t.find(name);
       if (i >= 0) {
+        var row = t.rows[i];
+        var anchor = -1;
+        (rowFormulas_(t, [row])[row] || []).forEach(function (f, c) {
+          if (anchor < 0 && f && ARRAY_FORMULA_RE.test(String(f))) anchor = c;
+        });
+        timer.lap('sourceRead');
+        if (anchor >= 0) {
+          throw Core.makeError('VALIDATION', 'La ligne de « ' + Core.str(name) + ' » contient la formule qui calcule la colonne « ' +
+            columnName_(t, anchor) + ' » de tout l’onglet « ' + t.tabName + ' » : déplacez la formule puis supprimez la ligne ' +
+            'dans le Google Sheet source.');
+        }
         Store.noteSourceWrite();
         t.sheet.deleteRow(t.rows[i] + 1);
       }

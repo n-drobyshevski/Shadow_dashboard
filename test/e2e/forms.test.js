@@ -152,6 +152,50 @@ describe('« Nouveau poste »: the panel', () => {
     });
   });
 
+  test('current month: once the schema is read, its computed columns are read-only in the table (also after a re-mount)', async () => {
+    await withApp(LIVE, async (app) => {
+      const { page } = app;
+      await page.waitForSelector('#postes-table');
+      const editableHeads = () => page.$$eval('#postes-table thead th.th-editable', (ths) => ths.map((th) => th.textContent.trim()));
+      const editableCells = (col) => page.$$eval(`#postes-table td.cell-editable[data-col="${col}"]`, (tds) => tds.length);
+      const COMPUTED = ['Score conformité', 'Niveau de risque', 'Statut'];
+      const id = await page.evaluate(() => window.State.getMonthData('2026-05').postes.find((p) => p['Nom du poste'] === 'LAB-MEC-01')._id);
+      const cell = (col) => `#postes-table tbody tr[data-id="${id}"] td[data-col="${col}"]`;
+      // Not read yet: every source column is editable.
+      for (const c of COMPUTED.concat('Responsable')) assert.ok((await editableHeads()).includes(c), c);
+      // A computed cell edited (dirty), then another cell being edited when the schema arrives (hover prefetch).
+      await page.click(cell('Score conformité'));
+      await page.fill(`${cell('Score conformité')} .cell-editor-host input`, '85%');
+      await page.press(`${cell('Score conformité')} .cell-editor-host input`, 'Enter');
+      await page.click(cell('Responsable'));
+      await page.fill(`${cell('Responsable')} .cell-editor-host input`, 'Zoé Lefèvre');
+      await page.hover('#postes-add');
+      await app.waitIdle();
+      assert.equal((await callsNamed(app, 'api_getFormSchema')).length, 1);
+      assert.deepEqual((await editableHeads()).filter((h) => COMPUTED.includes(h)), [], 'locked');
+      assert.ok((await editableHeads()).includes('Responsable'));
+      assert.ok(await page.$(`${cell('Responsable')} .cell-editor-host input`), 'the open editor stays');
+      await page.press(`${cell('Responsable')} .cell-editor-host input`, 'Enter');
+      await page.waitForSelector(`${cell('Responsable')} .cell-editor-host`, { state: 'detached' });
+      for (const c of COMPUTED) assert.equal(await editableCells(c), 0, c);
+      assert.ok(await editableCells('Responsable') > 0);
+      // The unsaved value of the locked column is dropped; the other one is saved.
+      assert.equal((await page.textContent('#postes-table .etable-save')).trim(), 'Enregistrer (1)');
+      await page.click('#postes-table .etable-save');
+      await app.waitIdle();
+      assert.deepEqual((await callsNamed(app, 'api_savePostes')).map((c) => c.args.changes),
+        [[{ id, updates: { Responsable: 'Zoé Lefèvre' } }]]);
+      // Re-mounted: read-only at once, from the schema State keeps (no new request).
+      await app.goto('apps');
+      await page.waitForSelector('#apps-table');
+      await app.goto('postes');
+      await page.waitForSelector('#postes-table');
+      for (const c of COMPUTED) assert.equal(await editableCells(c), 0, c);
+      assert.equal((await callsNamed(app, 'api_getFormSchema')).length, 1);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
   test('Équipe defaults to the single active filter; a schema failure shows « Réessayer »', async () => {
     await withApp(LIVE, async (app) => {
       const { page } = app;

@@ -50,7 +50,11 @@ Les modifications du mois en cours faites dans l'application (cellules des Poste
 poste générique, ajout / renommage / suppression d'une application) sont **écrites dans le classeur
 source**, puis dans l'instantané : la synchronisation suivante les relit. Galink et IDP, absents de la
 source, restent dans l'application. Une cellule calculée par une formule dans la source n'est pas
-modifiable depuis l'application. Les modifications d'un mois passé ne changent que son historique.
+modifiable depuis l'application, pas plus qu'une colonne remplie par une formule matricielle
+(`ARRAYFORMULA`, `={…}`) ; la ligne qui porte une telle formule ne peut pas être supprimée depuis
+l'application. Un nom présent sur plusieurs lignes de la source (« Minitab » et « MINITAB ») ne peut
+être ni modifié, ni renommé, ni supprimé tant que les doublons ne sont pas corrigés dans le Google Sheet
+(la synchronisation les signale). Les modifications d'un mois passé ne changent que son historique.
 
 | Onglet | Contenu |
 |---|---|
@@ -315,9 +319,18 @@ Les tests utilisent un faux SpreadsheetApp ; ce point dépend du comportement r�
 - [ ] Formulaires de création, limites connues : une liste à choix multiples (puces) accepte des valeurs
       séparées par des virgules, ce qui n'est qu'une hypothèse (aucune API ne dit si une liste autorise
       plusieurs valeurs) ; les dates sont écrites en texte `JJ/MM/AAAA`, donc pour une source en
-      paramètres régionaux français (comme les modifications de cellules) ; les modifications de
-      cellules dans le tableau ont le même angle mort sur les colonnes `ARRAYFORMULA` (noté pour plus
-      tard, non corrigé ici).
+      paramètres régionaux français (comme les modifications de cellules).
+- [ ] Écriture dans la source, colonnes calculées : dans une colonne `ARRAYFORMULA` (formule dans la
+      ligne d'en-tête ou la première ligne de données), modifier une cellule d'une autre ligne depuis le
+      tableau du mois en cours : refus « La colonne « … » est calculée par une formule dans le Google
+      Sheet source », la colonne reste intacte (pas de `#REF!`). Après ouverture du formulaire « Nouveau
+      poste » (ou survol du bouton), les colonnes calculées ne sont plus modifiables dans le tableau.
+      Supprimer l'application dont la ligne porte la formule : refus, rien n'est supprimé.
+- [ ] Écriture dans la source, doublons : ajouter dans la source une ligne « MINITAB » (même nom à la
+      casse près qu'une ligne existante), synchroniser : le journal signale « Noms en double … ».
+      Modifier, renommer ou supprimer l'une ou l'autre depuis l'application : refus « … apparaît 2 fois
+      … », aucune ligne de la source ne change. Renommer une application avec un nom ajouté dans la
+      source depuis la dernière synchronisation : refus « … existe déjà dans l’onglet … ».
 - [ ] Le déclencheur `syncHourly` apparaît dans l'éditeur (Déclencheurs) et s'exécute toutes les
       heures (Exécutions) ; une synchronisation sans changement n'ajoute rien au journal.
 - [ ] Mesures : dans Exécutions, un appel (par exemple l'ouverture de l'application) montre ses lignes

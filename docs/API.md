@@ -191,8 +191,9 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
   referentiel}, postes_headers:[...], apps_headers:[...], warnings:[...], changes:Changes|null}` — one entry per
   synchronisation that changed something (`changes` is `null` for the manual imports of earlier versions).
 - **Changes**: `{created:bool, postes:Diff, applications:Diff, referentiel:bool}`, `Diff = {added, removed,
-  changed, values}` (records matched by key with `normKey`; `changed` counts records, `values` the cells that
-  differ; a pure row-order change is not a change).
+  changed, values}` (records matched by key with `normKey`; records sharing a key — duplicate names in the
+  source — are matched among themselves: identical ones first, then in sheet order, the extra ones added /
+  removed; `changed` counts records, `values` the cells that differ; a pure row-order change is not a change).
 - **SyncStatus**: `{enabled:bool, month:'YYYY-MM' (current month), lastRunAt, lastOkAt, lastChangeAt
   ('YYYY-MM-DD HH:mm' | ''), lastChange:{month, at, created, postes:Diff, applications:Diff, referentiel}|null,
   lastError:{at, code, message}|null, warnings:[string], authError?:string}` (`SYNC_STATE` Script Property;
@@ -212,14 +213,14 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 | `api_syncNow` | – | `{status:SyncStatus, result:SyncResult}` — synchronises the current month now. `SyncResult = {month, counts:{postes, applications, referentiel}, overwritten:bool, carriedOver:n, warnings:[...], changed:bool, changes:Changes}`; nothing is written when `changed` is false. | `NOT_CONFIGURED`, `SOURCE_ERROR`, `BUSY` (recorded in `lastError`, except `BUSY`) |
 | `api_enableSync` | – | as `api_syncNow`, after creating the hourly trigger if it is missing | `NOT_CONFIGURED` (ScriptApp not authorised: the deployer must run `setup` in the editor), then as `api_syncNow` |
 | `api_getImportLog` | `{limit?}` (integer 1–500, default 12) | `[{month, imported_at, counts, warnings, changes}]`: the `limit` latest ImportLog entries, newest first, with the fields the « Journal des synchronisations » shows only (no `source_id`, no headers). Read from the bottom of the tab (`Store.recentImportLog`). | `VALIDATION` (bad `limit`) |
-| `api_savePostes` | `{month, changes:[{id, updates:{col:value}}]}` | `{updated:[rec], sourceUpdated:bool}` (`true` = current month, written into the source) | `FORBIDDEN` (switch `edit` off), `VALIDATION` (keys starting with `_` or the key column are rejected; a source cell computed by a formula; a value refused by the source cell's data validation), `NOT_FOUND`, `SOURCE_ERROR` (row not found in the source: renamed or deleted since the last sync) |
+| `api_savePostes` | `{month, changes:[{id, updates:{col:value}}]}` | `{updated:[rec], sourceUpdated:bool}` (`true` = current month, written into the source) | `FORBIDDEN` (switch `edit` off), `VALIDATION` (keys starting with `_` or the key column are rejected; a source cell computed by a formula, or in a column an array formula fills; a value refused by the source cell's data validation), `NOT_FOUND`, `SOURCE_ERROR` (row not found in the source: renamed or deleted since the last sync; a name several source rows share: « « X » apparaît 2 fois dans l’onglet « … » du Google Sheet source : corrigez d’abord les doublons dans le Google Sheet, puis synchronisez. », nothing written) |
 | `api_addGenericPoste` | `{month}` | `{created:bool, record:rec}` (existing record if already present; current month: also appended to the source with `Importer.appendRecord(…, {strict:false})`: no rule enforced, computed columns left to their formulas and their values read back into the record) | `FORBIDDEN` (switch `create` off), `NOT_FOUND` |
 | `api_getFormSchema` | `{entity:'postes'\|'applications', month, fresh?:bool}` | `FormSchema = {entity, month, live:bool, origin:'source'\|'fallback'\|'snapshot', keyField, readAt:'YYYY-MM-DD HH:mm'\|'', warning?:string, columns:[FormColumn]}` — the fields of a creation form. Current month (`live`): read from the source OUTSIDE the lock (`Importer.readFormSchema`, cached 5 min per entity and source; `fresh:true` reads again), `origin:'source'`, applications completed with `Galink` / `IDP` (`appOnly`) when the source has no such column; when the source is not configured or cannot be read: the snapshot's columns (`Core.snapshotFormColumns` over the month's ImportLog headers and Référentiel, nothing cached), `origin:'fallback'` with a French `warning` (never fails). Past month: `Core.snapshotFormColumns` (`origin:'snapshot'`), the source is never opened. `readAt` = when the source was read (`'source'`) or the month synchronised. | `FORBIDDEN` (switch `create` off), `VALIDATION` (`entity`, month), `NOT_FOUND` (past month not imported) |
 | `api_addPoste` | `{month, record:{col:value}}` | `rec` (enriched poste; current month: appended to the source first, with the computed columns as the sheet shows them right after the write) | `FORBIDDEN` (switch `create` off), `VALIDATION` with `error.field` (blank name / missing `Équipe`, name already in the month — snapshot — or in the source tab — normKey —, a column that does not exist, a value for a computed column, a value outside a rejecting list, a date that is no real day, a value the source sheet refuses itself), `NOT_FOUND`, `SOURCE_ERROR` |
 | `api_saveApplications` | `{month, changes:[{id, updates}]}` | `{updated:[rec], sourceUpdated:bool}` | as `api_savePostes` (switch `edit`) |
 | `api_addApplication` | `{month, record:{...}}` | `rec` (current month: also appended to the source tab, below its last application) — same path and checks as `api_addPoste` (only the name is required; `Galink` / `IDP` must be Oui/Non/blank and stay in the snapshot when the source has no such column) | `FORBIDDEN` (switch `create` off), `VALIDATION` with `error.field` (as `api_addPoste`), `NOT_FOUND`, `SOURCE_ERROR` |
-| `api_deleteApplication` | `{month, id}` | `{deleted:true, id}` (current month: its source row is deleted too, when there is one) | `FORBIDDEN` (switch `delete` off), `NOT_FOUND` |
-| `api_renameApplication` | `{month, id, newName}` | `{record:rec, actionsUpdated:n}` — also renames `target_name` of every Action with `target_type==='application'` and `target_name===oldName`; current month: the source key cell too | `FORBIDDEN` (switch `edit` off), `VALIDATION` (blank / duplicate), `NOT_FOUND`, `SOURCE_ERROR` |
+| `api_deleteApplication` | `{month, id}` | `{deleted:true, id}` (current month: its source row is deleted too, when there is one) | `FORBIDDEN` (switch `delete` off), `NOT_FOUND`, `VALIDATION` (current month: the source row holds an array formula — « La ligne de « X » contient la formule qui calcule la colonne « Y » de tout l’onglet « … » : déplacez la formule puis supprimez la ligne dans le Google Sheet source. »), `SOURCE_ERROR` (a name several source rows share, as `api_savePostes`) — nothing deleted on a refusal |
+| `api_renameApplication` | `{month, id, newName}` | `{record:rec, actionsUpdated:n}` — also renames `target_name` of every Action with `target_type==='application'` and `target_name===oldName`; current month: the source key cell too | `FORBIDDEN` (switch `edit` off), `VALIDATION` (blank; duplicate in the month — snapshot — or, current month, in the source tab — normKey, another row than the renamed one —, `error.field` = the key column), `NOT_FOUND`, `SOURCE_ERROR` (as `api_savePostes`: row not found, or the old name shared by several source rows) |
 | `api_getTimeline` | – | `[{month, postes:[slim], applications:[slim]}]` asc by month. Slim poste = `{'Équipe','Bâtiment / Labo','EDR Decathlon','IT Decathlon','Réseau Decathlon','Niveau de risque',_score,_conforme}`; slim app = `{'Équipe','SIP','Contrat','Galink','IDP','Niveau de risque',_score,_conforme}` (so `Core.filterData` / `computeKpis` / `riskCounts` work on them). | – |
 | `api_getActions` | – | `{actions:[Action], replacements:[Replacement]}` | – |
 | `api_addAction` | `{target_type, target_name, equipe, action, responsable?, date_created?, date_completed?, deadline?, priorite?, status?, source_month?, comment?}` | `Action` (`id` generated, `status` default `'À faire'`, `date_created` default today DD/MM/YYYY, `recorded_at` today ISO) | `VALIDATION` (`target_type` not poste/application, blank `target_name` or `action`) |
@@ -485,6 +486,10 @@ Importer.readSource()       -> {sourceId, title, postes:{headers,records,warning
                                Référentiel categories / values) are SOURCE_ERROR here, outside the lock;
                                `_` columns are dropped by rowsToRecords and every `_` field of the
                                records again here (ids and stamps only ever come from the Store).
+                               Keys (normKey) that several records of a tab share add a warning ('Noms en
+                               double dans l’onglet « … » : « Minitab » (2 lignes)… ', at most 10 names
+                               listed): those rows cannot be edited or deleted from the app (writeEdits /
+                               deleteRecord).
 Importer.importMonth(month, overwrite, {skipUnchanged?}) -> SyncResult (see §3). Notes
                                Config.sourceStamp(), reads the source (readSource) OUTSIDE the lock,
                                then takes Store.withLock (BUSY after 20 s, as before) to read the stored
@@ -526,8 +531,11 @@ Importer.importMonth(month, overwrite, {skipUnchanged?}) -> SyncResult (see §3)
                                ignored.
 Importer.writeEdits(entity, [{name, fields}]) -> cells written. entity 'postes'|'applications'; locates
                                each row by key (normKey) in the source tab, checks every cell first (row
-                               found -> else SOURCE_ERROR; no formula -> else VALIDATION), then setValue per
-                               cell (Core.escapeFormula: text stays text). Fields without a source column
+                               found -> else SOURCE_ERROR; the only row with that key -> else SOURCE_ERROR
+                               « … apparaît N fois … »; a new key (rename) on no other row -> else
+                               VALIDATION, field = key; no formula in the cell and no array formula filling
+                               its column -> else VALIDATION « calculée par une formule », field), then
+                               setValue per cell (Core.escapeFormula: text stays text). Fields without a source column
                                are skipped (snapshot only). A value refused by data validation -> VALIDATION.
                                Writes stay one setValue per edited cell: a block setValues would rewrite
                                the cells between edited ones (formulas, validated cells, concurrent hand
@@ -564,17 +572,23 @@ Importer.appendRecord(entity, rec, {strict?}) -> {values, computed}. New source 
                                the new row: computed = the computed columns as shown (blank or « Loading… » /
                                « Chargement… » -> null); values = what was written (dates 'DD/MM/YYYY' when
                                strict). Duplicate key -> VALIDATION (field = the key column).
-Importer.deleteRecord(entity, name) -> bool (false when the source has no such row).
+Importer.deleteRecord(entity, name) -> bool (false when the source has no such row). Refused before anything
+                               is written: a key several rows share (SOURCE_ERROR, as writeEdits) and a row
+                               holding an array formula (VALIDATION, names its column: deleting it would
+                               empty the whole column).
                                Reads of the three write-backs: getDataRange() for the size, the first 15
                                rows (header row, Core.findHeaderRow's scan depth) and the key column below
                                the header (getDisplayValues), then only what the write touches:
                                writeEdits the formulas of the edited rows (rows at most 5 apart in one
                                block; more than 3 blocks -> one block from the first to the last edited
-                               row), appendRecord the reads of readFormSchema (without lists), the row below
-                               the last record and the new row once written. Never the whole tab. All three run
+                               row) and of the header row + first data row (array formulas: one more block,
+                               joined to the first one when it is at most 5 rows away), appendRecord the
+                               reads of readFormSchema (without lists), the row below the last record and the
+                               new row once written, deleteRecord the deleted row's formulas. Never the whole
+                               tab. All three run
                                under Store.withLock (re-entrant) and call Store.noteSourceWrite() before their
-                               first write. A cell refused by data validation (writeEdits) or a formula cell is
-                               VALIDATION with the field.
+                               first write. A cell refused by data validation (writeEdits), a formula cell or
+                               a cell of an array-formula column is VALIDATION with the field.
 ```
 
 ### Sync (`src/Sync.js`)
@@ -720,6 +734,8 @@ State.loadActions({force}?)      -> Promise<{actions, replacements}> (cached)
 State.loadFormSchema(entity, month, {force}?) -> Promise<FormSchema> (api_getFormSchema of a creation form; kept
                                     5 minutes in memory, one request in flight per entity + month; force asks the
                                     server with {fresh:true}; dropped by State.invalidate())
+State.peekFormSchema(entity, month) -> the FormSchema loadFormSchema keeps (whatever its age) | null; never asks
+                                    the server
 State.extendColumns(month, entity, names[]) -> bool: adds the names the month's `columns[entity]` lacks (a record
                                     created with a column added to the source since the last sync), true when
                                     something was added
@@ -783,12 +799,14 @@ UI.tabs(items:[{id, label, render:(root)=>void}], activeId?) -> Element
 UI.multiSelect({label, options:[string], value:[string], onChange:(values)=>void}) -> Element
 UI.select({label?, options:[string|{value,label}], value, onChange}) -> Element
 UI.editableTable({columns, rows, rowKey='_id', search=true, pageSize=50, onSave?, onRowClick?, emptyText?,
-                  toolbar?:[Node]}) -> {node, setRows(rows), getDirty()}
+                  toolbar?:[Node]}) -> {node, setRows(rows), getDirty(), lockColumns(keys)}
     columns: [{key, label?, editable?:bool, options?:[string]|null, width?, render?:(row)=>Node|string,
                sortValue?:(row)=>any}]
     Click on an editable cell -> inline <select> (options + current value + '' ) or <input>; edits are
     kept as dirty until "Enregistrer (n)" -> onSave(changes:[{id, updates}]) (Promise); "Annuler" reverts.
-    Sorting by header click, text search across visible columns, pagination.
+    Sorting by header click, text search across visible columns, pagination. lockColumns(keys): those columns
+    become read-only once the table is shown (`editable` set to false, their unsaved values dropped, header and
+    rows re-rendered — after the cell being edited closes, if any); true when a column changed.
 UI.toggle({id, label, description?, checked, onChange?(checked) -> Promise|void, disabled?}) -> div.toggle-row
     A setting saved at once: label + description left, <button role=switch aria-checked> right (drawn track and
     thumb aria-hidden, visible « Activé » / « Désactivé »; aria-labelledby id-label, aria-describedby id-desc).
@@ -964,6 +982,10 @@ instead of the configuration form.
   ajouté à l’historique de avril 2026. ». Toolbar: search, `Conformité` select (Toutes / Conformes / Non conformes).
 - `UI.editableTable` over filtered postes; columns = `columns.postes` order (key column first, not
   editable) + computed `Score` (`UI.scoreBadge`) + `Applis` count; options via `Core.optionsForColumn`.
+  Current month: the source columns the creation form's schema marks `computed` (a formula, or an array formula
+  filling the column; `api_getFormSchema` origin `'source'`) are not editable inline, as the server refuses them:
+  at once when `State.peekFormSchema` has the schema, else as soon as the form or its hover prefetch reads it
+  (`table.lockColumns`; no extra request: without `create` only the server-side refusal applies).
   Period: the last month's inventory, kicker « … · inventaire fin octobre », computed column `_evo`
   « Évolution depuis avril » (`Core.scoreEvolution` of the first month → this one, same filters: « Nouveau »,
   « 40,0 % → 80,0 % » ok / ko, « — »), `#postes-evo-stats` « +14 nouveaux · 2 retirés · 9 scores modifiés
@@ -1079,8 +1101,12 @@ elsewhere (poll, bootstrap reload).
   « Renommer », « Supprimer », edit note), Actions and Paramètres unaffected, refusals behind an open page.
 - `test/integration/form.test.js` — the forms' server half over the `form` source fixture: schema, cache and
   fallback, `api_addPoste` / `api_addApplication` / `api_addGenericPoste` writes and refusals with their field.
+- `test/integration/writeback.test.js` — write-back integrity: a name several source rows share (sync warning,
+  edit / rename / delete of either record refused before any write, a change to the second row detected, swapped
+  rows no change), a rename to a name only the source has, array-formula columns (edit of a spilled cell refused
+  with its field, the row holding the formula not deletable).
 - `test/e2e/forms.test.js` — the creation forms' client half: the panel (sections, notes, focus, prefetch and
-  cache, « Relire les colonnes »), saving (exact `api_addPoste` arguments, row and toast, field errors opening their
+  cache, « Relire les colonnes », the schema's computed columns read-only in the live table), saving (exact `api_addPoste` arguments, row and toast, field errors opening their
   section), closing (unsaved-changes confirm, locked while saving), schema variants (new column, fallback, past
   month), the applications form and the 390px layout.
 - `npm test` → `test/unit/**` + `test/integration/**`; `npm run test:e2e` → Playwright smoke tests.

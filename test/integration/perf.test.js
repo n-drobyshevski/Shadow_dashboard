@@ -47,7 +47,10 @@ const GROUP_ADMIN = 'chef@decathlon.com';
  * A month span also reads the row on each side of the month's block (same getValues), so that a month
  * that grew or moved past the block while it was read outside the lock is detected: cellsRead of the
  * flows that read spans went up by those rows (getMonthData +16, savePostesLive +6, syncNoChange +16).
- * These are the only bounds ever raised, both for correctness.
+ * The live-month save also reads the formulas of the source's header row and first data row (one more
+ * getFormulas of 2 rows, 50 cells, under the lock), so that it refuses an edit in a column an array formula
+ * fills: savePostesLive getFormulas 1 -> 2, sourceReadsLocked 3 -> 4, cellsRead and sourceCellsRead +50.
+ * These are the only bounds ever raised, all for correctness.
  * The creation forms added getDataValidations (0 for every earlier flow) and three flows: the form schema
  * read cold (the source only: header block, key column, two formula blocks, the last row's rules and raw
  * values, one box of Référentiel lists; cached), warm (the cache alone: no spreadsheet opened) and a
@@ -77,8 +80,8 @@ const BASELINE = {
   getImportLog: { openById: 1, getValues: 1, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 96,
     getDataRange: 0, propertiesReads: 1, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 0, sourceReadsLocked: 0 },
   // The write-back reads the source under the lock by design (it writes there next).
-  savePostesLive: { openById: 2, getValues: 4, getDisplayValues: 2, getFormulas: 1, getDataValidations: 0, cellsRead: 15307,
-    getDataRange: 1, propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 700, sourceReadsLocked: 3 },
+  savePostesLive: { openById: 2, getValues: 4, getDisplayValues: 2, getFormulas: 2, getDataValidations: 0, cellsRead: 15357,
+    getDataRange: 1, propertiesReads: 2, cacheReads: 0, cacheWrites: 0, groupCalls: 0, sourceCellsRead: 750, sourceReadsLocked: 4 },
   formSchemaCold: { openById: 1, getValues: 1, getDisplayValues: 3, getFormulas: 2, getDataValidations: 1, cellsRead: 812,
     getDataRange: 1, propertiesReads: 1, cacheReads: 1, cacheWrites: 1, groupCalls: 0, sourceCellsRead: 812, sourceReadsLocked: 0 },
   formSchemaWarm: { openById: 0, getValues: 0, getDisplayValues: 0, getFormulas: 0, getDataValidations: 0, cellsRead: 0,

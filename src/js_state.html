@@ -182,6 +182,12 @@
     return p;
   }
 
+  /** The form schema loadFormSchema keeps for `entity` + `month` (whatever its age), or null: never asks the server. */
+  function peekFormSchema(entity, month) {
+    var hit = formSchemaCache[entity + '|' + month];
+    return hit ? hit.data : null;
+  }
+
   /** Local edits change scores, so the cached timeline (built from server snapshots) is stale. */
   function dropTimeline() {
     timelineCache = null;
@@ -440,6 +446,7 @@
     addRecord: addRecord,
     extendColumns: extendColumns,
     loadFormSchema: loadFormSchema,
+    peekFormSchema: peekFormSchema,
     invalidate: invalidate,
     filtered: filtered,
     filterByEquipe: filterByEquipe,

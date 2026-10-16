@@ -15,6 +15,8 @@
  *   editableTable options also accept toolbarEnd:[Node] (placed at the right end, after search + count)
  *     and readOnly:bool (lecteurs: `editable` columns render as plain cells — no inline editor, no dotted
  *     underline, no dirty bar, no Enregistrer / Annuler; sorting, search, paging and onRowClick stay).
+ *   editableTable(...).lockColumns(keys) makes those columns read-only once the table is shown (their
+ *     unsaved values are dropped); true when a column changed.
  *   UI.fmtPctNode(n, digits?)           -> span.pct: same text as fmtPct, the space before % is set in the
  *                                           sans face so that it stays narrow inside mono figures.
  *   UI.cellMark(column, value)          -> read view of a ledger cell: Statut / Niveau de risque as marks,
@@ -1310,7 +1312,7 @@
 
   /**
    * UI.editableTable({columns, rows, rowKey='_id', search=true, pageSize=50, onSave?, onRowClick?,
-   *                   emptyText?, toolbar?, readOnly?}) -> {node, setRows(rows), getDirty()}
+   *                   emptyText?, toolbar?, readOnly?}) -> {node, setRows(rows), getDirty(), lockColumns(keys)}
    */
   function editableTable(o) {
     var opts = o || {};
@@ -1326,6 +1328,7 @@
     var page = 0;
     var saving = false;
     var rowsReplaced = false;
+    var staleBody = false;   // lockColumns while a cell was being edited: the body re-renders when it closes
 
     function idOf(row) { return row ? String(row[rowKey]) : ''; }
     function isEditable(col) { return !readOnly && !!col.editable; }
@@ -1513,11 +1516,12 @@
       function finish(apply) {
         if (done) return;
         done = true;
-        if (apply) setDirty(row, col.key, getValue());
+        if (apply && isEditable(col)) setDirty(row, col.key, getValue());
         td.classList.remove('cell-editing');
         if (host.parentNode) host.parentNode.removeChild(host);
         // Re-render every cell of the row: computed columns (score, criteria...) follow the edit at once.
-        renderRow(td.parentNode, row);
+        if (staleBody) renderBody();
+        else renderRow(td.parentNode, row);
         if (td.isConnected) td.focus();
       }
 
@@ -1573,6 +1577,7 @@
     }
 
     function renderBody() {
+      staleBody = false;
       clear(tbody);
       var list = visibleRows();
       var pages = Math.max(1, Math.ceil(list.length / pageSize));
@@ -1682,9 +1687,32 @@
       renderBody();
     }
 
+    /**
+     * Makes the columns whose key is in `keys` read-only from now on (found computed after the table was
+     * shown): their unsaved values are dropped, header and rows re-render (once a cell being edited
+     * closes). Returns true when a column changed.
+     */
+    function lockColumns(keys) {
+      var locked = columns.filter(function (col) { return col.editable && (keys || []).indexOf(col.key) >= 0; });
+      if (!locked.length) return false;
+      locked.forEach(function (col) { col.editable = false; });
+      Object.keys(dirty).forEach(function (id) {
+        locked.forEach(function (col) { delete dirty[id][col.key]; });
+        if (!Object.keys(dirty[id]).length) delete dirty[id];
+      });
+      renderHead();
+      if (tbody.querySelector('.cell-editing')) {
+        staleBody = true;
+        updateDirtyBar();
+      } else {
+        renderBody();
+      }
+      return true;
+    }
+
     renderHead();
     renderBody();
-    return { node: node, setRows: setRows, getDirty: getDirty };
+    return { node: node, setRows: setRows, getDirty: getDirty, lockColumns: lockColumns };
   }
 
   // ------------------------------------------------------------------------------ CSV
