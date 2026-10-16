@@ -1,12 +1,8 @@
 <style>
-/* ==================================================================================================
-   Controls (js_controls.html): popover, dropdown / combobox, date & month fields, checkbox, toggle, tooltip,
-   search field, busy buttons, loading / error states, plus the global browser-chrome resets.
-   Tokens only (css.html :root). Loaded right after css.html.
-   ================================================================================================== */
+/* Controls from js_controls.html: popover, dropdown, combobox, date and month fields, checkbox, toggle,
+   tooltip, search field, busy buttons, loading and error states, browser-chrome resets. Loaded after css.html. */
 
-/* ------------------------------------------------------------------ browser chrome (color-scheme and
-   scrollbars: css.html) */
+/* Browser chrome; color-scheme and scrollbars are in css.html */
 input:-webkit-autofill, input:-webkit-autofill:hover, input:-webkit-autofill:focus,
 textarea:-webkit-autofill, select:-webkit-autofill {
   -webkit-text-fill-color: var(--ink); caret-color: var(--ink);
@@ -20,13 +16,13 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
   -webkit-appearance: none; appearance: none; display: none;
 }
 
-/* Focus: keyboard only (never after a mouse click on a button), never clipped by a scrolling parent. */
+/* Keyboard-only focus rings, inset so a scrolling parent never clips them. */
 .nav-link:focus-visible, .th-sort:focus-visible, .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .tabpanel:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 .toast-close { width: 32px; height: 32px; margin: -7px -8px -7px 0; border-radius: var(--radius); }
 .toast-close:focus-visible { outline: 2px solid var(--paper); outline-offset: -4px; }
 
-/* ------------------------------------------------------------------ shared caret */
+/* Shared caret */
 .dd-caret {
   display: inline-block; flex: 0 0 auto; width: 7px; height: 7px; margin: 0 1px;
   border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
@@ -35,7 +31,7 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
 .is-open .dd-caret, [aria-expanded="true"] > .dd-caret { transform: translateY(1px) rotate(-135deg); }
 :disabled > .dd-caret, .is-disabled .dd-caret { color: var(--ink-3); }
 
-/* ------------------------------------------------------------------ dropdown trigger */
+/* Dropdown trigger */
 .dd { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
 .dd-trigger {
   display: flex; align-items: center; gap: var(--s2); width: 100%; height: 32px; min-height: 32px;
@@ -54,17 +50,14 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
 .dd.is-placeholder:not(.dd-multiple) .dd-value { color: var(--ink-3); }
 .dd-multiple.is-placeholder .dd-value { color: var(--ink-2); }
 .dd-mono .dd-value, .dd-mono .dd-input, .dd-input.mono { font-family: var(--font-mono); font-size: 12.5px; }
-/* Placeholders are prose: always sans, whatever face the committed value uses. */
 .dd-input::placeholder { font-family: var(--font-sans); font-size: 13px; color: var(--ink-3); }
 .dd-sm .dd-trigger, .dd-sm .dd-input { height: 28px; min-height: 28px; line-height: 26px; }
 .dd-sm .dd-trigger { padding-left: 6px; }
 
-/* toolbars: content-sized triggers */
 .toolbar .dd-trigger, .etable-tools .dd-trigger, .inline-form .dd-trigger { width: auto; min-width: 120px; max-width: 280px; }
 .toolbar .select-field, .etable-tools .select-field, .inline-form .select-field { flex-direction: row; align-items: center; gap: var(--s2); }
 .inline-form .dd-field { width: auto; min-width: 160px; }
 
-/* input + caret button (combobox, date, month) */
 .dd-field { display: flex; flex-direction: column; min-width: 0; }
 .dd-control { position: relative; display: flex; align-items: center; min-width: 0; width: 100%; }
 .dd-control > .input { width: 100%; padding-right: 30px; }
@@ -79,7 +72,7 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
 .dd-sm .dd-control > .input { padding-right: 24px; padding-left: 6px; }
 .datefield .input, .monthfield .input { font-variant-numeric: tabular-nums; letter-spacing: .01em; }
 
-/* ------------------------------------------------------------------ popover (overlay surface) */
+/* Popover */
 .popover {
   position: fixed; top: 0; left: 0; z-index: 150;
   background: var(--paper); color: var(--ink); border: 1px solid var(--rule-2);
@@ -126,7 +119,7 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
   .dd-option { min-height: 36px; }
 }
 
-/* ------------------------------------------------------------------ checkbox */
+/* Checkbox */
 .cb { display: inline-flex; align-items: center; gap: var(--s2); min-height: 32px; font-size: 13px; cursor: pointer; position: relative; }
 .cb-input { position: absolute; left: 0; top: 50%; width: 14px; height: 14px; margin: -7px 0 0; opacity: 0; pointer-events: none; }
 .cb-box {
@@ -145,9 +138,7 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
 .cb.is-disabled .cb-input:checked + .cb-box { background: var(--ink-3); border-color: var(--ink-3); }
 .dd-multiple .dd-option[aria-selected="true"] { font-weight: 400; }
 
-/* ------------------------------------------------------------------ toggle (setting switch)
-   Label + description on the left, the switch on the right: an outlined track whose thumb slides right
-   when on (track filled with --ink), and the state word, so the state is never told by colour alone. */
+/* Toggle: the thumb position and the state word carry the state, never colour alone. */
 .toggle-row { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s4); }
 .toggle-text { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0; padding-top: 6px; }
 .toggle-label { font-size: 14px; font-weight: 500; color: var(--ink); cursor: pointer; }
@@ -169,7 +160,7 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
 .toggle[aria-checked="true"] { color: var(--ink); }
 .toggle[aria-checked="true"] .toggle-track { background: var(--ink); border-color: var(--ink); }
 .toggle[aria-checked="true"] .toggle-thumb { background: var(--on-ink); transform: translateX(14px); }
-/* Fixed width: « Activé » / « Désactivé » never moves the track. */
+/* Fixed width so the state word never moves the track. */
 .toggle-state { min-width: 68px; text-align: left; }
 .toggle:hover:not(:disabled) .toggle-track { border-color: var(--ink); }
 .toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -184,7 +175,7 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
   .toggle-text { padding-top: 10px; }
 }
 
-/* ------------------------------------------------------------------ calendar / month grid */
+/* Calendar and month grid */
 .cal { width: 268px; padding: var(--s2) var(--s2) var(--s1); }
 .cal-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); padding-bottom: var(--s1); }
 .cal-title { font-size: 13px; font-weight: 500; color: var(--ink); font-variant-numeric: tabular-nums; }
@@ -221,7 +212,7 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
 .mcal-month.is-selected.has-data::before { background: var(--paper); }
 .mcal-legend { display: flex; align-items: center; gap: 6px; margin: var(--s1) 2px 0; font-size: 12px; color: var(--ink-3); }
 
-/* ------------------------------------------------------------------ tooltip */
+/* Tooltip */
 .tooltip {
   position: fixed; top: 0; left: 0; z-index: 210; max-width: min(320px, calc(100vw - 16px));
   padding: 5px var(--s2); border-radius: var(--radius); background: var(--ink); color: var(--paper);
@@ -229,7 +220,7 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
   text-transform: none; white-space: pre-line; overflow-wrap: anywhere; pointer-events: none;
 }
 
-/* ------------------------------------------------------------------ search field */
+/* Search field */
 .search-field { display: inline-flex; min-width: 0; }
 .search-box { position: relative; display: flex; align-items: center; width: 100%; min-width: 0; }
 .search-box > .input { width: 100%; padding-right: 30px; }
@@ -247,15 +238,15 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
   .etable-search-field { flex: 1 1 auto; width: auto; }
 }
 
-/* ------------------------------------------------------------------ busy buttons */
+/* Busy buttons */
 .btn.is-busy { cursor: progress; }
 .btn.is-busy:disabled { opacity: 1; }
 .btn-spinner { width: 12px; height: 12px; margin: 0; flex: 0 0 auto; }
 .btn-primary .btn-spinner { border-color: color-mix(in srgb, var(--paper) 35%, transparent); border-top-color: var(--paper); }
 .btn-danger .btn-spinner { border-color: color-mix(in srgb, var(--ko) 30%, transparent); border-top-color: var(--ko); }
 
-/* ------------------------------------------------------------------ states: empty / loading / error */
-/* skeletons: grey silhouettes at the real sizes (UI.skeleton); one shimmer, off with reduced motion */
+/* Empty, loading and error states */
+/* Skeleton shimmer is turned off under reduced motion in css.html. */
 .skeleton { display: flex; flex-direction: column; gap: var(--s5); }
 .skeleton-body { display: flex; flex-direction: column; gap: var(--s5); }
 .skeleton-lines .skeleton-body { gap: var(--s3); }
@@ -284,12 +275,10 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
 .error-state .error-retry { min-height: 0; margin-left: var(--s2); font-size: inherit; }
 .form-alert { grid-column: 1 / -1; }
 
-/* ------------------------------------------------------------------ editable table: inline editor */
+/* Editable table: inline editor */
 .etable .table td.cell-editing { padding: 5px var(--s3) !important; overflow: visible !important; color: transparent; text-decoration: none !important; }
 .etable .table td.cell-editing > :not(.cell-editor-host) { visibility: hidden; }
 .cell-editor-host { position: absolute; top: 2px; bottom: 2px; left: 2px; z-index: 5; display: flex; min-width: 0; color: var(--ink); }
-/* The editor never grows past its cell: these columns are wide enough for it (JJ/MM/AAAA + calendar button,
-   a short choice + caret). */
 .etable .table td.cell-date { min-width: calc(10ch + 56px); }
 .etable .table td.cell-choice { min-width: 84px; }
 .cell-editor-host .dd-field, .cell-editor-host .dd-control, .cell-editor-host .dd-trigger { min-width: 0; }
