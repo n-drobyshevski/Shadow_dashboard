@@ -523,8 +523,37 @@ describe('access (shell)', () => {
       readySelector: '.page[data-page="unconfigured"]' }, async (app) => {
       const { page } = app;
       assert.equal(await page.$('#config-source'), null);
-      assert.match(await page.textContent('#main'), /Un administrateur doit d’abord/);
+      assert.match(await page.textContent('#main'), /Son propriétaire \(le compte qui l’a déployée\) doit d’abord/);
+      assert.equal(await page.$('#waiting-open-settings'), null, 'no Paramètres for a lecteur');
       assert.equal((await callsNamed(app, 'api_setConfig')).length, 0);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('another admin before any source: waiting screen with Paramètres, no source form (owner only)', async () => {
+    await withApp({ email: ACCOUNTS.ADMIN2, configured: false, empty: true,
+      readySelector: '.page[data-page="unconfigured"]' }, async (app) => {
+      const { page } = app;
+      assert.equal(await page.$('#config-source'), null);
+      assert.match(await page.textContent('#main'), /Son propriétaire/);
+      await page.click('#waiting-open-settings');
+      await page.waitForSelector('#settings-source-owner-only');
+      assert.equal(await page.$('#settings-source'), null);
+      assert.equal((await callsNamed(app, 'api_setConfig')).length, 0);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('source: only the owner gets the form; another admin sees why', async () => {
+    await withApp({ email: ACCOUNTS.ADMIN2, page: 'settings' }, async (app) => {
+      const { page } = app;
+      assert.equal(await page.$('#settings-source'), null);
+      assert.match(await page.textContent('#settings-source-owner-only'), /Seul le propriétaire de l’application/);
+      assert.ok(await page.$('#settings-source-info'), 'the current source is still shown');
+      // The server (mock) refuses it too.
+      const res = await page.evaluate(() => new Promise((resolve) => google.script.run
+        .withSuccessHandler(resolve).api_setConfig(JSON.stringify({ source: '1NewSourceIdNewSourceIdNewSourceId0123' }))));
+      assert.equal(JSON.parse(res).error.code, 'FORBIDDEN');
       assert.deepEqual(app.errors, []);
     });
   });

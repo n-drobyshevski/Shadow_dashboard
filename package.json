@@ -17,7 +17,13 @@
     "open": "clasp open-web-app ${DEPLOYMENT_ID:-}"
   },
   "devDependencies": {
-    "@google/clasp": "^3.4.1"
+    "@google/clasp": "^3.4.1",
+    "braces": "file:vendor/braces"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  },
+  "overrides": {
+    "braces": "$braces"
+  }
 }

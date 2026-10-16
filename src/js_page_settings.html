@@ -133,10 +133,14 @@
         input),
       el('div', { class: 'form-actions' }, button));
 
+    // The server refuses a source change from anyone but the owner (the deployer's rights open the file).
+    var owner = !!(State.get().user || {}).isOwner;
     return UI.section('Source de données',
       el('p', { class: 'page-lede', id: 'settings-source-help' }, 'Le classeur « ShadowIT_Industry », relu toutes ' +
         'les heures. Changer de source ne modifie pas les mois passés : le mois en cours suit la nouvelle source.'),
-      info, form);
+      info,
+      owner ? form : el('p', { class: 'field-help', id: 'settings-source-owner-only' }, 'Seul le propriétaire de ' +
+        'l’application (le compte qui l’a déployée) peut changer de classeur source.'));
   }
 
   // ------------------------------------------------------------------------------ synchronisation

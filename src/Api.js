@@ -41,12 +41,13 @@ function apiWrap_(fn, name, minRole) {
     var ok = false;
     var code = null;
     var release = null;
+    var user = null;
     try {
       Store.clearMemo_();
       Config.clearMemo_();
       release = Access.throttle(name);
       var cfg = Config.get();
-      var user = Access.requireRole(minRole || 'lecteur', cfg.access);
+      user = Access.requireRole(minRole || 'lecteur', cfg.access);
       authMs = Date.now() - t0;
       Core.setThreshold(cfg.threshold);
       var args = parseArgs_(argsJson);
@@ -58,7 +59,9 @@ function apiWrap_(fn, name, minRole) {
       var e = err || {};
       var known = Core.ERROR_CODES.indexOf(e.code) >= 0 && e.code !== 'INTERNAL';
       code = known ? e.code : 'INTERNAL';
-      var message = known ? String(e.message || code) : internalMessage_(e);
+      // Google's error text (which may name a spreadsheet id) only for admins; anyone else, including a
+      // caller refused or not identified yet, gets a generic message. The log keeps the detail.
+      var message = known ? String(e.message || code) : internalMessage_(e, !!user && user.role === 'admin');
       if (code === 'FORBIDDEN' || e.throttled) console.warn('[' + (name || 'api') + '] ' + code + ': ' + message);
       else console.error('[' + (name || 'api') + '] ' + code + ': ' + (e.stack || e.message || String(err)));
       var error = { code: code, message: message };
@@ -93,11 +96,17 @@ function parseArgs_(argsJson) {
   return args;
 }
 
-/** French message for unexpected errors: first line of the error message only (never the stack). */
-function internalMessage_(e) {
+/**
+ * French message for unexpected errors. Admins get the first line of the error message (never the
+ * stack); other callers a generic message: Google's text can name a spreadsheet id they never see.
+ */
+function internalMessage_(e, admin) {
+  if (!admin) return INTERNAL_GENERIC_;
   var detail = String((e && e.message) || '').split('\n')[0].slice(0, 200);
   return 'Erreur interne du serveur' + (detail ? ' : ' + detail : '.');
 }
+
+var INTERNAL_GENERIC_ = 'Erreur interne du serveur. Réessayez ; si le problème persiste, prévenez un administrateur.';
 
 // ------------------------------------------------------------------------------ implementation
 
@@ -108,6 +117,7 @@ var ApiImpl_ = (function () {
   var DATE_FR_RE = /^\d{2}\/\d{2}\/\d{4}$/;
   var IMPORT_LOG_LIMIT = 12;     // api_getImportLog default (the « Journal des synchronisations »)
   var IMPORT_LOG_MAX_LIMIT = 500;
+  var SYNC_ERROR_GENERIC = 'La synchronisation a échoué. Un administrateur en voit le détail dans Paramètres.';
 
   var hasOwn = Object.prototype.hasOwnProperty;
 
@@ -354,7 +364,7 @@ var ApiImpl_ = (function () {
       user: { email: user.email, role: user.role, isOwner: user.isOwner },
       prefs: Config.getPrefs(user.email),
       editing: cfg.editing,
-      sync: Sync.status()
+      sync: syncFor_(Sync.status(), user)
     };
   }
 
@@ -372,7 +382,15 @@ var ApiImpl_ = (function () {
     return { prefs: Config.setPrefs(user.email, patch) };
   }
 
-  function setConfig(args) {
+  /**
+   * Sets the source spreadsheet: the owner only. The app opens it with the deployer's rights, so another
+   * admin could otherwise make it read (and write back to) any spreadsheet the deployer can open.
+   */
+  function setConfig(args, user) {
+    if (!user || !user.isOwner) {
+      throw Core.makeError('FORBIDDEN', 'Seul le propriétaire de l’application (le compte qui l’a déployée) ' +
+        'peut choisir le classeur source.');
+    }
     var input = typeof args.source === 'string' ? args.source : '';
     var id = Core.extractSpreadsheetId(input);
     if (!id) {
@@ -407,9 +425,20 @@ var ApiImpl_ = (function () {
   // ---------------------------------------------------------------------------- sync
 
   /** Sync status, plus the editing switches: the 10-minute poll also brings other admins' changes. */
-  function getSyncStatus() {
-    var st = Sync.status();
+  function getSyncStatus(args, user) {
+    var st = syncFor_(Sync.status(), user);
     st.editing = Config.get().editing;
+    return st;
+  }
+
+  /**
+   * The sync status as `user` may see it: for anyone but an admin, lastError keeps its time and code but
+   * not its message (the first line of the failure, which may be Google's text naming a spreadsheet).
+   */
+  function syncFor_(st, user) {
+    if (st && st.lastError && !(user && user.role === 'admin')) {
+      st.lastError = { at: st.lastError.at, code: st.lastError.code, message: SYNC_ERROR_GENERIC };
+    }
     return st;
   }
 

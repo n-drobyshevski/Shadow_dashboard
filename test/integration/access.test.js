@@ -546,7 +546,9 @@ test('interface preferences: stored per account, allowed to every role, validate
   assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), {});
   assert.deepEqual(plain(ok(sb.ctx, 'api_savePrefs', { sidebar: 'collapsed' })), { prefs: { sidebar: 'collapsed' } });
   assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), { sidebar: 'collapsed' });
-  assert.equal(props.getProperty('PREFS_' + OWNER), '{"sidebar":"collapsed"}');
+  const stored = JSON.parse(props.getProperty('PREFS_' + OWNER));
+  assert.equal(stored.sidebar, 'collapsed');
+  assert.equal(typeof stored.at, 'number', 'the time of the save, used to drop the oldest accounts');
   fail(sb.ctx, 'api_savePrefs', { sidebar: 'wide' }, 'VALIDATION');
   fail(sb.ctx, 'api_savePrefs', { theme: 'dark' }, 'VALIDATION');
   fail(sb.ctx, 'api_savePrefs', {}, 'VALIDATION');
@@ -571,4 +573,79 @@ test('interface preferences: stored per account, allowed to every role, validate
   assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), {});
   props.setProperty('PREFS_' + OWNER, '{"sidebar":"huge","x":1}');
   assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), {});
+});
+
+test('interface preferences: at most MAX_PREFS accounts, the least recently saved dropped first', () => {
+  const sb = imported();
+  const props = sb.ctx.PropertiesService.getScriptProperties();
+  const max = sb.ctx.Config.MAX_PREFS;
+  ok(sb.ctx, 'api_setDomainRole', { role: 'lecteur' });
+  // max accounts already stored: 2 legacy entries (no `at`: dropped first), then at = 2, 3, 4...
+  for (let i = 0; i < max; i++) {
+    props.setProperty('PREFS_u' + i + '@decathlon.com', i < 2 ? '{"sidebar":"open"}' : JSON.stringify({ sidebar: 'open', at: i }));
+  }
+  const keys = () => Object.keys(props.getProperties()).filter((k) => k.indexOf('PREFS_') === 0);
+  assert.equal(keys().length, max);
+  // An account already stored saves again: nothing is dropped.
+  as(sb, 'u5@decathlon.com');
+  ok(sb.ctx, 'api_savePrefs', { sidebar: 'collapsed' });
+  assert.equal(keys().length, max);
+  // A new account: the least recently saved one goes (a legacy entry first), the store stays at max.
+  as(sb, 'new1@decathlon.com');
+  ok(sb.ctx, 'api_savePrefs', { period: 'last3' });
+  assert.equal(keys().length, max);
+  assert.equal(props.getProperty('PREFS_u0@decathlon.com'), null);
+  as(sb, 'new2@decathlon.com');
+  ok(sb.ctx, 'api_savePrefs', { period: 'last3' });
+  assert.equal(props.getProperty('PREFS_u1@decathlon.com'), null);
+  as(sb, 'new3@decathlon.com');
+  ok(sb.ctx, 'api_savePrefs', { period: 'last3' });
+  assert.equal(props.getProperty('PREFS_u2@decathlon.com'), null, 'then the oldest save');
+  assert.notEqual(props.getProperty('PREFS_u5@decathlon.com'), null, 'u5 saved recently: kept');
+  assert.equal(keys().length, max);
+  // A dropped account just falls back to the defaults.
+  as(sb, 'u0@decathlon.com');
+  assert.deepEqual(plain(ok(sb.ctx, 'api_bootstrap').prefs), {});
+});
+
+// ------------------------------------------------------------------------------------ source and errors
+
+test('only the owner chooses the source spreadsheet (another admin cannot point the app at any file)', () => {
+  const sb = imported();
+  ok(sb.ctx, 'api_saveUser', { email: ADMIN2, role: 'admin' });
+  as(sb, ADMIN2);
+  const opened = sb.env.__state.calls.openById || 0;
+  const err = fail(sb.ctx, 'api_setConfig', { source: 'https://docs.google.com/spreadsheets/d/' + 'X'.repeat(30) + '/edit' }, 'FORBIDDEN');
+  assert.match(err.message, /Seul le propriétaire/);
+  assert.equal(sb.env.__state.calls.openById || 0, opened, 'the spreadsheet is not even opened');
+  assert.equal(ok(sb.ctx, 'api_getSettings').source.id, SOURCE_ID, 'unchanged');
+  as(sb, undefined); // the owner
+  ok(sb.ctx, 'api_setConfig', { source: SOURCE_ID });
+});
+
+test('unexpected errors: Google\'s text for admins only; lecteurs get a generic message (also for the sync error)', () => {
+  const sb = imported();
+  ok(sb.ctx, 'api_saveUser', { email: READER, role: 'lecteur' });
+  const leak = 'Service Spreadsheets failed while accessing document with id 1SecretDataSpreadsheetIdXyz.';
+  const listMonths = sb.ctx.Store.listMonths;
+  sb.ctx.Store.listMonths = () => { throw new Error(leak + '\nat stack'); };
+  as(sb, READER);
+  let err = fail(sb.ctx, 'api_bootstrap', null, 'INTERNAL');
+  assert.equal(err.message, 'Erreur interne du serveur. Réessayez ; si le problème persiste, prévenez un administrateur.');
+  as(sb, undefined);
+  err = fail(sb.ctx, 'api_bootstrap', null, 'INTERNAL');
+  assert.equal(err.message, 'Erreur interne du serveur : ' + leak);
+  sb.ctx.Store.listMonths = listMonths;
+
+  // A failed sync: the owner sees the failure's text, a lecteur only its time and code.
+  sb.ctx.Config.today = () => '2026-05-15';
+  sb.env.__fault({ method: 'openById', id: SOURCE_ID });
+  call(sb.ctx, 'api_syncNow');
+  const full = ok(sb.ctx, 'api_getSyncStatus').lastError;
+  assert.ok(full && full.message.length > 0);
+  as(sb, READER);
+  for (const st of [ok(sb.ctx, 'api_getSyncStatus'), ok(sb.ctx, 'api_bootstrap').sync]) {
+    assert.deepEqual(plain(st.lastError), { at: full.at, code: full.code,
+      message: 'La synchronisation a échoué. Un administrateur en voit le détail dans Paramètres.' });
+  }
 });

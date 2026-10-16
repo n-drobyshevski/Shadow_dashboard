@@ -29,7 +29,9 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      # No install: the unit and integration tests only use Node built-ins.
+      # Lockfile-exact install, no install scripts: only test/unit/braces-patch.test.js needs a package
+      # (vendor/braces requires fill-range); the other tests only use Node built-ins.
+      - run: npm ci --ignore-scripts
       - run: npm test
 
   semgrep:
@@ -109,6 +111,15 @@ jobs:
       # package-lock.json: the clasp toolchain (dev only, nothing of it is deployed). Plotly, the only
       # library the deployed app loads, is pinned by version + SRI and checked by test/integration/security.test.js.
       - run: '"$RUNNER_TEMP/osv-scanner" scan source --config osv-scanner.toml -L package-lock.json'
+      # vendor/braces is braces 3.0.3 patched for GHSA-vfj7-8cjw-p6xm. A warning (not a failure) once npm
+      # has a newer braces: check whether it fixes the advisory, then drop the vendored copy.
+      - name: Upstream braces still at 3.0.3
+        run: |
+          latest=$(npm view braces version)
+          echo "braces on npm: $latest"
+          if [ "$latest" != "3.0.3" ]; then
+            echo "::warning title=braces ${latest} published::Check GHSA-vfj7-8cjw-p6xm; if fixed, remove vendor/braces, its devDependency and the override (docs/SECURITY.md)."
+          fi
       - name: Plotly 2.35.3 has no known advisory
         run: |
           out=$(curl -sSf -X POST https://api.osv.dev/v1/query \

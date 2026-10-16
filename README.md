@@ -82,7 +82,9 @@ Workspace que le déployeur. Avec un compte Gmail personnel, seul le déployeur 
 « Accès » ci-dessous).
 
 1. **Installer les outils** : `npm ci` installe exactement les versions de `package-lock.json`, sans
-   le modifier (clasp envoie le code avec vos droits Google ; pas de version non relue).
+   le modifier (clasp envoie le code avec vos droits Google ; pas de version non relue). `npm audit`
+   doit indiquer 0 vulnérabilité : `braces` (utilisé par clasp) est remplacé par la copie corrigée de
+   `vendor/braces` (voir son README et docs/SECURITY.md).
    ```sh
    npm ci
    ```
@@ -235,7 +237,8 @@ WSL.
   `DATA_SPREADSHEET_ID`. Le prochain chargement crée un nouveau classeur `ShadowIT_AppData` vide
   (seul le mois en cours revient, à la synchronisation suivante ; l'historique, les actions et les
   remplacements sont perdus).
-- Pour changer de classeur source : Paramètres → Source de données → « Changer de source ».
+- Pour changer de classeur source : Paramètres → Source de données → « Changer de source » (propriétaire
+  uniquement : le classeur est ouvert avec les droits du compte qui a déployé l’application).
 - Si la synchronisation échoue (source supprimée, droits retirés, onglet renommé), le bouton d'état
   en bas du menu de gauche passe en rouge avec le message, et Google envoie un e-mail d'échec au propriétaire
   du script. Les données affichées restent celles de la dernière synchronisation réussie.
