@@ -558,11 +558,14 @@
   function syncNow(button, opts) {
     if (syncing) return Promise.resolve(null);
     syncing = true;
+    pickGhost();
+    document.body.classList.add('is-syncing');
     updateSyncChip();
     var p = api.call(opts && opts.enable ? 'api_enableSync' : 'api_syncNow', null);
     if (button) UI.busy(button, p, 'Synchronisation…').then(null, function () {});
     return p.then(function (res) {
       syncing = false;
+      document.body.classList.remove('is-syncing');
       var r = res.result || {};
       State.set({ sync: res.status });
       UI.toast(r.changed ? 'Synchronisé — ' + Fmt.syncChange(r.changes) + '.' : 'Synchronisé — aucune modification.', 'success');
@@ -572,6 +575,7 @@
       return res;
     }, function (err) {
       syncing = false;
+      document.body.classList.remove('is-syncing');
       UI.errorToast(err, 'Synchronisation impossible');
       return refreshSyncStatus().then(function () { return null; });
     });
@@ -1111,12 +1115,33 @@
     if ((info.id === 'dashboard' && !per.single) || info.id === 'timeline') State.loadTimeline().catch(ignore);
   }
 
+  // The ghost logo either floats or looks around while data loads, drawn again at each wait.
+  function pickGhost() {
+    document.documentElement.setAttribute('data-ghost', Math.random() < 0.5 ? 'float' : 'look');
+  }
+
+  function isLoading() {
+    return main.getAttribute('aria-busy') === 'true' || !!main.querySelector('[aria-busy="true"]:not(button)');
+  }
+
+  function watchLoading() {
+    var was = false;
+    new MutationObserver(function () {
+      var now = isLoading();
+      if (now && !was) pickGhost();
+      was = now;
+    }).observe(main, { subtree: true, attributes: true, attributeFilter: ['aria-busy'], childList: true });
+  }
+
   function boot() {
     // Start the Plotly download now; only charts wait for it.
     Charts.ready();
     sidebar = document.getElementById('sidebar');
     appbar = document.getElementById('appbar');
     main = document.getElementById('main');
+    // index.html already picked one for the splash.
+    if (!document.documentElement.hasAttribute('data-ghost')) pickGhost();
+    watchLoading();
     document.body.classList.toggle('nav-collapsed', readLocalSidebar() === 'collapsed');
     var toggle = document.getElementById('nav-toggle');
     if (toggle && !toggle.dataset.bound) {

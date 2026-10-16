@@ -109,7 +109,8 @@
   .page-settings .access-table tbody tr:focus-within .access-actions .btn { opacity: 1; }
 }
 /* Rows just added: a green wash until the next change. */
-.page-settings .access-table tbody tr.is-new > * { background: var(--ok-bg); }
+.page-settings .access-table tbody tr.is-new > * { background: var(--ok-bg); animation: row-new 900ms var(--ease-out); }
+@keyframes row-new { from { background: color-mix(in srgb, var(--ok) 30%, var(--paper)); } }
 /* « Ajouter un accès » dialog */
 .access-add { display: flex; flex-direction: column; gap: var(--s4); }
 .access-add .settings-tabs { display: flex; flex-wrap: wrap; gap: 0 var(--s5); border-bottom: 1px solid var(--rule-2); }

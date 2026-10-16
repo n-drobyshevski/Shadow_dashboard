@@ -125,6 +125,7 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
 .cb-box {
   flex: 0 0 14px; width: 14px; height: 14px; position: relative;
   border: 1px solid var(--rule-2); border-radius: 2px; background: var(--paper);
+  transition: background-color var(--d1), border-color var(--d1);
 }
 .cb:hover .cb-box, .dd-option:hover > .cb-box, .dd-option.is-active > .cb-box { border-color: var(--ink-3); }
 .cb-input:checked + .cb-box, .dd-option[aria-selected="true"] > .cb-box { background: var(--ink); border-color: var(--ink); }
@@ -132,6 +133,8 @@ input[type="search"]::-webkit-search-results-button, input[type="search"]::-webk
   content: ''; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px;
   border-right: 2px solid var(--paper); border-bottom: 2px solid var(--paper); transform: rotate(45deg);
 }
+.cb-input:checked + .cb-box::after { animation: check-in var(--d1) var(--ease-out); }
+@keyframes check-in { from { opacity: 0; transform: rotate(45deg) scale(.4); } }
 .cb-input:focus-visible + .cb-box { outline: 2px solid var(--accent); outline-offset: 1px; }
 .cb.is-disabled { color: var(--ink-3); cursor: not-allowed; }
 .cb.is-disabled .cb-box { background: var(--paper-2); border-color: var(--rule); }

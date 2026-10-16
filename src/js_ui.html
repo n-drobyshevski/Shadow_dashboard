@@ -391,8 +391,12 @@
       document.body.appendChild(root);
     }
     var node;
+    var leaving = false;
     function dismiss() {
-      if (node && node.parentNode) node.parentNode.removeChild(node);
+      if (leaving || !node) return;
+      leaving = true;
+      node.classList.add('is-leaving');
+      setTimeout(function () { if (node.parentNode) node.parentNode.removeChild(node); }, 110);
     }
     node = el('div', { class: 'toast toast-' + kind, role: kind === 'error' ? 'alert' : 'status' },
       el('span', { class: 'toast-msg' }, String(message === undefined ? '' : message)),
