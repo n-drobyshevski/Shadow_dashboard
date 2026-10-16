@@ -6,7 +6,7 @@
  */
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const { ACCOUNTS, openApp, chooseOption, dropdownValue } = require('./harness');
+const { ACCOUNTS, openApp, chooseOption } = require('./harness');
 
 async function withApp(options, fn) {
   const app = await openApp(options);
@@ -22,7 +22,21 @@ async function callsNamed(app, name) {
 }
 
 async function accessEmails(page) {
-  return page.$$eval('#access-table tbody tr', (rows) => rows.map((r) => r.dataset.email));
+  return page.$$eval('#access-table tbody tr[data-email]', (rows) => rows.map((r) => r.dataset.email));
+}
+
+async function groupRows(page) {
+  return page.$$eval('#access-table tbody tr[data-group]', (rows) => rows.map((r) => r.dataset.group));
+}
+
+/** Opens « Ajouter » on Accès, on one of its tabs (one | many | group). */
+async function openAdd(page, tabId) {
+  await page.click('#access-add-open');
+  await page.waitForSelector('.modal #add-email');
+  if (tabId && tabId !== 'one') {
+    await page.click('#add-tab-' + tabId);
+    await page.waitForSelector('#add-panel-' + tabId, { state: 'visible' });
+  }
 }
 
 /** Selects a tab of Paramètres (general | saisie | acces) and waits for its panel. */
@@ -48,7 +62,7 @@ describe('settings (admin)', () => {
       const titles = (id) => page.$$eval('#settings-panel-' + id + ' .card-title', (ns) => ns.map((n) => n.textContent.trim()));
       assert.deepEqual(await titles('general'), ['Source de données', 'Synchronisation', 'Seuil de conformité']);
       assert.deepEqual(await titles('saisie'), ['Saisie dans l’application']);
-      assert.deepEqual(await titles('acces'), ['Comptes', 'Groupes Google']);
+      assert.deepEqual(await titles('acces'), ['Personnes et groupes']);
       assert.equal(await page.isVisible('#settings-panel-saisie'), false);
       assert.equal(await page.isVisible('#settings-panel-acces'), false);
       assert.equal((await page.textContent('#settings-source-link')).trim(), 'ShadowIT_Industry');
@@ -57,12 +71,17 @@ describe('settings (admin)', () => {
       assert.ok(await page.isHidden('#settings-threshold-reset'));
       await tab(page, 'acces');
       assert.equal(await page.isVisible('#settings-panel-general'), false);
-      assert.equal(await dropdownValue(page, '#settings-domain-role'), 'none');
+      assert.equal(await page.getAttribute('#settings-domain-none', 'aria-pressed'), 'true');
+      assert.equal(await page.getAttribute('#settings-domain-lecteur', 'aria-pressed'), 'false');
+      // One list: accounts (owner first), then groups.
       assert.deepEqual(await accessEmails(page),
         [ACCOUNTS.OWNER, ACCOUNTS.LECTEUR, ACCOUNTS.ADMIN2]);
+      assert.deepEqual(await groupRows(page), ['labo-industry@decathlon.com']);
+      assert.match(await page.textContent('#access-table tr[data-group="labo-industry@decathlon.com"]'), /Groupe Google/);
+      assert.equal((await page.textContent('#access-count')).trim(), '3 comptes · 1 groupe');
       // The owner row and the signed-in row are plain text, never editable.
       const owner = page.locator(`#access-table tr[data-email="${ACCOUNTS.OWNER}"]`);
-      assert.match(await owner.textContent(), /Administrateur\s*propriétaire/);
+      assert.match(await owner.textContent(), /Propriétaire[\s\S]*Administrateur/);
       assert.equal(await owner.locator('button').count(), 0);
       assert.equal(await page.locator(`#access-table tr[data-email="${ACCOUNTS.LECTEUR}"] button:has-text("Retirer")`).count(), 1);
       assert.doesNotMatch(await page.textContent('#main'), /\p{Extended_Pictographic}/u);
@@ -161,22 +180,31 @@ describe('settings (admin)', () => {
     await withApp({ page: 'settings' }, async (app) => {
       const { page } = app;
       await tab(page, 'acces');
-      await page.fill('#access-email', 'pas-une-adresse');
-      await page.click('#access-add');
-      await page.waitForSelector('#access-email[aria-invalid="true"]');
-      assert.match(await page.textContent('#access-email-err'), /Adresse e-mail invalide/);
+      await openAdd(page);
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'add-email');
+      assert.equal(await page.isChecked('#add-role-lecteur'), true, 'lecteur by default');
+      await page.click('.modal .btn-primary');
+      assert.match(await page.textContent('#add-email-err'), /Saisissez une adresse/);
+      await page.fill('#add-email', 'pas-une-adresse');
+      await page.press('#add-email', 'Enter');
+      await page.waitForFunction(() => /Adresse e-mail invalide/.test(document.getElementById('add-email-err').textContent));
+      assert.equal(await page.getAttribute('#add-email', 'aria-invalid'), 'true');
 
-      await page.fill('#access-email', ACCOUNTS.OWNER);
-      await page.click('#access-add');
-      await page.waitForFunction(() => /propriétaire/.test(document.getElementById('access-email-err').textContent));
+      await page.fill('#add-email', ACCOUNTS.OWNER);
+      await page.click('.modal .btn-primary');
+      await page.waitForFunction(() => /propriétaire/.test(document.getElementById('add-email-err').textContent));
+      assert.ok(await page.isVisible('.modal'), 'a refusal keeps the dialog open');
 
-      await page.fill('#access-email', '  Nina.New@Decathlon.com ');
-      await chooseOption(page, '#access-role', 'Administrateur');
-      await page.click('#access-add');
+      await page.fill('#add-email', '  Nina.New@Decathlon.com ');
+      await page.check('#add-role-admin');
+      await page.click('.modal .btn-primary');
+      await page.waitForSelector('.modal', { state: 'detached' });
       assert.equal(await lastToast(page), 'Accès ajouté — nina.new@decathlon.com (Administrateur).');
       await app.waitIdle();
       assert.deepEqual(await accessEmails(page),
         [ACCOUNTS.OWNER, ACCOUNTS.LECTEUR, 'nina.new@decathlon.com', ACCOUNTS.ADMIN2]);
+      // The new row is highlighted until the next change.
+      assert.equal(await page.$eval('#access-table tr[data-email="nina.new@decathlon.com"]', (n) => n.classList.contains('is-new')), true);
 
       await chooseOption(page, `#access-table tr[data-email="${ACCOUNTS.ADMIN2}"] .dd-trigger`, 'Lecteur');
       assert.equal(await lastToast(page), `Rôle modifié — ${ACCOUNTS.ADMIN2} : Lecteur.`);
@@ -192,8 +220,11 @@ describe('settings (admin)', () => {
       await app.waitIdle();
       assert.ok(!(await accessEmails(page)).includes(ACCOUNTS.LECTEUR));
 
-      await chooseOption(page, '#settings-domain-role', 'Lecteur');
+      await page.click('#settings-domain-lecteur');
       assert.match(await lastToast(page), /Tout compte du domaine/);
+      await app.waitIdle();
+      assert.equal(await page.getAttribute('#settings-domain-lecteur', 'aria-pressed'), 'true');
+      assert.equal(await page.getAttribute('#settings-domain-none', 'aria-pressed'), 'false');
       assert.deepEqual((await callsNamed(app, 'api_setDomainRole')).map((c) => c.args), [{ role: 'lecteur' }]);
       assert.deepEqual(app.errors, []);
     });
@@ -203,10 +234,9 @@ describe('settings (admin)', () => {
     await withApp({ page: 'settings' }, async (app) => {
       const { page } = app;
       await tab(page, 'acces');
-      assert.equal((await page.textContent('#access-count')).trim(), '3 comptes');
-      await page.click('#access-bulk-open');
-      await page.waitForSelector('.modal #bulk-emails');
-      assert.equal(await page.evaluate(() => document.activeElement.id), 'bulk-emails');
+      assert.equal((await page.textContent('#access-count')).trim(), '3 comptes · 1 groupe');
+      await openAdd(page, 'many');
+      assert.equal(await page.getAttribute('#add-tab-many', 'aria-selected'), 'true');
       const primary = page.locator('.modal .btn-primary');
       assert.equal(await primary.isDisabled(), true, 'nothing to add yet');
 
@@ -219,9 +249,9 @@ describe('settings (admin)', () => {
       assert.equal((await primary.textContent()).trim(), 'Enregistrer 4 comptes');
 
       // Same paste as admins: the preview follows the role.
-      await chooseOption(page, '#bulk-role', 'Administrateur');
+      await page.check('#add-role-admin');
       assert.match(await page.textContent('#bulk-preview'), /^3 nouveaux comptes · 1 rôle modifié · 1 déjà administrateur/);
-      await chooseOption(page, '#bulk-role', 'Lecteur');
+      await page.check('#add-role-lecteur');
 
       await primary.click();
       await page.waitForSelector('.modal', { state: 'detached' });
@@ -230,18 +260,18 @@ describe('settings (admin)', () => {
       const call = (await callsNamed(app, 'api_addUsers')).pop();
       assert.deepEqual(call.args, { role: 'lecteur', emails: ['nina.petit@decathlon.com', 'tom.roux@decathlon.com',
         'jade.morel@decathlon.com', ACCOUNTS.ADMIN2] });
-      assert.equal((await page.textContent('#access-count')).trim(), '6 comptes');
+      assert.equal((await page.textContent('#access-count')).trim(), '6 comptes · 1 groupe');
       assert.equal(await page.evaluate((e) => window.__mock.db.access.users.find((u) => u.email === e).role, ACCOUNTS.ADMIN2), 'lecteur');
 
       // Search hides non-matching rows and keeps the focus; Escape clears it.
       await page.fill('#access-search', 'nina');
       assert.deepEqual(await page.$$eval('#access-table tbody tr:not([hidden])', (rs) => rs.map((r) => r.dataset.email)),
         ['nina.petit@decathlon.com']);
-      assert.equal((await page.textContent('#access-count')).trim(), '1 sur 6 comptes');
+      assert.equal((await page.textContent('#access-count')).trim(), '1 sur 7');
       await page.fill('#access-search', 'zzz');
       assert.ok(await page.isVisible('#access-nomatch'));
       await page.press('#access-search', 'Escape');
-      assert.equal(await page.$$eval('#access-table tbody tr:not([hidden])', (rs) => rs.length), 6);
+      assert.equal(await page.$$eval('#access-table tbody tr:not([hidden])', (rs) => rs.length), 7);
       assert.equal(await page.evaluate(() => document.activeElement.id), 'access-search');
       assert.deepEqual(app.errors, []);
     });
@@ -251,7 +281,7 @@ describe('settings (admin)', () => {
     await withApp({ page: 'settings' }, async (app) => {
       const { page } = app;
       await tab(page, 'acces');
-      await page.click('#access-bulk-open');
+      await openAdd(page, 'many');
       await page.fill('#bulk-emails', 'Léa Martin, Sam\n' + ACCOUNTS.LECTEUR);
       assert.equal((await page.textContent('#bulk-preview')).trim(), '1 déjà lecteur');
       assert.equal(await page.locator('.modal .btn-primary').isDisabled(), true);
@@ -272,30 +302,32 @@ describe('settings (admin)', () => {
     await withApp({ page: 'settings' }, async (app) => {
       const { page } = app;
       await tab(page, 'acces');
-      const groupRows = () => page.$$eval('#groups-table tbody tr', (rs) => rs.map((r) => r.dataset.group));
-      assert.deepEqual(await groupRows(), ['labo-industry@decathlon.com']);
+      assert.deepEqual(await groupRows(page), ['labo-industry@decathlon.com']);
 
-      await page.fill('#group-email', 'inconnu@decathlon.com');
-      await page.click('#group-add');
-      await page.waitForSelector('#group-email[aria-invalid="true"]');
-      assert.match(await page.textContent('#group-email-err'), /Groupe introuvable ou membres non visibles/);
+      await openAdd(page, 'group');
+      assert.equal((await page.textContent('.modal .btn-primary')).trim(), 'Ajouter le groupe');
+      await page.fill('#add-group', 'inconnu@decathlon.com');
+      await page.press('#add-group', 'Enter');
+      await page.waitForSelector('#add-group[aria-invalid="true"]');
+      assert.match(await page.textContent('#add-group-err'), /Groupe introuvable ou membres non visibles/);
 
-      await page.fill('#group-email', 'Shadow-Admins@decathlon.com');
-      await chooseOption(page, '#group-role', 'Administrateur');
-      await page.click('#group-add');
+      await page.fill('#add-group', 'Shadow-Admins@decathlon.com');
+      await page.check('#add-role-admin');
+      await page.click('.modal .btn-primary');
+      await page.waitForSelector('.modal', { state: 'detached' });
       assert.equal(await lastToast(page), 'Groupe ajouté — shadow-admins@decathlon.com (Administrateur).');
       await app.waitIdle();
-      assert.deepEqual(await groupRows(), ['labo-industry@decathlon.com', 'shadow-admins@decathlon.com']);
+      assert.deepEqual(await groupRows(page), ['labo-industry@decathlon.com', 'shadow-admins@decathlon.com']);
 
-      await chooseOption(page, '#groups-table tr[data-group="labo-industry@decathlon.com"] .dd-trigger', 'Administrateur');
+      await chooseOption(page, '#access-table tr[data-group="labo-industry@decathlon.com"] .dd-trigger', 'Administrateur');
       assert.equal(await lastToast(page), 'Rôle modifié — labo-industry@decathlon.com : Administrateur.');
       await app.waitIdle();
 
-      await page.click('#groups-table tr[data-group="labo-industry@decathlon.com"] button:has-text("Retirer")');
+      await page.click('#access-table tr[data-group="labo-industry@decathlon.com"] button:has-text("Retirer")');
       await page.click('.modal button:has-text("Retirer")');
       await page.waitForSelector('.modal', { state: 'detached' });
       await app.waitIdle();
-      assert.deepEqual(await groupRows(), ['shadow-admins@decathlon.com']);
+      assert.deepEqual(await groupRows(page), ['shadow-admins@decathlon.com']);
       assert.deepEqual(app.errors, []);
     });
 
@@ -308,11 +340,37 @@ describe('settings (admin)', () => {
       await page.waitForSelector('#main .page[data-page="dashboard"]');
       await app.goto('settings');
       await tab(page, 'acces');
-      await page.click('#groups-table tr[data-group="shadow-admins@decathlon.com"] button:has-text("Retirer")');
+      await page.click('#access-table tr[data-group="shadow-admins@decathlon.com"] button:has-text("Retirer")');
       await page.click('.modal button:has-text("Retirer")');
       await page.waitForFunction(() => /retirerait le rôle administrateur/.test(document.querySelector('.modal') ?
         document.querySelector('.modal').textContent : ''));
       assert.equal(await page.evaluate(() => window.__mock.db.access.groups.length), 2);
+      assert.deepEqual(app.errors, []);
+    });
+  });
+
+  test('access filters: role and group chips with counts, combined with the search', async () => {
+    await withApp({ page: 'settings' }, async (app) => {
+      const { page } = app;
+      await tab(page, 'acces');
+      const visible = () => page.$$eval('#access-table tbody tr:not([hidden])', (rs) => rs.map((r) => r.dataset.email || r.dataset.group));
+      const chips = await page.$$eval('#settings-access [aria-label="Filtrer la liste"] button', (ns) => ns.map((n) =>
+        [n.id, n.getAttribute('aria-pressed'), n.textContent.replace(/\s+/g, ' ').trim()]));
+      assert.deepEqual(chips, [['access-filter-all', 'true', 'Tous 4'], ['access-filter-admin', 'false', 'Administrateurs 2'],
+        ['access-filter-lecteur', 'false', 'Lecteurs 1'], ['access-filter-group', 'false', 'Groupes 1']]);
+      await page.click('#access-filter-admin');
+      assert.deepEqual(await visible(), [ACCOUNTS.OWNER, ACCOUNTS.ADMIN2]);
+      assert.equal(await page.getAttribute('#access-filter-admin', 'aria-pressed'), 'true');
+      assert.equal((await page.textContent('#access-count')).trim(), '2 sur 4');
+      await page.click('#access-filter-group');
+      assert.deepEqual(await visible(), ['labo-industry@decathlon.com']);
+      await page.click('#access-filter-lecteur');
+      assert.deepEqual(await visible(), [ACCOUNTS.LECTEUR], 'a group with the lecteur role is not a lecteur account');
+      await page.fill('#access-search', 'sam');
+      assert.deepEqual(await visible(), []);
+      assert.ok(await page.isVisible('#access-nomatch'));
+      await page.click('#access-filter-all');
+      assert.deepEqual(await visible(), [ACCOUNTS.ADMIN2]);
       assert.deepEqual(app.errors, []);
     });
   });
@@ -353,8 +411,9 @@ describe('settings (admin)', () => {
       assert.ok(await page.isVisible('#settings-source'));
       assert.equal(await page.$('#settings-source-toggle'), null);
       await tab(page, 'acces');
-      await page.fill('#access-email', 'first.reader@decathlon.com');
-      await page.click('#access-add');
+      await openAdd(page);
+      await page.fill('#add-email', 'first.reader@decathlon.com');
+      await page.click('.modal .btn-primary');
       assert.match(await lastToast(page), /Accès ajouté/);
       // Saving the first source keeps the admin on Paramètres with the full shell.
       await tab(page, 'general');

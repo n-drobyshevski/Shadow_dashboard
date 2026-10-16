@@ -49,31 +49,108 @@
 /* « Saisie dans l’application »: one switch per row, rows split by a hairline. */
 .page-settings .editing-list { display: flex; flex-direction: column; gap: var(--s3); }
 .page-settings .editing-list > .toggle-row + .toggle-row { border-top: 1px solid var(--rule); padding-top: var(--s3); }
-/* Access table: account in mono, role as a small dropdown, the row action right-aligned. */
-.page-settings .access-table .access-role { width: 168px; }
-.page-settings .access-table .access-role .select-field { max-width: 160px; }
-.page-settings .access-table .access-actions { width: 96px; text-align: right; }
-.page-settings .access-note { color: var(--ink-3); font-size: 12px; margin-left: var(--s1); }
-.page-settings .settings-form .select-field { min-width: 160px; }
-/* Above the access table: search + count on the left, bulk add on the right. */
+/* Accès: « Qui d’autre… » band, then one list of accounts and groups. */
+.page-settings .access-domain {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3) var(--s5); padding: var(--s4) var(--s5);
+  background: var(--paper-2); border-radius: var(--radius-overlay);
+}
+.page-settings .access-domain-text { flex: 1 1 280px; display: flex; flex-direction: column; gap: 2px; }
+.page-settings .access-domain-title { margin: 0; font-size: 14px; font-weight: 500; }
+.page-settings .segmented, .access-add .segmented { display: inline-flex; border: 1px solid var(--rule-2); border-radius: var(--radius); overflow: hidden; }
+.page-settings .segmented-btn {
+  min-height: var(--control-h); padding: 0 var(--s4); border: 0; border-right: 1px solid var(--rule-2); background: var(--paper);
+  font: inherit; font-size: 13px; color: var(--ink-2); cursor: pointer;
+}
+.page-settings .segmented-btn:last-child { border-right: 0; }
+.page-settings .segmented-btn:hover:not(:disabled) { color: var(--ink); }
+.page-settings .segmented-btn[aria-pressed="true"] { background: var(--ink); color: var(--on-ink); font-weight: 500; }
+.page-settings .segmented-btn:disabled { cursor: progress; }
+.page-settings .segmented-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .page-settings .access-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
 .page-settings .access-tools .search-field { flex: 0 1 280px; }
-.page-settings .access-count { color: var(--ink-3); font-size: 12px; }
-.page-settings .access-tools .access-bulk-open { margin-left: auto; }
+.page-settings .access-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.page-settings .access-chip {
+  display: inline-flex; align-items: center; gap: 6px; min-height: var(--control-h-sm); padding: 0 10px;
+  border: 1px solid var(--rule); border-radius: 14px; background: var(--paper); font: inherit; font-size: 13px;
+  color: var(--ink-2); cursor: pointer;
+}
+.page-settings .access-chip:hover { color: var(--ink); border-color: var(--rule-2); }
+.page-settings .access-chip[aria-pressed="true"] { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); color: var(--ink); font-weight: 500; }
+.page-settings .access-chip-n { font-size: 12px; color: var(--ink-3); font-weight: 400; }
+.page-settings .access-count { margin-left: auto; color: var(--ink-3); font-size: 12px; }
 .page-settings .access-nomatch { margin: 0; color: var(--ink-2); }
-.page-settings .access-groups { display: flex; flex-direction: column; gap: var(--s3); }
-.page-settings .access-groups > .lede { margin: -4px 0 0; }
-/* Bulk add dialog */
-.access-bulk .access-bulk-text { width: 100%; min-height: 168px; font-family: var(--font-mono); font-size: 13px; }
-.access-bulk .access-bulk-role { max-width: 200px; }
-.access-bulk .access-bulk-preview { margin: 0; font-size: 13px; color: var(--ink-2); min-height: 20px; }
-.access-bulk .access-bulk-preview .num { font-family: var(--font-mono); color: var(--ink); }
-.access-bulk .access-bulk-invalid { color: var(--ko); overflow-wrap: anywhere; }
-.access-bulk { display: flex; flex-direction: column; gap: var(--s3); }
+.page-settings .access-table .access-role { width: 168px; }
+.page-settings .access-table .access-role .select-field { max-width: 160px; }
+.page-settings .access-table .access-actions { width: 88px; text-align: right; }
+.page-settings .access-note { color: var(--ink-3); font-size: 12px; margin-left: var(--s1); }
+.page-settings .access-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.page-settings .access-avatar {
+  flex: 0 0 28px; width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--font-mono); font-size: 11px; font-weight: 500; letter-spacing: 0;
+}
+.page-settings .access-avatar.is-admin { background: var(--ink); color: var(--on-ink); }
+.page-settings .access-avatar.is-lecteur { background: var(--rule); color: var(--ink); }
+.page-settings .access-avatar.is-group { border: 1px dashed var(--ink-3); color: var(--ink-2); }
+.page-settings .access-avatar svg { fill: none; stroke: currentColor; stroke-width: 1.4; }
+.page-settings .access-id { display: flex; flex-direction: column; min-width: 0; }
+.page-settings .access-email { overflow-wrap: anywhere; }
+.page-settings .access-sub { font-size: 12px; color: var(--ink-3); }
+.page-settings .access-tag {
+  display: inline-block; margin-left: var(--s2); padding: 0 6px; border: 1px solid var(--rule); border-radius: var(--radius);
+  font-family: var(--font-sans); font-size: 11px; line-height: 18px; color: var(--ink-2); vertical-align: 1px;
+}
+.page-settings .access-fixed-role { color: var(--ink-2); padding-left: 7px; }
+/* Quiet role dropdown: reads as text, a border under the pointer or the focus. */
+.page-settings .dd-quiet .dd-trigger { border-color: transparent; background: none; }
+.page-settings .dd-quiet .dd-trigger:hover, .page-settings .dd-quiet .dd-trigger:focus-visible,
+.page-settings .dd-quiet .dd-trigger[aria-expanded="true"] { border-color: var(--rule-2); background: var(--paper); }
+/* « Retirer » stays quiet until the row is pointed at or focused (always visible on touch screens). */
+@media (hover: hover) {
+  .page-settings .access-table tbody tr .access-actions .btn { opacity: .55; }
+  .page-settings .access-table tbody tr:hover .access-actions .btn,
+  .page-settings .access-table tbody tr:focus-within .access-actions .btn { opacity: 1; }
+}
+/* Rows just added: a green wash until the next change. */
+.page-settings .access-table tbody tr.is-new > * { background: var(--ok-bg); }
+/* « Ajouter un accès » dialog: tabs, the field(s) of the tab, the role for all. */
+.access-add { display: flex; flex-direction: column; gap: var(--s4); }
+.access-add .settings-tabs { display: flex; flex-wrap: wrap; gap: 0 var(--s5); border-bottom: 1px solid var(--rule-2); }
+.access-add .settings-tab {
+  min-height: 40px; margin-bottom: -1px; padding: 0 2px; border: 0; border-bottom: 2px solid transparent; background: none;
+  font: inherit; font-size: 13px; color: var(--ink-2); cursor: pointer;
+}
+.access-add .settings-tab[aria-selected="true"] { border-bottom-color: var(--ink); color: var(--ink); font-weight: 500; }
+.access-add .settings-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.access-add-panel { display: flex; flex-direction: column; gap: var(--s2); }
+.access-add-panel[hidden] { display: none; }
+.access-add-panel > .lede, .access-add-panel > .field-help { margin: 0; }
+.access-add .input.mono { font-family: var(--font-mono); }
+.access-bulk-text { width: 100%; min-height: 150px; font-family: var(--font-mono); font-size: 13px; }
+.access-bulk-preview { margin: 0; font-size: 13px; color: var(--ink-2); min-height: 20px; }
+.access-bulk-preview .num { font-family: var(--font-mono); color: var(--ink); }
+.access-bulk-invalid { color: var(--ko); overflow-wrap: anywhere; }
+.role-cards { display: flex; flex-direction: column; gap: var(--s2); margin: 0; padding: 0; border: 0; min-width: 0; }
+.role-cards > legend { padding: 0; margin-bottom: var(--s2); }
+.role-card {
+  display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--rule); border-radius: var(--radius);
+  cursor: pointer;
+}
+.role-card:hover { border-color: var(--rule-2); }
+.role-card:has(input:checked) { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.role-card input { margin: 3px 0 0; accent-color: var(--ink); }
+.role-card-text { display: flex; flex-direction: column; }
+.role-card-label { font-size: 13px; font-weight: 500; }
 @media (max-width: 700px) {
   .page-settings .access-table .access-role { width: auto; }
-  .page-settings .access-table .access-added { display: none; }
+  .page-settings .access-table .access-added, .page-settings .access-table thead th:nth-child(3) { display: none; }
   .page-settings .access-table .access-role .access-note { display: block; margin-left: 0; }
+  /* Narrow: the address alone (no avatar, no group subtitle), the tag under it; « Retirer » always full strength. */
+  .page-settings .access-avatar, .page-settings .access-sub { display: none; }
+  .page-settings .access-tag { display: table; margin: 2px 0 0; }
+  .page-settings .access-table .access-role { width: 1%; }
+  .page-settings .access-table .access-actions { width: 1%; }
+  .page-settings .access-count { margin-left: 0; }
+  .page-settings .access-table th, .page-settings .access-table td { padding-left: 4px; padding-right: 4px; }
 }
 </style>
 <script>
@@ -94,13 +171,12 @@
  *     delete: bool}), for every admin and every month: modify, create and delete postes / applications
  *     (actions and remplacements are not concerned). The result goes to State.setEditing (the Postes /
  *     Applications pages follow at once); the switches follow State 'editing' changes made elsewhere.
- *   - Accès: role of the other accounts of the domain (api_setDomainRole), the access list with an inline
- *     role dropdown and « Retirer » (api_saveUser / api_removeUser), a search over the list, an add form,
- *     and « Ajouter plusieurs comptes… »: paste any list of addresses (Core.parseEmailList), live
- *     preview of new / changed / already present / invalid, one api_addUsers call. Below, « Groupes Google »:
- *     every member of a listed group gets its role (api_saveGroup / api_removeGroup; the server checks the
- *     group exists and its members are visible to the owner). The deployer is
- *     always admin and the caller cannot edit their own access (server guards, shown here as plain text).
+ *   - Accès: « Qui d’autre peut ouvrir l’application ? » (domain role, two buttons -> api_setDomainRole), then
+ *     one list of accounts and Google Groups (search, filter chips by role / groups, inline role dropdown,
+ *     « Retirer »: api_saveUser / api_removeUser, api_saveGroup / api_removeGroup) and « Ajouter » (openAdd: one
+ *     account, a pasted list with its live preview -> api_addUsers, or a group the server checks). Every member
+ *     of a listed group gets its role. The deployer is always admin and the caller cannot edit their own access
+ *     (server guards, shown here as plain text).
  * The page is also reachable before a source is configured, so that access can be set up first.
  */
 (function () {
@@ -129,7 +205,7 @@
   function pct(n) { return n + UI.NNBSP + '%'; }
 
   var ROLE_OPTIONS = [{ value: 'lecteur', label: 'Lecteur' }, { value: 'admin', label: 'Administrateur' }];
-  var DOMAIN_OPTIONS = [{ value: 'none', label: 'Aucun accès' }, { value: 'lecteur', label: 'Lecteur' }];
+  var DOMAIN_OPTIONS = [{ value: 'none', label: 'Personne d’autre' }, { value: 'lecteur', label: 'Tous, en lecture' }];
 
   // ------------------------------------------------------------------------------ source
 
@@ -456,24 +532,87 @@
     return plan;
   }
 
-  function openBulkAdd(view, me, onDone) {
-    var text = el('textarea', { class: 'input access-bulk-text', id: 'bulk-emails', rows: 8, spellcheck: 'false',
-      autocomplete: 'off', 'aria-describedby': 'bulk-help bulk-preview',
-      placeholder: 'lea.martin@decathlon.com\nsam.durand@decathlon.com\nNina Petit <nina.petit@decathlon.com>' });
-    var role = UI.select({ label: 'Rôle pour tous', id: 'bulk-role', options: ROLE_OPTIONS, value: 'lecteur',
-      onChange: update });
-    role.classList.add('access-bulk-role');
-    var preview = el('p', { class: 'access-bulk-preview', id: 'bulk-preview', role: 'status', 'aria-live': 'polite' });
+  var ADD_TABS = [
+    { id: 'one', label: 'Un compte' },
+    { id: 'many', label: 'Plusieurs comptes' },
+    { id: 'group', label: 'Un groupe Google' }
+  ];
+  var ROLE_CARDS = [
+    { value: 'lecteur', label: 'Lecteur', help: 'Consulte les tableaux, graphiques et exports.' },
+    { value: 'admin', label: 'Administrateur', help: 'Modifie les données, synchronise et gère ces paramètres.' }
+  ];
+
+  /**
+   * « Ajouter un accès »: a dialog with three tabs (one account → api_saveUser, a pasted list → api_addUsers with
+   * a live preview, a Google Group → api_saveGroup, checked by the server) and one role for all (radio cards).
+   * The primary button says what will happen; a refusal shows on the field and keeps the dialog open.
+   * onDone(accessView, addedEmails) after a success.
+   */
+  function openAdd(view, me, onDone) {
+    var tab = 'one';
+    var role = 'lecteur';
     var plan = null;
     var dlg = null;
 
+    var one = el('input', { type: 'email', class: 'input mono', id: 'add-email', autocomplete: 'off', spellcheck: 'false',
+      placeholder: 'prenom.nom@decathlon.com', 'aria-describedby': 'add-email-help' });
+    var text = el('textarea', { class: 'input access-bulk-text', id: 'bulk-emails', rows: 7, spellcheck: 'false',
+      autocomplete: 'off', 'aria-describedby': 'bulk-help bulk-preview',
+      placeholder: 'lea.martin@decathlon.com\nsam.durand@decathlon.com\nNina Petit <nina.petit@decathlon.com>' });
+    var group = el('input', { type: 'email', class: 'input mono', id: 'add-group', autocomplete: 'off', spellcheck: 'false',
+      placeholder: 'equipe-labo@decathlon.com', 'aria-describedby': 'add-group-help' });
+    var preview = el('p', { class: 'access-bulk-preview', id: 'bulk-preview', role: 'status', 'aria-live': 'polite' });
+    var fields = { one: one, many: text, group: group };
+
+    function submitOnEnter(e) { if (e.key === 'Enter') { e.preventDefault(); dlg.buttons[1].click(); } }
+    one.addEventListener('keydown', submitOnEnter);
+    group.addEventListener('keydown', submitOnEnter);
+    text.addEventListener('input', update);
+
+    var panels = {
+      one: [el('div', { class: 'form-field' }, el('label', { for: 'add-email', class: 'field-label' }, 'Adresse e-mail'), one),
+        el('p', { class: 'field-help', id: 'add-email-help' }, 'Un compte Google du domaine.')],
+      many: [UI.lede('Une adresse par ligne, ou séparées par des virgules. 500 au plus.',
+        'Une colonne de Google Sheet ou le champ « À » d’un e-mail (« Nom <adresse> ») se collent tels quels. ' +
+          'Les points-virgules séparent aussi ; les doublons et les mots sans « @ » sont ignorés.',
+        { id: 'bulk-help', small: true }),
+        el('div', { class: 'form-field' }, el('label', { for: 'bulk-emails', class: 'field-label' }, 'Adresses'), text),
+        preview],
+      group: [el('div', { class: 'form-field' }, el('label', { for: 'add-group', class: 'field-label' }, 'Adresse du groupe'), group),
+        UI.lede('Chaque membre reçoit le rôle, sous-groupes compris. Le groupe est vérifié à l’ajout.', [
+          'Le propriétaire du déploiement doit pouvoir voir les membres du groupe.',
+          'Un changement de membres dans Google est pris en compte sous 10 minutes.'], { id: 'add-group-help', small: true })]
+    };
+    var panelNodes = {};
+    var strip = tabList({ prefix: 'add', tabs: ADD_TABS, label: 'Type d’accès', selected: tab, onSelect: function (id) {
+      tab = id;
+      ADD_TABS.forEach(function (t) { panelNodes[t.id].hidden = t.id !== id; });
+      update();
+    } });
+
+    var roleSet = el('fieldset', { class: 'role-cards', id: 'add-role' },
+      el('legend', { class: 'field-label' }, 'Rôle'),
+      ROLE_CARDS.map(function (r) {
+        return el('label', { class: 'role-card', for: 'add-role-' + r.value },
+          el('input', { type: 'radio', name: 'add-role', id: 'add-role-' + r.value, value: r.value, checked: r.value === role,
+            onChange: function () { role = r.value; update(); } }),
+          el('span', { class: 'role-card-text' }, el('span', { class: 'role-card-label' }, r.label),
+            el('span', { class: 'field-help' }, r.help)));
+      }));
+
     function update() {
-      plan = bulkPlan(text.value, role.getValue(), view, me);
+      var btn = dlg && dlg.buttons[1];
+      UI.fieldError(fields[tab], '');
+      if (tab !== 'many') {
+        if (btn) { btn.textContent = tab === 'group' ? 'Ajouter le groupe' : 'Ajouter'; btn.disabled = false; }
+        return;
+      }
+      plan = bulkPlan(text.value, role, view, me);
       UI.clear(preview);
       var parts = [];
       if (plan.add.length) parts.push([el('span', { class: 'num' }, UI.fmtNum(plan.add.length)), plan.add.length > 1 ? ' nouveaux comptes' : ' nouveau compte']);
       if (plan.change.length) parts.push([el('span', { class: 'num' }, UI.fmtNum(plan.change.length)), plan.change.length > 1 ? ' rôles modifiés' : ' rôle modifié']);
-      if (plan.same.length) parts.push([el('span', { class: 'num' }, UI.fmtNum(plan.same.length)), ' déjà ' + (role.getValue() === 'admin' ? 'administrateur' : 'lecteur') + (plan.same.length > 1 ? 's' : '')]);
+      if (plan.same.length) parts.push([el('span', { class: 'num' }, UI.fmtNum(plan.same.length)), ' déjà ' + (role === 'admin' ? 'administrateur' : 'lecteur') + (plan.same.length > 1 ? 's' : '')]);
       if (plan.skip.length) parts.push([el('span', { class: 'num' }, UI.fmtNum(plan.skip.length)), ' ignoré' + (plan.skip.length > 1 ? 's' : '') + ' (' + plan.skip.map(function (x) { return x.reason; }).join(', ') + ')']);
       if (!parts.length && !plan.invalid.length) preview.appendChild(document.createTextNode(text.value.trim() ? 'Aucune adresse reconnue.' : ''));
       parts.forEach(function (p, i) { if (i) preview.appendChild(document.createTextNode(' · ')); preview.appendChild(el('span', null, p)); });
@@ -484,60 +623,124 @@
           UI.plural(plan.invalid.length, 'adresse invalide', 'adresses invalides') + ' : ' + shown));
       }
       var n = plan.add.length + plan.change.length;
-      if (dlg) {
-        var btn = dlg.buttons[1];
+      if (btn) {
         btn.textContent = n ? (plan.add.length && !plan.change.length ? 'Ajouter ' + UI.plural(n, 'compte', 'comptes') :
           'Enregistrer ' + UI.plural(n, 'compte', 'comptes')) : 'Ajouter';
         btn.disabled = !n;
       }
-      UI.fieldError(text, '');
     }
-    text.addEventListener('input', update);
+
+    /** One address (account or group): apiName({email, role}); the error stays on the field. */
+    function addOne(close, input, apiName, empty, done) {
+      var value = input.value.trim();
+      if (!value) { UI.fieldError(input, empty); input.focus(); return null; }
+      var r = role;
+      return api.call(apiName, { email: value, role: r }).then(function (next) {
+        close();
+        UI.toast(done + ' — ' + value.toLowerCase() + ' (' + roleLabel(r) + ').', 'success');
+        onDone(next, [value.toLowerCase()]);
+      }, function (err) {
+        UI.fieldError(input, UI.errorText(err));
+        input.focus();
+      });
+    }
+
+    function addMany(close) {
+      update();
+      var emails = plan.add.concat(plan.change);
+      if (!emails.length) { UI.fieldError(text, 'Aucune adresse à ajouter.'); return null; }
+      if (emails.length > 500) { UI.fieldError(text, 'Au plus 500 adresses par ajout (' + UI.fmtNum(emails.length) + ' collées).'); return null; }
+      var r = role;
+      return api.call('api_addUsers', { emails: emails, role: r }).then(function (res) {
+        close();
+        var bits = [];
+        if (res.added.length) bits.push(UI.plural(res.added.length, 'compte ajouté', 'comptes ajoutés'));
+        if (res.updated.length) bits.push(UI.plural(res.updated.length, 'rôle modifié', 'rôles modifiés'));
+        if (res.skipped.length) bits.push(UI.plural(res.skipped.length, 'ignoré', 'ignorés'));
+        UI.toast((bits.join(' · ') || 'Aucun changement') + ' — ' + roleLabel(r) + '.', 'success');
+        onDone(res.access, emails);
+      }, function (err) {
+        UI.fieldError(text, UI.errorText(err));
+      });
+    }
+
+    var body = el('div', { class: 'access-add' }, strip.node,
+      ADD_TABS.map(function (t) {
+        panelNodes[t.id] = el('div', { class: 'access-add-panel', role: 'tabpanel', id: 'add-panel-' + t.id,
+          'aria-labelledby': 'add-tab-' + t.id, hidden: t.id !== tab }, panels[t.id]);
+        return panelNodes[t.id];
+      }),
+      roleSet);
 
     dlg = UI.modal({
-      title: 'Ajouter plusieurs comptes',
+      title: 'Ajouter un accès',
       wide: true,
-      body: el('div', { class: 'access-bulk' },
-        UI.lede('Une adresse par ligne, ou séparées par des virgules. 500 au plus.',
-          'Une colonne de Google Sheet ou le champ « À » d’un e-mail (« Nom <adresse> ») se collent tels quels. ' +
-            'Les points-virgules séparent aussi ; les doublons et les mots sans « @ » sont ignorés.',
-          { id: 'bulk-help', small: true }),
-        el('div', { class: 'form-field' }, el('label', { for: 'bulk-emails', class: 'field-label' }, 'Adresses'), text),
-        role, preview),
+      body: body,
+      initialFocus: one,
       actions: [
         { label: 'Annuler' },
         { label: 'Ajouter', primary: true, onClick: function (close) {
-          update();
-          var emails = plan.add.concat(plan.change);
-          if (!emails.length) { UI.fieldError(text, 'Aucune adresse à ajouter.'); return null; }
-          if (emails.length > 500) { UI.fieldError(text, 'Au plus 500 adresses par ajout (' + UI.fmtNum(emails.length) + ' collées).'); return null; }
-          var r = role.getValue();
-          return api.call('api_addUsers', { emails: emails, role: r }).then(function (res) {
-            close();
-            var bits = [];
-            if (res.added.length) bits.push(UI.plural(res.added.length, 'compte ajouté', 'comptes ajoutés'));
-            if (res.updated.length) bits.push(UI.plural(res.updated.length, 'rôle modifié', 'rôles modifiés'));
-            if (res.skipped.length) bits.push(UI.plural(res.skipped.length, 'ignoré', 'ignorés'));
-            UI.toast((bits.join(' · ') || 'Aucun changement') + ' — ' + roleLabel(r) + '.', 'success');
-            onDone(res.access);
-          }, function (err) {
-            UI.fieldError(text, UI.errorText(err));
-          });
+          if (tab === 'many') return addMany(close);
+          if (tab === 'group') return addOne(close, group, 'api_saveGroup', 'Saisissez l’adresse du groupe.', 'Groupe ajouté');
+          return addOne(close, one, 'api_saveUser', 'Saisissez une adresse e-mail.', 'Accès ajouté');
         } }
       ]
     });
     update();
+    return { select: function (id) { strip.select(id, false); } };
   }
 
+  var ACCESS_FILTERS = [
+    { id: 'all', label: 'Tous' },
+    { id: 'admin', label: 'Administrateurs' },
+    { id: 'lecteur', label: 'Lecteurs' },
+    { id: 'group', label: 'Groupes' }
+  ];
+
+  /** « SA » for sam.admin@…, « LE » for lea@… (decorative: the address is read next to it). */
+  function initials(email) {
+    var parts = String(email).split('@')[0].split(/[._+-]+/).filter(Boolean);
+    var a = parts[0] || '?';
+    return (a.charAt(0) + (parts[1] ? parts[1].charAt(0) : a.charAt(1))).toUpperCase();
+  }
+
+  /** Two heads (a Google Group), drawn with SVG nodes. */
+  function groupIcon() {
+    var NS = 'http://www.w3.org/2000/svg';
+    var svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('width', '16');
+    svg.setAttribute('height', '16');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    [['circle', { cx: 6, cy: 6, r: 2.4 }], ['circle', { cx: 11.2, cy: 6.8, r: 1.9 }],
+      ['path', { d: 'M1.8 13c.6-2.2 2.3-3.3 4.2-3.3s3.6 1.1 4.2 3.3M10 10.1c1.9-.3 3.5.7 4.1 2.9' }]].forEach(function (p) {
+      var n = document.createElementNS(NS, p[0]);
+      Object.keys(p[1]).forEach(function (k) { n.setAttribute(k, String(p[1][k])); });
+      svg.appendChild(n);
+    });
+    return svg;
+  }
+
+  /**
+   * Accès: « Qui d’autre peut ouvrir l’application ? » (domain role, two buttons), then one list of accounts AND
+   * groups (#access-table: user rows data-email, group rows data-group) with a search, filters by role / groups
+   * and « Ajouter » (openAdd). Roles change in place (quiet dropdown), « Retirer » asks first. Rows just added
+   * are highlighted until the next change.
+   */
   function accessSection(s) {
+    var domainBox = el('section', { class: 'access-domain', id: 'settings-domain', 'aria-labelledby': 'settings-domain-title' });
     var wrap = el('div', { class: 'access-body' });
-    var groupsWrap = el('div', { class: 'access-body' });
     var view = s.access;
     var query = '';
+    var filterId = 'all';
+    var fresh = {};
 
-    function apply(next) {
+    function apply(next, added) {
       view = next;
       s.access = next;
+      fresh = {};
+      (added || []).forEach(function (e) { fresh[e] = true; });
       render();
     }
 
@@ -563,11 +766,13 @@
       return dd;
     }
 
-    /** Inline role dropdown of a user or group row. */
+    /** Inline role dropdown of a user or group row (quiet: a border only under the pointer or the focus). */
     function entryRole(entry, apiName, aria) {
-      return savingSelect({ ariaLabel: aria, options: ROLE_OPTIONS, value: entry.role, size: 'sm',
+      var dd = savingSelect({ ariaLabel: aria, options: ROLE_OPTIONS, value: entry.role, size: 'sm',
         save: function (role) { return api.call(apiName, { email: entry.email, role: role }); },
         done: function (role) { UI.toast('Rôle modifié — ' + entry.email + ' : ' + roleLabel(role) + '.', 'success'); } });
+      dd.classList.add('dd-quiet');
+      return dd;
     }
 
     /** « Retirer » of a user or group row: confirmation, then apiName({email}). */
@@ -586,154 +791,126 @@
         } }, 'Retirer');
     }
 
-    /**
-     * « Ajouter un compte » / « Ajouter un groupe » form: e-mail + role + submit (ids `${id}-email`,
-     * `${id}-role`, `${id}-add`, `${id}-form`), apiName({email, role}), error under the field.
-     */
-    function addEntryForm(o) {
-      var email = el('input', { type: 'email', class: 'input', id: o.id + '-email', autocomplete: 'off',
-        placeholder: o.placeholder, spellcheck: 'false' });
-      var role = UI.select({ label: 'Rôle', id: o.id + '-role', options: ROLE_OPTIONS, value: 'lecteur' });
-      var add = el('button', { type: 'submit', class: 'btn btn-secondary', id: o.id + '-add' }, o.button);
-      return el('form', { class: 'settings-form', id: o.id + '-form', novalidate: true, onSubmit: function (e) {
-        e.preventDefault();
-        var value = email.value.trim();
-        UI.fieldError(email, '');
-        if (!value) { UI.fieldError(email, o.emptyMessage); email.focus(); return; }
-        var r = role.getValue();
-        UI.busy(add, api.call(o.apiName, { email: value, role: r }), o.busyLabel).then(function (next) {
+    function renderDomain() {
+      var buttons = {};
+      function setDomain(role) {
+        if (role === view.domainRole) return;
+        DOMAIN_OPTIONS.forEach(function (o) { buttons[o.value].disabled = true; });
+        api.call('api_setDomainRole', { role: role }).then(function (next) {
           if (!alive()) return;
-          UI.toast(o.added + ' — ' + value.toLowerCase() + ' (' + roleLabel(r) + ').', 'success');
+          UI.toast(role === 'lecteur' ? 'Tout compte du domaine peut désormais consulter l’application.' :
+            'Seuls les comptes listés peuvent ouvrir l’application.', 'success');
           apply(next);
-          var again = document.getElementById(o.id + '-email');
-          if (again) again.focus();
         }, function (err) {
           if (!alive()) return;
-          UI.fieldError(email, UI.errorText(err));
-          email.focus();
+          DOMAIN_OPTIONS.forEach(function (o) { buttons[o.value].disabled = false; });
+          UI.errorToast(err);
         });
-      } },
-        el('div', { class: 'form-field form-field-grow' },
-          el('label', { for: o.id + '-email', class: 'field-label' }, o.label), email),
-        role,
-        el('div', { class: 'form-actions' }, add));
+      }
+      UI.clear(domainBox).appendChild(el('div', { class: 'access-domain-text' },
+        el('h3', { class: 'access-domain-title', id: 'settings-domain-title' }, 'Qui d’autre peut ouvrir l’application ?'),
+        el('p', { class: 'field-help' }, 'Les comptes du domaine Workspace qui ne sont pas dans la liste.')));
+      domainBox.appendChild(el('div', { class: 'segmented', role: 'group', id: 'settings-domain-role',
+        'aria-labelledby': 'settings-domain-title' },
+        DOMAIN_OPTIONS.map(function (o) {
+          buttons[o.value] = el('button', { type: 'button', class: 'segmented-btn', id: 'settings-domain-' + o.value,
+            'aria-pressed': view.domainRole === o.value ? 'true' : 'false',
+            onClick: function () { setDomain(o.value); } }, o.label);
+          return buttons[o.value];
+        })));
     }
 
     function render() {
+      renderDomain();
       UI.clear(wrap);
-      UI.clear(groupsWrap);
       var me = s.me;
-      var rows = [{ email: view.owner, role: 'admin', owner: true }].concat(view.users);
+      var rows = [{ email: view.owner, role: 'admin', owner: true }]
+        .concat(view.users.map(function (u) { return Object.assign({}, u); }))
+        .concat((view.groups || []).map(function (g) { return Object.assign({ group: true }, g); }));
+      var counts = { all: rows.length, admin: 0, lecteur: 0, group: 0 };
+      rows.forEach(function (r) { counts[r.group ? 'group' : r.role] += 1; });
+
       var tbl = UI.table({
         id: 'access-table',
         className: 'access-table',
-        caption: 'Comptes autorisés',
+        caption: 'Comptes et groupes autorisés',
         rows: rows,
         columns: [
-          { label: 'Compte', mono: true, rowHeader: true },
+          { label: 'Nom', rowHeader: true, className: 'access-who is-wrap' },
           { label: 'Rôle', className: 'access-role' },
           { label: 'Ajouté le', mono: true, className: 'access-added' },
           { label: '', className: 'access-actions' }
         ],
-        rowAttrs: function (u) { return { dataset: { email: u.email } }; },
-        cells: function (u) {
-          var fixed = u.owner || u.email === me;
-          var note = u.owner ? 'propriétaire' : (u.email === me ? 'vous' : '');
+        rowAttrs: function (r) {
+          var data = r.group ? { group: r.email, role: r.role, kind: 'group' } : { email: r.email, role: r.role, kind: 'user' };
+          return { dataset: data, class: fresh[r.email] ? 'is-new' : null };
+        },
+        cells: function (r) {
+          var fixed = r.owner || r.email === me;
+          var tag = r.owner ? 'Propriétaire' : (r.email === me ? 'Vous' : '');
+          var name = el('span', { class: 'access-name' },
+            el('span', { class: ['access-avatar', r.group ? 'is-group' : 'is-' + r.role], 'aria-hidden': 'true' },
+              r.group ? groupIcon() : initials(r.email)),
+            el('span', { class: 'access-id' },
+              el('span', { class: 'access-email mono' }, r.email, tag ? el('span', { class: 'access-tag' }, tag) : null),
+              r.group ? el('span', { class: 'access-sub' }, 'Groupe Google · ses membres reçoivent ce rôle') : null));
+          var removeMsg = r.group ? 'Les membres de ' + r.email + ' perdront le rôle donné par ce groupe.' :
+            r.email + ' ne pourra plus ouvrir l’application' +
+              (view.domainRole === 'lecteur' ? ', sauf en lecture comme tout compte du domaine' : '') + '.';
           return [
-            u.email,
-            fixed ? [roleLabel(u.role), note ? el('span', { class: 'access-note' }, note) : null] :
-              entryRole(u, 'api_saveUser', 'Rôle de ' + u.email),
-            u.owner ? '—' : addedCell(u),
-            fixed ? null : removeEntry({ email: u.email, apiName: 'api_removeUser', dataset: { email: u.email },
-              aria: 'Retirer l’accès de ' + u.email, title: 'Retirer l’accès', done: 'Accès retiré — ' + u.email + '.',
-              message: u.email + ' ne pourra plus ouvrir l’application' +
-                (view.domainRole === 'lecteur' ? ', sauf en lecture comme tout compte du domaine' : '') + '.' })
+            name,
+            fixed ? el('span', { class: 'access-fixed-role' }, roleLabel(r.role)) :
+              entryRole(r, r.group ? 'api_saveGroup' : 'api_saveUser', (r.group ? 'Rôle du groupe ' : 'Rôle de ') + r.email),
+            r.owner ? '—' : addedCell(r),
+            fixed ? null : removeEntry(r.group ?
+              { email: r.email, apiName: 'api_removeGroup', aria: 'Retirer le groupe ' + r.email, title: 'Retirer le groupe',
+                done: 'Groupe retiré — ' + r.email + '.', message: removeMsg } :
+              { email: r.email, apiName: 'api_removeUser', dataset: { email: r.email }, aria: 'Retirer l’accès de ' + r.email,
+                title: 'Retirer l’accès', done: 'Accès retiré — ' + r.email + '.', message: removeMsg })
           ];
         }
       });
 
-      var domain = savingSelect({ label: 'Autres comptes du domaine', id: 'settings-domain-role', options: DOMAIN_OPTIONS,
-        value: view.domainRole,
-        save: function (role) { return api.call('api_setDomainRole', { role: role }); },
-        done: function (role) {
-          UI.toast(role === 'lecteur' ? 'Tout compte du domaine peut désormais consulter l’application.' :
-            'Seuls les comptes listés peuvent ouvrir l’application.', 'success');
-        } });
-
-      var form = addEntryForm({ id: 'access', label: 'Ajouter un compte', placeholder: 'prenom.nom@decathlon.com',
-        button: 'Ajouter', apiName: 'api_saveUser', emptyMessage: 'Saisissez une adresse e-mail.', added: 'Accès ajouté' });
-
       var count = el('span', { class: 'access-count', id: 'access-count', role: 'status' });
       var nomatch = el('p', { class: 'access-nomatch', id: 'access-nomatch', hidden: true }, 'Aucun compte ne correspond.');
-      var search = UI.searchField({ id: 'access-search', value: query, placeholder: 'Rechercher un compte…',
-        ariaLabel: 'Rechercher un compte', onInput: function (v) { query = v; filter(); } });
-      var bulk = el('button', { type: 'button', class: 'btn btn-secondary access-bulk-open', id: 'access-bulk-open',
-        onClick: function () { openBulkAdd(view, me, apply); } }, 'Ajouter plusieurs comptes…');
+      var search = UI.searchField({ id: 'access-search', value: query, placeholder: 'Rechercher un compte ou un groupe…',
+        ariaLabel: 'Rechercher un compte ou un groupe', onInput: function (v) { query = v; filter(); } });
+      var chips = {};
+      var chipBox = el('div', { class: 'access-filters', role: 'group', 'aria-label': 'Filtrer la liste' },
+        ACCESS_FILTERS.map(function (f) {
+          chips[f.id] = el('button', { type: 'button', class: 'access-chip', id: 'access-filter-' + f.id,
+            'aria-pressed': f.id === filterId ? 'true' : 'false',
+            onClick: function () {
+              filterId = f.id;
+              ACCESS_FILTERS.forEach(function (x) { chips[x.id].setAttribute('aria-pressed', x.id === filterId ? 'true' : 'false'); });
+              filter();
+            } }, f.label, ' ', el('span', { class: 'access-chip-n num' }, UI.fmtNum(counts[f.id])));
+          return chips[f.id];
+        }));
 
       // Hides the rows that do not match (no re-render: the search keeps focus while typing).
       function filter() {
         var q = query.trim().toLowerCase();
         var shown = 0;
         Array.prototype.forEach.call(tbl.querySelectorAll('tbody tr'), function (tr) {
-          var u = rows.filter(function (r) { return r.email === tr.dataset.email; })[0];
-          var hay = u ? (u.email + ' ' + roleLabel(u.role) + ' ' + (u.added_by || '')).toLowerCase() : '';
-          var ok = !q || hay.indexOf(q) >= 0;
+          var key = tr.dataset.group || tr.dataset.email;
+          var r = rows.filter(function (x) { return x.email === key; })[0];
+          var hay = r ? (r.email + ' ' + roleLabel(r.role) + ' ' + (r.added_by || '') + (r.group ? ' groupe' : '')).toLowerCase() : '';
+          var kindOk = filterId === 'all' || (filterId === 'group' ? !!tr.dataset.group : !tr.dataset.group && tr.dataset.role === filterId);
+          var ok = kindOk && (!q || hay.indexOf(q) >= 0);
           tr.hidden = !ok;
           if (ok) shown++;
         });
-        var total = rows.length;
-        count.textContent = q ? UI.fmtNum(shown) + ' sur ' + UI.plural(total, 'compte', 'comptes') : UI.plural(total, 'compte', 'comptes');
+        var accounts = rows.length - counts.group;
+        var whole = UI.plural(accounts, 'compte', 'comptes') + (counts.group ? ' · ' + UI.plural(counts.group, 'groupe', 'groupes') : '');
+        count.textContent = shown === rows.length ? whole : UI.fmtNum(shown) + ' sur ' + UI.fmtNum(rows.length);
         nomatch.hidden = shown > 0;
       }
 
-      wrap.appendChild(el('div', { class: 'settings-form' }, domain));
-      wrap.appendChild(el('div', { class: 'access-tools' }, search, count, bulk));
+      wrap.appendChild(el('div', { class: 'access-tools' }, search, chipBox, count));
       wrap.appendChild(tbl);
       wrap.appendChild(nomatch);
-      wrap.appendChild(form);
-      groupsWrap.appendChild(groupsBlock());
       filter();
-    }
-
-    /** Google Groups: table (role dropdown, « Retirer ») + add form. */
-    function groupsBlock() {
-      var groups = view.groups || [];
-      var block = el('div', { class: 'access-groups' });
-      block.appendChild(UI.lede('Chaque membre reçoit le rôle du groupe ; le plus élevé l’emporte.', [
-        'Sous-groupes compris. Le propriétaire du déploiement doit pouvoir voir les membres du groupe.',
-        'Un changement de membres dans Google est pris en compte sous 10 minutes.'], { id: 'groups-help' }));
-      if (groups.length) {
-        block.appendChild(UI.table({
-          id: 'groups-table',
-          className: 'access-table',
-          caption: 'Groupes Google autorisés',
-          rows: groups,
-          columns: [
-            { label: 'Groupe', mono: true, rowHeader: true },
-            { label: 'Rôle', className: 'access-role' },
-            { label: 'Ajouté le', mono: true, className: 'access-added' },
-            { label: '', className: 'access-actions' }
-          ],
-          rowAttrs: function (g) { return { dataset: { group: g.email } }; },
-          cells: function (g) {
-            return [
-              g.email,
-              entryRole(g, 'api_saveGroup', 'Rôle du groupe ' + g.email),
-              addedCell(g),
-              removeEntry({ email: g.email, apiName: 'api_removeGroup', aria: 'Retirer le groupe ' + g.email,
-                title: 'Retirer le groupe', done: 'Groupe retiré — ' + g.email + '.',
-                message: 'Les membres de ' + g.email + ' perdront le rôle donné par ce groupe.' })
-            ];
-          }
-        }));
-      } else {
-        block.appendChild(UI.empty('Aucun groupe.', { small: true }));
-      }
-
-      block.appendChild(addEntryForm({ id: 'group', label: 'Ajouter un groupe', placeholder: 'equipe-labo@decathlon.com',
-        button: 'Ajouter le groupe', busyLabel: 'Vérification…', apiName: 'api_saveGroup',
-        emptyMessage: 'Saisissez l’adresse du groupe.', added: 'Groupe ajouté' }));
-      return block;
     }
 
     function addedCell(entry) {
@@ -741,17 +918,18 @@
     }
 
     render();
-    var accounts = card('Comptes', null,
+    var addBtn = el('button', { type: 'button', class: 'btn btn-primary btn-sm', id: 'access-add-open',
+      onClick: function () { openAdd(view, s.me, apply); } }, 'Ajouter');
+    var list = card('Personnes et groupes', addBtn,
       UI.lede('Les administrateurs modifient données et paramètres ; les lecteurs consultent.', [
         'Le propriétaire du déploiement (' + view.owner + ') est toujours administrateur, et personne ne peut ' +
           'modifier son propre accès.',
+        'Un membre d’un groupe reçoit le rôle du groupe ; s’il en a plusieurs, le plus élevé l’emporte.',
         'Seuls les comptes Google du domaine Workspace peuvent ouvrir l’application : Google ne transmet pas ' +
           'l’adresse des autres.'], { id: 'access-help' }),
       wrap);
-    accounts.id = 'settings-access';
-    var groups = card('Groupes Google', null, groupsWrap);
-    groups.id = 'settings-groups';
-    return [accounts, groups];
+    list.id = 'settings-access';
+    return [domainBox, list];
   }
 
   // ------------------------------------------------------------------------------ page
@@ -780,43 +958,55 @@
   ];
 
   /**
-   * Tab list + one panel per tab (every panel stays in the DOM: switches and the sync status keep following State
-   * while hidden). Roving tabindex: Tab enters the selected tab, arrows / Home / End move and select.
+   * ARIA tab strip: tabs [{id, label}] -> buttons #<prefix>-tab-<id> controlling #<prefix>-panel-<id>; roving
+   * tabindex, arrows / Home / End move and select (wrapping). onSelect(id) shows the panel. -> {node, select(id, focus)}
    */
-  function tabbed(body, panels) {
+  function tabList(o) {
     var buttons = {};
-    var nodes = {};
+    var current = o.selected;
     function select(id, focus) {
-      currentTab = id;
-      TABS.forEach(function (t) {
-        var on = t.id === id;
-        buttons[t.id].setAttribute('aria-selected', on ? 'true' : 'false');
-        buttons[t.id].tabIndex = on ? 0 : -1;
-        nodes[t.id].hidden = !on;
+      current = id;
+      o.tabs.forEach(function (t) {
+        buttons[t.id].setAttribute('aria-selected', t.id === id ? 'true' : 'false');
+        buttons[t.id].tabIndex = t.id === id ? 0 : -1;
       });
       if (focus) buttons[id].focus();
+      o.onSelect(id);
     }
-    var list = el('div', { class: 'settings-tabs', role: 'tablist', 'aria-label': 'Sections des paramètres',
+    var node = el('div', { class: 'settings-tabs', role: 'tablist', 'aria-label': o.label,
       onKeydown: function (e) {
-        var i = TABS.map(function (t) { return t.id; }).indexOf(currentTab);
+        var ids = o.tabs.map(function (t) { return t.id; });
+        var i = ids.indexOf(current);
         var next = e.key === 'ArrowRight' ? i + 1 : e.key === 'ArrowLeft' ? i - 1 : e.key === 'Home' ? 0 :
-          e.key === 'End' ? TABS.length - 1 : null;
+          e.key === 'End' ? ids.length - 1 : null;
         if (next === null) return;
         e.preventDefault();
-        select(TABS[(next + TABS.length) % TABS.length].id, true);
+        select(ids[(next + ids.length) % ids.length], true);
       } },
-      TABS.map(function (t) {
-        buttons[t.id] = el('button', { type: 'button', class: 'settings-tab', role: 'tab', id: 'settings-tab-' + t.id,
-          'aria-controls': 'settings-panel-' + t.id, onClick: function () { select(t.id); } }, t.label);
+      o.tabs.map(function (t) {
+        buttons[t.id] = el('button', { type: 'button', class: 'settings-tab', role: 'tab', id: o.prefix + '-tab-' + t.id,
+          'aria-controls': o.prefix + '-panel-' + t.id, 'aria-selected': t.id === current ? 'true' : 'false',
+          tabindex: t.id === current ? '0' : '-1', onClick: function () { select(t.id); } }, t.label);
         return buttons[t.id];
       }));
-    body.appendChild(list);
+    return { node: node, select: select };
+  }
+
+  /** The page's tabs + one panel per tab (every panel stays in the DOM: switches and the sync status keep following State while hidden). */
+  function tabbed(body, panels) {
+    var nodes = {};
+    var first = TABS.some(function (t) { return t.id === currentTab; }) ? currentTab : 'general';
+    var strip = tabList({ prefix: 'settings', tabs: TABS, label: 'Sections des paramètres', selected: first,
+      onSelect: function (id) {
+        currentTab = id;
+        TABS.forEach(function (t) { if (nodes[t.id]) nodes[t.id].hidden = t.id !== id; });
+      } });
+    body.appendChild(strip.node);
     TABS.forEach(function (t) {
       nodes[t.id] = el('div', { class: 'settings-panel', role: 'tabpanel', id: 'settings-panel-' + t.id,
-        'aria-labelledby': 'settings-tab-' + t.id }, panels[t.id]);
+        'aria-labelledby': 'settings-tab-' + t.id, hidden: t.id !== first }, panels[t.id]);
       body.appendChild(nodes[t.id]);
     });
-    select(TABS.some(function (t) { return t.id === currentTab; }) ? currentTab : 'general');
   }
 
   /** The app bar's « Journal » link: next mount opens « Général » with the journal shown and focused. */

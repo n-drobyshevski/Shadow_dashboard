@@ -1140,8 +1140,15 @@ content), each saved on its own:
   (each with its description). A toggle calls `api_setEditing({<key>: bool})` once, then `State.setEditing` and a toast
   (« Création d’entrées désactivée. »…); on failure the switch goes back and an error toast shows. The switches follow
   `state.editing` changes made elsewhere (poll, bootstrap reload), hidden tab or not.
-- **Accès**: « Comptes » (`#settings-access`: domain role, search, table, add one, « Ajouter plusieurs comptes… ») and
-  « Groupes Google » (`#settings-groups`).
+- **Accès**: « Qui d’autre peut ouvrir l’application ? » (`#settings-domain`: `#settings-domain-none` /
+  `#settings-domain-lecteur`, `aria-pressed`, → `api_setDomainRole`), then « Personnes et groupes »
+  (`#settings-access`): one `#access-table` of accounts (rows `data-email`, owner first) and groups (rows
+  `data-group`), `#access-search`, filter chips `#access-filter-all|admin|lecteur|group`, `#access-count`
+  (« 3 comptes · 1 groupe », « 2 sur 4 » while filtered), role dropdowns (`api_saveUser` / `api_saveGroup`) and
+  « Retirer » (`api_removeUser` / `api_removeGroup`). `#access-add-open` « Ajouter » opens « Ajouter un accès »:
+  tabs `#add-tab-one|many|group` (`#add-email` → `api_saveUser`; `#bulk-emails` with the `#bulk-preview` →
+  `api_addUsers`; `#add-group` → `api_saveGroup`), role radios `#add-role-lecteur|admin`; Enter in a field
+  submits; a refusal shows on the field (`#<field>-err`) and keeps the dialog open. Added rows get `.is-new`.
 
 ---------------------------------------------------------------------------------------------------
 ## 7. Tests

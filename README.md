@@ -140,7 +140,7 @@ le compte qui déploie exécute `setup` dans l'éditeur Apps Script et accepte l
 (déclencheurs) — ouvrir l'application web ne la demande pas, elle s'exécute avec l'autorisation déjà
 accordée. `setup` crée aussi le déclencheur horaire ; sinon, Paramètres → Synchronisation → « Activer la
 synchronisation horaire ». Les mois déjà importés sont conservés.
-9. **Donner les accès** : Paramètres → Accès → « Ajouter un compte » (rôle Lecteur ou
+9. **Donner les accès** : Paramètres → Accès → « Ajouter » → « Un compte » (rôle Lecteur ou
    Administrateur), puis partager l'URL de l'application. Tant que personne n'est ajouté, seul le
    déployeur peut l'ouvrir.
 
@@ -169,7 +169,11 @@ synchronisation horaire ». Les mois déjà importés sont conservés.
   page se met à jour) ou dans les 10 minutes.
 - Le **propriétaire du déploiement est toujours administrateur** et n'apparaît pas comme modifiable ;
   personne ne peut modifier son propre accès, ce qui évite de se bloquer.
-- **Ajout en masse** : « Ajouter plusieurs comptes… » accepte une liste collée telle quelle (colonne
+- **Une seule liste** (Paramètres → Accès) : comptes et groupes ensemble, avec une recherche et des
+  filtres (Administrateurs, Lecteurs, Groupes). Le rôle se change sur la ligne, « Retirer » demande
+  confirmation. « Ajouter » ouvre une fenêtre à trois onglets : « Un compte », « Plusieurs comptes »,
+  « Un groupe Google », et un rôle pour tous.
+- **Ajout en masse** : l'onglet « Plusieurs comptes » d'« Ajouter » accepte une liste collée telle quelle (colonne
   d'un Google Sheet, adresses séparées par virgules ou points-virgules, champ « À » d'un e-mail
   `Nom <adresse>`), affiche ce qui sera ajouté, modifié, ignoré ou invalide, puis enregistre tout en une
   fois (500 adresses par ajout, 2000 comptes au total ; au-delà, ouvrir plutôt au domaine en lecture).
@@ -190,8 +194,8 @@ synchronisation horaire ». Les mois déjà importés sont conservés.
   après sa dernière vérification réussie. Le retrait d'un groupe de la liste s'applique
   immédiatement. Pour retirer un accès sur-le-champ, retirer le compte (ou le groupe) de la liste. Un administrateur ne peut pas retirer ni rétrograder le groupe qui
   lui donne ce rôle.
-- « Autres comptes du domaine » : *Aucun accès* (par défaut, seuls les comptes listés entrent) ou
-  *Lecteur* (tout le domaine peut consulter).
+- « Qui d'autre peut ouvrir l'application ? » : *Personne d'autre* (par défaut, seuls les comptes et
+  groupes listés entrent) ou *Tous, en lecture* (tout le domaine peut consulter).
 - **Limite d'appels** : chaque compte, sauf le propriétaire, a droit à 120 appels au serveur par minute ;
   les lectures de tout l'historique (Évolution, comparaison de mois, journal des imports) comptent pour 5.
   Au-delà, l'appel est refusé avec « Trop de requêtes. Réessayez dans une minute. ». Un usage normal en
@@ -542,7 +546,8 @@ always admin and nobody can edit their own access. Paramètres › « Saisie dan
 switches for every admin and every month (edit / create / delete postes and applications; the
 `EDITING_JSON` script property, all on by default): a switch that is off hides its controls and the server
 refuses the call (actions, remplacements and the sync are not concerned). Unlisted domain accounts get no access by default,
-or lecteur if « Autres comptes du domaine » is set so. « Ajouter plusieurs comptes… » takes a pasted
+or lecteur if « Qui d’autre peut ouvrir l’application ? » says « Tous, en lecture ». « Ajouter » ›
+« Plusieurs comptes » takes a pasted
 list in any common shape (Sheets column, comma/semicolon separated, `Name <address>`), previews it and
 saves it in one call (500 per batch, 2000 accounts max, and at most 300,000 characters of serialized
 list so it can never fill the Script Properties store). Google Groups can be granted a role too:

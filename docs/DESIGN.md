@@ -151,9 +151,17 @@ with the system fallbacks above. The stylesheet must not block the first paint (
   figure field with its `%` unit, primary « Enregistrer », quiet « Rétablir 80 % » only when changed),
   « Saisie dans l’application » (one intro paragraph — for every admin and every month, actions not
   concerned — then three switches: « Modifier les entrées », « Créer des entrées », « Supprimer des
-  entrées », each saved on toggle with a toast), « Accès » (« Autres comptes du domaine » dropdown, ledger table Compte (mono) / Rôle (small dropdown,
-  saved on change) / Ajouté le / « Retirer » quiet destructive button with a confirm; the owner and the
-  signed-in rows are plain text with a « propriétaire » / « vous » note; add form under the table).
+  entrées », each saved on toggle with a toast), « Accès » tab: a `--paper-2` band « Qui d’autre peut ouvrir l’application ? » with a two-button
+  segmented control (« Personne d’autre » / « Tous, en lecture »), then one card « Personnes et groupes »:
+  « Ajouter » (primary, small) beside the title, search + filter chips with counts (Tous · Administrateurs ·
+  Lecteurs · Groupes, `aria-pressed`) + count, one ledger table Nom (28px initials avatar — ink for admins,
+  `--rule` for lecteurs, dashed two-heads icon for groups — address in mono, « Propriétaire » / « Vous »
+  tag, « Groupe Google · ses membres reçoivent ce rôle » under a group) / Rôle (quiet dropdown: a border
+  only on hover / focus, saved on change) / Ajouté le / « Retirer » (quiet destructive, faded until the row
+  is hovered or focused, with a confirm). Rows just added get an `--ok-bg` wash until the next change.
+  « Ajouter un accès » is a wide modal with three tabs (« Un compte » / « Plusieurs comptes » with the live
+  preview / « Un groupe Google », checked by the server) and the role as two radio cards with what each
+  can do; the primary button says what will happen (« Ajouter 2 comptes », « Ajouter le groupe »).
 - **Signed-in account**: last block of the sidebar footer, email in 12px mono `--ink-2`, role under it
   in `--ink-3` (« Lecteur · lecture seule »). Lecteurs get no spreadsheet links and no write controls
   (hidden, not disabled), and no per-page banner.
