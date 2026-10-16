@@ -24,6 +24,11 @@ var Config = (function () {
   // JSON {edit, create, delete} for Paramètres › « Saisie dans l’application ». Only an explicit true
   // turns a switch on; missing or unreadable means all off.
   var PROP_EDITING = 'EDITING_JSON';
+  // Pending « Demander l’accès » requests, oldest first: [{email, requested_at, message}]. One property, so
+  // it stays under 3000 characters (9 KB even in multi-byte UTF-8): the oldest requests go first.
+  var PROP_REQUESTS = 'ACCESS_REQUESTS_JSON';
+  var MAX_REQUESTS_CHARS = 3000;
+  var MAX_REQUEST_MESSAGE = 200;
   var EDITING_KEYS = ['edit', 'create', 'delete'];
   var PREF_VALUES = { sidebar: ['open', 'collapsed'], period: ['month', 'last3', 'last6', 'year', 'all'] };
   // assets/favicon.png inlined so nothing has to be hosted. Regenerate with base64 -w0 assets/favicon.png
@@ -48,6 +53,7 @@ var Config = (function () {
     actions: 'Actions',
     replacements: 'Replacements',
     importLog: 'ImportLog',
+    accessLog: 'AccessLog',
     meta: 'Meta'
   };
 
@@ -61,6 +67,7 @@ var Config = (function () {
       'recorded_at'],
     ImportLog: ['month', 'imported_at', 'source_id', 'counts_json', 'postes_headers_json', 'apps_headers_json',
       'warnings_json', 'changes_json'],
+    AccessLog: ['at', 'email', 'result', 'pages'],
     Meta: ['key', 'value']
   };
 
@@ -96,7 +103,8 @@ var Config = (function () {
       threshold: threshold === null ? Core.THRESHOLD : threshold,
       schemaVersion: schemaVersionFor_(p, dataId),
       access: parseAccess_(readAccessJson_(p)),
-      editing: editingOf_(p[PROP_EDITING])
+      editing: editingOf_(p[PROP_EDITING]),
+      requests: parseRequests_(p[PROP_REQUESTS])
     };
   }
 
@@ -184,6 +192,29 @@ var Config = (function () {
       groups: entries(raw && raw.groups),
       domainRole: raw && typeof raw.domainRole === 'string' ? raw.domainRole : 'none'
     };
+  }
+
+  function parseRequests_(json) {
+    var raw = null;
+    try { raw = json ? JSON.parse(json) : null; } catch (e) { raw = null; }
+    return (Array.isArray(raw) ? raw : []).filter(function (r) { return r && typeof r.email === 'string' && r.email; })
+      .map(function (r) {
+        return { email: r.email, requested_at: String(r.requested_at || ''), message: String(r.message || '') };
+      });
+  }
+
+  /** Call inside Store.withLock. Drops the oldest requests until the list fits in one property. */
+  function setAccessRequests(list) {
+    var kept = list.slice();
+    var json = JSON.stringify(kept);
+    while (kept.length && json.length > MAX_REQUESTS_CHARS) {
+      kept.shift();
+      json = JSON.stringify(kept);
+    }
+    clearMemo_();
+    if (kept.length) props_().setProperty(PROP_REQUESTS, json);
+    else props_().deleteProperty(PROP_REQUESTS);
+    return kept;
   }
 
   function setThreshold(n) {
@@ -305,6 +336,7 @@ var Config = (function () {
     PROP_SOURCE_ID: PROP_SOURCE_ID,
     PROP_THRESHOLD: PROP_THRESHOLD,
     PROP_ACCESS: PROP_ACCESS,
+    PROP_REQUESTS: PROP_REQUESTS,
     PROP_FAVICON: PROP_FAVICON,
     PROP_SCHEMA: PROP_SCHEMA,
     PROP_SOURCE_INFO: PROP_SOURCE_INFO,
@@ -317,6 +349,8 @@ var Config = (function () {
     DEFAULT_FAVICON_URL: DEFAULT_FAVICON_URL,
     MAX_USERS: MAX_USERS,
     MAX_ACCESS_CHARS: MAX_ACCESS_CHARS,
+    MAX_REQUEST_MESSAGE: MAX_REQUEST_MESSAGE,
+    setAccessRequests: setAccessRequests,
     MAX_GROUPS: MAX_GROUPS,
     DATA_SPREADSHEET_NAME: DATA_SPREADSHEET_NAME,
     TIME_ZONE: TIME_ZONE,

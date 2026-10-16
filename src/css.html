@@ -174,6 +174,9 @@ html { scroll-padding-top: var(--sticky-top); }
 .nav-link.active { color: var(--ink); font-weight: 500; box-shadow: inset 2px 0 0 var(--ink); }
 .nav-label { flex: 1 1 auto; }
 .nav-count { font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); font-weight: 400; }
+/* Pending access requests: the one count that asks for action. */
+.nav-count.is-alert { min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--ko); color: var(--on-ink);
+  font-size: 11px; line-height: 18px; text-align: center; }
 .icon { display: block; width: 16px; height: 16px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.5;
   stroke-linecap: square; stroke-linejoin: miter; }
 .icon .icon-fill { fill: currentColor; stroke: none; }
@@ -983,6 +986,11 @@ body.unconfigured .toast-root { left: var(--s4); }
 .config-card { display: flex; flex-direction: column; gap: var(--s4); }
 .config-form { display: flex; flex-direction: column; gap: var(--s2); max-width: 640px; }
 .config-form .form-actions { margin-top: var(--s2); }
+.denied-request-form { display: flex; flex-direction: column; gap: var(--s2); max-width: 520px; }
+.denied-request-form textarea { resize: vertical; min-height: 72px; }
+.denied-sent { padding: var(--s3) var(--s4); background: var(--ok-bg); border-radius: var(--radius); max-width: 520px; }
+.denied-sent p { margin: 0; }
+.denied-sent-title { color: var(--ok); font-weight: 500; }
 
 /* Responsive: top bar under 900px */
 @media (max-width: 900px) {

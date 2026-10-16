@@ -15,7 +15,7 @@ const READER = 'lea.reader@decathlon.com';
 const ADMIN2 = 'sam.admin@decathlon.com';
 
 const LECTEUR_APIS = ['api_bootstrap', 'api_savePrefs', 'api_getMonthData', 'api_getSyncStatus', 'api_getImportLog',
-  'api_getTimeline', 'api_getActions', 'api_getDiff'];
+  'api_getTimeline', 'api_getActions', 'api_getDiff', 'api_notePages', 'api_requestAccess'];
 
 function call(ctx, name, args) {
   const out = ctx[name](args === undefined ? 'null' : JSON.stringify(args));
@@ -57,14 +57,15 @@ test('the deployer is admin without being listed; bootstrap reports the user and
   assert.match(boot.dataUrl, /^https:\/\//);
   assert.match(boot.sourceUrl, /^https:\/\//);
   const settings = ok(sb.ctx, 'api_getSettings');
-  assert.deepEqual(settings.access, { owner: OWNER, users: [], groups: [], domainRole: 'none' });
+  assert.deepEqual(settings.access, { owner: OWNER, users: [], groups: [], domainRole: 'none', requests: [] });
   assert.equal(settings.me, OWNER);
 });
 
 test('unknown account and missing identity are FORBIDDEN on every endpoint', () => {
   const sb = imported();
   as(sb, 'stranger@decathlon.com');
-  for (const name of apiNames(sb.ctx)) {
+  // « Demander l’accès » is the one endpoint open to an account without a role.
+  for (const name of apiNames(sb.ctx).filter((n) => n !== 'api_requestAccess')) {
     const err = fail(sb.ctx, name, {}, 'FORBIDDEN');
     assert.match(err.message, /stranger@decathlon\.com/);
   }
@@ -97,7 +98,7 @@ test('lecteur: read endpoints work, every write endpoint is FORBIDDEN, links are
   ok(sb.ctx, 'api_getDiff', { oldMonth: '2026-05', newMonth: '2026-05' });
 
   const writes = apiNames(sb.ctx).filter((n) => !LECTEUR_APIS.includes(n));
-  assert.equal(writes.length, 27); // 26 admin endpoints + the test-only api_importMonth
+  assert.equal(writes.length, 29); // 28 admin endpoints + the test-only api_importMonth
   const poste = md.postes[0];
   for (const name of writes) {
     const err = fail(sb.ctx, name, { month: '2026-05', id: poste._id, changes: [], email: ADMIN2, role: 'admin',
@@ -425,7 +426,8 @@ test('groups: every group a call may need is read from the cache in ONE getAll',
   assert.equal(ok(sb.ctx, 'api_bootstrap').user.role, 'lecteur');
   assert.equal(count('cacheGetAll') - warm.getAll, 2, 'warm: one getAll');
   assert.equal(sb.env.__state.groupCalls, warm.groups, 'warm: no GroupsApp call');
-  assert.equal(count('cacheGet') - before.get, 2, 'never one get per group: only the throttle release, once per call');
+  // The bootstrap also checks the access log's 30 min visit entry.
+  assert.equal(count('cacheGet') - before.get, 3, 'never one get per group: the throttle release per call and the visit check');
 });
 
 test('groups: a cached membership slides with use but is re-verified after 1 h at most', (t) => {
@@ -648,4 +650,56 @@ test('unexpected errors: Google\'s text for admins only; lecteurs get a generic 
     assert.deepEqual(plain(st.lastError), { at: full.at, code: full.code,
       message: 'La synchronisation a échoué. Un administrateur en voit le détail dans Paramètres.' });
   }
+});
+
+// ------------------------------------------------------------------------------ access requests
+
+test('« Demander l’accès »: any identified account, one request each, answered by adding the account', () => {
+  const sb = imported();
+  as(sb, 'stranger@decathlon.com');
+  fail(sb.ctx, 'api_requestAccess', { message: 'x'.repeat(201) }, 'VALIDATION');
+  fail(sb.ctx, 'api_requestAccess', { message: 42 }, 'VALIDATION');
+  const first = ok(sb.ctx, 'api_requestAccess', { message: '  Labo\nTextile  ' });
+  assert.equal(first.status, 'pending');
+  assert.equal(first.already, false);
+  const again = ok(sb.ctx, 'api_requestAccess', {});
+  assert.equal(again.already, true);
+  assert.equal(again.requested_at, first.requested_at);
+  as(sb, 'other@decathlon.com');
+  ok(sb.ctx, 'api_requestAccess', null);
+  as(sb, '');
+  fail(sb.ctx, 'api_requestAccess', {}, 'FORBIDDEN');
+
+  // Admins: count in the bootstrap, list (newest first) in the settings; a lecteur sees neither.
+  as(sb, undefined);
+  assert.equal(ok(sb.ctx, 'api_bootstrap').accessRequests, 2);
+  assert.deepEqual(ok(sb.ctx, 'api_getSettings').access.requests.map((r) => [r.email, r.message]),
+    [['other@decathlon.com', ''], ['stranger@decathlon.com', 'Labo Textile']]);
+  ok(sb.ctx, 'api_saveUser', { email: READER, role: 'lecteur' });
+  as(sb, READER);
+  assert.equal(ok(sb.ctx, 'api_bootstrap').accessRequests, 0);
+  assert.deepEqual(ok(sb.ctx, 'api_requestAccess'), { status: 'granted' });
+  fail(sb.ctx, 'api_dismissAccessRequest', { email: 'other@decathlon.com' }, 'FORBIDDEN');
+
+  // Adding the account answers its request; « Ignorer » drops one without access.
+  as(sb, undefined);
+  const view = ok(sb.ctx, 'api_saveUser', { email: 'stranger@decathlon.com', role: 'lecteur' });
+  assert.deepEqual(view.requests.map((r) => r.email), ['other@decathlon.com']);
+  assert.deepEqual(ok(sb.ctx, 'api_dismissAccessRequest', { email: 'other@decathlon.com' }), { requests: [] });
+  fail(sb.ctx, 'api_dismissAccessRequest', { email: 'other@decathlon.com' }, 'NOT_FOUND');
+  assert.equal(sb.env.PropertiesService.getScriptProperties().getProperty('ACCESS_REQUESTS_JSON'), null);
+});
+
+test('« Demander l’accès »: the domain set to lecteur answers every request; the list stays under one property', () => {
+  const sb = imported();
+  for (let i = 0; i < 40; i++) {
+    as(sb, 'user' + i + '@decathlon.com');
+    ok(sb.ctx, 'api_requestAccess', { message: 'é'.repeat(200) });
+  }
+  as(sb, undefined);
+  const list = ok(sb.ctx, 'api_getSettings').access.requests;
+  assert.ok(list.length > 0 && list.length < 40, 'oldest dropped');
+  assert.equal(list[0].email, 'user39@decathlon.com', 'the newest kept');
+  assert.ok(sb.env.PropertiesService.getScriptProperties().getProperty('ACCESS_REQUESTS_JSON').length <= 3000);
+  assert.deepEqual(ok(sb.ctx, 'api_setDomainRole', { role: 'lecteur' }).requests, []);
 });

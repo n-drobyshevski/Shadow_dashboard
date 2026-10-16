@@ -316,7 +316,7 @@ test('groups: a refused account costs one cache read per call (one "no role" ent
   const before = { getAll: st.calls.cacheGetAll, get: st.calls.cacheGet, groups: st.groupCalls };
   fail(sb.ctx, 'api_bootstrap', null, 'FORBIDDEN');
   assert.equal(st.calls.cacheGetAll - before.getAll, 2, 'the throttle counters and the "no role" entry');
-  assert.equal(st.calls.cacheGet - before.get, 1, 'the throttle release only');
+  assert.equal(st.calls.cacheGet - before.get, 2, 'the throttle release and the access log visit check');
   assert.equal(st.groupCalls, before.groups);
 
   // An explicit entry or the domain role applies at once (checked before the entry).

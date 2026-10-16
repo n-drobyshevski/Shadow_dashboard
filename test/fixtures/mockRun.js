@@ -40,7 +40,7 @@ function mockMain(FIX, OPTS) {
   var ERROR_CODES = ['NOT_CONFIGURED', 'MONTH_EXISTS', 'NOT_FOUND', 'BUSY', 'VALIDATION', 'SOURCE_ERROR',
     'FORBIDDEN', 'INTERNAL'];
   var LECTEUR_APIS = ['api_bootstrap', 'api_savePrefs', 'api_getMonthData', 'api_getSyncStatus', 'api_getImportLog',
-    'api_getTimeline', 'api_getActions', 'api_getDiff'];
+    'api_getTimeline', 'api_getActions', 'api_getDiff', 'api_notePages'];
   var PREF_VALUES = { sidebar: ['open', 'collapsed'] };
   var EDITING_KEYS = ['edit', 'create', 'delete'];
   // Same refusals as Api.js requireEditing_.
@@ -101,12 +101,42 @@ function mockMain(FIX, OPTS) {
   /** The month the hourly sync follows: OPTS.currentMonth or the real one. */
   function currentMonth() { return OPTS.currentMonth || Core().currentMonth(new Date()); }
 
+  // Visits over the last ten days, relative to now so that « Aujourd’hui » and the 30-day figures hold.
+  // Today's visits sit at fixed fractions of the time elapsed since midnight: always today, in the past.
+  function sampleAccessLog() {
+    function two(n) { return (n < 10 ? '0' : '') + n; }
+    function stamp(d) {
+      return d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate()) + ' ' + two(d.getHours()) + ':' + two(d.getMinutes());
+    }
+    var now = new Date();
+    var midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    function today(f) { return stamp(new Date(midnight.getTime() + Math.floor((now - midnight) * f / 60000) * 60000)); }
+    function ago(days, h, m) { return stamp(new Date(now.getFullYear(), now.getMonth(), now.getDate() - days, h, m)); }
+    var READER = 'lea.reader@decathlon.com';
+    var rows = [
+      [ago(9, 9, 10), READER, 'lecteur', ['dashboard', 'postes']],
+      [ago(5, 10, 0), 'inconnu@decathlon.com', 'refused', []],
+      [ago(3, 14, 22), 'marc.labo@decathlon.com', 'lecteur', ['dashboard', 'apps', 'timeline']],
+      [ago(1, 8, 30), READER, 'lecteur', ['dashboard', 'postes']],
+      [ago(1, 9, 0), OWNER, 'admin', ['dashboard', 'settings']],
+      [ago(1, 15, 2), READER, 'lecteur', ['actions']],
+      [today(0.2), OWNER, 'admin', ['dashboard']],
+      [today(0.3), READER, 'lecteur', ['dashboard']],
+      [today(0.5), 'inconnu@decathlon.com', 'refused', []],
+      [today(0.6), READER, 'lecteur', ['postes']],
+      [today(0.9), READER, 'lecteur', ['postes', 'actions']]
+    ];
+    return rows.map(function (r) { return { at: r[0], email: r[1], result: r[2], pages: r[3] }; });
+  }
+
   var db = {
     configured: !!OPTS.configured,
     sourceId: OPTS.configured ? FIX.SOURCE_ID : '',
     sourceTitle: OPTS.configured ? 'ShadowIT_Industry' : '',
     months: {},          // month -> {postes, applications, referentiel, columns}
     importLog: [],       // insertion order
+    accessLog: OPTS.empty ? [] : sampleAccessLog(),   // insertion order
+    requests: OPTS.requests ? clone(OPTS.requests) : [],   // « Demander l’accès », oldest first
     actions: OPTS.empty ? [] : clone(FIX.ACTIONS),
     replacements: OPTS.empty ? [] : clone(FIX.REPLACEMENTS),
     threshold: 80,
@@ -449,7 +479,8 @@ function mockMain(FIX, OPTS) {
         user: user,
         prefs: clone(db.prefs[user.email] || {}),
         editing: editingView(),
-        sync: syncStatus()
+        sync: syncStatus(),
+        accessRequests: admin ? db.requests.length : 0
       };
     },
 
@@ -513,6 +544,30 @@ function mockMain(FIX, OPTS) {
       return clone(db.importLog).reverse().slice(0, limit).map(function (e) {
         return { month: e.month, imported_at: e.imported_at, counts: e.counts, warnings: e.warnings, changes: e.changes || null };
       });
+    },
+
+    api_getAccessLog: function (args) {
+      var limit = obj(args).limit === undefined || obj(args).limit === null ? 50 : obj(args).limit;
+      if (typeof limit !== 'number' || Math.floor(limit) !== limit || limit < 1 || limit > 500) {
+        fail('VALIDATION', '« limit » doit être un entier entre 1 et 500.');
+      }
+      return clone(db.accessLog).reverse().slice(0, limit);
+    },
+
+    api_notePages: function (args) {
+      var pages = obj(args).pages;
+      var ids = ['dashboard', 'postes', 'apps', 'timeline', 'actions', 'settings'];
+      if (!Array.isArray(pages) || !pages.length || pages.length > ids.length ||
+        pages.some(function (p) { return ids.indexOf(p) < 0; })) {
+        fail('VALIDATION', '« pages » doit être une liste de pages de l’application.');
+      }
+      for (var i = db.accessLog.length - 1; i >= 0; i--) {
+        var row = db.accessLog[i];
+        if (row.email !== normEmail(db.email) || row.result === 'refused') continue;
+        pages.forEach(function (p) { if (row.pages.indexOf(p) < 0) row.pages.push(p); });
+        break;
+      }
+      return null;
     },
 
     api_savePostes: function (args) { requireEditing('edit'); return saveEntity('postes', KEY_POSTE, args); },
@@ -765,6 +820,28 @@ function mockMain(FIX, OPTS) {
       return accessView();
     },
 
+    api_requestAccess: function (args) {
+      var email = normEmail(db.email);
+      if (roleOf(email)) return { status: 'granted' };
+      var message = obj(args).message === undefined || obj(args).message === null ? '' : obj(args).message;
+      if (typeof message !== 'string') fail('VALIDATION', 'Message invalide.');
+      message = message.trim();
+      if (message.length > 200) fail('VALIDATION', 'Message trop long : 200 caractères au plus.', 'message');
+      var mine = db.requests.filter(function (r) { return r.email === email; })[0];
+      var already = !!mine;
+      if (mine) mine.message = message || mine.message;
+      else db.requests.push(mine = { email: email, requested_at: '2026-05-12 09:02', message: message });
+      return { status: 'pending', requested_at: mine.requested_at, already: already };
+    },
+
+    api_dismissAccessRequest: function (args) {
+      var email = normEmail(obj(args).email);
+      var left = db.requests.filter(function (r) { return r.email !== email; });
+      if (left.length === db.requests.length) fail('NOT_FOUND', 'Aucune demande d’accès de ' + email + '.');
+      db.requests = left;
+      return { requests: clone(left).reverse() };
+    },
+
     api_setDomainRole: function (args) {
       var role = obj(args).role;
       if (['none', 'lecteur'].indexOf(role) < 0) fail('VALIDATION', 'Rôle invalide : « ' + s(role) + ' ».');
@@ -792,7 +869,9 @@ function mockMain(FIX, OPTS) {
     users.sort(function (a, b) { return a.email < b.email ? -1 : a.email > b.email ? 1 : 0; });
     var groups = clone(db.access.groups);
     groups.sort(function (a, b) { return a.email < b.email ? -1 : a.email > b.email ? 1 : 0; });
-    return { owner: OWNER, users: users, groups: groups, domainRole: db.access.domainRole };
+    if (db.access.domainRole === 'lecteur') db.requests = [];
+    db.requests = db.requests.filter(function (r) { return !users.some(function (u) { return u.email === r.email; }); });
+    return { owner: OWNER, users: users, groups: groups, domainRole: db.access.domainRole, requests: clone(db.requests).reverse() };
   }
   function editableEmail(v) {
     var email = normEmail(v);
@@ -811,6 +890,7 @@ function mockMain(FIX, OPTS) {
         'Google Workspace que son propriétaire.');
     }
     var role = roleOf(email);
+    if (name === 'api_requestAccess') return { email: email, role: role, isOwner: email === OWNER };
     if (!role) fail('FORBIDDEN', 'Accès refusé pour ' + email + '. Demandez l’accès à un administrateur.');
     if (role !== 'admin' && LECTEUR_APIS.indexOf(name) < 0) fail('FORBIDDEN', 'Action réservée aux administrateurs.');
     Core().setThreshold(db.threshold);
@@ -916,7 +996,7 @@ function mockMain(FIX, OPTS) {
  * @returns {string} browser JavaScript (no surrounding <script> tag)
  */
 function buildMockScript({ empty = false, configured = true, delayMs = 0, email, failNext, prefs, currentMonth, sync,
-  formSchema, delays, editing } = {}) {
+  formSchema, delays, editing, requests } = {}) {
   const fixtures = {
     POSTES_HEADERS: data.POSTES_HEADERS,
     APPS_HEADERS: data.APPS_HEADERS,
@@ -933,7 +1013,7 @@ function buildMockScript({ empty = false, configured = true, delayMs = 0, email,
     .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
   return '(' + mockMain.toString() + ')(' + json(fixtures) + ', ' + json({ empty, configured, delayMs, email, failNext: failNext || {}, prefs: prefs || null,
     currentMonth: currentMonth || null, sync: sync || null, formSchema: formSchema || null, delays: delays || null,
-    editing: editing || null }) + ');';
+    editing: editing || null, requests: requests || null }) + ');';
 }
 
 /**

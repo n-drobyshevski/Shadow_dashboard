@@ -19,7 +19,7 @@ This page records what was checked, what was fixed, and what is still open. Upda
 
 | Role | What it can do |
 |---|---|
-| no role | nothing; the page shows the access-denied screen |
+| no role | nothing but « Demander l’accès » (`api_requestAccess`); the page shows the access-denied screen |
 | `lecteur` | read only, plus its own display preferences |
 | `admin` | every write: entities, actions, settings, access, sync |
 | owner (the deployer) | everything an admin can; cannot be removed or demoted |
@@ -103,6 +103,17 @@ This page records what was checked, what was fixed, and what is still open. Upda
   - there is no `window.open` and no `postMessage` listener.
 - **Browser storage:** localStorage holds only the sidebar-collapsed flag.
 - **Logs:** perf lines carry no emails or ids.
+- **Access requests (`api_requestAccess`):** the one endpoint an account without a role reaches, after the throttle and the identity check (an empty email is refused).
+  - It stores the caller's own session email, never an address from the arguments, plus a message of 200 characters at most (control characters become spaces). Admins see it as text only (`textContent`).
+  - One pending request per account; asking again only replaces the message. The list is one Script Property kept under 3000 characters by dropping the oldest, so it cannot grow past the 9 KB limit or crowd the other properties.
+  - Giving the account access (or the domain lecteur role) answers its request; « Ignorer » (`api_dismissAccessRequest`) is admin only and gives no access.
+- **Access log (AccessLog tab):** the one deliberate store of who opened the app.
+  - It keeps the time, the email and the result (admin, lecteur, refused) of each visit, at most one row per person per 30 min, and the pages viewed during that visit; nothing else (no IP, no URL, no data).
+  - `api_notePages` is open to every role, but it only adds ids from a fixed list of 6 pages to the caller's own latest row (found by the session email), under the same best-effort tryLock.
+  - Only admins read it (`api_getAccessLog`, weighted 5 by the throttle). It lives in the data spreadsheet, which is shared with nobody.
+  - It is capped: past 1 100 rows the oldest are deleted down to 1 000.
+  - A refused account is logged only once a data spreadsheet exists, so a stranger cannot make the app create one; its 30 min entry and the throttle bound how often it can write.
+  - Writing is best effort under a 500 ms tryLock: a busy lock or a failure drops the row, never the call, and the warning it logs names no email.
 - **Secrets:** gitleaks finds nothing in the full history. `.clasprc*.json` is ignored by git.
 - **Plotly 2.35.3:** no OSV advisory. The old prototype-pollution CVE (CVE-2023-46308) was fixed in 2.25.2.
 

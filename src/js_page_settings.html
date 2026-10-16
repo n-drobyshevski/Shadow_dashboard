@@ -141,7 +141,8 @@
 .role-card-label { font-size: 13px; font-weight: 500; }
 @media (max-width: 700px) {
   .page-settings .access-table .access-role { width: auto; }
-  .page-settings .access-table .access-added, .page-settings .access-table thead th:nth-child(3) { display: none; }
+  .page-settings .access-table .access-added, .page-settings .access-table thead th:nth-child(3),
+  .page-settings .access-table .access-last, .page-settings .access-table thead th:nth-child(4) { display: none; }
   .page-settings .access-table .access-role .access-note { display: block; margin-left: 0; }
   /* Narrow: the address alone, with its tag underneath. */
   .page-settings .access-avatar, .page-settings .access-sub { display: none; }
@@ -151,6 +152,36 @@
   .page-settings .access-count { margin-left: 0; }
   .page-settings .access-table th, .page-settings .access-table td { padding-left: 4px; padding-right: 4px; }
 }
+/* Dernières connexions */
+.page-settings .access-log { display: flex; flex-direction: column; gap: var(--s4); }
+.page-settings .visit-day { margin: 0 0 calc(-1 * var(--s2)); font-size: 12px; font-weight: 500; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ink-2); }
+/* Same column widths in every day's table. */
+.page-settings .visit-table { table-layout: fixed; }
+.page-settings .visit-table th:nth-child(2) { width: 150px; }
+.page-settings .visit-table th:nth-child(3) { width: 88px; }
+.page-settings .visit-table th:nth-child(4) { width: 128px; }
+.page-settings .visit-table th:nth-child(5) { width: 164px; }
+.page-settings .visit-table td:first-child { overflow: hidden; text-overflow: ellipsis; }
+.page-settings .access-table .access-added .access-note, .page-settings .access-table .access-last .access-note {
+  display: block; margin-left: 0; }
+.page-settings .visit-count { display: inline-block; min-width: 22px; padding: 0 6px; border-radius: 9px; background: var(--paper-2);
+  font-family: var(--font-mono); font-size: 11px; text-align: center; color: var(--ink-2); }
+.page-settings .visit-pages { display: inline-flex; gap: 3px; vertical-align: middle; }
+.page-settings .visit-pg { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 18px; padding: 0 3px;
+  border: 1px solid var(--rule); border-radius: 3px; font-family: var(--font-mono); font-size: 10px; color: var(--ink-3); }
+.page-settings .visit-pg.is-on { background: var(--ink); border-color: var(--ink); color: var(--on-ink); }
+.page-settings .metric-card.tone-ko .metric-value { color: var(--ko); }
+.page-settings .access-requests { border-color: var(--ko); }
+.page-settings .request-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.page-settings .request-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s2) var(--s4);
+  padding: var(--s2) 0; border-top: 1px solid var(--rule); }
+.page-settings .request-who { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--s2); min-width: 0; }
+.page-settings .request-message { flex-basis: 100%; color: var(--ink-2); font-size: 13px; overflow-wrap: anywhere;
+  quotes: "«\202f" "\202f»"; }
+@media (max-width: 700px) { .page-settings .request-item { grid-template-columns: 1fr; } }
+.page-settings .request-actions { display: flex; align-items: center; gap: var(--s2); }
+.page-settings .settings-card[hidden] { display: none; }
 </style>
 <script>
 // Pages.settings: the admin-only « Paramètres » page, in three tabs (Général, Saisie, Accès).
@@ -166,6 +197,7 @@
   var editingView = null;
   var unsubscribe = null;
   var currentTab = 'general'; // kept across visits
+  var tabHooks = {};          // tab id -> runs once, the first time that tab is shown
   var journalOpen = false;    // kept across visits, since a sync that adds a month re-mounts the page
   var journalWanted = false;  // focus the journal toggle on the next render
   function alive() { return !!page && page.isConnected; }
@@ -698,6 +730,26 @@
     var query = '';
     var filterId = 'all';
     var fresh = {};
+    var requestsBox = el('section', { class: 'section settings-card access-requests', id: 'settings-requests', hidden: true,
+      'aria-labelledby': 'settings-requests-title' });
+    var lastVisits = null; // email -> {at, n30}, once the access log is in
+    var logCard = accessLogCard(s.me);
+
+    // The log costs a server read and quota, so it loads when the Accès tab is first shown.
+    tabHooks.acces = function () {
+      UI.asyncBlock(logCard.querySelector('#access-log'), {
+        load: function () { return api.call('api_getAccessLog', { limit: ACCESS_LOG_ROWS }); },
+        placeholder: function () { return UI.loading('Chargement du journal…', { small: true }); },
+        small: true,
+        error: { prefix: 'Journal indisponible' },
+        live: alive,
+        render: function (log) {
+          logCard.__render(log);
+          lastVisits = groupVisits(log || [], s.me, false).last;
+          render();
+        }
+      });
+    };
 
     function apply(next, added) {
       view = next;
@@ -778,7 +830,48 @@
         })));
     }
 
+    // « Demander l’accès »: shown first while any request waits; adding the account answers it.
+    function renderRequests() {
+      var list = view.requests || [];
+      State.set({ accessRequests: list.length });
+      UI.clear(requestsBox);
+      requestsBox.hidden = !list.length;
+      if (!list.length) return;
+      requestsBox.appendChild(el('div', { class: 'card-head' },
+        el('h2', { class: 'section-title card-title', id: 'settings-requests-title' }, 'Demandes d’accès'),
+        el('span', { class: 'field-help' }, UI.plural(list.length, 'demande en attente', 'demandes en attente'))));
+      requestsBox.appendChild(el('ul', { class: 'request-list', 'aria-labelledby': 'settings-requests-title' },
+        list.map(function (r) {
+          var grant = el('button', { type: 'button', class: 'btn btn-primary btn-sm', dataset: { grant: r.email },
+            onClick: function () {
+              UI.busy(grant, api.call('api_saveUser', { email: r.email, role: 'lecteur' })).then(function (next) {
+                if (!alive()) return;
+                UI.toast('Accès donné — ' + r.email + ' (Lecteur).', 'success');
+                apply(next, [r.email]);
+              }, function (err) { if (alive()) UI.errorToast(err); });
+            } }, 'Ajouter comme lecteur');
+          var dismiss = el('button', { type: 'button', class: 'btn btn-quiet btn-sm', dataset: { dismiss: r.email },
+            'aria-label': 'Ignorer la demande de ' + r.email,
+            onClick: function () {
+              UI.busy(dismiss, api.call('api_dismissAccessRequest', { email: r.email })).then(function (res) {
+                if (!alive()) return;
+                UI.toast('Demande ignorée — ' + r.email + '.', 'success');
+                view.requests = res.requests;
+                s.access = view;
+                renderRequests();
+              }, function (err) { if (alive()) UI.errorToast(err); });
+            } }, 'Ignorer');
+          return el('li', { class: 'request-item', dataset: { email: r.email } },
+            el('div', { class: 'request-who' },
+              el('span', { class: 'mono' }, r.email),
+              el('span', { class: 'access-note' }, 'le ' + Fmt.dateTime(r.requested_at)),
+              r.message ? el('q', { class: 'request-message' }, r.message) : null),
+            el('div', { class: 'request-actions' }, grant, dismiss));
+        })));
+    }
+
     function render() {
+      renderRequests();
       renderDomain();
       UI.clear(wrap);
       var me = s.me;
@@ -797,10 +890,12 @@
           { label: 'Nom', rowHeader: true, className: 'access-who is-wrap' },
           { label: 'Rôle', className: 'access-role' },
           { label: 'Ajouté le', mono: true, className: 'access-added' },
+          { label: 'Dernière visite', mono: true, className: 'access-last' },
           { label: '', className: 'access-actions' }
         ],
         rowAttrs: function (r) {
           var data = r.group ? { group: r.email, role: r.role, kind: 'group' } : { email: r.email, role: r.role, kind: 'user' };
+          if (!r.group && lastVisits) data.lastVisit = lastVisitText(r.email);
           return { dataset: data, class: fresh[r.email] ? 'is-new' : null };
         },
         cells: function (r) {
@@ -820,6 +915,7 @@
             fixed ? el('span', { class: 'access-fixed-role' }, roleLabel(r.role)) :
               entryRole(r, r.group ? 'api_saveGroup' : 'api_saveUser', (r.group ? 'Rôle du groupe ' : 'Rôle de ') + r.email),
             r.owner ? '—' : addedCell(r),
+            r.group || !lastVisits ? el('span', { class: 'faint' }, '—') : lastVisitCell(r.email),
             fixed ? null : removeEntry(r.group ?
               { email: r.email, apiName: 'api_removeGroup', aria: 'Retirer le groupe ' + r.email, title: 'Retirer le groupe',
                 done: 'Groupe retiré — ' + r.email + '.', message: removeMsg } :
@@ -853,7 +949,8 @@
         Array.prototype.forEach.call(tbl.querySelectorAll('tbody tr'), function (tr) {
           var key = tr.dataset.group || tr.dataset.email;
           var r = rows.filter(function (x) { return x.email === key; })[0];
-          var hay = r ? (r.email + ' ' + roleLabel(r.role) + ' ' + (r.added_by || '') + (r.group ? ' groupe' : '')).toLowerCase() : '';
+          var hay = r ? (r.email + ' ' + roleLabel(r.role) + ' ' + (r.added_by || '') + (r.group ? ' groupe' : '') + ' ' +
+            (tr.dataset.lastVisit || '')).toLowerCase() : '';
           var kindOk = filterId === 'all' || (filterId === 'group' ? !!tr.dataset.group : !tr.dataset.group && tr.dataset.role === filterId);
           var ok = kindOk && (!q || hay.indexOf(q) >= 0);
           tr.hidden = !ok;
@@ -869,6 +966,17 @@
       wrap.appendChild(tbl);
       wrap.appendChild(nomatch);
       filter();
+    }
+
+    function lastVisitCell(email) {
+      var v = lastVisits[email];
+      if (!v) return el('span', { class: 'faint' }, 'jamais');
+      return [whenLabel(v.at), el('span', { class: 'access-note' }, UI.fmtNum(v.n30) + ' en 30 j')];
+    }
+
+    function lastVisitText(email) {
+      var v = lastVisits[email];
+      return v ? whenLabel(v.at) + ' · ' + UI.fmtNum(v.n30) + ' en 30 j' : 'jamais';
     }
 
     function addedCell(entry) {
@@ -887,16 +995,152 @@
           'l’adresse des autres.'], { id: 'access-help' }),
       wrap);
     list.id = 'settings-access';
-    return [domainBox, list];
+    return [requestsBox, domainBox, list, logCard];
   }
 
-  // Page
+  // Access log: the last 500 visits, grouped by day and person. Times are 'YYYY-MM-DD HH:mm', Paris time.
+  var ACCESS_LOG_ROWS = 500;
+  var DAYS_STEP = 7;
+  var ACCESS_RESULT = { admin: ['Administrateur', 'neutral'], lecteur: ['Lecteur', 'neutral'], refused: ['Refusé', 'ko'] };
+  var PAGE_MARKS = [['dashboard', 'T', 'Tableau de bord'], ['postes', 'P', 'Postes'], ['apps', 'A', 'Applications'],
+    ['timeline', 'É', 'Suivi temporel'], ['actions', 'S', 'Suivi des actions'], ['settings', 'R', 'Paramètres']];
+  var hideMyVisits = true; // kept across visits
+
+  function dayKey(d) {
+    function two(n) { return (n < 10 ? '0' : '') + n; }
+    return d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate());
+  }
+  function daysAgoKey(n) { var d = new Date(); d.setDate(d.getDate() - n); return dayKey(d); }
+
+  function dayLabel(key) {
+    if (key === daysAgoKey(0)) return 'Aujourd’hui';
+    if (key === daysAgoKey(1)) return 'Hier';
+    var p = key.split('-');
+    var text = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]))
+      .toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  function whenLabel(at) {
+    var day = at.slice(0, 10);
+    var time = at.slice(11, 16);
+    if (day === daysAgoKey(0)) return 'aujourd’hui ' + time;
+    if (day === daysAgoKey(1)) return 'hier ' + time;
+    return day.slice(8, 10) + '/' + day.slice(5, 7) + ' ' + time;
+  }
+
+  // log is newest first. Returns the 30-day figures, the day groups (one line per person) and, per email,
+  // the last visit and the visits in 30 days. Refusals are not visits.
+  function groupVisits(log, me, hideMe) {
+    var from30 = daysAgoKey(29);
+    var from7 = daysAgoKey(6);
+    var people = {}, active = {}, refused = {}, visits = 0;
+    var days = [], byDay = {}, last = {};
+    log.forEach(function (e) {
+      if (!e || typeof e.at !== 'string' || (hideMe && e.email === me)) return;
+      var day = e.at.slice(0, 10);
+      var ok = e.result !== 'refused';
+      if (ok && !last[e.email]) last[e.email] = { at: e.at, n30: 0 };
+      if (day >= from30) {
+        if (ok) { people[e.email] = true; visits++; last[e.email].n30++; } else refused[e.email] = true;
+        if (ok && day >= from7) active[e.email] = true;
+      }
+      if (!byDay[day]) { byDay[day] = { day: day, lines: [], byEmail: {} }; days.push(byDay[day]); }
+      var g = byDay[day];
+      var line = g.byEmail[e.email];
+      if (!line) {
+        line = g.byEmail[e.email] = { email: e.email, result: e.result, visits: 0, first: '', last: e.at.slice(11, 16), pages: {} };
+        g.lines.push(line);
+      }
+      line.visits++;
+      line.first = e.at.slice(11, 16);
+      (e.pages || []).forEach(function (pg) { line.pages[pg] = true; });
+    });
+    var count = function (o) { return Object.keys(o).length; };
+    return { people: count(people), active: count(active), visits: visits, refused: count(refused), days: days, last: last };
+  }
+
+  function pageMarks(pages) {
+    var seen = PAGE_MARKS.filter(function (m) { return pages[m[0]]; });
+    var names = seen.length ? seen.map(function (m) { return m[2]; }).join(', ') : 'aucune page notée';
+    return el('span', { class: 'visit-pages', role: 'img', 'aria-label': 'Pages : ' + names, tooltip: names },
+      PAGE_MARKS.map(function (m) {
+        return el('span', { class: ['visit-pg', pages[m[0]] ? 'is-on' : null], 'aria-hidden': 'true' }, m[1]);
+      }));
+  }
+
+  // « Dernières connexions »: figures, then one table per day. render(log) fills it once the log is in.
+  function accessLogCard(me) {
+    var body = el('div', { class: 'access-log', id: 'access-log' });
+    var log = null;
+    var shownDays = DAYS_STEP;
+    var hide = UI.checkbox({ id: 'access-log-hide-me', checked: hideMyVisits, label: 'Masquer mes visites',
+      onChange: function (on) { hideMyVisits = on; shownDays = DAYS_STEP; if (log) draw(); } });
+
+    function line(l) {
+      var r = ACCESS_RESULT[l.result] || [l.result, 'neutral'];
+      return {
+        cells: [
+          el('span', { class: 'mono' }, l.email),
+          UI.statusMark(r[0], r[1]),
+          el('span', { class: 'visit-count' }, UI.fmtNum(l.visits)),
+          el('span', { class: 'mono' }, l.first === l.last ? l.last : l.first + ' → ' + l.last),
+          l.result === 'refused' ? el('span', { class: 'faint' }, '—') : pageMarks(l.pages)
+        ],
+        attrs: { dataset: { email: l.email, result: l.result } }
+      };
+    }
+
+    function draw() {
+      UI.clear(body);
+      var g = groupVisits(log, me, hide.getValue());
+      body.appendChild(UI.kpiStrip([
+        { key: 'people', title: 'Utilisateurs', value: UI.fmtNum(g.people), sub: '30 derniers jours' },
+        { key: 'active', title: 'Actifs', value: UI.fmtNum(g.active), sub: '7 derniers jours' },
+        { key: 'visits', title: 'Visites', value: UI.fmtNum(g.visits), sub: '30 derniers jours' },
+        { key: 'refused', title: 'Comptes refusés', value: UI.fmtNum(g.refused), sub: '30 derniers jours',
+          tone: g.refused ? 'ko' : null }
+      ]));
+      if (!g.days.length) { body.appendChild(UI.empty('Aucune connexion enregistrée.', { small: true })); return; }
+      g.days.slice(0, shownDays).forEach(function (d) {
+        var lines = d.lines.map(line);
+        body.appendChild(el('h3', { class: 'visit-day' }, dayLabel(d.day)));
+        body.appendChild(UI.table({
+          className: 'visit-table',
+          caption: dayLabel(d.day),
+          rows: lines,
+          rowAttrs: function (x) { return x.attrs; },
+          columns: [
+            { label: 'Personne', cell: function (x) { return x.cells[0]; } },
+            { label: 'Accès', cell: function (x) { return x.cells[1]; } },
+            { label: 'Visites', num: true, cell: function (x) { return x.cells[2]; } },
+            { label: 'Heures', cell: function (x) { return x.cells[3]; } },
+            { label: 'Pages', cell: function (x) { return x.cells[4]; } }
+          ]
+        })).dataset.day = d.day;
+      });
+      if (g.days.length > shownDays) {
+        body.appendChild(el('button', { type: 'button', class: 'btn btn-link btn-sm', id: 'access-log-more',
+          onClick: function () { shownDays += DAYS_STEP; draw(); var b = document.getElementById('access-log-more'); if (b) b.focus(); } },
+          'Jours précédents'));
+      }
+      body.appendChild(el('p', { class: 'field-help' }, 'Une visite = une ouverture ; les rechargements dans la demi-heure ' +
+        'ne comptent pas. Calculé sur les ' + UI.fmtNum(ACCESS_LOG_ROWS) + ' dernières connexions.'));
+    }
+
+    var section = card('Dernières connexions', hide,
+      UI.lede('Qui a ouvert l’application et quelles pages, refus compris.', null, { small: true }), body);
+    section.id = 'settings-access-log';
+    section.__render = function (next) { log = next || []; draw(); };
+    return section;
+  }
 
   function load(body) {
     UI.asyncBlock(body, {
       load: function () { return api.call('api_getSettings', null); },
       placeholder: function () { return UI.skeleton('lines', { label: 'Chargement des paramètres…', rows: 8 }); },
       render: function (s) {
+        tabHooks = {};
         syncView = syncSection(s.sync);
         State.setEditing(s.editing);
         editingView = editingSection(s);
@@ -955,6 +1199,7 @@
       onSelect: function (id) {
         currentTab = id;
         TABS.forEach(function (t) { if (nodes[t.id]) nodes[t.id].hidden = t.id !== id; });
+        runTabHook(id);
       } });
     body.appendChild(strip.node);
     TABS.forEach(function (t) {
@@ -962,6 +1207,13 @@
         'aria-labelledby': 'settings-tab-' + t.id, hidden: t.id !== first }, panels[t.id]);
       body.appendChild(nodes[t.id]);
     });
+    runTabHook(first);
+  }
+
+  function runTabHook(id) {
+    var hook = tabHooks[id];
+    delete tabHooks[id];
+    if (hook) hook();
   }
 
   // For the app bar's « Journal » link: the next mount opens Général with the journal focused.

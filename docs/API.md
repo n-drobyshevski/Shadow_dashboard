@@ -150,7 +150,7 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 - All wrapped by `apiWrap_(fn, name, minRole)` which first calls `Access.throttle(name)`, before any Script
   Property is read: `FORBIDDEN` when the identity is not passed, `BUSY` « Trop de requêtes. Réessayez dans une
   minute. » when the account (any account but the deployer, with or without a role) has used its 120 units of
-  the current minute (1 per call, 5 for `api_getTimeline`, `api_getDiff`, `api_getImportLog`), `BUSY` « Trop de
+  the current minute (1 per call, 5 for `api_getTimeline`, `api_getDiff`, `api_getImportLog`, `api_getAccessLog`), `BUSY` « Trop de
   requêtes en cours. Réessayez dans quelques instants. » when 10 calls of the account are already running (the
   release `Access.throttle` returns runs in `finally`). `doGet` goes through the same throttle (`'doGet'`, before
   the template is rendered and `FAVICON_URL` read) and answers a refusal with a short static page. It then checks
@@ -167,7 +167,8 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
   (`Store.clearMemo_()`, `Config.clearMemo_()`, §4): one call = one execution in Apps Script, and the
   reset keeps the test sandbox, which runs many calls in one context, honest.
 - Roles: **lecteur** endpoints = `api_bootstrap`, `api_savePrefs`, `api_getMonthData`, `api_getSyncStatus`,
-  `api_getImportLog`, `api_getTimeline`, `api_getActions`, `api_getDiff`. Every other endpoint is **admin** only.
+  `api_getImportLog`, `api_getTimeline`, `api_getActions`, `api_getDiff`, `api_notePages`. `api_requestAccess` is open to any
+  identified account of the domain, **with or without a role** (`apiWrap_` minRole `'none'`). Every other endpoint is **admin** only.
 - **Current month = live.** The month of today (Europe/Paris) follows the source spreadsheet: the hourly sync
   re-imports it, and every edit of that month (`api_savePostes`, `api_saveApplications`, `api_addGenericPoste`,
   `api_addPoste`, `api_addApplication`, `api_deleteApplication`, `api_renameApplication`) is written into the source FIRST
@@ -218,7 +219,7 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 
 | Function | Args | Returns `data` | Errors |
 |---|---|---|---|
-| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:'', threshold:int, user:{email, role:'admin'|'lecteur', isOwner:bool}, prefs:{sidebar?, period?}, editing:Editing, sync:SyncStatus}` (`dataUrl` / `sourceUrl` / `sourceTitle` are `''` for lecteurs: the spreadsheets are private to the deployer). Never opens the source: the URLs are built from the ids and `sourceTitle` is the stored one (`SOURCE_INFO`, refreshed by every sync; `''` until the first sync on a deployment that predates it), so it can be one sync old and says nothing about access — Paramètres checks the source live. | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
+| `api_bootstrap` | – | `{configured:bool, months:['YYYY-MM' asc], latestMonth:'YYYY-MM'|'', currentMonth:'YYYY-MM', dataUrl, sourceUrl:''|url, sourceTitle:'', threshold:int, user:{email, role:'admin'|'lecteur', isOwner:bool}, prefs:{sidebar?, period?}, editing:Editing, sync:SyncStatus, accessRequests:int}` (`accessRequests` = pending « Demander l’accès » requests, 0 for lecteurs; `dataUrl` / `sourceUrl` / `sourceTitle` are `''` for lecteurs: the spreadsheets are private to the deployer). Never opens the source: the URLs are built from the ids and `sourceTitle` is the stored one (`SOURCE_INFO`, refreshed by every sync; `''` until the first sync on a deployment that predates it), so it can be one sync old and says nothing about access — Paramètres checks the source live. | – (creates the data spreadsheet if none is configured). Like every endpoint: `INTERNAL` ('Classeur de données inaccessible…') when the configured data spreadsheet cannot be opened. |
 | `api_savePrefs` | `{sidebar:'open'\|'collapsed', period:'month'\|'last3'\|'last6'\|'year'\|'all'}` (any subset of the known keys) | `{prefs}` = the caller's stored preferences. Every role (lecteurs included): interface state only, per account (`PREFS_<email>` Script Property; at most `Config.MAX_PREFS` = 300 accounts, the least recently saved dropped first). | `VALIDATION` (unknown key or value, nothing to save, no identity) |
 | `api_setConfig` | `{source:'url or id'}` — **owner only** (`FORBIDDEN` for other admins: the deployer's rights open the file) | `{sourceId, sourceTitle, sourceUrl, tabsFound:{postes:bool, applications:bool, referentiel:bool}, sync:SyncStatus}` — also creates the hourly trigger (`sync.authError` when ScriptApp is not authorised; the source is saved anyway). The client then calls `api_syncNow`. | `VALIDATION` (bad id), `SOURCE_ERROR` (cannot open / no postes+apps tab). Saved only on success. |
 | `api_getMonthData` | `{month}` | `{month, postes:[rec], applications:[rec], referentiel:{cat:[v]}, columns:{postes:[h], applications:[h]}, importInfo:{imported_at, warnings:[]}\|null}` | `VALIDATION`, `NOT_FOUND` (month not imported). `columns.applications` always ends with `Galink`, `IDP` if missing from the source headers. |
@@ -226,6 +227,10 @@ Every public `api_*` function: `api_xxx(argsJson: string) → string`.
 | `api_syncNow` | – | `{status:SyncStatus, result:SyncResult}` — synchronises the current month now. `SyncResult = {month, counts:{postes, applications, referentiel}, overwritten:bool, carriedOver:n, warnings:[...], changed:bool, changes:Changes}`; nothing is written when `changed` is false. | `NOT_CONFIGURED`, `SOURCE_ERROR`, `BUSY` (recorded in `lastError`, except `BUSY`) |
 | `api_enableSync` | – | as `api_syncNow`, after creating the hourly trigger if it is missing | `NOT_CONFIGURED` (ScriptApp not authorised: the deployer must run `setup` in the editor), then as `api_syncNow` |
 | `api_getImportLog` | `{limit?}` (integer 1–500, default 12) | `[{month, imported_at, counts, warnings, changes}]`: the `limit` latest ImportLog entries, newest first, with the fields the « Journal des synchronisations » shows only (no `source_id`, no headers). Read from the bottom of the tab (`Store.recentImportLog`). | `VALIDATION` (bad `limit`) |
+| `api_getAccessLog` | `{limit?}` (integer 1–500, default 500) | `[{at:'YYYY-MM-DD HH:mm', email, result:'admin'\|'lecteur'\|'refused', pages:[id]}]`: the `limit` latest AccessLog rows, newest first (`Store.recentAccessLog`). **Admin only.** | `VALIDATION` (bad `limit`) |
+| `api_notePages` | `{pages:[id]}` (1–6 of `dashboard`, `postes`, `apps`, `timeline`, `actions`, `settings`) | `null`. Adds the ids to the caller's latest non-refused AccessLog row among the last 50 (`Store.noteAccessPages`, 500 ms tryLock); best effort, never fails on the write. Sent by the client once per page per visit, batched 3 s after the last new page. | `VALIDATION` (bad `pages`) |
+| `api_requestAccess` | `{message?}` (string, 200 chars at most, control characters become spaces) | `{status:'granted'}` when the caller already has a role; else `{status:'pending', requested_at, already:bool}`. One pending request per account in `ACCESS_REQUESTS_JSON` (asking again only updates the message); the list keeps under 3000 characters by dropping the oldest. Under `Store.withLock`. **Any identified account**, role or not. | `VALIDATION` (`message`) |
+| `api_dismissAccessRequest` | `{email}` | `{requests}` (newest first): the request is dropped without giving access. **Admin only.** | `VALIDATION`, `NOT_FOUND` |
 | `api_savePostes` | `{month, changes:[{id, updates:{col:value}}]}` | `{updated:[rec], sourceUpdated:bool}` (`true` = current month, written into the source) | `FORBIDDEN` (switch `edit` off), `VALIDATION` (keys starting with `_` or the key column are rejected; a source cell computed by a formula, or in a column an array formula fills; a value refused by the source cell's data validation), `NOT_FOUND`, `SOURCE_ERROR` (row not found in the source: renamed or deleted since the last sync; a name several source rows share: « « X » apparaît 2 fois dans l’onglet « … » du Google Sheet source : corrigez d’abord les doublons dans le Google Sheet, puis synchronisez. »; a name several records of the month's snapshot share — one of the rows removed from the source since the last sync —: « « X » apparaît 2 fois dans les données synchronisées (onglet « … ») : corrigez les doublons dans le Google Sheet source, synchronisez, puis réessayez. », nothing written). Also `VALIDATION` with the field for a source cell longer than `Core.LIMITS.cellChars` (truncated by the import: « « X », colonne « Y » : la cellule du Google Sheet source a plus de 5000 caractères et l’application n’en a que le début : modifiez-la dans le Google Sheet source. »). An edit made only of fields without a source column (`Galink` / `IDP`) does not look the source row up: it is saved even for a duplicated name. |
 | `api_addGenericPoste` | `{month}` | `{created:bool, record:rec}` (existing record if already present; current month: also appended to the source with `Importer.appendRecord(…, {strict:false})`: no rule enforced, computed columns left to their formulas and their values read back into the record) | `FORBIDDEN` (switch `create` off), `NOT_FOUND` |
 | `api_getFormSchema` | `{entity:'postes'\|'applications', month, fresh?:bool}` | `FormSchema = {entity, month, live:bool, origin:'source'\|'fallback'\|'snapshot', keyField, readAt:'YYYY-MM-DD HH:mm'\|'', warning?:string, columns:[FormColumn]}` — the fields of a creation form. Current month (`live`): read from the source OUTSIDE the lock (`Importer.readFormSchema`, cached 5 min per entity and source; `fresh:true` reads again), `origin:'source'`, applications completed with `Galink` / `IDP` (`appOnly`) when the source has no such column; when the source is not configured or cannot be read: the snapshot's columns (`Core.snapshotFormColumns` over the month's ImportLog headers and Référentiel, nothing cached), `origin:'fallback'` with a French `warning` (never fails). Past month: `Core.snapshotFormColumns` (`origin:'snapshot'`), the source is never opened. `readAt` = when the source was read (`'source'`) or the month synchronised. | `FORBIDDEN` (switch `create` off), `VALIDATION` (`entity`, month), `NOT_FOUND` (past month not imported) |
@@ -268,16 +273,18 @@ of a source column that has one. Past months (`origin:'snapshot'`): nothing is c
 optional fields, no sheet computes them) and only Oui/Non lists are strict.
 
 `AccessView` = `{owner:email, users:[{email, role, added_at:'YYYY-MM-DD', added_by:email}] sorted by email
-(owner excluded), groups:[same shape] sorted by email, domainRole:'none'|'lecteur'}`. Emails are trimmed and lower-cased.
+(owner excluded), groups:[same shape] sorted by email, domainRole:'none'|'lecteur', requests:[{email, requested_at:
+'YYYY-MM-DD HH:mm', message}] newest first (pending « Demander l’accès »; an explicit entry for that account, or the
+domain set to lecteur, answers it)}`. Emails are trimmed and lower-cased.
 
 The **complete list** of public API functions (used by the contract test) is exactly:
 `api_bootstrap, api_savePrefs, api_setConfig, api_getMonthData, api_getSyncStatus, api_syncNow, api_enableSync,
-api_getImportLog, api_savePostes,
+api_getImportLog, api_getAccessLog, api_notePages, api_savePostes,
 api_addGenericPoste, api_addPoste, api_getFormSchema, api_saveApplications, api_addApplication, api_deleteApplication,
 api_renameApplication, api_getTimeline, api_getActions, api_addAction, api_updateAction,
 api_deleteAction, api_addReplacement, api_updateReplacement, api_deleteReplacement, api_getDiff,
 api_getSettings, api_setThreshold, api_setEditing, api_saveUser, api_addUsers, api_removeUser, api_setDomainRole,
-api_saveGroup, api_removeGroup`
+api_saveGroup, api_removeGroup, api_requestAccess, api_dismissAccessRequest`
 
 ---------------------------------------------------------------------------------------------------
 ## 4. Server internals
@@ -288,7 +295,8 @@ Config.PROP_DATA_ID   = 'DATA_SPREADSHEET_ID'
 Config.PROP_SOURCE_ID = 'SOURCE_SPREADSHEET_ID'
 Config.DATA_SPREADSHEET_NAME = 'ShadowIT_AppData'
 Config.TABS = { postes:'Postes', applications:'Applications', referentiel:'Referentiel',
-                actions:'Actions', replacements:'Replacements', importLog:'ImportLog', meta:'Meta' }
+                actions:'Actions', replacements:'Replacements', importLog:'ImportLog', accessLog:'AccessLog',
+                meta:'Meta' }
 Config.SCHEMAS = {
   Postes:       ['_month','_id','_key','_order','_json','_updated_at'],
   Applications: ['_month','_id','_key','_order','_json','_updated_at'],
@@ -298,6 +306,8 @@ Config.SCHEMAS = {
   Replacements: ['id','old_poste','new_poste','equipe','responsable','date_replacement','comment','recorded_at'],
   ImportLog:    ['month','imported_at','source_id','counts_json','postes_headers_json','apps_headers_json','warnings_json',
                  'changes_json'],
+  AccessLog:    ['at','email','result','pages']   (one row per person per 30 min, ~1 000 rows kept; pages =
+                 comma-separated page ids seen during that visit)
   Meta:         ['key','value']
 }
 Config.SCHEMA_VERSION = '2'   (2: ImportLog.changes_json)
@@ -397,7 +407,7 @@ Access.throttle(name)        -> release function. Per-account limits, called by 
                                Config.get: FORBIDDEN when activeEmail() is '' (same message as requireRole);
                                nothing for the deployer (release = no-op); else 'rl:<minute>|<email>' (minute =
                                floor(Date.now() / 60000)) counts the units used this minute: THROTTLE_WEIGHTS[name]
-                               (5 for api_getTimeline, api_getDiff, api_getImportLog) or 1, and 'if:<email>' holds
+                               (5 for api_getTimeline, api_getDiff, api_getImportLog, api_getAccessLog) or 1, and 'if:<email>' holds
                                the start times (ms) of the account's running calls. Above THROTTLE_PER_MIN = 120:
                                BUSY « Trop de requêtes. Réessayez dans une minute. »; with THROTTLE_IN_FLIGHT = 10
                                calls running: BUSY « Trop de requêtes en cours. Réessayez dans quelques
@@ -505,6 +515,12 @@ Store.recentImportLog(limit)            -> the `limit` latest entries, newest fi
                                            blocks twice as large while blank rows left fewer entries (a
                                            block past the end of the sheet -> whole tab)
 Store.appendImportLog(entry)            -> void
+Store.appendAccessLog({at?, email, result}) -> bool: one AccessLog row under a 500 ms tryLock (false and nothing
+                                           written when the lock is busy, so a boot never waits behind a sync);
+                                           past 1 100 rows the oldest are deleted down to 1 000 in one deleteRows
+Store.recentAccessLog(limit)            -> [{at, email, result, pages:[id]}] newest first, read like recentImportLog
+Store.noteAccessPages(email, pages)     -> bool: merges page ids into that email's latest non-refused row among the
+                                           last 50 (one read, one cell written), under the same tryLock
 Store.latestImportInfo(month)           -> last ImportLog entry for month or null, parsing that row only: the
                                            last 30 rows first unless column A is already memoized, then column
                                            A from the bottom and that one row (last rows past the end of the
@@ -1099,7 +1115,11 @@ what the last change was (`Fmt.syncChange`), the source warnings, and — admins
 `api_getSyncStatus` every 10 min, when the tab comes back and when the panel opens: a `lastChangeAt` newer
 than the data on screen sets « Nouvelles données ». Below 900px the filters fold behind `#filters-toggle`.
 Boot: `FORBIDDEN` from `api_bootstrap` → « Accès refusé » screen (`.page-denied`, server message,
-« Réessayer »); a lecteur on an unconfigured app gets a waiting screen (`data-page="unconfigured"`)
+« Réessayer » `#denied-retry`). When the account is known (not « Identité Google non transmise »), the screen
+offers « Demander l’accès »: `#request-message` (optional, 200 chars) and `#request-send` → `api_requestAccess`;
+`granted` re-boots, `pending` shows `#request-sent` « Demande envoyée. » or « Demande déjà envoyée le … ». Admins see
+the pending count on the Paramètres nav link (`.nav-count.is-alert[data-count="settings"]`, aria-label « 2 demandes
+d’accès », from `bootstrap.accessRequests` → `State.accessRequests`); a lecteur on an unconfigured app gets a waiting screen (`data-page="unconfigured"`)
 instead of the configuration form.
 
 ---------------------------------------------------------------------------------------------------
@@ -1216,7 +1236,9 @@ content), each saved on its own:
   (each with its description). A toggle calls `api_setEditing({<key>: bool})` once, then `State.setEditing` and a toast
   (« Création d’entrées désactivée. »…); on failure the switch goes back and an error toast shows. The switches follow
   `state.editing` changes made elsewhere (poll, bootstrap reload), hidden tab or not.
-- **Accès**: « Qui d’autre peut ouvrir l’application ? » (`#settings-domain`: `#settings-domain-none` /
+- **Accès**: first, while any request waits, « Demandes d’accès » (`#settings-requests`, newest first: address, date,
+  message; `[data-grant]` « Ajouter comme lecteur » → `api_saveUser` role lecteur, `[data-dismiss]` « Ignorer » →
+  `api_dismissAccessRequest`; the nav count follows). Then « Qui d’autre peut ouvrir l’application ? » (`#settings-domain`: `#settings-domain-none` /
   `#settings-domain-lecteur`, `aria-pressed`, → `api_setDomainRole`), then « Personnes et groupes »
   (`#settings-access`): one `#access-table` of accounts (rows `data-email`, owner first) and groups (rows
   `data-group`), `#access-search`, filter chips `#access-filter-all|admin|lecteur|group`, `#access-count`
@@ -1225,6 +1247,13 @@ content), each saved on its own:
   tabs `#add-tab-one|many|group` (`#add-email` → `api_saveUser`; `#bulk-emails` with the `#bulk-preview` →
   `api_addUsers`; `#add-group` → `api_saveGroup`), role radios `#add-role-lecteur|admin`; Enter in a field
   submits; a refusal shows on the field (`#<field>-err`) and keeps the dialog open. Added rows get `.is-new`.
+  Last, « Dernières connexions » (`#settings-access-log`): the first time the Accès tab is shown, one
+  `api_getAccessLog` (500 rows) feeds it and the « Dernière visite » column of `#access-table` (« aujourd’hui 08:41 ·
+  14 en 30 j », « jamais », « — » for groups; `data-last-visit`, part of the search). The card: « Masquer mes
+  visites » (`#access-log-hide-me`, checked by default), a KPI strip (`data-kpi` people / active / visits / refused:
+  30 days, 7 days for active, refusals are not visits), then one `.visit-table` per day (caption « Aujourd’hui »,
+  « Hier », « Mardi 14 octobre »), one row per person (`data-email`, `data-result`): access mark, visits, time span,
+  page marks T P A É S R. 7 days shown, `#access-log-more` « Jours précédents » adds 7.
 
 ---------------------------------------------------------------------------------------------------
 ## 7. Tests

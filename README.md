@@ -203,7 +203,14 @@ synchronisation horaire ». Les mois déjà importés sont conservés.
   Au-delà, l'appel est refusé avec « Trop de requêtes. Réessayez dans une minute. ». Un usage normal en
   reste loin : la limite protège les quotas Google du propriétaire. Elle vaut aussi pour les comptes sans
   accès, et un appel au-delà est refusé avant toute lecture des réglages.
-- Un compte non autorisé voit « Accès refusé » avec son adresse, à transmettre à un administrateur.
+- Un compte non autorisé voit « Accès refusé » avec son adresse et peut cliquer sur **« Demander l'accès »**
+  (avec un message facultatif). Les administrateurs voient le nombre de demandes à côté de « Paramètres » et
+  les traitent dans Paramètres → Accès : « Ajouter comme lecteur » ou « Ignorer ». Une demande par compte ;
+  les demandes sont dans la propriété du script `ACCESS_REQUESTS_JSON`.
+- **Dernières connexions** (Paramètres → Accès, administrateurs seulement) : qui a ouvert l'application,
+  quand et quelles pages, refus compris, regroupé par jour et par personne (« Masquer mes visites » coché
+  par défaut), et une colonne « Dernière visite » dans la liste des accès. Une ligne par personne et par
+  demi-heure dans l'onglet `AccessLog` du classeur de données ; les 1 000 dernières sont gardées.
 - La liste est stockée dans les propriétés du script (`ACCESS_JSON_N` et `ACCESS_JSON_0`, `_1`… : une
   propriété est limitée à 9 Ko), le seuil dans `COMPLIANCE_THRESHOLD` et les interrupteurs de saisie dans
   `EDITING_JSON` (`{"edit":true,"create":false,"delete":true}`) : Éditeur Apps Script → Paramètres du
